@@ -2,6 +2,14 @@
 
 The Govee integration allows you to control and monitor lights and switches using the Govee API.
 
+## Discontinuation - who wants to continue?
+
+I will probably only allow pull reqests which fix breaking changes. If you want to take over this repository feel free to contact me. Preferably I will hand over to some developers which have done pull requests in the past. Give me some time to answer - thanks.
+
+Greetings, Florian.
+
+--------------------------------------------------
+
 ## Installation
 
 * The installation is done inside [HACS](https://hacs.xyz/) (Home Assistant Community Store). If you don't have HACS, you must install it before adding this integration. [Installation instructions here.](https://hacs.xyz/docs/setup/download)
