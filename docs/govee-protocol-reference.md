@@ -2,8 +2,11 @@
 
 A comprehensive technical reference for Govee device communication protocols, compiled from official documentation, PCAP analysis of the Android app, and community reverse engineering efforts.
 
-**Last Updated:** January 2026
-**PCAP Source:** `logs/PCAPdroid_09_Jan_19_27_26.pcap` (Android app capture)
+**Last Updated:** January 24, 2026
+**Data Sources:**
+- `docs/PCAPdroid_24_Jan_16_00_31.pcap` - Android app network capture
+- `logs/PCAPdroid_09_Jan_19_27_26.pcap` - Reference capture
+- Live AWS IoT MQTT capture sessions (January 2026)
 
 ---
 
@@ -686,7 +689,8 @@ This protocol provides real-time device state updates and is used by the Govee m
 | **Authentication** | Mutual TLS with client certificates |
 | **Keepalive** | 120 seconds |
 
-*Endpoint confirmed via PCAP analysis: IP 54.147.158.57*
+*Endpoint confirmed via PCAP analysis. Multiple IPs observed (load-balanced):*
+*98.88.204.61, 35.169.219.171, 13.223.152.107, 3.231.7.138*
 
 ### 3.2 Authentication Flow
 
@@ -721,27 +725,97 @@ AP/{accountId}/{clientId}
 - `accountId`: Numeric account ID from login response (as string)
 - `clientId`: 32-character UUID (generated client-side)
 
-### 3.4 Message Formats
+### 3.4 Topic Structure
 
-**Incoming State Update:**
+Two topic types are used:
+
+| Prefix | Purpose | Example |
+|--------|---------|---------|
+| `GA/` | Account topic (receive state updates) | `GA/6e325aac784478097fe4a9c0fb4da9b3` |
+| `GD/` | Device topic (send commands) | `GD/3c863a6df68bbbfb346997c964c84289` |
+
+- Subscribe to `GA/` topic to receive state updates for all devices
+- Publish commands to device-specific `GD/` topic
+- Device topics obtained from `/device/rest/devices/v1/list` API
+
+### 3.5 Message Formats
+
+**Incoming State Update (Full Response):**
+
+*Validated via live MQTT capture (January 2026):*
+
 ```json
 {
-  "device": "8C:2E:9C:04:A0:03:82:D1",
-  "sku": "H6072",
+  "proType": 2,
+  "sku": "H601F",
+  "device": "03:9C:DC:06:75:4B:10:7C",
+  "softVersion": "1.00.24",
+  "wifiSoftVersion": "1.00.24",
+  "wifiHardVersion": "4.01.01",
+  "cmd": "status",
+  "type": 0,
+  "transaction": "v_1769290509067",
+  "pactType": 1,
+  "pactCode": 2,
   "state": {
     "onOff": 1,
-    "brightness": 50,
-    "color": {
-      "r": 255,
-      "g": 0,
-      "b": 0
-    },
-    "colorTemInKelvin": 0
+    "mode": 21,
+    "brightness": 3,
+    "color": { "r": 131, "g": 56, "b": 236 },
+    "colorTemInKelvin": 0,
+    "sta": { "stc": "7_3_61_3503820" },
+    "result": 1
+  },
+  "op": {
+    "command": [
+      "qgUVAAAAAAAAAAAAAAAAAAAAALo=",
+      "qqUBMoM47BSDOOwUgzjsFIM47Cg="
+    ]
   }
 }
 ```
 
-**State Request (Outbound):**
+**Response Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `proType` | Protocol type (2 = standard) |
+| `sku` | Device model |
+| `device` | Device MAC address |
+| `softVersion` | Firmware version |
+| `cmd` | Echo of command sent |
+| `transaction` | Echo of transaction ID |
+| `pactType`, `pactCode` | Protocol/packet codes |
+| `state` | Current device state |
+| `op.command` | BLE packet sequence (base64) |
+
+**State Object Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `onOff` | Power state (0=off, 1=on) |
+| `mode` | Current mode number |
+| `brightness` | Brightness (1-100) |
+| `color` | RGB color object |
+| `colorTemInKelvin` | Color temperature |
+| `sta.stc` | Status code string |
+| `result` | Command result (1=success) |
+
+**op.command BLE Packets:**
+
+The `op.command` array contains base64-encoded BLE packets representing device state. These use `0xAA` prefix (status packets) rather than `0x33` (command packets):
+
+| Packet Prefix | Purpose |
+|---------------|---------|
+| `0xAA 0x05` | Mode/brightness info |
+| `0xAA 0x07` | Sleep timer (hours, minutes) |
+| `0xAA 0x13` | Current color RGB |
+| `0xAA 0x23` | Segment configuration |
+| `0xAA 0xA5` | Segment colors (4 RGB values per packet) |
+
+**Outbound Commands:**
+
+*Status Request:*
 ```json
 {
   "msg": {
@@ -753,7 +827,7 @@ AP/{accountId}/{clientId}
 }
 ```
 
-**Power Control (Outbound):**
+*Power Control:*
 ```json
 {
   "msg": {
@@ -766,7 +840,7 @@ AP/{accountId}/{clientId}
 }
 ```
 
-**Brightness Control (Outbound):**
+*Brightness Control:*
 ```json
 {
   "msg": {
@@ -779,7 +853,7 @@ AP/{accountId}/{clientId}
 }
 ```
 
-**Color Control (Outbound):**
+*Color Control:*
 ```json
 {
   "msg": {
@@ -795,7 +869,7 @@ AP/{accountId}/{clientId}
 }
 ```
 
-**BLE Passthrough (ptReal):**
+*BLE Passthrough (ptReal):*
 ```json
 {
   "msg": {
@@ -810,24 +884,25 @@ AP/{accountId}/{clientId}
 }
 ```
 
-### 3.5 PCAP Traffic Analysis
+### 3.6 PCAP Traffic Analysis
 
-From the captured PCAP file:
+From PCAP analysis (January 2026 captures):
 
-| Metric | Value |
-|--------|-------|
-| Session Duration | 296.2 seconds |
-| Total Packets | 253 |
-| Data Transferred | 64,307 bytes |
-| Outbound Messages | 61 |
-| Inbound Messages | 78 |
-| Typical Request Size | ~205 bytes |
-| Typical Response Size | 700-2000 bytes |
+| Metric | Jan 24 Capture | Jan 9 Capture |
+|--------|----------------|---------------|
+| Session Duration | 679 seconds | 296 seconds |
+| Total Packets | 761 | 253 |
+| Data Transferred | 200,786 bytes | 64,307 bytes |
+| Outbound Packets | 377 | 61 |
+| Inbound Packets | 384 | 78 |
+| Avg Packet Size (Out) | 300 bytes | 205 bytes |
+| Avg Packet Size (In) | 573 bytes | 700-2000 bytes |
 
-**Timing Pattern:**
-- Initial TLS handshake: ~5 seconds
-- State request/response: <1 second round-trip
-- Idle keepalive: No activity for up to 54 seconds observed
+**Timing Patterns:**
+- State updates: <1 second round-trip
+- Average message gap: ~4-5 seconds during activity
+- Max idle period: 151 seconds (connection maintained)
+- Multiple AWS IoT IPs used (load balancing)
 
 ---
 
@@ -1137,20 +1212,85 @@ All commands are **20 bytes** with XOR checksum:
 
 | Byte | Purpose |
 |------|---------|
-| `0x33` | Standard command |
-| `0xAA` | Keep-alive signal |
+| `0x33` | Standard command (outbound) |
+| `0xAA` | Status/state data (in MQTT responses) |
 | `0xA1` | DIY mode data |
-| `0xA3` | Multi-packet data |
+| `0xA3` | Multi-packet/scene data |
 
-### 6.4 Command Types
+### 6.4 Command Types (0x33 prefix)
 
 | Command | Byte | Description |
 |---------|------|-------------|
 | Power | `0x01` | On/Off control |
-| Brightness | `0x04` | Brightness level |
+| Brightness | `0x04` | Brightness level (0-255) |
 | Color/Mode | `0x05` | Color and mode operations |
 | Segment | `0x0B` | Segment control |
 | Gradient | `0x14` | Gradient toggle |
+| Scene | `0x21` | Scene activation |
+| Nightlight | `0x36` | Nightlight mode toggle (confirmed) |
+
+**Nightlight Command (0x33 0x36):**
+
+*Discovered via live MQTT capture during rapid OFF→ON sequence:*
+
+```
+33 36 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 05
+```
+
+- **Physical trigger required**: Nightlight activates ONLY via rapid OFF→ON within ~2 seconds
+- Value byte [2]: `0x00` observed during capture
+- Device handles this locally; mode may not change in cloud state
+
+**MQTT Activation Testing (January 2026):**
+
+Attempted remote activation via MQTT `ptReal` commands:
+- Sent `0x33 0x36 0x01` (nightlight enable) - device acknowledged but no activation
+- Sent `0x33 0x14 0x01` (gradient toggle) - device acknowledged but no effect
+- Sent high-level `nightLight` / `nightlightToggle` commands - device acknowledged
+
+**Conclusion:** The nightlight feature cannot be activated remotely via MQTT or cloud API.
+It requires the physical power cycling trigger (OFF→ON within 2 seconds). The device
+firmware appears to only accept this mode change from local state transitions.
+
+### 6.4.1 Status Packet Types (0xAA prefix, in MQTT responses)
+
+*Discovered via live MQTT capture (January 2026):*
+
+| Sub-byte | Purpose | Data Format |
+|----------|---------|-------------|
+| `0x05` | Mode info | `[mode_byte]` |
+| `0x07` | Sleep timer | `[hours, minutes]` |
+| `0x11` | Settings | Device settings packet |
+| `0x12` | Extended settings | Additional config |
+| `0x13` | Current color | `[?, R, G, B]` |
+| `0x23` | Segment config | Segment enable flags |
+| `0x26` | Status flags | General status |
+| `0xA5` | Segment colors | 4 RGB triplets per packet |
+
+### 6.4.2 Multi-Packet Types (0xA3 prefix)
+
+| Sub-byte | Purpose |
+|----------|---------|
+| `0x02` | Scene end/cancel |
+| `0x0A` | Scene parameter |
+| `0x58` | Scene selection |
+
+### 6.4.3 Segment Color Encoding (0xAA 0xA5)
+
+RGBIC devices report segment colors in `op.command` array:
+
+```
+AA A5 [group] [R1 G1 B1] [R2 G2 B2] [R3 G3 B3] [R4 G4 B4] ... [checksum]
+```
+
+- Group 0x01: Segments 0-3
+- Group 0x02: Segments 4-6 (last slot may be zeros)
+
+Example (7-segment device):
+```
+aaa50114ffd66427ffd66427ffd66414ffd6640e  → Seg 0-3: RGB(20,255,214), RGB(100,39,255), ...
+aaa50214ffd66414ffd66427ffd6640000000067  → Seg 4-6: RGB(20,255,214), RGB(100,20,255), ...
+```
 
 ### 6.5 Checksum Calculation
 
@@ -1512,55 +1652,124 @@ DIY Styles:
 
 ## 11. PCAP Analysis Details
 
-### 10.1 Capture Information
+### 11.1 Capture Information
+
+**Primary Capture (January 24, 2026):**
 
 | Field | Value |
 |-------|-------|
-| **File** | `PCAPdroid_09_Jan_19_27_26.pcap` |
+| **File** | `docs/PCAPdroid_24_Jan_16_00_31.pcap` |
+| **Size** | 29,311,903 bytes (28 MB) |
+| **Packets** | 7,157 total |
+| **Duration** | 683 seconds (~11 minutes) |
+| **Source** | PCAPdroid (Android) |
+
+**Reference Capture (January 9, 2026):**
+
+| Field | Value |
+|-------|-------|
+| **File** | `logs/PCAPdroid_09_Jan_19_27_26.pcap` |
 | **Size** | 7,091,980 bytes (6.8 MB) |
 | **Packets** | 3,281 total |
 | **Duration** | ~5 minutes |
-| **Source** | PCAPdroid (Android) |
 
-### 10.2 Traffic Breakdown
+### 11.2 Traffic Breakdown
 
 | Protocol | Packets | Bytes | Purpose |
 |----------|---------|-------|---------|
-| HTTPS (443) | 2,976 | ~5.8 MB | App API, CDN |
-| MQTT (8883) | 285 | ~64 KB | AWS IoT |
-| DNS (53) | 20 | ~2 KB | Name resolution |
+| HTTPS (443) | 6,348 | ~29 MB | App API, CDN, Firebase |
+| MQTT (8883) | 761 | ~200 KB | AWS IoT real-time |
+| DNS (53) | 48 | ~5 KB | Name resolution |
 
-### 10.3 Server IPs Observed
+### 11.3 Server IPs Observed
 
+**app2.govee.com (Auth + Internal API):**
+| IP | TLS Connections |
+|----|-----------------|
+| 52.0.106.177 | 15 |
+| 18.208.241.196 | 7 |
+| 100.49.147.20 | 7 |
+| 54.165.11.166 | 6 |
+| 3.93.134.192 | 1 |
+
+**AWS IoT MQTT (aqm3wd1qlc3dy-ats.iot.us-east-1.amazonaws.com):**
+| IP | Purpose |
+|----|---------|
+| 98.88.204.61 | Primary MQTT endpoint |
+| 35.169.219.171 | Failover/load-balanced |
+| 13.223.152.107 | Failover/load-balanced |
+| 3.231.7.138 | Failover/load-balanced |
+
+**CDN / Static Assets:**
 | IP | Service |
 |----|---------|
-| 54.90.251.176 | app2.govee.com |
-| 54.147.158.57 | AWS IoT MQTT |
-| 99.84.237.* | CloudFront CDN |
-| 3.161.193.69 | Unknown (AWS) |
-| 74.125.136.95 | Google (analytics) |
+| 3.161.193.104 | app-h5-manifest.govee.com |
+| 99.84.237.29 | d1f2504ijhdyjw.cloudfront.net |
+| 99.84.237.110 | d1f2504ijhdyjw.cloudfront.net |
+| 99.84.237.10 | d1f2504ijhdyjw.cloudfront.net |
 
-### 10.4 TLS SNI Hostnames
+**Analytics:**
+| IP | Service |
+|----|---------|
+| 74.125.136.94 | firebase-settings.crashlytics.com |
+| 216.239.36.223 | firebaselogging-pa.googleapis.com |
 
-- `aqm3wd1qlc3dy-ats.iot.us-east-1.amazonaws.com`
-- `app2.govee.com`
-- `app-h5-manifest.govee.com`
-- `govee.com`
-- Various Amazon Trust CRL/OCSP endpoints
+### 11.4 TLS SNI Hostnames
 
-### 10.5 Connection Patterns
+| Hostname | Purpose |
+|----------|---------|
+| `aqm3wd1qlc3dy-ats.iot.us-east-1.amazonaws.com` | AWS IoT MQTT |
+| `app2.govee.com` | Authentication & Internal API |
+| `app-h5-manifest.govee.com` | H5 app resources/manifests |
+| `d1f2504ijhdyjw.cloudfront.net` | CDN for static assets |
+| `firebase-settings.crashlytics.com` | Crash reporting |
+| `firebaselogging-pa.googleapis.com` | Firebase analytics |
+
+### 11.5 TLS Cipher Suites
+
+All connections use Perfect Forward Secrecy (PFS), preventing decryption with private keys alone:
+
+| Service | Cipher Suite |
+|---------|--------------|
+| AWS IoT MQTT (8883) | `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` |
+| app2.govee.com | `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` |
+| CloudFront CDN | `TLS_AES_128_GCM_SHA256` (TLS 1.3) |
+| Google/Firebase | `TLS_AES_256_GCM_SHA384` (TLS 1.3) |
+
+*Note: To decrypt TLS traffic, use SSLKEYLOGFILE during capture or configure a MITM proxy.*
+
+### 11.6 AWS IoT MQTT Session Analysis
+
+| Metric | Value |
+|--------|-------|
+| Session Duration | 679 seconds |
+| Total Packets | 761 |
+| Total Bytes | 200,786 |
+| Outbound Packets | 377 |
+| Inbound Packets | 384 |
+| Outbound Bytes | 64,444 |
+| Inbound Bytes | 136,342 |
+| Avg Outbound Gap | 4.99 seconds |
+| Avg Inbound Gap | 3.81 seconds |
+| Max Idle Period | 151 seconds |
+
+**Packet Size Distribution:**
+- Outbound: min=31, max=1,271, avg=300 bytes
+- Inbound: min=31, max=5,392, avg=573 bytes
+
+### 11.7 Connection Patterns
 
 **MQTT Session:**
-- Connection established at t=0
-- TLS handshake: ~200ms
-- State requests every 3-10 seconds during activity
-- Keepalive maintains connection during idle
-- Total session: 296 seconds
+- Multiple AWS IoT IPs used (load balancing observed)
+- Connection maintained for entire capture duration
+- State updates arrive within seconds of app changes
+- Keepalive maintains connection during idle periods
 
 **API Patterns:**
-- Burst of requests during app activity
-- Scene/asset downloads from CDN
-- Token refresh observed
+- Heavy initial burst: scene libraries, device list
+- Large asset downloads from CloudFront CDN (~4 MB)
+- Multiple reconnections to app2.govee.com (15 TLS sessions)
+- Firebase analytics sent periodically
 
 ---
 
