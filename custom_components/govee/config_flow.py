@@ -41,6 +41,8 @@ from .const import (
     DEFAULT_ENABLE_SEGMENTS,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    KEY_IOT_CREDENTIALS,
+    KEY_IOT_LOGIN_FAILED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -158,8 +160,11 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             if not email and not password:
                 return self._create_entry()
 
+            # Basic email format check
+            if email and "@" not in email:
+                errors["base"] = "invalid_email_format"
             # One provided without the other
-            if email and not password:
+            elif email and not password:
                 errors["base"] = "email_without_password"
             elif password and not email:
                 errors["base"] = "password_without_email"
@@ -209,12 +214,12 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             return
 
         # Clear cached credentials
-        if "iot_credentials" in self.hass.data[DOMAIN]:
-            self.hass.data[DOMAIN]["iot_credentials"].pop(entry_id, None)
+        if KEY_IOT_CREDENTIALS in self.hass.data[DOMAIN]:
+            self.hass.data[DOMAIN][KEY_IOT_CREDENTIALS].pop(entry_id, None)
 
         # Clear login failure flag
-        if "iot_login_failed" in self.hass.data[DOMAIN]:
-            self.hass.data[DOMAIN]["iot_login_failed"].pop(entry_id, None)
+        if KEY_IOT_LOGIN_FAILED in self.hass.data[DOMAIN]:
+            self.hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED].pop(entry_id, None)
 
         _LOGGER.debug("Cleared MQTT cache for entry %s", entry_id)
 
@@ -358,7 +363,9 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     elif email and not password:
                         # Email without password - check if keeping existing password
                         existing_email = reconfigure_entry.data.get(CONF_EMAIL, "")
-                        existing_password = reconfigure_entry.data.get(CONF_PASSWORD, "")
+                        existing_password = reconfigure_entry.data.get(
+                            CONF_PASSWORD, ""
+                        )
                         if email == existing_email and existing_password:
                             # Keeping same email with existing password - OK
                             new_data[CONF_EMAIL] = email

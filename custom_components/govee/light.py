@@ -100,8 +100,6 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
     - State restoration for group devices
     """
 
-    _attr_translation_key = "govee_light"
-
     def __init__(
         self,
         coordinator: GoveeCoordinator,
@@ -203,12 +201,20 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
         return temp_range.max_kelvin if temp_range else 9000
 
     def _ha_to_device_brightness(self, ha_brightness: int) -> int:
-        """Convert HA brightness (0-255) to device range."""
-        return int(ha_brightness / HA_BRIGHTNESS_MAX * self._brightness_max)
+        """Convert HA brightness (0-255) to device range, respecting min."""
+        ratio = ha_brightness / HA_BRIGHTNESS_MAX
+        return int(
+            self._brightness_min + ratio * (self._brightness_max - self._brightness_min)
+        )
 
     def _device_to_ha_brightness(self, device_brightness: int) -> int:
-        """Convert device brightness to HA range (0-255)."""
-        return int(device_brightness / self._brightness_max * HA_BRIGHTNESS_MAX)
+        """Convert device brightness to HA range (0-255), respecting min."""
+        device_range = self._brightness_max - self._brightness_min
+        if device_range <= 0:
+            return 0
+        return int(
+            (device_brightness - self._brightness_min) / device_range * HA_BRIGHTNESS_MAX
+        )
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on with optional parameters."""
@@ -216,35 +222,45 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
         if ATTR_BRIGHTNESS in kwargs:
             ha_brightness = kwargs[ATTR_BRIGHTNESS]
             device_brightness = self._ha_to_device_brightness(ha_brightness)
-            await self.coordinator.async_control_device(
+            if not await self.coordinator.async_control_device(
                 self._device_id,
                 BrightnessCommand(brightness=device_brightness),
-            )
+            ):
+                _LOGGER.warning("Brightness command failed for %s", self._device_id)
 
         # Handle RGB color
         if ATTR_RGB_COLOR in kwargs:
             r, g, b = kwargs[ATTR_RGB_COLOR]
             color = RGBColor(r=r, g=g, b=b)
-            await self.coordinator.async_control_device(
+            if not await self.coordinator.async_control_device(
                 self._device_id,
                 ColorCommand(color=color),
-            )
-            self._attr_color_mode = ColorMode.RGB
+            ):
+                _LOGGER.warning("Color command failed for %s", self._device_id)
+            else:
+                self._attr_color_mode = ColorMode.RGB
 
         # Handle color temperature
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
             kelvin = kwargs[ATTR_COLOR_TEMP_KELVIN]
-            await self.coordinator.async_control_device(
+            if not await self.coordinator.async_control_device(
                 self._device_id,
                 ColorTempCommand(kelvin=kelvin),
-            )
-            self._attr_color_mode = ColorMode.COLOR_TEMP
+            ):
+                _LOGGER.warning("Color temp command failed for %s", self._device_id)
+            else:
+                self._attr_color_mode = ColorMode.COLOR_TEMP
 
-        # Always send power on
-        await self.coordinator.async_control_device(
-            self._device_id,
-            PowerCommand(power_on=True),
+        # Only send power command if light is off or no attributes were set
+        has_attribute = any(
+            k in kwargs
+            for k in (ATTR_BRIGHTNESS, ATTR_RGB_COLOR, ATTR_COLOR_TEMP_KELVIN)
         )
+        if not has_attribute or not self.is_on:
+            await self.coordinator.async_control_device(
+                self._device_id,
+                PowerCommand(power_on=True),
+            )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
@@ -260,14 +276,11 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
         if self._device.is_group:
             last_state = await self.async_get_last_state()
             if last_state:
-                # Restore power state
-                state = self.device_state
-                if state:
-                    state.power_state = last_state.state == "on"
-
-                    # Restore brightness
-                    if last_state.attributes.get("brightness"):
-                        device_brightness = self._ha_to_device_brightness(
-                            last_state.attributes["brightness"]
-                        )
-                        state.brightness = device_brightness
+                # Restore state via coordinator
+                power = last_state.state == "on"
+                brightness = None
+                if last_state.attributes.get("brightness"):
+                    brightness = self._ha_to_device_brightness(
+                        last_state.attributes["brightness"]
+                    )
+                self.coordinator.restore_group_state(self._device_id, power, brightness)

@@ -31,6 +31,11 @@ from .const import (
     DEFAULT_ENABLE_SEGMENTS,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
+    KEY_IOT_CREDENTIALS,
+    KEY_IOT_LOGIN_FAILED,
+    SUFFIX_DIY_SCENE_SELECT,
+    SUFFIX_SCENE_SELECT,
+    SUFFIX_SEGMENT,
 )
 from .coordinator import GoveeCoordinator
 from .services import async_setup_services, async_unload_services
@@ -51,10 +56,6 @@ PLATFORMS: list[Platform] = [
 
 # Type alias for runtime data
 type GoveeConfigEntry = ConfigEntry[GoveeCoordinator]
-
-# Keys for storing cached data in hass.data[DOMAIN]
-_KEY_IOT_CREDENTIALS = "iot_credentials"
-_KEY_IOT_LOGIN_FAILED = "iot_login_failed"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bool:
@@ -86,16 +87,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
     password = entry.data.get(CONF_PASSWORD)
 
     if email and password:
-        # Initialize domain data if needed
-        if DOMAIN not in hass.data:
-            hass.data[DOMAIN] = {}
+        # Initialize domain data if needed (idempotent)
+        hass.data.setdefault(DOMAIN, {})
 
         # Check for cached credentials or previous login failure
         cached_creds = (
-            hass.data[DOMAIN].get(_KEY_IOT_CREDENTIALS, {}).get(entry.entry_id)
+            hass.data[DOMAIN].get(KEY_IOT_CREDENTIALS, {}).get(entry.entry_id)
         )
         login_failed = (
-            hass.data[DOMAIN].get(_KEY_IOT_LOGIN_FAILED, {}).get(entry.entry_id)
+            hass.data[DOMAIN].get(KEY_IOT_LOGIN_FAILED, {}).get(entry.entry_id)
         )
 
         if cached_creds:
@@ -117,24 +117,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
                     _LOGGER.info("MQTT credentials obtained for real-time updates")
 
                     # Cache successful credentials
-                    if _KEY_IOT_CREDENTIALS not in hass.data[DOMAIN]:
-                        hass.data[DOMAIN][_KEY_IOT_CREDENTIALS] = {}
-                    hass.data[DOMAIN][_KEY_IOT_CREDENTIALS][
+                    if KEY_IOT_CREDENTIALS not in hass.data[DOMAIN]:
+                        hass.data[DOMAIN][KEY_IOT_CREDENTIALS] = {}
+                    hass.data[DOMAIN][KEY_IOT_CREDENTIALS][
                         entry.entry_id
                     ] = iot_credentials
 
             except GoveeAuthError as err:
                 _LOGGER.warning("Failed to get MQTT credentials: %s", err)
                 # Record failure to prevent repeated attempts
-                if _KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
-                    hass.data[DOMAIN][_KEY_IOT_LOGIN_FAILED] = {}
-                hass.data[DOMAIN][_KEY_IOT_LOGIN_FAILED][entry.entry_id] = str(err)
+                if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
+                    hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}
+                hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED][entry.entry_id] = str(err)
             except Exception as err:
                 _LOGGER.warning("MQTT setup failed: %s", err)
                 # Record failure to prevent repeated attempts
-                if _KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
-                    hass.data[DOMAIN][_KEY_IOT_LOGIN_FAILED] = {}
-                hass.data[DOMAIN][_KEY_IOT_LOGIN_FAILED][entry.entry_id] = str(err)
+                if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
+                    hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}
+                hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED][entry.entry_id] = str(err)
 
     # Get options
     options = entry.options
@@ -151,18 +151,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
         enable_groups=enable_groups,
     )
 
-    # Set up coordinator (discover devices, start MQTT)
+    # Discover devices, start MQTT, and perform initial refresh
+    # _async_setup() is called automatically by async_config_entry_first_refresh()
     try:
-        await coordinator.async_setup()
+        await coordinator.async_config_entry_first_refresh()
     except ConfigEntryAuthFailed:
         await api_client.close()
         raise
     except Exception as err:
         await api_client.close()
         raise ConfigEntryNotReady(f"Failed to set up Govee: {err}") from err
-
-    # Initial refresh
-    await coordinator.async_config_entry_first_refresh()
 
     # Clean up orphaned entities (e.g., groups that are now disabled)
     await _async_cleanup_orphaned_entities(hass, entry, coordinator)
@@ -173,13 +171,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Set up services (only once)
-    if not hass.data.get(DOMAIN):
-        hass.data[DOMAIN] = {}
+    # Set up services (only once) and store coordinator
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if "_services_setup" not in domain_data:
+        domain_data["_services_setup"] = True
         await async_setup_services(hass)
 
     # Store coordinator in hass.data for services access
-    hass.data[DOMAIN][entry.entry_id] = coordinator
+    domain_data[entry.entry_id] = coordinator
 
     # Register update listener for options changes
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -245,16 +244,7 @@ async def _async_cleanup_orphaned_entities(
         enable_diy_scenes,
     )
 
-    # Suffixes used by various entity types
-    entity_suffixes = (
-        "_scene_select",
-        "_diy_scene_select",
-        "_diy_style_select",
-        "_hdmi_source_select",
-        "_refresh_scenes",
-        "_night_light",
-        "_music_mode",
-    )
+    known_device_ids = set(coordinator.devices.keys())
 
     # Get all entity entries for this config entry
     all_entities = list(
@@ -268,7 +258,6 @@ async def _async_cleanup_orphaned_entities(
 
     entries_to_remove = []
     for entity_entry in all_entities:
-        # Extract device_id from unique_id
         unique_id = entity_entry.unique_id
         if not unique_id:
             continue
@@ -276,60 +265,21 @@ async def _async_cleanup_orphaned_entities(
         should_remove = False
         removal_reason = ""
 
-        # Check for segment entities that should be removed
-        if "_segment_" in unique_id:
-            if not enable_segments:
-                should_remove = True
-                removal_reason = "segments disabled"
-            else:
-                # Check if parent device exists
-                device_id = unique_id.split("_segment_")[0]
-                if device_id not in coordinator.devices:
-                    should_remove = True
-                    removal_reason = f"device {device_id} not discovered"
-
-        # Check for DIY scene select entities that should be removed
-        # IMPORTANT: Check DIY scenes first since _diy_scene_select also ends with _scene_select
-        elif unique_id.endswith("_diy_scene_select"):
-            if not enable_diy_scenes:
-                should_remove = True
-                removal_reason = "DIY scenes disabled"
-            else:
-                device_id = unique_id[: -len("_diy_scene_select")]
-                if device_id not in coordinator.devices:
-                    should_remove = True
-                    removal_reason = f"device {device_id} not discovered"
-
-        # Check for regular scene select entities that should be removed
-        elif unique_id.endswith("_scene_select"):
-            if not enable_scenes:
-                should_remove = True
-                removal_reason = "scenes disabled"
-            else:
-                device_id = unique_id[: -len("_scene_select")]
-                if device_id not in coordinator.devices:
-                    should_remove = True
-                    removal_reason = f"device {device_id} not discovered"
-
-        # Check other entity types for device existence
-        else:
-            device_id = unique_id
-            _LOGGER.debug("Checking entity unique_id=%s", unique_id)
-
-            for suffix in entity_suffixes:
-                if device_id.endswith(suffix):
-                    device_id = device_id[: -len(suffix)]
-                    _LOGGER.debug("  Stripped suffix, device_id=%s", device_id)
-                    break
-
-            if device_id not in coordinator.devices:
-                should_remove = True
-                removal_reason = f"device {device_id} not discovered"
-                _LOGGER.debug(
-                    "  Device not in coordinator (enable_groups=%s). Available devices: %s",
-                    coordinator._enable_groups,
-                    list(coordinator.devices.keys()),
-                )
+        # Check feature toggles first
+        if SUFFIX_SEGMENT in unique_id and not enable_segments:
+            should_remove = True
+            removal_reason = "segments disabled"
+        elif unique_id.endswith(SUFFIX_SCENE_SELECT) and not enable_scenes:
+            should_remove = True
+            removal_reason = "scenes disabled"
+        elif unique_id.endswith(SUFFIX_DIY_SCENE_SELECT) and not enable_diy_scenes:
+            should_remove = True
+            removal_reason = "DIY scenes disabled"
+        elif not any(unique_id.startswith(did) for did in known_device_ids):
+            # Every unique_id starts with the device_id, so a simple
+            # prefix check replaces all suffix-stripping logic
+            should_remove = True
+            removal_reason = "device not discovered"
 
         if should_remove:
             entries_to_remove.append(entity_entry)

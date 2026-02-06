@@ -151,19 +151,10 @@ class GoveeCapability:
 
         Uses case-insensitive matching for robustness.
         """
-        result = (
+        return (
             self.type == CAPABILITY_DYNAMIC_SCENE
             and self.instance.lower() == INSTANCE_SCENE.lower()
         )
-        if self.type == CAPABILITY_DYNAMIC_SCENE:
-            _LOGGER.debug(
-                "Checking is_scene: type=%s instance=%s expected=%s result=%s",
-                self.type,
-                self.instance,
-                INSTANCE_SCENE,
-                result,
-            )
-        return result
 
     @property
     def is_diy_scene(self) -> bool:
@@ -171,19 +162,10 @@ class GoveeCapability:
 
         Uses case-insensitive matching for robustness.
         """
-        result = (
+        return (
             self.type == CAPABILITY_DYNAMIC_SCENE
             and self.instance.lower() == INSTANCE_DIY.lower()
         )
-        if self.type == CAPABILITY_DYNAMIC_SCENE:
-            _LOGGER.debug(
-                "Checking is_diy_scene: type=%s instance=%s expected=%s result=%s",
-                self.type,
-                self.instance,
-                INSTANCE_DIY,
-                result,
-            )
-        return result
 
     @property
     def is_toggle(self) -> bool:
@@ -437,6 +419,10 @@ class GoveeDevice:
         """
         device_id = data.get("device", "")
         sku = data.get("sku", "")
+        if not device_id or not sku:
+            raise ValueError(
+                f"Device missing required fields: device_id={device_id!r}, sku={sku!r}"
+            )
         name = data.get("deviceName", sku)
         device_type = data.get("type", "devices.types.light")
 

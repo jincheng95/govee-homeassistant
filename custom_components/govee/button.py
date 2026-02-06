@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components.button import ButtonDeviceClass, ButtonEntity
+from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import SUFFIX_REFRESH_SCENES
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .models import GoveeDevice
@@ -47,7 +48,6 @@ class GoveeRefreshScenesButton(GoveeEntity, ButtonEntity):
     Useful when new scenes are created in the Govee app.
     """
 
-    _attr_device_class = ButtonDeviceClass.UPDATE
     _attr_entity_category = EntityCategory.CONFIG
     _attr_translation_key = "refresh_scenes"
     _attr_icon = "mdi:refresh"
@@ -60,7 +60,7 @@ class GoveeRefreshScenesButton(GoveeEntity, ButtonEntity):
         """Initialize the refresh scenes button."""
         super().__init__(coordinator, device)
 
-        self._attr_unique_id = f"{device.device_id}_refresh_scenes"
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_REFRESH_SCENES}"
         self._attr_name = "Refresh Scenes"
 
     async def async_press(self) -> None:

@@ -15,51 +15,17 @@ from homeassistant.components.light import (  # type: ignore[attr-defined]
     ColorMode,
     LightEntity,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo  # type: ignore[attr-defined]
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from ..const import CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS, DOMAIN
+from ..const import SUFFIX_SEGMENT
 from ..coordinator import GoveeCoordinator
+from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up Govee segment lights from a config entry."""
-    coordinator: GoveeCoordinator = entry.runtime_data
-
-    # Check if segments are enabled
-    if not entry.options.get(CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS):
-        _LOGGER.debug("Segment entities disabled")
-        return
-
-    entities: list[LightEntity] = []
-
-    for device in coordinator.devices.values():
-        if device.supports_segments and device.segment_count > 0:
-            # Create entity for each segment
-            for segment_index in range(device.segment_count):
-                entities.append(
-                    GoveeSegmentEntity(
-                        coordinator=coordinator,
-                        device=device,
-                        segment_index=segment_index,
-                    )
-                )
-
-    async_add_entities(entities)
-    _LOGGER.debug("Set up %d Govee segment entities", len(entities))
-
-
-class GoveeSegmentEntity(LightEntity, RestoreEntity):
+class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
     """Govee segment light entity.
 
     Represents a single segment of an RGBIC LED strip.
@@ -70,7 +36,6 @@ class GoveeSegmentEntity(LightEntity, RestoreEntity):
     to prevent API responses from overwriting local state.
     """
 
-    _attr_has_entity_name = True
     _attr_translation_key = "govee_segment"
     _attr_supported_color_modes = {ColorMode.RGB}
     _attr_color_mode = ColorMode.RGB
@@ -88,13 +53,11 @@ class GoveeSegmentEntity(LightEntity, RestoreEntity):
             device: Device this segment belongs to.
             segment_index: Zero-based segment index.
         """
-        self._coordinator = coordinator
-        self._device = device
-        self._device_id = device.device_id
+        super().__init__(coordinator, device)
         self._segment_index = segment_index
 
         # Unique ID combines device and segment
-        self._attr_unique_id = f"{device.device_id}_segment_{segment_index}"
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_SEGMENT}{segment_index}"
 
         # Segment name with 1-based index for user display
         self._attr_name = f"Segment {segment_index + 1}"
@@ -111,23 +74,13 @@ class GoveeSegmentEntity(LightEntity, RestoreEntity):
         self._rgb_color: tuple[int, int, int] = (255, 255, 255)
 
     @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device.device_id)},
-            name=self._device.name,
-            manufacturer="Govee",
-            model=self._device.sku,
-        )
-
-    @property
     def available(self) -> bool:
-        """Return True if entity is available."""
-        # Check parent device availability
-        state = self._coordinator.get_state(self._device_id)
-        if state is None:
-            return False
-        return state.online or self._device.is_group
+        """Return True if entity is available.
+
+        Segments don't depend on coordinator state updates.
+        Just check the coordinator is healthy.
+        """
+        return self.coordinator.last_update_success
 
     @property
     def is_on(self) -> bool:
@@ -163,7 +116,7 @@ class GoveeSegmentEntity(LightEntity, RestoreEntity):
             color=color,
         )
 
-        await self._coordinator.async_control_device(
+        await self.coordinator.async_control_device(
             self._device_id,
             command,
         )
@@ -179,7 +132,7 @@ class GoveeSegmentEntity(LightEntity, RestoreEntity):
             color=RGBColor(r=0, g=0, b=0),
         )
 
-        await self._coordinator.async_control_device(
+        await self.coordinator.async_control_device(
             self._device_id,
             command,
         )

@@ -46,6 +46,5 @@ class GoveeConnectionError(GoveeApiError):
 class GoveeDeviceNotFoundError(GoveeApiError):
     """Device not found (expected for group devices)."""
 
-    def __init__(self, device_id: str) -> None:
-        super().__init__(f"Device not found: {device_id}", code=400)
-        self.device_id = device_id
+    def __init__(self, message: str = "Device not found") -> None:
+        super().__init__(message, code=400)

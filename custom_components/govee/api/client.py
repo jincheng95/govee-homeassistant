@@ -7,6 +7,7 @@ Implements IApiClient protocol.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -41,8 +42,8 @@ RETRY_START_TIMEOUT = 1.0  # Initial retry delay in seconds
 RETRY_MAX_TIMEOUT = 30.0  # Maximum retry delay
 RETRY_FACTOR = 2.0  # Exponential factor
 
-# Non-retryable status codes
-NO_RETRY_STATUSES = {400, 401, 403, 404}
+# Retryable server error status codes
+RETRY_STATUSES = {500, 502, 503, 504}
 
 
 class GoveeApiClient:
@@ -93,7 +94,9 @@ class GoveeApiClient:
         """Ensure retry client is initialized."""
         if self._retry_client is None:
             if self._session is None:
-                self._session = aiohttp.ClientSession()
+                self._session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=30),
+                )
                 self._owns_session = True
 
             retry_options = ExponentialRetry(
@@ -101,7 +104,7 @@ class GoveeApiClient:
                 start_timeout=RETRY_START_TIMEOUT,
                 max_timeout=RETRY_MAX_TIMEOUT,
                 factor=RETRY_FACTOR,
-                statuses=set(),  # Retry all except NO_RETRY_STATUSES
+                statuses=RETRY_STATUSES,
                 exceptions={aiohttp.ClientError, TimeoutError},
             )
 
@@ -269,7 +272,7 @@ class GoveeApiClient:
         client = await self._ensure_client()
 
         payload = {
-            "requestId": "uuid",
+            "requestId": str(uuid.uuid4()),
             "payload": {
                 "sku": sku,
                 "device": device_id,
@@ -317,7 +320,7 @@ class GoveeApiClient:
         # Build request payload
         cmd_payload = command.to_api_payload()
         payload = {
-            "requestId": "uuid",
+            "requestId": str(uuid.uuid4()),
             "payload": {
                 "sku": sku,
                 "device": device_id,
@@ -354,7 +357,7 @@ class GoveeApiClient:
         client = await self._ensure_client()
 
         payload = {
-            "requestId": "uuid",
+            "requestId": str(uuid.uuid4()),
             "payload": {
                 "sku": sku,
                 "device": device_id,
@@ -407,7 +410,7 @@ class GoveeApiClient:
         client = await self._ensure_client()
 
         payload = {
-            "requestId": "uuid",
+            "requestId": str(uuid.uuid4()),
             "payload": {
                 "sku": sku,
                 "device": device_id,

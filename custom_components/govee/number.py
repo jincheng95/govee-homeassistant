@@ -16,7 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, SUFFIX_MUSIC_SENSITIVITY
 from .coordinator import GoveeCoordinator
 from .models import GoveeDevice, MusicModeCommand
 
@@ -105,7 +105,7 @@ class GoveeMusicSensitivityNumber(
         self._attr_native_value: float | None = 50.0  # Default to mid-sensitivity
 
         # Unique ID
-        self._attr_unique_id = f"{device.device_id}_music_sensitivity"
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_MUSIC_SENSITIVITY}"
 
         # Entity name
         self._attr_name = "Music Sensitivity"

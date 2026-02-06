@@ -23,8 +23,23 @@ DEFAULT_ENABLE_SCENES: Final = True
 DEFAULT_ENABLE_DIY_SCENES: Final = True
 DEFAULT_ENABLE_SEGMENTS: Final = True
 
-# Platforms to set up
-PLATFORMS: Final = ["light", "scene"]
-
 # Config entry version (fresh start)
 CONFIG_VERSION: Final = 1
+
+# Keys for storing cached data in hass.data[DOMAIN]
+KEY_IOT_CREDENTIALS: Final = "iot_credentials"
+KEY_IOT_LOGIN_FAILED: Final = "iot_login_failed"
+
+# Entity unique_id suffixes
+# Used in entity creation and orphan cleanup to keep patterns consistent
+SUFFIX_SEGMENT: Final = "_segment_"
+SUFFIX_SCENE_SELECT: Final = "_scene_select"
+SUFFIX_DIY_SCENE_SELECT: Final = "_diy_scene_select"
+SUFFIX_DIY_STYLE_SELECT: Final = "_diy_style_select"
+SUFFIX_HDMI_SOURCE_SELECT: Final = "_hdmi_source_select"
+SUFFIX_MUSIC_MODE_SELECT: Final = "_music_mode_select"
+SUFFIX_REFRESH_SCENES: Final = "_refresh_scenes"
+SUFFIX_NIGHT_LIGHT: Final = "_night_light"
+SUFFIX_MUSIC_MODE: Final = "_music_mode"
+SUFFIX_MUSIC_SENSITIVITY: Final = "_music_sensitivity"
+SUFFIX_DREAMVIEW: Final = "_dreamview"

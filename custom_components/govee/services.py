@@ -119,9 +119,11 @@ async def async_unload_services(hass: HomeAssistant) -> None:
 def _get_coordinators(hass: HomeAssistant) -> list[GoveeCoordinator]:
     """Get all Govee coordinators."""
     coordinators = []
-    for entry_id, entry_data in hass.data.get(DOMAIN, {}).items():
-        if isinstance(entry_data, GoveeCoordinator):
-            coordinators.append(entry_data)
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if hasattr(entry, "runtime_data") and isinstance(
+            entry.runtime_data, GoveeCoordinator
+        ):
+            coordinators.append(entry.runtime_data)
     return coordinators
 
 

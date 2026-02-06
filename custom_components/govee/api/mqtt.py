@@ -42,6 +42,7 @@ AWS_IOT_KEEPALIVE = 120
 RECONNECT_BASE = 5
 RECONNECT_MAX = 300
 CONNECTION_TIMEOUT = 60
+MAX_RECONNECT_ATTEMPTS = 50
 
 # Amazon Root CA 1 - Required for AWS IoT server certificate verification
 # Source: https://www.amazontrust.com/repository/AmazonRootCA1.pem
@@ -161,10 +162,10 @@ class GoveeAwsIotClient:
             temp_dir = self._temp_dir
             self._temp_dir = None
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, temp_dir.cleanup)
-            except Exception:
-                pass
+            except Exception as err:
+                _LOGGER.debug("Temp dir cleanup: %s", err)
 
         self._client = None
         self._connected = False
@@ -235,12 +236,13 @@ class GoveeAwsIotClient:
 
         Runs blocking SSL context creation in an executor.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._create_ssl_context_sync)
 
     async def _connection_loop(self) -> None:
         """Maintain AWS IoT MQTT connection with exponential backoff."""
         reconnect_interval = RECONNECT_BASE
+        reconnect_attempts = 0
 
         while self._running:
             try:
@@ -264,6 +266,7 @@ class GoveeAwsIotClient:
                     self._connected = True
                     self._max_backoff_count = 0
                     reconnect_interval = RECONNECT_BASE
+                    reconnect_attempts = 0
 
                     _LOGGER.info(
                         "Connected to AWS IoT MQTT at %s",
@@ -291,23 +294,28 @@ class GoveeAwsIotClient:
                 self._connected = False
 
                 if self._running:
+                    reconnect_attempts += 1
+
+                    if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS:
+                        _LOGGER.error(
+                            "AWS IoT connection failed after %d attempts, giving up",
+                            reconnect_attempts,
+                        )
+                        self._running = False
+                        break
+
                     _LOGGER.warning(
-                        "AWS IoT connection error (%s): %s. Reconnecting in %ds",
+                        "AWS IoT connection error (%s): %s. "
+                        "Reconnecting in %ds (attempt %d/%d)",
                         type(err).__name__,
                         err,
                         reconnect_interval,
+                        reconnect_attempts,
+                        MAX_RECONNECT_ATTEMPTS,
                     )
 
                     await asyncio.sleep(reconnect_interval)
                     reconnect_interval = min(reconnect_interval * 2, RECONNECT_MAX)
-
-                    if reconnect_interval >= RECONNECT_MAX:
-                        self._max_backoff_count += 1
-                        if self._max_backoff_count >= 3:
-                            _LOGGER.error(
-                                "AWS IoT connection failed %d times at max backoff",
-                                self._max_backoff_count,
-                            )
 
         self._connected = False
 
@@ -365,7 +373,10 @@ class GoveeAwsIotClient:
             )
 
             # Invoke callback with device ID and state dict
-            self._on_state_update(device_id, state)
+            try:
+                self._on_state_update(device_id, state)
+            except Exception as err:
+                _LOGGER.error("State update callback failed for %s: %s", device_id, err)
 
         except json.JSONDecodeError as err:
             _LOGGER.warning("Failed to parse AWS IoT message: %s", err)

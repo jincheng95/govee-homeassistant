@@ -49,6 +49,7 @@
       "invalid_auth": "Invalid API key. Check that you're using the developer key from developer.govee.com, not your account password.",
       "invalid_account": "Invalid Govee app credentials. Make sure you're using the password from the Govee mobile app (not the website).",
       "invalid_api_key_format": "API key appears invalid. It should be a long string (36+ characters) from developer.govee.com.",
+      "invalid_email_format": "Please enter a valid email address.",
       "password_without_email": "Please enter both email and password, or leave both empty to skip.",
       "email_without_password": "Please enter both email and password, or leave both empty to skip.",
       "cannot_connect": "Failed to connect to Govee API. Check your internet connection.",

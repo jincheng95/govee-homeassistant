@@ -9,10 +9,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -26,9 +26,26 @@ from .api import (
     GoveeRateLimitError,
 )
 from .api.auth import GoveeAuthClient
+from .api.ble_packet import DIY_STYLE_NAMES
+from .ble_passthrough import BlePassthroughManager
 from .const import DOMAIN
 from .models import GoveeDevice, GoveeDeviceState
+from .models.commands import (
+    BrightnessCommand,
+    ColorCommand,
+    ColorTempCommand,
+    DeviceCommand,
+    DIYSceneCommand,
+    ModeCommand,
+    MusicModeCommand,
+    PowerCommand,
+    SceneCommand,
+    ToggleCommand,
+    create_dreamview_command,
+)
+from .models.device import INSTANCE_DREAMVIEW, INSTANCE_HDMI_SOURCE
 from .protocols import IStateObserver
+from .scene_cache import SceneCacheManager
 from .repairs import (
     async_create_auth_issue,
     async_create_mqtt_issue,
@@ -37,9 +54,6 @@ from .repairs import (
     async_delete_mqtt_issue,
     async_delete_rate_limit_issue,
 )
-
-if TYPE_CHECKING:
-    from .models.commands import DeviceCommand
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,6 +96,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=DOMAIN,
             update_interval=timedelta(seconds=poll_interval),
         )
@@ -97,11 +112,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # State cache
         self._states: dict[str, GoveeDeviceState] = {}
 
-        # Scene cache {device_id: [scenes]}
-        self._scene_cache: dict[str, list[dict[str, Any]]] = {}
-
-        # DIY scene cache {device_id: [scenes]}
-        self._diy_scene_cache: dict[str, list[dict[str, Any]]] = {}
+        # Scene cache manager
+        self._scene_cache = SceneCacheManager(api_client)
 
         # Observers for state changes
         self._observers: list[IStateObserver] = []
@@ -113,13 +125,53 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # Maps device_id -> MQTT topic for publishing commands
         self._device_topics: dict[str, str] = {}
 
+        # BLE passthrough manager for MQTT-based commands
+        self._ble_manager = BlePassthroughManager(
+            get_mqtt_client=lambda: self._mqtt_client,
+            device_topics=self._device_topics,
+            ensure_device_topic=self._ensure_device_topic,
+        )
+
         # Track rate limit state to avoid spamming repair issues
         self._rate_limited: bool = False
+
+        # Store original poll interval for restoring after rate limit backoff
+        self._original_update_interval = timedelta(seconds=poll_interval)
 
     @property
     def devices(self) -> dict[str, GoveeDevice]:
         """Get all discovered devices."""
         return self._devices
+
+    @property
+    def api_rate_limit_remaining(self) -> int:
+        """Return API rate limit remaining."""
+        return self._api_client.rate_limit_remaining
+
+    @property
+    def api_rate_limit_total(self) -> int:
+        """Return API rate limit total."""
+        return self._api_client.rate_limit_total
+
+    @property
+    def api_rate_limit_reset(self) -> int:
+        """Return API rate limit reset time."""
+        return self._api_client.rate_limit_reset
+
+    @property
+    def mqtt_client(self) -> GoveeAwsIotClient | None:
+        """Return MQTT client instance."""
+        return self._mqtt_client
+
+    @property
+    def scene_cache_count(self) -> int:
+        """Return number of devices with cached scenes."""
+        return self._scene_cache.scene_cache_count
+
+    @property
+    def diy_scene_cache_count(self) -> int:
+        """Return number of devices with cached DIY scenes."""
+        return self._scene_cache.diy_scene_cache_count
 
     @property
     def mqtt_connected(self) -> bool:
@@ -157,10 +209,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             except Exception as err:
                 _LOGGER.warning("Observer notification failed: %s", err)
 
-    async def async_setup(self) -> None:
+    async def _async_setup(self) -> None:
         """Set up the coordinator - discover devices and start MQTT.
 
-        Should be called once during integration setup.
+        Called automatically by async_config_entry_first_refresh().
         """
         # Discover devices
         await self._discover_devices()
@@ -221,43 +273,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 self._enable_groups,
             )
 
-            # Pre-populate scene cache for devices with scene capabilities
-            # This ensures scene entities are created on initial setup
-            _LOGGER.debug(
-                "Pre-populating scene cache for %d devices", len(self._devices)
-            )
-            for device_id, device in self._devices.items():
-                if device.supports_scenes:
-                    try:
-                        scenes = await self._api_client.get_dynamic_scenes(
-                            device_id, device.sku
-                        )
-                        self._scene_cache[device_id] = scenes
-                        _LOGGER.debug(
-                            "Cached %d scenes for %s", len(scenes), device.name
-                        )
-                    except GoveeApiError as err:
-                        _LOGGER.warning(
-                            "Failed to pre-fetch scenes for %s: %s", device.name, err
-                        )
-                        self._scene_cache[device_id] = []
+            # Clean up scene caches for devices no longer discovered
+            self._scene_cache.cleanup_stale(set(self._devices))
 
-                if device.supports_diy_scenes:
-                    try:
-                        diy_scenes = await self._api_client.get_diy_scenes(
-                            device_id, device.sku
-                        )
-                        self._diy_scene_cache[device_id] = diy_scenes
-                        _LOGGER.debug(
-                            "Cached %d DIY scenes for %s", len(diy_scenes), device.name
-                        )
-                    except GoveeApiError as err:
-                        _LOGGER.warning(
-                            "Failed to pre-fetch DIY scenes for %s: %s",
-                            device.name,
-                            err,
-                        )
-                        self._diy_scene_cache[device_id] = []
+            # Scene cache is populated lazily via async_get_scenes() / async_get_diy_scenes()
+            # during entity setup, avoiding rate limit pressure at startup
 
             # Clear any auth issues on success
             await async_delete_auth_issue(self.hass, self._config_entry)
@@ -321,11 +341,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         except Exception as err:
             _LOGGER.warning("Unexpected error fetching device topics: %s", err)
 
+    @callback
     def _on_mqtt_state_update(self, device_id: str, state_data: dict[str, Any]) -> None:
         """Handle state update from MQTT.
 
-        This is called from the MQTT client when a state message is received.
-        Updates internal state and notifies observers.
+        Called from aiomqtt's async message loop, which runs on the HA event
+        loop. Safe to call async_set_updated_data() directly. The @callback
+        decorator documents this event-loop-only contract.
         """
         if device_id not in self._devices:
             _LOGGER.debug("MQTT update for unknown device: %s", device_id)
@@ -365,12 +387,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             for device_id, device in self._devices.items()
         ]
 
+        # Scale timeout based on device count (2s per device, min 30s, max 120s)
+        timeout = min(max(STATE_FETCH_TIMEOUT, len(self._devices) * 2), 120)
+
         # Wait for all with timeout
         try:
-            async with asyncio.timeout(STATE_FETCH_TIMEOUT):
+            async with asyncio.timeout(timeout):
                 results = await asyncio.gather(*tasks, return_exceptions=True)
         except TimeoutError:
-            _LOGGER.warning("State fetch timed out after %ds", STATE_FETCH_TIMEOUT)
+            _LOGGER.warning("State fetch timed out after %ds", timeout)
             return self._states
 
         # Process results
@@ -390,9 +415,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 )
                 # Keep previous state on error
 
-        # Clear rate limit issue if we got successful updates
+        # Clear rate limit issue and restore poll interval if we got successful updates
         if successful_updates > 0 and self._rate_limited:
             self._rate_limited = False
+            self.update_interval = self._original_update_interval
+            _LOGGER.info(
+                "Rate limit cleared, restoring poll interval to %s",
+                self._original_update_interval,
+            )
             await async_delete_rate_limit_issue(self.hass, self._config_entry)
 
         return self._states
@@ -422,49 +452,31 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         try:
             state = await self._api_client.get_device_state(device_id, device.sku)
 
-            # Preserve optimistic state for scenes (API doesn't return active scene)
-            # But clear scene if device was turned off
+            # Preserve optimistic state fields that API doesn't reliably return.
+            # Clear them when device is turned off (no longer active).
             existing_state = self._states.get(device_id)
-            if existing_state and existing_state.active_scene:
-                if state.power_state:
-                    # Device is still on, preserve the scene
-                    state.active_scene = existing_state.active_scene
-                else:
-                    # Device is off, clear the scene
-                    _LOGGER.debug(
-                        "Clearing scene for %s (device turned off)", device_id
-                    )
-
-            # Preserve DreamView optimistic state
-            # API often returns stale data that doesn't reflect recent commands
-            if existing_state and existing_state.dreamview_enabled:
-                if state.power_state:
-                    state.dreamview_enabled = existing_state.dreamview_enabled
-                else:
-                    _LOGGER.debug(
-                        "Clearing DreamView for %s (device turned off)", device_id
-                    )
-
-            # Preserve Music Mode optimistic state
-            if existing_state and existing_state.music_mode_enabled:
-                if state.power_state:
-                    state.music_mode_enabled = existing_state.music_mode_enabled
-                    state.music_mode_value = existing_state.music_mode_value
-                    state.music_mode_name = existing_state.music_mode_name
-                    state.music_sensitivity = existing_state.music_sensitivity
-                else:
-                    _LOGGER.debug(
-                        "Clearing music mode for %s (device turned off)", device_id
-                    )
-
-            # Preserve DIY scene optimistic state
-            if existing_state and existing_state.active_diy_scene:
-                if state.power_state:
-                    state.active_diy_scene = existing_state.active_diy_scene
-                else:
-                    _LOGGER.debug(
-                        "Clearing DIY scene for %s (device turned off)", device_id
-                    )
+            if existing_state:
+                self._preserve_optimistic_field(
+                    existing_state, state, device_id, "active_scene", "scene"
+                )
+                self._preserve_optimistic_field(
+                    existing_state, state, device_id, "dreamview_enabled", "DreamView"
+                )
+                self._preserve_optimistic_field(
+                    existing_state, state, device_id, "active_diy_scene", "DIY scene"
+                )
+                # Music mode has extra fields to preserve alongside the flag
+                if existing_state.music_mode_enabled:
+                    if state.power_state:
+                        state.music_mode_enabled = existing_state.music_mode_enabled
+                        state.music_mode_value = existing_state.music_mode_value
+                        state.music_mode_name = existing_state.music_mode_name
+                        state.music_sensitivity = existing_state.music_sensitivity
+                    else:
+                        _LOGGER.debug(
+                            "Clearing music mode for %s (device turned off)",
+                            device_id,
+                        )
 
             return state
 
@@ -481,10 +493,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         except GoveeRateLimitError as err:
             _LOGGER.warning("Rate limit hit, keeping previous state")
-            # Create rate limit repair issue (only once)
+            # Create rate limit repair issue and back off (only once)
             if not self._rate_limited:
                 self._rate_limited = True
                 reset_time = "unknown"
+                # Back off: increase poll interval to retry_after or 120s
+                backoff_seconds = int(err.retry_after) if err.retry_after else 120
+                self.update_interval = timedelta(seconds=backoff_seconds)
+                _LOGGER.warning(
+                    "Rate limited, increasing poll interval to %ds",
+                    backoff_seconds,
+                )
                 if err.retry_after:
                     reset_time = f"{int(err.retry_after)} seconds"
                 self.hass.async_create_task(
@@ -539,51 +558,97 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.error("Control command failed: %s", err)
             return False
 
-    async def async_send_music_mode(
-        self, device_id: str, enabled: bool, sensitivity: int = 50
-    ) -> bool:
-        """Send music mode command via BLE passthrough.
+    async def _ensure_device_topic(self, device_id: str) -> str | None:
+        """Get device MQTT topic, refreshing if needed.
 
-        Sends a ptReal MQTT command to enable/disable music reactive mode.
-        This feature requires MQTT connection as there is no REST API fallback.
+        If the topic is missing for this device but we have credentials,
+        attempt a single refresh from the API.
+        """
+        topic = self._device_topics.get(device_id)
+        if topic is not None:
+            return topic
+
+        # Topic missing - try one refresh
+        if self._iot_credentials:
+            _LOGGER.debug("Device topic missing for %s, refreshing from API", device_id)
+            await self._fetch_device_topics()
+            topic = self._device_topics.get(device_id)
+            if topic:
+                _LOGGER.debug("Got device topic for %s after refresh", device_id)
+
+        return topic
+
+    async def async_send_music_mode(
+        self,
+        device_id: str,
+        enabled: bool,
+        sensitivity: int = 50,
+        music_mode: int = 1,
+        last_scene_id: str | None = None,
+        last_scene_name: str | None = None,
+    ) -> bool:
+        """Send music mode command via REST API first, with BLE fallback.
+
+        Tries REST API for devices with STRUCT music mode capability,
+        then falls back to BLE passthrough via MQTT.
 
         Args:
             device_id: Device identifier.
             enabled: True to enable music mode, False to disable.
             sensitivity: Microphone sensitivity 0-100 (default 50).
+            music_mode: Music mode value (default 1 = Rhythm).
+            last_scene_id: Last active scene ID (for restoring on disable).
+            last_scene_name: Last active scene name (for restoring on disable).
 
         Returns:
             True if command was sent successfully.
         """
-        if not self.mqtt_connected:
+        device = self._devices.get(device_id)
+        if not device:
+            _LOGGER.error("Unknown device for music mode: %s", device_id)
+            return False
+
+        # Try REST API first for devices with STRUCT music mode capability
+        if device.has_struct_music_mode:
+            if enabled:
+                try:
+                    command = MusicModeCommand(
+                        music_mode=music_mode,
+                        sensitivity=sensitivity,
+                        auto_color=1,
+                    )
+                    success = await self.async_control_device(device_id, command)
+                    if success:
+                        _LOGGER.debug(
+                            "Sent music mode ON to %s via REST API", device.name
+                        )
+                        return True
+                except ConfigEntryAuthFailed:
+                    raise
+                except Exception as err:
+                    _LOGGER.debug(
+                        "REST music mode ON failed for %s: %s, trying BLE",
+                        device.name,
+                        err,
+                    )
+            else:
+                # Disable music mode via REST: restore last scene or send brightness
+                success = await self._rest_disable_music_mode(
+                    device_id, last_scene_id, last_scene_name
+                )
+                if success:
+                    return True
+
+        # Fall back to BLE passthrough via MQTT
+        if not self._ble_manager.available:
             _LOGGER.warning(
                 "Cannot send music mode for %s: MQTT not connected",
                 device_id,
             )
             return False
 
-        device = self._devices.get(device_id)
-        if not device:
-            _LOGGER.error("Unknown device for music mode: %s", device_id)
-            return False
-
-        # Build and send BLE packet
-        from .api.ble_packet import build_music_mode_packet, encode_packet_base64
-
-        packet = build_music_mode_packet(enabled, sensitivity)
-        encoded = encode_packet_base64(packet)
-
-        # Get device-specific MQTT topic for publishing
-        device_topic = self._device_topics.get(device_id)
-
-        if self._mqtt_client is None:
-            return False
-
-        success = await self._mqtt_client.async_publish_ptreal(
-            device_id,
-            device.sku,
-            encoded,
-            device_topic,
+        success = await self._ble_manager.async_send_music_mode(
+            device_id, device.sku, enabled, sensitivity
         )
 
         if success:
@@ -592,11 +657,66 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             if state:
                 state.apply_optimistic_music_mode(enabled)
             _LOGGER.debug(
-                "Sent music mode %s (sensitivity=%d) to %s",
+                "Sent music mode %s (sensitivity=%d) to %s via BLE",
                 "ON" if enabled else "OFF",
                 sensitivity,
                 device.name,
             )
+
+        return success
+
+    async def _rest_disable_music_mode(
+        self,
+        device_id: str,
+        last_scene_id: str | None = None,
+        last_scene_name: str | None = None,
+    ) -> bool:
+        """Disable music mode via REST API.
+
+        Tries to restore the last active scene, then falls back to a
+        brightness command to cleanly exit music mode.
+
+        Args:
+            device_id: Device identifier.
+            last_scene_id: Scene ID to restore.
+            last_scene_name: Scene name to restore.
+
+        Returns:
+            True if successfully disabled via REST.
+        """
+        device = self._devices.get(device_id)
+        success = False
+
+        # Try restoring last active scene
+        if last_scene_id and last_scene_name:
+            command = SceneCommand(
+                scene_id=int(last_scene_id),
+                scene_name=last_scene_name,
+            )
+            success = await self.async_control_device(device_id, command)
+            if success:
+                _LOGGER.debug(
+                    "Restored scene '%s' on %s after music mode off",
+                    last_scene_name,
+                    device.name if device else device_id,
+                )
+
+        if not success:
+            # No last scene or scene restore failed - send brightness command
+            # to cleanly exit music mode via REST (avoids visible power cycle)
+            state = self._states.get(device_id)
+            brightness = state.brightness if state and state.brightness else 100
+            success = await self.async_control_device(
+                device_id, BrightnessCommand(brightness=brightness)
+            )
+            _LOGGER.debug(
+                "Sent brightness command to %s to exit music mode (brightness=%d)",
+                device.name if device else device_id,
+                brightness,
+            )
+
+        if success:
+            self.clear_music_mode(device_id)
 
         return success
 
@@ -616,8 +736,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             return False
 
         # Try REST API first (works for HTTP-capable devices like H6097)
-        from .models.commands import create_dreamview_command
-
         try:
             success = await self.async_control_device(
                 device_id, create_dreamview_command(enabled)
@@ -636,28 +754,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.debug("REST DreamView failed for %s: %s", device.name, err)
 
         # Fall back to BLE passthrough for devices that need it
-        if not self.mqtt_connected:
+        if not self._ble_manager.available:
             _LOGGER.warning(
                 "Cannot send DreamView for %s: MQTT not connected",
                 device_id,
             )
             return False
 
-        from .api.ble_packet import build_dreamview_packet, encode_packet_base64
-
-        packet = build_dreamview_packet(enabled)
-        encoded = encode_packet_base64(packet)
-
-        device_topic = self._device_topics.get(device_id)
-
-        if self._mqtt_client is None:
-            return False
-
-        success = await self._mqtt_client.async_publish_ptreal(
-            device_id,
-            device.sku,
-            encoded,
-            device_topic,
+        success = await self._ble_manager.async_send_dreamview(
+            device_id, device.sku, enabled
         )
 
         if success:
@@ -694,26 +799,44 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.error("Unknown device for DIY style: %s", device_id)
             return False
 
-        from .api.ble_packet import DIY_STYLE_NAMES
-
         style_value = DIY_STYLE_NAMES.get(style)
         if style_value is None:
             _LOGGER.warning("Unknown DIY style: %s", style)
             return False
+
+        _LOGGER.debug(
+            "DIY style command for %s is optimistic only - no device command sent. "
+            "Full BLE packet implementation is not yet available",
+            device.name,
+        )
 
         # Apply optimistic state update
         state = self._states.get(device_id)
         if state:
             state.apply_optimistic_diy_style(style, style_value)
 
-        _LOGGER.debug(
-            "Applied DIY style '%s' (value=%d) to %s (optimistic only)",
-            style,
-            style_value,
-            device.name,
-        )
+        return False
 
-        return True
+    @staticmethod
+    def _preserve_optimistic_field(
+        existing: GoveeDeviceState,
+        new: GoveeDeviceState,
+        device_id: str,
+        field: str,
+        label: str,
+    ) -> None:
+        """Preserve an optimistic state field across API polls.
+
+        If the existing state has a truthy value for the field, preserve it
+        on the new state when the device is on. Clear it when the device is off.
+        """
+        if getattr(existing, field):
+            if new.power_state:
+                setattr(new, field, getattr(existing, field))
+            else:
+                _LOGGER.debug(
+                    "Clearing %s for %s (device turned off)", label, device_id
+                )
 
     def _apply_optimistic_update(
         self,
@@ -725,20 +848,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if not state:
             return
 
-        # Import here to avoid circular dependency
-        from .models.commands import (
-            BrightnessCommand,
-            ColorCommand,
-            ColorTempCommand,
-            DIYSceneCommand,
-            ModeCommand,
-            MusicModeCommand,
-            PowerCommand,
-            SceneCommand,
-            ToggleCommand,
-        )
-        from .models.device import INSTANCE_DREAMVIEW, INSTANCE_HDMI_SOURCE
-
         if isinstance(command, PowerCommand):
             state.apply_optimistic_power(command.power_on)
         elif isinstance(command, BrightnessCommand):
@@ -748,7 +857,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         elif isinstance(command, ColorTempCommand):
             state.apply_optimistic_color_temp(command.kelvin)
         elif isinstance(command, SceneCommand):
-            state.apply_optimistic_scene(str(command.scene_id))
+            state.apply_optimistic_scene(str(command.scene_id), command.scene_name)
         elif isinstance(command, DIYSceneCommand):
             state.apply_optimistic_diy_scene(str(command.scene_id))
         elif isinstance(command, ModeCommand):
@@ -787,47 +896,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         Returns:
             List of scene definitions.
         """
-        if not refresh and device_id in self._scene_cache:
-            cached_scenes = self._scene_cache[device_id]
-            _LOGGER.debug(
-                "Returning %d cached scenes for %s",
-                len(cached_scenes),
-                device_id,
-            )
-            return cached_scenes
-
         device = self._devices.get(device_id)
-        if not device:
-            _LOGGER.warning(
-                "Device %s not found in coordinator for scene fetch", device_id
-            )
-            return []
-
-        _LOGGER.debug(
-            "Fetching scenes from API for %s (sku=%s)",
-            device.name,
-            device.sku,
-        )
-
-        try:
-            scenes = await self._api_client.get_dynamic_scenes(device_id, device.sku)
-            self._scene_cache[device_id] = scenes
-            _LOGGER.info(
-                "Fetched and cached %d scenes for %s",
-                len(scenes),
-                device.name,
-            )
-            return scenes
-        except GoveeApiError as err:
-            _LOGGER.error(
-                "API error fetching scenes for %s: %s",
-                device.name,
-                err,
-            )
-            # Return cached scenes if available, otherwise empty list
-            cached = self._scene_cache.get(device_id, [])
-            _LOGGER.debug("Returning %d cached scenes after error", len(cached))
-            return cached
+        return await self._scene_cache.async_get_scenes(device_id, device, refresh)
 
     async def async_get_diy_scenes(
         self,
@@ -843,47 +913,40 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         Returns:
             List of DIY scene definitions.
         """
-        if not refresh and device_id in self._diy_scene_cache:
-            cached_scenes = self._diy_scene_cache[device_id]
-            _LOGGER.debug(
-                "Returning %d cached DIY scenes for %s",
-                len(cached_scenes),
-                device_id,
-            )
-            return cached_scenes
-
         device = self._devices.get(device_id)
-        if not device:
-            _LOGGER.warning(
-                "Device %s not found in coordinator for DIY scene fetch", device_id
-            )
-            return []
+        return await self._scene_cache.async_get_diy_scenes(device_id, device, refresh)
 
-        _LOGGER.debug(
-            "Fetching DIY scenes from API for %s (sku=%s)",
-            device.name,
-            device.sku,
-        )
+    def clear_scene(self, device_id: str) -> None:
+        """Clear active scene for a device."""
+        state = self._states.get(device_id)
+        if state:
+            state.active_scene = None
+            state.source = "optimistic"
 
-        try:
-            scenes = await self._api_client.get_diy_scenes(device_id, device.sku)
-            self._diy_scene_cache[device_id] = scenes
-            _LOGGER.info(
-                "Fetched and cached %d DIY scenes for %s",
-                len(scenes),
-                device.name,
-            )
-            return scenes
-        except GoveeApiError as err:
-            _LOGGER.error(
-                "API error fetching DIY scenes for %s: %s",
-                device.name,
-                err,
-            )
-            # Return cached scenes if available, otherwise empty list
-            cached = self._diy_scene_cache.get(device_id, [])
-            _LOGGER.debug("Returning %d cached DIY scenes after error", len(cached))
-            return cached
+    def clear_diy_scene(self, device_id: str) -> None:
+        """Clear active DIY scene for a device."""
+        state = self._states.get(device_id)
+        if state:
+            state.active_diy_scene = None
+            state.source = "optimistic"
+
+    def clear_music_mode(self, device_id: str) -> None:
+        """Clear music mode state for a device."""
+        state = self._states.get(device_id)
+        if state:
+            state.music_mode_enabled = False
+            state.source = "optimistic"
+
+    def restore_group_state(
+        self, device_id: str, power: bool, brightness: int | None = None
+    ) -> None:
+        """Restore state for a group device from HA state machine."""
+        state = self._states.get(device_id)
+        if state:
+            state.power_state = power
+            if brightness is not None:
+                state.brightness = brightness
+            state.source = "optimistic"
 
     async def async_shutdown(self) -> None:
         """Shutdown coordinator and cleanup resources."""

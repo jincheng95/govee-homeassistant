@@ -91,6 +91,22 @@ class IApiClient(Protocol):
         """
         ...
 
+    async def get_diy_scenes(
+        self,
+        device_id: str,
+        sku: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch available DIY scenes for a device.
+
+        Args:
+            device_id: Device identifier.
+            sku: Device SKU.
+
+        Returns:
+            List of DIY scene definitions with id, name, etc.
+        """
+        ...
+
     async def close(self) -> None:
         """Close the API client and release resources."""
         ...

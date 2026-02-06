@@ -40,7 +40,7 @@ async def async_setup_entry(
     ]
 
     # Add MQTT status sensor if MQTT is configured
-    if coordinator._mqtt_client is not None:
+    if coordinator.mqtt_client is not None:
         entities.append(GoveeMqttStatusSensor(coordinator, entry.entry_id))
 
     async_add_entities(entities)
@@ -69,7 +69,6 @@ class GoveeRateLimitSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity):
         super().__init__(coordinator)
 
         self._attr_unique_id = f"{entry_id}_rate_limit"
-        self._attr_name = "API Rate Limit Remaining"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -84,15 +83,14 @@ class GoveeRateLimitSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity):
     @property
     def native_value(self) -> int:
         """Return the current rate limit remaining."""
-        return self.coordinator._api_client.rate_limit_remaining
+        return self.coordinator.api_rate_limit_remaining
 
     @property
     def extra_state_attributes(self) -> dict[str, int]:
         """Return additional rate limit info."""
-        client = self.coordinator._api_client
         return {
-            "total_limit": client.rate_limit_total,
-            "reset_time": client.rate_limit_reset,
+            "total_limit": self.coordinator.api_rate_limit_total,
+            "reset_time": self.coordinator.api_rate_limit_reset,
         }
 
 
@@ -118,7 +116,6 @@ class GoveeMqttStatusSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity)
         super().__init__(coordinator)
 
         self._attr_unique_id = f"{entry_id}_mqtt_status"
-        self._attr_name = "MQTT Status"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -133,7 +130,7 @@ class GoveeMqttStatusSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity)
     @property
     def native_value(self) -> str:
         """Return the current MQTT status."""
-        mqtt_client = self.coordinator._mqtt_client
+        mqtt_client = self.coordinator.mqtt_client
         if mqtt_client is None:
             return "unavailable"
         return "connected" if mqtt_client.connected else "disconnected"

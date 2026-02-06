@@ -63,18 +63,19 @@ async def async_get_config_entry_diagnostics(
         }
 
     # Collect MQTT status
+    mqtt_client = coordinator.mqtt_client
     mqtt_info = None
-    if coordinator._mqtt_client:
+    if mqtt_client:
         mqtt_info = {
-            "available": coordinator._mqtt_client.available,
-            "connected": coordinator._mqtt_client.connected,
+            "available": mqtt_client.available,
+            "connected": mqtt_client.connected,
         }
 
     # Collect API client info
     api_info = {
-        "rate_limit_remaining": coordinator._api_client.rate_limit_remaining,
-        "rate_limit_total": coordinator._api_client.rate_limit_total,
-        "rate_limit_reset": coordinator._api_client.rate_limit_reset,
+        "rate_limit_remaining": coordinator.api_rate_limit_remaining,
+        "rate_limit_total": coordinator.api_rate_limit_total,
+        "rate_limit_reset": coordinator.api_rate_limit_reset,
     }
 
     # Build diagnostics data
@@ -89,7 +90,7 @@ async def async_get_config_entry_diagnostics(
         "device_count": len(coordinator.devices),
         "mqtt": mqtt_info,
         "api": api_info,
-        "scene_cache_count": len(coordinator._scene_cache),
+        "scene_cache_count": coordinator.scene_cache_count,
     }
 
     return diagnostics_data

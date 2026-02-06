@@ -405,7 +405,7 @@ class GoveeAuthClient:
             "Accept": "application/json",
         }
 
-        _LOGGER.debug("Attempting Govee account login for email: %s", email)
+        _LOGGER.debug("Attempting Govee account login")
 
         try:
             async with self._session.post(

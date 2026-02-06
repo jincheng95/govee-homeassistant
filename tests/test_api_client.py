@@ -17,7 +17,6 @@ from custom_components.govee.api.exceptions import (
 )
 from custom_components.govee.models import PowerCommand
 
-
 # ==============================================================================
 # Exception Tests
 # ==============================================================================
@@ -69,10 +68,15 @@ class TestExceptions:
 
     def test_govee_device_not_found_error(self):
         """Test device not found error."""
-        err = GoveeDeviceNotFoundError("AA:BB:CC:DD")
-        assert "AA:BB:CC:DD" in str(err)
+        err = GoveeDeviceNotFoundError("devices not exist")
+        assert "devices not exist" in str(err)
         assert err.code == 400
-        assert err.device_id == "AA:BB:CC:DD"
+
+    def test_govee_device_not_found_error_default(self):
+        """Test device not found error with default message."""
+        err = GoveeDeviceNotFoundError()
+        assert "Device not found" in str(err)
+        assert err.code == 400
 
 
 # ==============================================================================

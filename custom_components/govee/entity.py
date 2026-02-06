@@ -48,7 +48,7 @@ class GoveeEntity(CoordinatorEntity["GoveeCoordinator"]):
         self._device_id = device.device_id
 
         # Set unique_id based on device
-        self._attr_unique_id = f"{device.device_id}"
+        self._attr_unique_id = device.device_id
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -66,11 +66,16 @@ class GoveeEntity(CoordinatorEntity["GoveeCoordinator"]):
     def available(self) -> bool:
         """Return True if entity is available.
 
+        Checks coordinator health first (via super().available which
+        verifies last_update_success), then device-specific status.
         Group devices are always considered available since we can't
         query their state but can still control them.
         """
         if self._device.is_group:
             return True
+
+        if not super().available:
+            return False
 
         state = self.coordinator.get_state(self._device_id)
         return state is not None and state.online
@@ -91,27 +96,28 @@ class GoveeEntity(CoordinatorEntity["GoveeCoordinator"]):
 
         Returns None if no area can be inferred.
         """
-        # Common area keywords (check in order)
+        # Common area keywords sorted by length descending (longest match first)
+        # so "Master Bedroom Light" matches "Master Bedroom" before "Bedroom"
         areas = [
+            "Master Bedroom",
             "Living Room",
+            "Dining Room",
+            "Front Yard",
+            "Guest Room",
+            "Media Room",
+            "Game Room",
+            "Kids Room",
+            "Bathroom",
+            "Backyard",
+            "Basement",
             "Bedroom",
             "Kitchen",
-            "Bathroom",
-            "Office",
-            "Dining Room",
-            "Garage",
-            "Basement",
-            "Attic",
             "Hallway",
-            "Patio",
-            "Backyard",
-            "Front Yard",
-            "Game Room",
-            "Media Room",
             "Nursery",
-            "Guest Room",
-            "Master Bedroom",
-            "Kids Room",
+            "Garage",
+            "Office",
+            "Patio",
+            "Attic",
         ]
 
         name_lower = name.lower()

@@ -12,9 +12,7 @@ from typing import Any
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo  # type: ignore[attr-defined]
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.ble_packet import DIY_STYLE_NAMES
 from .const import (
@@ -22,9 +20,14 @@ from .const import (
     CONF_ENABLE_SCENES,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_SCENES,
-    DOMAIN,
+    SUFFIX_DIY_SCENE_SELECT,
+    SUFFIX_DIY_STYLE_SELECT,
+    SUFFIX_HDMI_SOURCE_SELECT,
+    SUFFIX_MUSIC_MODE_SELECT,
+    SUFFIX_SCENE_SELECT,
 )
 from .coordinator import GoveeCoordinator
+from .entity import GoveeEntity
 from .models import (
     DIYSceneCommand,
     GoveeDevice,
@@ -100,8 +103,8 @@ async def async_setup_entry(
                 _LOGGER.debug("Created scene select entity for %s", device.name)
 
         # DIY scenes and DIY style selector
-        # Both require MQTT connection for reliable control
-        if enable_diy_scenes and device.supports_diy_scenes and coordinator.mqtt_connected:
+        # Availability gated on MQTT at runtime (no REST endpoint for DIY)
+        if enable_diy_scenes and device.supports_diy_scenes:
             diy_scenes = await coordinator.async_get_diy_scenes(device.device_id)
             _LOGGER.debug("Fetched %d DIY scenes for %s", len(diy_scenes), device.name)
             if diy_scenes:
@@ -114,7 +117,7 @@ async def async_setup_entry(
                 )
                 _LOGGER.debug("Created DIY scene select entity for %s", device.name)
 
-            # DIY style selector - MQTT already verified above
+            # DIY style selector - availability gated on MQTT at runtime
             entities.append(
                 GoveeDIYStyleSelectEntity(
                     coordinator=coordinator,
@@ -157,7 +160,7 @@ async def async_setup_entry(
     _LOGGER.debug("Set up %d Govee scene select entities", len(entities))
 
 
-class GoveeSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity):
+class GoveeSceneSelectEntity(GoveeEntity, SelectEntity):
     """Govee scene select entity.
 
     Provides a dropdown to select and activate scenes on a device.
@@ -167,7 +170,6 @@ class GoveeSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity
     When Music Mode or DreamView is activated, the scene selection shows "None".
     """
 
-    _attr_has_entity_name = True
     _attr_translation_key = "govee_scene_select"
     _attr_icon = "mdi:palette"
 
@@ -184,10 +186,7 @@ class GoveeSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity
             device: Device this select belongs to.
             scenes: List of scene data from API.
         """
-        super().__init__(coordinator)
-
-        self._device = device
-        self._device_id = device.device_id
+        super().__init__(coordinator, device)
 
         # Build scene mapping: name -> (id, name)
         self._scene_map: dict[str, tuple[int, str]] = {}
@@ -213,28 +212,7 @@ class GoveeSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity
         self._attr_options = options
 
         # Unique ID
-        self._attr_unique_id = f"{device.device_id}_scene_select"
-
-        # Entity name
-        self._attr_name = "Scene"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device.device_id)},
-            name=self._device.name,
-            manufacturer="Govee",
-            model=self._device.sku,
-        )
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        state = self.coordinator.get_state(self._device_id)
-        if state is None:
-            return False
-        return state.online or self._device.is_group
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_SCENE_SELECT}"
 
     @property
     def current_option(self) -> str | None:
@@ -257,10 +235,8 @@ class GoveeSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity
         Selecting a scene clears Music Mode and DreamView states.
         """
         if option == SCENE_NONE:
-            # Clear the scene state
-            state = self.coordinator.get_state(self._device_id)
-            if state:
-                state.active_scene = None
+            # Clear the scene state via coordinator
+            self.coordinator.clear_scene(self._device_id)
             self.async_write_ha_state()
             return
 
@@ -297,7 +273,7 @@ class GoveeSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity
             )
 
 
-class GoveeDIYSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity):
+class GoveeDIYSceneSelectEntity(GoveeEntity, SelectEntity):
     """Govee DIY scene select entity.
 
     Provides a dropdown to select and activate DIY scenes on a device.
@@ -307,7 +283,6 @@ class GoveeDIYSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
     When Music Mode or DreamView is activated, the scene selection shows "None".
     """
 
-    _attr_has_entity_name = True
     _attr_translation_key = "govee_diy_scene_select"
     _attr_icon = "mdi:palette-advanced"
 
@@ -324,10 +299,7 @@ class GoveeDIYSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
             device: Device this select belongs to.
             scenes: List of DIY scene data from API.
         """
-        super().__init__(coordinator)
-
-        self._device = device
-        self._device_id = device.device_id
+        super().__init__(coordinator, device)
 
         # Build scene mapping: name -> (id, name)
         self._scene_map: dict[str, tuple[int, str]] = {}
@@ -354,33 +326,17 @@ class GoveeDIYSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
         self._attr_options = options
 
         # Unique ID
-        self._attr_unique_id = f"{device.device_id}_diy_scene_select"
-
-        # Entity name
-        self._attr_name = "DIY Scene"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device.device_id)},
-            name=self._device.name,
-            manufacturer="Govee",
-            model=self._device.sku,
-        )
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_DIY_SCENE_SELECT}"
 
     @property
     def available(self) -> bool:
         """Return True if entity is available.
 
-        Requires MQTT connection for reliable DIY scene control.
+        Requires MQTT connection for DIY scene control (no REST endpoint).
         """
         if not self.coordinator.mqtt_connected:
             return False
-        state = self.coordinator.get_state(self._device_id)
-        if state is None:
-            return False
-        return state.online or self._device.is_group
+        return super().available
 
     @property
     def current_option(self) -> str | None:
@@ -403,10 +359,8 @@ class GoveeDIYSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
         Selecting a DIY scene clears Music Mode and DreamView states.
         """
         if option == SCENE_NONE:
-            # Clear the DIY scene state
-            state = self.coordinator.get_state(self._device_id)
-            if state:
-                state.active_diy_scene = None
+            # Clear the DIY scene state via coordinator
+            self.coordinator.clear_diy_scene(self._device_id)
             self.async_write_ha_state()
             return
 
@@ -443,7 +397,7 @@ class GoveeDIYSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
             )
 
 
-class GoveeDIYStyleSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity):
+class GoveeDIYStyleSelectEntity(GoveeEntity, SelectEntity):
     """Govee DIY style select entity.
 
     Provides a dropdown to select the animation style for DIY scenes.
@@ -454,9 +408,9 @@ class GoveeDIYStyleSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
     tracked when this selector is used.
     """
 
-    _attr_has_entity_name = True
     _attr_translation_key = "govee_diy_style_select"
     _attr_icon = "mdi:animation-play"
+    _attr_entity_registry_enabled_default = False
 
     def __init__(
         self,
@@ -469,44 +423,32 @@ class GoveeDIYStyleSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
             coordinator: Govee data coordinator.
             device: Device this select belongs to.
         """
-        super().__init__(coordinator)
-
-        self._device = device
-        self._device_id = device.device_id
+        super().__init__(coordinator, device)
 
         # Available style options
         self._attr_options = DIY_STYLE_OPTIONS
         self._attr_current_option = DIY_STYLE_OPTIONS[0]  # Default to Fade
 
         # Unique ID
-        self._attr_unique_id = f"{device.device_id}_diy_style_select"
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_DIY_STYLE_SELECT}"
 
-        # Entity name
-        self._attr_name = "DIY Style"
+    async def async_added_to_hass(self) -> None:
+        """Initialize default DIY style in coordinator state when added to HA."""
+        await super().async_added_to_hass()
 
         # Initialize the style value in state if not already set
         # This ensures speed commands work even before user interacts with style selector
-        state = coordinator.get_state(device.device_id)
+        state = self.coordinator.get_state(self._device_id)
         if state and state.diy_style_value is None:
             # Set default style value (Fade = 0)
             state.diy_style = DIY_STYLE_OPTIONS[0]
             state.diy_style_value = DIY_STYLE_NAMES[DIY_STYLE_OPTIONS[0]]
             _LOGGER.debug(
                 "Initialized DIY style for %s: %s (value=%d)",
-                device.name,
+                self._device.name,
                 state.diy_style,
                 state.diy_style_value,
             )
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device.device_id)},
-            name=self._device.name,
-            manufacturer="Govee",
-            model=self._device.sku,
-        )
 
     @property
     def available(self) -> bool:
@@ -516,10 +458,7 @@ class GoveeDIYStyleSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
         """
         if not self.coordinator.mqtt_connected:
             return False
-        state = self.coordinator.get_state(self._device_id)
-        if state is None:
-            return False
-        return state.online or self._device.is_group
+        return super().available
 
     @property
     def current_option(self) -> str | None:
@@ -560,14 +499,13 @@ class GoveeDIYStyleSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
             )
 
 
-class GoveeHdmiSourceSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity):
+class GoveeHdmiSourceSelectEntity(GoveeEntity, SelectEntity):
     """Govee HDMI source select entity.
 
     Provides a dropdown to select HDMI input source on devices like
     the Govee AI Sync Box (H6604).
     """
 
-    _attr_has_entity_name = True
     _attr_translation_key = "govee_hdmi_source_select"
     _attr_icon = "mdi:hdmi-port"
 
@@ -584,10 +522,7 @@ class GoveeHdmiSourceSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectE
             device: Device this select belongs to.
             options: List of HDMI source options from capability parameters.
         """
-        super().__init__(coordinator)
-
-        self._device = device
-        self._device_id = device.device_id
+        super().__init__(coordinator, device)
 
         # Build option mapping: display name -> value
         self._option_map: dict[str, int] = {}
@@ -603,28 +538,7 @@ class GoveeHdmiSourceSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectE
         self._attr_options = option_names
 
         # Unique ID
-        self._attr_unique_id = f"{device.device_id}_hdmi_source_select"
-
-        # Entity name
-        self._attr_name = "HDMI Source"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device.device_id)},
-            name=self._device.name,
-            manufacturer="Govee",
-            model=self._device.sku,
-        )
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        state = self.coordinator.get_state(self._device_id)
-        if state is None:
-            return False
-        return state.online or self._device.is_group
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_HDMI_SOURCE_SELECT}"
 
     @property
     def current_option(self) -> str | None:
@@ -671,7 +585,7 @@ class GoveeHdmiSourceSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectE
             )
 
 
-class GoveeMusicModeSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEntity):
+class GoveeMusicModeSelectEntity(GoveeEntity, SelectEntity):
     """Govee music mode select entity.
 
     Provides a dropdown to select music reactive mode on devices with
@@ -692,7 +606,6 @@ class GoveeMusicModeSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEn
     - Energic (11)
     """
 
-    _attr_has_entity_name = True
     _attr_translation_key = "govee_music_mode_select"
     _attr_icon = "mdi:music"
 
@@ -709,10 +622,7 @@ class GoveeMusicModeSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEn
             device: Device this select belongs to.
             options: List of music mode options from capability parameters.
         """
-        super().__init__(coordinator)
-
-        self._device = device
-        self._device_id = device.device_id
+        super().__init__(coordinator, device)
 
         # Build option mapping: display name -> value
         self._option_map: dict[str, int] = {}
@@ -728,28 +638,7 @@ class GoveeMusicModeSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEn
         self._attr_options = option_names
 
         # Unique ID
-        self._attr_unique_id = f"{device.device_id}_music_mode_select"
-
-        # Entity name
-        self._attr_name = "Music Mode"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device.device_id)},
-            name=self._device.name,
-            manufacturer="Govee",
-            model=self._device.sku,
-        )
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available."""
-        state = self.coordinator.get_state(self._device_id)
-        if state is None:
-            return False
-        return state.online or self._device.is_group
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_MUSIC_MODE_SELECT}"
 
     @property
     def current_option(self) -> str | None:

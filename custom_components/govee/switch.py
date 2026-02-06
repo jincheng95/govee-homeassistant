@@ -14,7 +14,9 @@ from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
+from .const import SUFFIX_DREAMVIEW, SUFFIX_MUSIC_MODE, SUFFIX_NIGHT_LIGHT
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .models import (
@@ -62,8 +64,8 @@ async def async_setup_entry(
                 GoveeMusicModeSwitchEntity(coordinator, device, use_rest_api=True)
             )
             _LOGGER.debug("Created STRUCT music mode switch entity for %s", device.name)
-        elif device.supports_music_mode and coordinator.mqtt_connected:
-            # Legacy BLE-based music mode - requires MQTT
+        elif device.supports_music_mode:
+            # Legacy BLE-based music mode - availability gated on MQTT at runtime
             entities.append(
                 GoveeMusicModeSwitchEntity(coordinator, device, use_rest_api=False)
             )
@@ -72,14 +74,10 @@ async def async_setup_entry(
         # Create switch for DreamView (Movie Mode) toggle
         # Skip for group devices - groups don't support DreamView
         # DreamView uses BLE passthrough via MQTT (REST API returns 400 for some devices)
-        if (
-            device.supports_dreamview
-            and not device.is_group
-            and coordinator.mqtt_connected
-        ):
+        if device.supports_dreamview and not device.is_group:
             entities.append(GoveeDreamViewSwitchEntity(coordinator, device))
             _LOGGER.debug(
-                "Created DreamView switch entity for %s (using BLE passthrough)",
+                "Created DreamView switch entity for %s (REST-first with BLE fallback)",
                 device.name,
             )
 
@@ -128,11 +126,12 @@ class GoveePlugSwitchEntity(GoveeEntity, SwitchEntity):
         )
 
 
-class GoveeNightLightSwitchEntity(GoveeEntity, SwitchEntity):
+class GoveeNightLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
     """Govee night light toggle switch entity.
 
     Controls night light mode for devices that support it.
     Uses optimistic state since API may not return night light status.
+    Uses RestoreEntity to persist state across HA restarts.
     """
 
     _attr_translation_key = "govee_night_light"
@@ -146,13 +145,17 @@ class GoveeNightLightSwitchEntity(GoveeEntity, SwitchEntity):
         super().__init__(coordinator, device)
 
         # Unique ID for night light switch
-        self._attr_unique_id = f"{device.device_id}_night_light"
-
-        # Name as "Night Light"
-        self._attr_name = "Night Light"
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_NIGHT_LIGHT}"
 
         # Optimistic state
         self._is_on = False
+
+    async def async_added_to_hass(self) -> None:
+        """Restore state on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state:
+            self._is_on = last_state.state == "on"
 
     @property
     def is_on(self) -> bool:
@@ -219,10 +222,7 @@ class GoveeMusicModeSwitchEntity(GoveeEntity, SwitchEntity):
         self._use_rest_api = use_rest_api
 
         # Unique ID for music mode switch
-        self._attr_unique_id = f"{device.device_id}_music_mode"
-
-        # Name as "Music Mode"
-        self._attr_name = "Music Mode"
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_MUSIC_MODE}"
 
         # Optimistic state
         self._is_on = False
@@ -283,43 +283,29 @@ class GoveeMusicModeSwitchEntity(GoveeEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn music mode off.
 
-        For STRUCT devices, turning off music mode typically requires
-        sending a different command (like switching to a scene or
-        solid color). For now, we just clear the state and let the
-        user switch to another mode.
-
-        For BLE devices, we send the explicit off command.
+        Delegates to coordinator which handles REST-first with BLE fallback.
+        For STRUCT devices, the coordinator restores the last scene or sends
+        a brightness command to cleanly exit music mode.
+        For BLE devices, the coordinator sends the explicit off command.
         """
-        if self._use_rest_api:
-            # STRUCT-based devices: Clear optimistic state
-            # Note: There's no explicit "off" for STRUCT music mode
-            # The user should switch to a scene or color to exit music mode
-            state = self.device_state
-            if state:
-                state.music_mode_enabled = False
-                state.source = "optimistic"
+        state = self.device_state
+        success = await self.coordinator.async_send_music_mode(
+            self._device_id,
+            enabled=False,
+            last_scene_id=state.last_scene_id if state else None,
+            last_scene_name=state.last_scene_name if state else None,
+        )
+        if success:
             self._is_on = False
             self.async_write_ha_state()
-            _LOGGER.debug(
-                "Cleared music mode state for %s (switch to scene/color to fully exit)",
-                self._device.name,
-            )
-        else:
-            # Use BLE passthrough via MQTT
-            success = await self.coordinator.async_send_music_mode(
-                self._device_id,
-                enabled=False,
-            )
-            if success:
-                self._is_on = False
-                self.async_write_ha_state()
 
 
 class GoveeDreamViewSwitchEntity(GoveeEntity, SwitchEntity):
     """Govee DreamView (Movie Mode) toggle switch entity.
 
     Controls DreamView mode for devices that support it (e.g., Immersion TV backlights).
-    Uses BLE passthrough via MQTT since REST API returns 400 for some devices (e.g., H6199).
+    Uses REST API first, with BLE passthrough via MQTT as fallback for devices
+    where REST returns 400 (e.g., H6199).
 
     DreamView, Music Mode, and Scenes are mutually exclusive on the device.
     When DreamView is turned on, music mode and scene states are cleared.
@@ -337,19 +323,15 @@ class GoveeDreamViewSwitchEntity(GoveeEntity, SwitchEntity):
         super().__init__(coordinator, device)
 
         # Unique ID for DreamView switch
-        self._attr_unique_id = f"{device.device_id}_dreamview"
-
-        # Name as "DreamView"
-        self._attr_name = "DreamView"
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_DREAMVIEW}"
 
     @property
     def available(self) -> bool:
         """Return True if entity is available.
 
-        DreamView via BLE requires MQTT connection.
+        DreamView uses REST API first, with BLE fallback via MQTT.
+        Entity is available as long as device is online.
         """
-        if not self.coordinator.mqtt_connected:
-            return False
         return super().available
 
     @property

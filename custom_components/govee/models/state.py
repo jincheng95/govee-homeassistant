@@ -43,12 +43,12 @@ class RGBColor:
         return cls(r=r, g=g, b=b)
 
     @classmethod
-    def from_dict(cls, data: dict[str, int]) -> RGBColor:
+    def from_dict(cls, data: dict[str, Any]) -> RGBColor:
         """Create from dict with r, g, b keys."""
         return cls(
-            r=data.get("r", 0),
-            g=data.get("g", 0),
-            b=data.get("b", 0),
+            r=int(data.get("r", 0)),
+            g=int(data.get("g", 0)),
+            b=int(data.get("b", 0)),
         )
 
 
@@ -105,6 +105,10 @@ class GoveeDeviceState:
     # DreamView (Movie Mode) state
     dreamview_enabled: bool | None = None  # DreamView on/off
 
+    # Last activated scene (for restoring after music mode off)
+    last_scene_id: str | None = None
+    last_scene_name: str | None = None
+
     # Source tracking for state management
     # "api" = from REST poll, "mqtt" = from push, "optimistic" = from command
     source: str = "api"
@@ -122,7 +126,7 @@ class GoveeDeviceState:
         for cap in capabilities:
             cap_type = cap.get("type", "")
             instance = cap.get("instance", "")
-            state = cap.get("state", {})
+            state = cap.get("state") or {}
             value = state.get("value")
 
             if cap_type == "devices.capabilities.online":
@@ -212,13 +216,17 @@ class GoveeDeviceState:
         self.color = None  # Color temp mode
         self.source = "optimistic"
 
-    def apply_optimistic_scene(self, scene_id: str) -> None:
+    def apply_optimistic_scene(
+        self, scene_id: str, scene_name: str | None = None
+    ) -> None:
         """Apply optimistic scene activation.
 
         Scenes, Music Mode, and DreamView are mutually exclusive.
         When a Scene is activated, DreamView, music mode, and DIY scene are cleared.
         """
         self.active_scene = scene_id
+        self.last_scene_id = scene_id
+        self.last_scene_name = scene_name
         self.source = "optimistic"
         # Mutual exclusion: clear other modes when activating scene
         self.dreamview_enabled = False

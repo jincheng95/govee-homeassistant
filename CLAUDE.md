@@ -48,8 +48,8 @@ custom_components/govee/
 ├── coordinator.py       # DataUpdateCoordinator with MQTT
 ├── entity.py            # Base GoveeEntity class
 ├── light.py             # Light platform
-├── scene.py             # Scene platform
-├── switch.py            # Switch platform (plugs, night light)
+├── select.py            # Scene/DIY/HDMI/music mode selectors
+├── switch.py            # Switch platform (plugs, night light, music, DreamView)
 ├── sensor.py            # Diagnostic sensors
 ├── button.py            # Refresh scenes button
 ├── services.py          # Custom services
@@ -241,11 +241,12 @@ for cap in device.capabilities:
 ## Options/Config Patterns
 
 ### Options schema (config_flow.py)
-Options are defined in `GoveeOptionsFlowHandler.async_step_init()`:
+Options are defined in `GoveeOptionsFlow.async_step_init()`:
 ```python
 vol.Optional(CONF_POLL_INTERVAL, default=...): vol.All(vol.Coerce(int), vol.Range(min=30, max=600)),
 vol.Optional(CONF_ENABLE_GROUPS, default=...): bool,
 vol.Optional(CONF_ENABLE_SCENES, default=...): bool,
+vol.Optional(CONF_ENABLE_DIY_SCENES, default=...): bool,
 vol.Optional(CONF_ENABLE_SEGMENTS, default=...): bool,
 ```
 
