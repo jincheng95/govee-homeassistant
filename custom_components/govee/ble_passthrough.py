@@ -8,6 +8,8 @@ responsibility surface.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from .api.ble_packet import (
     build_dreamview_packet,
@@ -27,9 +29,9 @@ class BlePassthroughManager:
 
     def __init__(
         self,
-        get_mqtt_client: callable,
+        get_mqtt_client: Callable[[], Any],
         device_topics: dict[str, str],
-        ensure_device_topic: callable,
+        ensure_device_topic: Callable[[str], Awaitable[str | None]],
     ) -> None:
         """Initialize the BLE passthrough manager.
 
@@ -70,12 +72,13 @@ class BlePassthroughManager:
 
         device_topic = await self._ensure_device_topic(device_id)
 
-        return await client.async_publish_ptreal(
+        result: bool = await client.async_publish_ptreal(
             device_id,
             sku,
             encoded_packet,
             device_topic,
         )
+        return result
 
     async def async_send_music_mode(
         self,
