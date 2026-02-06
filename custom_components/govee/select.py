@@ -99,8 +99,9 @@ async def async_setup_entry(
                 )
                 _LOGGER.debug("Created scene select entity for %s", device.name)
 
-        # DIY scenes
-        if enable_diy_scenes and device.supports_diy_scenes:
+        # DIY scenes and DIY style selector
+        # Both require MQTT connection for reliable control
+        if enable_diy_scenes and device.supports_diy_scenes and coordinator.mqtt_connected:
             diy_scenes = await coordinator.async_get_diy_scenes(device.device_id)
             _LOGGER.debug("Fetched %d DIY scenes for %s", len(diy_scenes), device.name)
             if diy_scenes:
@@ -113,16 +114,14 @@ async def async_setup_entry(
                 )
                 _LOGGER.debug("Created DIY scene select entity for %s", device.name)
 
-            # DIY style selector (only if device supports DIY scenes)
-            # Requires MQTT for BLE passthrough
-            if coordinator.mqtt_connected:
-                entities.append(
-                    GoveeDIYStyleSelectEntity(
-                        coordinator=coordinator,
-                        device=device,
-                    )
+            # DIY style selector - MQTT already verified above
+            entities.append(
+                GoveeDIYStyleSelectEntity(
+                    coordinator=coordinator,
+                    device=device,
                 )
-                _LOGGER.debug("Created DIY style select entity for %s", device.name)
+            )
+            _LOGGER.debug("Created DIY style select entity for %s", device.name)
 
         # HDMI source selector (for devices like AI Sync Box H6604)
         if device.supports_hdmi_source:
@@ -372,7 +371,12 @@ class GoveeDIYSceneSelectEntity(CoordinatorEntity["GoveeCoordinator"], SelectEnt
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available."""
+        """Return True if entity is available.
+
+        Requires MQTT connection for reliable DIY scene control.
+        """
+        if not self.coordinator.mqtt_connected:
+            return False
         state = self.coordinator.get_state(self._device_id)
         if state is None:
             return False
