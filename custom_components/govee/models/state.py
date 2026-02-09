@@ -147,7 +147,7 @@ class GoveeDeviceState:
                     elif isinstance(value, dict):
                         self.color = RGBColor.from_dict(value)
                 elif instance == "colorTemperatureK":
-                    self.color_temp_kelvin = int(value) if value is not None else None
+                    self.color_temp_kelvin = int(value) if value else None
 
             elif cap_type == "devices.capabilities.toggle":
                 if instance == "oscillationToggle":

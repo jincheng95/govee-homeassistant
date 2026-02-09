@@ -360,6 +360,52 @@ class TestGoveeDeviceState:
         assert state.color.as_tuple == (255, 128, 64)
         assert state.source == "mqtt"
 
+    def test_api_color_temp_zero_becomes_none(self):
+        """Test that API colorTemperatureK=0 is treated as None (no color temp set).
+
+        The Govee API returns 0 when the device is in RGB mode. Passing 0 through
+        causes a ZeroDivisionError in HomeKit Bridge (1000000 / 0).
+        """
+        state = GoveeDeviceState.create_empty("test_id")
+        api_response = {
+            "capabilities": [
+                {
+                    "type": "devices.capabilities.color_setting",
+                    "instance": "colorTemperatureK",
+                    "state": {"value": 0},
+                },
+            ],
+        }
+        state.update_from_api(api_response)
+        assert state.color_temp_kelvin is None
+
+    def test_api_color_temp_valid_preserved(self):
+        """Test that valid API colorTemperatureK values are preserved."""
+        state = GoveeDeviceState.create_empty("test_id")
+        api_response = {
+            "capabilities": [
+                {
+                    "type": "devices.capabilities.color_setting",
+                    "instance": "colorTemperatureK",
+                    "state": {"value": 4000},
+                },
+            ],
+        }
+        state.update_from_api(api_response)
+        assert state.color_temp_kelvin == 4000
+
+    def test_mqtt_color_temp_zero_becomes_none(self):
+        """Test that MQTT colorTemInKelvin=0 is treated as None."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.update_from_mqtt({"colorTemInKelvin": 0})
+        assert state.color_temp_kelvin is None
+
+    def test_mqtt_color_temp_valid_preserved(self):
+        """Test that valid MQTT colorTemInKelvin values are preserved."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.update_from_mqtt({"colorTemInKelvin": 4000})
+        assert state.color_temp_kelvin == 4000
+
     def test_optimistic_power(self):
         """Test optimistic power update."""
         state = GoveeDeviceState.create_empty("test_id")

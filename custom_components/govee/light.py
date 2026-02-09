@@ -186,7 +186,7 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
     def color_temp_kelvin(self) -> int | None:
         """Return color temperature in Kelvin."""
         state = self.device_state
-        return state.color_temp_kelvin if state else None
+        return state.color_temp_kelvin if state and state.color_temp_kelvin else None
 
     @property
     def min_color_temp_kelvin(self) -> int:
