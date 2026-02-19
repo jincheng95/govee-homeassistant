@@ -28,7 +28,7 @@ Ever wanted your Govee lights to actually *talk* to Home Assistant? This integra
 
 - **Full light control** — brightness, RGB colors, color temp, the works
 - **Scene magic** — your Govee scenes become HA scenes
-- **RGBIC segment control** — paint each segment a different color
+- **RGBIC segment control** — paint each segment a different color OR control all segments together as one
 - **Real-time sync** — optional MQTT for instant updates (bye-bye polling lag)
 
 ---
@@ -63,6 +63,23 @@ Enter your API key. Want instant updates? Add your Govee email/password for MQTT
 | **HDMI Sync Boxes** | On/off, HDMI input selection (1-4) |
 
 > **Note:** Cloud-enabled devices only. Bluetooth-only devices need a different integration.
+
+---
+
+## RGBIC Segment Control
+
+For devices with RGB segments (like LED strips), you can choose how to control them:
+
+| Mode | Use Case |
+|------|----------|
+| **Individual Segments** | Control each segment separately with different colors (default) |
+| **Grouped Segments** | Control all segments together as a single light — perfect for synchronized effects |
+| **Disabled** | Hide all segment entities if you don't need them |
+
+**To change the mode:**
+1. Go to **Settings** → **Devices & Services** → **Govee** → **Configure**
+2. Set "Segment control mode" to your preference
+3. Save — entities are automatically updated
 
 ---
 
