@@ -34,15 +34,20 @@ from .const import (
     CONF_ENABLE_SEGMENTS,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
+    CONF_SEGMENT_MODE,
     CONFIG_VERSION,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_ENABLE_SEGMENTS,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_SEGMENT_MODE,
     DOMAIN,
     KEY_IOT_CREDENTIALS,
     KEY_IOT_LOGIN_FAILED,
+    SEGMENT_MODE_DISABLED,
+    SEGMENT_MODE_GROUPED,
+    SEGMENT_MODE_INDIVIDUAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -468,11 +473,12 @@ class GoveeOptionsFlow(OptionsFlow):
                         ),
                     ): bool,
                     vol.Optional(
-                        CONF_ENABLE_SEGMENTS,
+                        CONF_SEGMENT_MODE,
                         default=options.get(
-                            CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS
+                            CONF_SEGMENT_MODE,
+                            SEGMENT_MODE_INDIVIDUAL if options.get(CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS) else SEGMENT_MODE_DISABLED,
                         ),
-                    ): bool,
+                    ): vol.In([SEGMENT_MODE_DISABLED, SEGMENT_MODE_GROUPED, SEGMENT_MODE_INDIVIDUAL]),
                 }
             ),
         )

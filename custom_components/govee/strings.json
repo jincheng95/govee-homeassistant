@@ -69,8 +69,17 @@
           "enable_groups": "Enable group devices",
           "enable_scenes": "Enable scene selector",
           "enable_diy_scenes": "Enable DIY scene selector",
-          "enable_segments": "Enable segment entities"
+          "segment_mode": "Segment control mode"
         }
+      }
+    }
+  },
+  "selector": {
+    "segment_mode": {
+      "options": {
+        "disabled": "Disabled (no segment entities)",
+        "grouped": "Grouped (single control for all segments)",
+        "individual": "Individual (separate control for each segment)"
       }
     }
   },
@@ -81,6 +90,9 @@
       },
       "govee_segment": {
         "name": "{device_name} Segment {segment_index}"
+      },
+      "govee_grouped_segment": {
+        "name": "{device_name} Segments"
       }
     },
     "number": {

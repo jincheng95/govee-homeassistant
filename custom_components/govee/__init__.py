@@ -25,15 +25,21 @@ from .const import (
     CONF_ENABLE_SEGMENTS,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
+    CONF_SEGMENT_MODE,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_ENABLE_SEGMENTS,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_SEGMENT_MODE,
     DOMAIN,
     KEY_IOT_CREDENTIALS,
     KEY_IOT_LOGIN_FAILED,
+    SEGMENT_MODE_DISABLED,
+    SEGMENT_MODE_GROUPED,
+    SEGMENT_MODE_INDIVIDUAL,
     SUFFIX_DIY_SCENE_SELECT,
+    SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SCENE_SELECT,
     SUFFIX_SEGMENT,
 )
@@ -233,13 +239,15 @@ async def _async_cleanup_orphaned_entities(
 
     # Get current options
     options = entry.options
-    enable_segments = options.get(CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS)
+    segment_mode = options.get(CONF_SEGMENT_MODE, DEFAULT_SEGMENT_MODE)
+    # For backward compatibility, check old enable_segments boolean
+    enable_segments_old = options.get(CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS)
     enable_scenes = options.get(CONF_ENABLE_SCENES, DEFAULT_ENABLE_SCENES)
     enable_diy_scenes = options.get(CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES)
 
     _LOGGER.debug(
-        "Orphan cleanup: enable_segments=%s, enable_scenes=%s, enable_diy_scenes=%s",
-        enable_segments,
+        "Orphan cleanup: segment_mode=%s, enable_scenes=%s, enable_diy_scenes=%s",
+        segment_mode,
         enable_scenes,
         enable_diy_scenes,
     )
@@ -266,9 +274,12 @@ async def _async_cleanup_orphaned_entities(
         removal_reason = ""
 
         # Check feature toggles first
-        if SUFFIX_SEGMENT in unique_id and not enable_segments:
+        if SUFFIX_GROUPED_SEGMENT in unique_id and segment_mode != SEGMENT_MODE_GROUPED:
             should_remove = True
-            removal_reason = "segments disabled"
+            removal_reason = "grouped segments disabled"
+        elif SUFFIX_SEGMENT in unique_id and segment_mode != SEGMENT_MODE_INDIVIDUAL:
+            should_remove = True
+            removal_reason = "individual segments disabled"
         elif unique_id.endswith(SUFFIX_SCENE_SELECT) and not enable_scenes:
             should_remove = True
             removal_reason = "scenes disabled"
