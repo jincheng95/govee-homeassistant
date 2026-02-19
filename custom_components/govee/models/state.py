@@ -105,6 +105,13 @@ class GoveeDeviceState:
     # DreamView (Movie Mode) state
     dreamview_enabled: bool | None = None  # DreamView on/off
 
+    # Heater state
+    heater_temperature: int | None = None  # Target temperature in Celsius
+    fan_speed: int | None = None  # Fan speed mode value (1=Low, 2=Medium, 3=High)
+
+    # Purifier state
+    purifier_mode: int | None = None  # Purifier mode value (1=Sleep, 2=Low, 3=High, etc.)
+
     # Last activated scene (for restoring after music mode off)
     last_scene_id: str | None = None
     last_scene_name: str | None = None

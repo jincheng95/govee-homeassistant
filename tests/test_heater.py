@@ -1,0 +1,377 @@
+"""Test Govee heater platform."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from custom_components.govee.models import GoveeCapability, GoveeDevice, RangeCommand
+from custom_components.govee.models.device import (
+    CAPABILITY_MODE,
+    CAPABILITY_ON_OFF,
+    CAPABILITY_RANGE,
+    DEVICE_TYPE_HEATER,
+    INSTANCE_FAN_SPEED,
+    INSTANCE_POWER,
+    INSTANCE_TEMPERATURE,
+)
+
+
+# ==============================================================================
+# Heater Device Fixtures
+# ==============================================================================
+
+
+@pytest.fixture
+def heater_capabilities() -> tuple[GoveeCapability, ...]:
+    """Create capabilities for a heater device (H7130)."""
+    return (
+        GoveeCapability(
+            type=CAPABILITY_ON_OFF,
+            instance=INSTANCE_POWER,
+            parameters={},
+        ),
+        GoveeCapability(
+            type=CAPABILITY_RANGE,
+            instance=INSTANCE_TEMPERATURE,
+            parameters={"range": {"min": 16, "max": 35}},
+        ),
+        GoveeCapability(
+            type=CAPABILITY_MODE,
+            instance=INSTANCE_FAN_SPEED,
+            parameters={
+                "options": [
+                    {"name": "Low", "value": 1},
+                    {"name": "Medium", "value": 2},
+                    {"name": "High", "value": 3},
+                ],
+            },
+        ),
+    )
+
+
+@pytest.fixture
+def mock_heater_device(heater_capabilities) -> GoveeDevice:
+    """Create a mock heater device (H7130)."""
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:00:77",
+        sku="H7130",
+        name="Living Room Heater",
+        device_type=DEVICE_TYPE_HEATER,
+        capabilities=heater_capabilities,
+        is_group=False,
+    )
+
+
+# ==============================================================================
+# Device Type Detection Tests
+# ==============================================================================
+
+
+class TestHeaterDeviceDetection:
+    """Test heater device type detection."""
+
+    def test_is_heater(self, mock_heater_device):
+        """Test is_heater property."""
+        assert mock_heater_device.is_heater is True
+
+    def test_is_heater_false_for_light(self, mock_light_device):
+        """Test is_heater is False for light devices."""
+        assert mock_light_device.is_heater is False
+
+    def test_device_type(self, mock_heater_device):
+        """Test device type is correct."""
+        assert mock_heater_device.device_type == DEVICE_TYPE_HEATER
+
+    def test_supports_power(self, mock_heater_device):
+        """Test heater supports power control."""
+        assert mock_heater_device.supports_power is True
+
+
+# ==============================================================================
+# Heater Capability Parsing Tests
+# ==============================================================================
+
+
+class TestHeaterCapabilityParsing:
+    """Test heater capability parsing."""
+
+    def test_get_temperature_range(self, mock_heater_device):
+        """Test temperature range extraction."""
+        min_temp, max_temp = mock_heater_device.get_temperature_range()
+        assert min_temp == 16
+        assert max_temp == 35
+
+    def test_get_temperature_range_default(self):
+        """Test temperature range defaults to 16-35."""
+        device = GoveeDevice(
+            device_id="test",
+            sku="H7130",
+            name="Test Heater",
+            device_type=DEVICE_TYPE_HEATER,
+            capabilities=(GoveeCapability(
+                type=CAPABILITY_ON_OFF,
+                instance=INSTANCE_POWER,
+                parameters={},
+            ),),
+        )
+        min_temp, max_temp = device.get_temperature_range()
+        assert min_temp == 16
+        assert max_temp == 35
+
+    def test_get_fan_speed_options(self, mock_heater_device):
+        """Test fan speed options extraction."""
+        options = mock_heater_device.get_fan_speed_options()
+        assert len(options) == 3
+        assert options[0]["name"] == "Low"
+        assert options[0]["value"] == 1
+        assert options[1]["name"] == "Medium"
+        assert options[1]["value"] == 2
+        assert options[2]["name"] == "High"
+        assert options[2]["value"] == 3
+
+    def test_get_fan_speed_options_empty(self):
+        """Test fan speed options return empty list if not available."""
+        device = GoveeDevice(
+            device_id="test",
+            sku="H7130",
+            name="Test Heater",
+            device_type=DEVICE_TYPE_HEATER,
+            capabilities=(GoveeCapability(
+                type=CAPABILITY_ON_OFF,
+                instance=INSTANCE_POWER,
+                parameters={},
+            ),),
+        )
+        options = device.get_fan_speed_options()
+        assert options == []
+
+
+# ==============================================================================
+# Heater Entity Tests
+# ==============================================================================
+
+
+class TestHeaterTemperatureNumberEntity:
+    """Test heater temperature number entity."""
+
+    @pytest.fixture
+    def mock_coordinator(self, mock_heater_device):
+        """Create a mock coordinator for testing."""
+        from custom_components.govee.models import GoveeDeviceState
+
+        coordinator = MagicMock()
+        coordinator.devices = {mock_heater_device.device_id: mock_heater_device}
+
+        # Create state with heater-specific fields
+        state = GoveeDeviceState(
+            device_id=mock_heater_device.device_id,
+            online=True,
+            power_state=True,
+            brightness=100,
+            source="api",
+        )
+        state.heater_temperature = 22
+
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        return coordinator
+
+    @pytest.fixture
+    def heater_temp_entity(self, mock_coordinator, mock_heater_device):
+        """Create a heater temperature entity for testing."""
+        from custom_components.govee.number import GoveeHeaterTemperatureNumber
+
+        return GoveeHeaterTemperatureNumber(
+            coordinator=mock_coordinator,
+            device=mock_heater_device,
+            temp_range=(16, 35),
+        )
+
+    def test_temp_entity_init(self, heater_temp_entity, mock_heater_device):
+        """Test temperature entity initialization."""
+        assert heater_temp_entity._device == mock_heater_device
+        assert heater_temp_entity._device_id == mock_heater_device.device_id
+
+    def test_temp_entity_range(self, heater_temp_entity):
+        """Test temperature range is correctly set."""
+        assert heater_temp_entity._attr_native_min_value == 16.0
+        assert heater_temp_entity._attr_native_max_value == 35.0
+        assert heater_temp_entity._attr_native_step == 1
+
+    def test_temp_entity_unique_id(self, heater_temp_entity, mock_heater_device):
+        """Test unique ID is correct."""
+        from custom_components.govee.const import SUFFIX_HEATER_TEMPERATURE
+
+        expected_id = f"{mock_heater_device.device_id}{SUFFIX_HEATER_TEMPERATURE}"
+        assert heater_temp_entity._attr_unique_id == expected_id
+
+    def test_temp_entity_available_online(self, heater_temp_entity):
+        """Test entity is available when device is online."""
+        assert heater_temp_entity.available is True
+
+    def test_temp_entity_unavailable_offline(self, heater_temp_entity, mock_coordinator):
+        """Test entity is unavailable when device is offline."""
+        from custom_components.govee.models import GoveeDeviceState
+
+        offline_state = GoveeDeviceState(
+            device_id=heater_temp_entity._device_id,
+            online=False,
+            power_state=False,
+            source="api",
+        )
+        mock_coordinator.get_state.return_value = offline_state
+        assert heater_temp_entity.available is False
+
+    async def test_set_temperature(self, heater_temp_entity, mock_coordinator):
+        """Test setting heater temperature."""
+        await heater_temp_entity.async_set_native_value(25.0)
+
+        # Verify command was sent
+        mock_coordinator.async_control_device.assert_called_once()
+        call_args = mock_coordinator.async_control_device.call_args
+        device_id, command = call_args[0]
+
+        assert device_id == heater_temp_entity._device_id
+        assert isinstance(command, RangeCommand)
+        assert command.range_instance == "temperature"
+        assert command.value == 25
+
+        # Verify state was updated
+        assert heater_temp_entity._attr_native_value == 25.0
+
+    async def test_set_temperature_boundary_low(self, heater_temp_entity, mock_coordinator):
+        """Test setting temperature at minimum boundary."""
+        await heater_temp_entity.async_set_native_value(16.0)
+
+        call_args = mock_coordinator.async_control_device.call_args
+        device_id, command = call_args[0]
+
+        assert command.value == 16
+
+    async def test_set_temperature_boundary_high(self, heater_temp_entity, mock_coordinator):
+        """Test setting temperature at maximum boundary."""
+        await heater_temp_entity.async_set_native_value(35.0)
+
+        call_args = mock_coordinator.async_control_device.call_args
+        device_id, command = call_args[0]
+
+        assert command.value == 35
+
+    async def test_set_temperature_failure(self, heater_temp_entity, mock_coordinator):
+        """Test temperature setting failure."""
+        mock_coordinator.async_control_device.return_value = False
+        initial_value = heater_temp_entity._attr_native_value
+
+        await heater_temp_entity.async_set_native_value(28.0)
+
+        # Value should not change on failure
+        assert heater_temp_entity._attr_native_value == initial_value
+
+
+class TestFanSpeedSelectEntity:
+    """Test heater fan speed select entity."""
+
+    @pytest.fixture
+    def mock_coordinator(self, mock_heater_device):
+        """Create a mock coordinator for testing."""
+        from custom_components.govee.models import GoveeDeviceState
+
+        coordinator = MagicMock()
+        coordinator.devices = {mock_heater_device.device_id: mock_heater_device}
+
+        state = GoveeDeviceState(
+            device_id=mock_heater_device.device_id,
+            online=True,
+            power_state=True,
+            source="api",
+        )
+        state.fan_speed = 2  # Medium
+
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        return coordinator
+
+    @pytest.fixture
+    def fan_speed_entity(self, mock_coordinator, mock_heater_device):
+        """Create a fan speed select entity for testing."""
+        from custom_components.govee.select import GoveeFanSpeedSelectEntity
+
+        options = mock_heater_device.get_fan_speed_options()
+        return GoveeFanSpeedSelectEntity(
+            coordinator=mock_coordinator,
+            device=mock_heater_device,
+            options=options,
+        )
+
+    def test_fan_speed_entity_init(self, fan_speed_entity, mock_heater_device):
+        """Test fan speed entity initialization."""
+        assert fan_speed_entity._device == mock_heater_device
+        assert fan_speed_entity._device_id == mock_heater_device.device_id
+
+    def test_fan_speed_options(self, fan_speed_entity):
+        """Test fan speed options are correctly set."""
+        assert fan_speed_entity._attr_options == ["Low", "Medium", "High"]
+
+    def test_fan_speed_option_map(self, fan_speed_entity):
+        """Test option map is correctly built."""
+        assert fan_speed_entity._option_map["Low"] == 1
+        assert fan_speed_entity._option_map["Medium"] == 2
+        assert fan_speed_entity._option_map["High"] == 3
+
+    def test_fan_speed_unique_id(self, fan_speed_entity, mock_heater_device):
+        """Test unique ID is correct."""
+        from custom_components.govee.const import SUFFIX_HEATER_FAN_SPEED
+
+        expected_id = f"{mock_heater_device.device_id}{SUFFIX_HEATER_FAN_SPEED}"
+        assert fan_speed_entity._attr_unique_id == expected_id
+
+    def test_current_option_medium(self, fan_speed_entity):
+        """Test current option returns Medium."""
+        assert fan_speed_entity.current_option == "Medium"
+
+    def test_current_option_default_on_none(self, fan_speed_entity, mock_coordinator):
+        """Test current option returns first option when state is None."""
+        from custom_components.govee.models import GoveeDeviceState
+
+        state = GoveeDeviceState(
+            device_id=fan_speed_entity._device_id,
+            online=True,
+            power_state=True,
+            source="api",
+        )
+        # No fan_speed set
+        mock_coordinator.get_state.return_value = state
+        assert fan_speed_entity.current_option == "Low"
+
+    async def test_select_fan_speed(self, fan_speed_entity, mock_coordinator):
+        """Test selecting fan speed."""
+        await fan_speed_entity.async_select_option("High")
+
+        # Verify command was sent
+        mock_coordinator.async_control_device.assert_called_once()
+        call_args = mock_coordinator.async_control_device.call_args
+        device_id, command = call_args[0]
+
+        assert device_id == fan_speed_entity._device_id
+        from custom_components.govee.models import ModeCommand
+        assert isinstance(command, ModeCommand)
+        assert command.mode_instance == INSTANCE_FAN_SPEED
+        assert command.value == 3
+
+    async def test_select_fan_speed_invalid(self, fan_speed_entity, mock_coordinator):
+        """Test selecting invalid fan speed option."""
+        await fan_speed_entity.async_select_option("Invalid")
+
+        # Command should not be sent
+        mock_coordinator.async_control_device.assert_not_called()
+
+    async def test_select_fan_speed_failure(self, fan_speed_entity, mock_coordinator):
+        """Test fan speed selection failure."""
+        mock_coordinator.async_control_device.return_value = False
+
+        await fan_speed_entity.async_select_option("Low")
+
+        # Command should still be attempted
+        mock_coordinator.async_control_device.assert_called_once()

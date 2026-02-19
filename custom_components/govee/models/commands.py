@@ -111,6 +111,28 @@ class BrightnessCommand(DeviceCommand):
 
 
 @dataclass(frozen=True)
+class RangeCommand(DeviceCommand):
+    """Generic command to set any range-type capability.
+
+    Used for range-based controls like temperature, fan speed, etc.
+    """
+
+    range_instance: str  # e.g., "temperature", "fanSpeed"
+    value: int  # Numeric value within device range
+
+    @property
+    def capability_type(self) -> str:
+        return CAPABILITY_RANGE
+
+    @property
+    def instance(self) -> str:
+        return self.range_instance
+
+    def get_value(self) -> int:
+        return self.value
+
+
+@dataclass(frozen=True)
 class ColorCommand(DeviceCommand):
     """Command to set device RGB color."""
 

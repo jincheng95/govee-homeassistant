@@ -29,6 +29,7 @@ DEVICE_TYPE_PLUG = "devices.types.socket"
 DEVICE_TYPE_HEATER = "devices.types.heater"
 DEVICE_TYPE_HUMIDIFIER = "devices.types.humidifier"
 DEVICE_TYPE_FAN = "devices.types.fan"
+DEVICE_TYPE_PURIFIER = "devices.types.purifier"
 
 # Instance constants
 INSTANCE_POWER = "powerSwitch"
@@ -46,6 +47,9 @@ INSTANCE_WORK_MODE = "workMode"
 INSTANCE_HDMI_SOURCE = "hdmiSource"
 INSTANCE_MUSIC_MODE = "musicMode"
 INSTANCE_DREAMVIEW = "dreamViewToggle"
+INSTANCE_TEMPERATURE = "temperature"
+INSTANCE_FAN_SPEED = "fanSpeed"
+INSTANCE_PURIFIER_MODE = "purifierMode"
 
 
 @dataclass(frozen=True)
@@ -287,6 +291,16 @@ class GoveeDevice:
         return self.device_type == DEVICE_TYPE_FAN
 
     @property
+    def is_heater(self) -> bool:
+        """Check if device is a heater."""
+        return self.device_type == DEVICE_TYPE_HEATER
+
+    @property
+    def is_purifier(self) -> bool:
+        """Check if device is an air purifier."""
+        return self.device_type == DEVICE_TYPE_PURIFIER
+
+    @property
     def supports_oscillation(self) -> bool:
         """Check if device supports oscillation (fans)."""
         return any(cap.is_oscillation for cap in self.capabilities)
@@ -363,6 +377,42 @@ class GoveeDevice:
                         range_info = f.get("range", {})
                         return (range_info.get("min", 0), range_info.get("max", 100))
         return (0, 100)
+
+    def get_temperature_range(self) -> tuple[int, int]:
+        """Extract temperature range from capability.
+
+        Returns (min, max) tuple, defaulting to (16, 35) Celsius.
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_RANGE and cap.instance == INSTANCE_TEMPERATURE:
+                range_data = cap.parameters.get("range", {})
+                return (
+                    int(range_data.get("min", 16)),
+                    int(range_data.get("max", 35)),
+                )
+        return (16, 35)
+
+    def get_fan_speed_options(self) -> list[dict[str, Any]]:
+        """Extract fan speed mode options from capability.
+
+        Returns list of {"name": "Low", "value": 1} dicts.
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_MODE and cap.instance == INSTANCE_FAN_SPEED:
+                options: list[dict[str, Any]] = cap.parameters.get("options", [])
+                return options
+        return []
+
+    def get_purifier_mode_options(self) -> list[dict[str, Any]]:
+        """Extract purifier mode options from capability.
+
+        Returns list of {"name": "Sleep", "value": 1} dicts.
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_MODE and cap.instance == INSTANCE_PURIFIER_MODE:
+                options: list[dict[str, Any]] = cap.parameters.get("options", [])
+                return options
+        return []
 
     @property
     def is_light_device(self) -> bool:

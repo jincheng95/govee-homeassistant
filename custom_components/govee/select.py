@@ -23,7 +23,9 @@ from .const import (
     SUFFIX_DIY_SCENE_SELECT,
     SUFFIX_DIY_STYLE_SELECT,
     SUFFIX_HDMI_SOURCE_SELECT,
+    SUFFIX_HEATER_FAN_SPEED,
     SUFFIX_MUSIC_MODE_SELECT,
+    SUFFIX_PURIFIER_MODE_SELECT,
     SUFFIX_SCENE_SELECT,
 )
 from .coordinator import GoveeCoordinator
@@ -35,7 +37,7 @@ from .models import (
     MusicModeCommand,
     SceneCommand,
 )
-from .models.device import INSTANCE_HDMI_SOURCE
+from .models.device import INSTANCE_FAN_SPEED, INSTANCE_HDMI_SOURCE, INSTANCE_PURIFIER_MODE
 
 # DIY Style options for select entity
 DIY_STYLE_OPTIONS = list(DIY_STYLE_NAMES.keys())
@@ -154,6 +156,40 @@ async def async_setup_entry(
                     "Created music mode select entity for %s with %d modes",
                     device.name,
                     len(music_options),
+                )
+
+        # Heater fan speed selector
+        if device.is_heater:
+            fan_options = device.get_fan_speed_options()
+            if fan_options:
+                entities.append(
+                    GoveeFanSpeedSelectEntity(
+                        coordinator=coordinator,
+                        device=device,
+                        options=fan_options,
+                    )
+                )
+                _LOGGER.debug(
+                    "Created fan speed select entity for %s with %d speeds",
+                    device.name,
+                    len(fan_options),
+                )
+
+        # Purifier mode selector
+        if device.is_purifier:
+            purifier_options = device.get_purifier_mode_options()
+            if purifier_options:
+                entities.append(
+                    GoveePurifierModeSelectEntity(
+                        coordinator=coordinator,
+                        device=device,
+                        options=purifier_options,
+                    )
+                )
+                _LOGGER.debug(
+                    "Created purifier mode select entity for %s with %d modes",
+                    device.name,
+                    len(purifier_options),
                 )
 
     async_add_entities(entities)
@@ -687,6 +723,178 @@ class GoveeMusicModeSelectEntity(GoveeEntity, SelectEntity):
         else:
             _LOGGER.warning(
                 "Failed to set music mode '%s' on %s",
+                option,
+                self._device.name,
+            )
+
+
+class GoveeFanSpeedSelectEntity(GoveeEntity, SelectEntity):
+    """Govee heater fan speed select entity.
+
+    Provides a dropdown to select fan speed mode on heater devices
+    (typically Low, Medium, High).
+    """
+
+    _attr_translation_key = "govee_fan_speed_select"
+    _attr_icon = "mdi:fan"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+        options: list[dict[str, Any]],
+    ) -> None:
+        """Initialize the fan speed select entity.
+
+        Args:
+            coordinator: Govee data coordinator.
+            device: Device this select belongs to.
+            options: List of fan speed options from capability parameters.
+        """
+        super().__init__(coordinator, device)
+
+        # Build option mapping: display name -> value
+        self._option_map: dict[str, int] = {}
+        option_names: list[str] = []
+
+        for opt in options:
+            name = opt.get("name", "")
+            value = opt.get("value")
+            if name and value is not None:
+                self._option_map[name] = value
+                option_names.append(name)
+
+        self._attr_options = option_names
+
+        # Unique ID
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_HEATER_FAN_SPEED}"
+
+    @property
+    def current_option(self) -> str | None:
+        """Return current selected option from state."""
+        state = self.coordinator.get_state(self._device_id)
+        if state and state.fan_speed is not None:
+            # Find option name matching the current value
+            for name, value in self._option_map.items():
+                if value == state.fan_speed:
+                    return name
+        # Return first option as default if available
+        return self._attr_options[0] if self._attr_options else None
+
+    async def async_select_option(self, option: str) -> None:
+        """Handle fan speed selection."""
+        value = self._option_map.get(option)
+        if value is None:
+            _LOGGER.warning("Unknown fan speed option: %s", option)
+            return
+
+        command = ModeCommand(
+            mode_instance=INSTANCE_FAN_SPEED,
+            value=value,
+        )
+
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            command,
+        )
+
+        if success:
+            self.async_write_ha_state()
+            _LOGGER.debug(
+                "Set fan speed '%s' (value=%d) on %s",
+                option,
+                value,
+                self._device.name,
+            )
+        else:
+            _LOGGER.warning(
+                "Failed to set fan speed '%s' on %s",
+                option,
+                self._device.name,
+            )
+
+
+class GoveePurifierModeSelectEntity(GoveeEntity, SelectEntity):
+    """Govee air purifier mode select entity.
+
+    Provides a dropdown to select purifier mode on air purifier devices
+    (typically Sleep, Low, High, Custom).
+    """
+
+    _attr_translation_key = "govee_purifier_mode_select"
+    _attr_icon = "mdi:air-purifier"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+        options: list[dict[str, Any]],
+    ) -> None:
+        """Initialize the purifier mode select entity.
+
+        Args:
+            coordinator: Govee data coordinator.
+            device: Device this select belongs to.
+            options: List of purifier mode options from capability parameters.
+        """
+        super().__init__(coordinator, device)
+
+        # Build option mapping: display name -> value
+        self._option_map: dict[str, int] = {}
+        option_names: list[str] = []
+
+        for opt in options:
+            name = opt.get("name", "")
+            value = opt.get("value")
+            if name and value is not None:
+                self._option_map[name] = value
+                option_names.append(name)
+
+        self._attr_options = option_names
+
+        # Unique ID
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_PURIFIER_MODE_SELECT}"
+
+    @property
+    def current_option(self) -> str | None:
+        """Return current selected option from state."""
+        state = self.coordinator.get_state(self._device_id)
+        if state and state.purifier_mode is not None:
+            # Find option name matching the current value
+            for name, value in self._option_map.items():
+                if value == state.purifier_mode:
+                    return name
+        # Return first option as default if available
+        return self._attr_options[0] if self._attr_options else None
+
+    async def async_select_option(self, option: str) -> None:
+        """Handle purifier mode selection."""
+        value = self._option_map.get(option)
+        if value is None:
+            _LOGGER.warning("Unknown purifier mode option: %s", option)
+            return
+
+        command = ModeCommand(
+            mode_instance=INSTANCE_PURIFIER_MODE,
+            value=value,
+        )
+
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            command,
+        )
+
+        if success:
+            self.async_write_ha_state()
+            _LOGGER.debug(
+                "Set purifier mode '%s' (value=%d) on %s",
+                option,
+                value,
+                self._device.name,
+            )
+        else:
+            _LOGGER.warning(
+                "Failed to set purifier mode '%s' on %s",
                 option,
                 self._device.name,
             )
