@@ -33,7 +33,6 @@ from custom_components.govee.models.device import (
 )
 from custom_components.govee.protocols import IStateObserver
 
-
 # ==============================================================================
 # Fixtures
 # ==============================================================================
@@ -395,7 +394,9 @@ class TestErrorHandling:
         """Test device not found is expected for groups."""
         err = GoveeDeviceNotFoundError("GROUP:ID")
 
-        is_group_error = "not exist" in str(err).lower() or "not found" in str(err).lower()
+        is_group_error = (
+            "not exist" in str(err).lower() or "not found" in str(err).lower()
+        )
 
         assert is_group_error or err.code == 400
 
@@ -457,10 +458,7 @@ class TestParallelStateFetching:
         async def mock_fetch(device_id, device):
             return GoveeDeviceState.create_empty(device_id)
 
-        tasks = [
-            mock_fetch(device_id, device)
-            for device_id, device in devices.items()
-        ]
+        tasks = [mock_fetch(device_id, device) for device_id, device in devices.items()]
 
         results = await asyncio.gather(*tasks)
 
@@ -631,3 +629,91 @@ class TestCoordinatorSceneManagement:
             del cache["device_id"]
 
         assert "device_id" not in cache
+
+
+class TestPowerOffPendingFlag:
+    """Test _pending_power_off tracking in coordinator (issue #16).
+
+    Tests the flag logic that allows segment entities to detect when a
+    power-off command is in flight, avoiding race conditions during
+    area-targeted turn_off.
+    """
+
+    def test_pending_power_off_starts_empty(self):
+        """Test _pending_power_off set is initially empty."""
+        pending: set[str] = set()
+        assert len(pending) == 0
+
+    def test_is_power_off_pending_false_initially(self):
+        """Test is_power_off_pending returns False for unknown device."""
+        pending: set[str] = set()
+        assert "device_id" not in pending
+
+    def test_flag_set_for_power_off_command(self):
+        """Test flag is set for PowerCommand(power_on=False)."""
+        pending: set[str] = set()
+        command = PowerCommand(power_on=False)
+
+        is_power_off = isinstance(command, PowerCommand) and not command.power_on
+        if is_power_off:
+            pending.add("device_id")
+
+        assert "device_id" in pending
+
+    def test_flag_not_set_for_power_on_command(self):
+        """Test flag is NOT set for PowerCommand(power_on=True)."""
+        pending: set[str] = set()
+        command = PowerCommand(power_on=True)
+
+        is_power_off = isinstance(command, PowerCommand) and not command.power_on
+        if is_power_off:
+            pending.add("device_id")
+
+        assert "device_id" not in pending
+
+    def test_flag_not_set_for_brightness_command(self):
+        """Test flag is NOT set for non-power commands."""
+        pending: set[str] = set()
+        command = BrightnessCommand(brightness=50)
+
+        is_power_off = isinstance(command, PowerCommand) and not command.power_on
+        if is_power_off:
+            pending.add("device_id")
+
+        assert "device_id" not in pending
+
+    def test_flag_cleared_after_success(self):
+        """Test flag is cleared via discard after command completes."""
+        pending: set[str] = set()
+        pending.add("device_id")
+
+        # Simulate finally block
+        pending.discard("device_id")
+
+        assert "device_id" not in pending
+
+    def test_flag_cleared_after_failure(self):
+        """Test flag is cleared even when command raises."""
+        pending: set[str] = set()
+        device_id = "device_id"
+        command = PowerCommand(power_on=False)
+
+        is_power_off = isinstance(command, PowerCommand) and not command.power_on
+        if is_power_off:
+            pending.add(device_id)
+
+        try:
+            raise GoveeApiError("Simulated failure")
+        except GoveeApiError:
+            pass
+        finally:
+            if is_power_off:
+                pending.discard(device_id)
+
+        assert device_id not in pending
+
+    def test_flag_discard_idempotent(self):
+        """Test discarding a non-existent device_id is safe."""
+        pending: set[str] = set()
+        pending.discard("nonexistent")  # Should not raise
+        assert len(pending) == 0

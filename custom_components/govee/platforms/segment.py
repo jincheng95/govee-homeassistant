@@ -125,17 +125,30 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn the segment off (set to black)."""
-        # Set segment to black
-        command = SegmentColorCommand(
-            segment_indices=(self._segment_index,),
-            color=RGBColor(r=0, g=0, b=0),
-        )
+        """Turn the segment off (set to black).
 
-        await self.coordinator.async_control_device(
-            self._device_id,
-            command,
-        )
+        Skips the API call if a power-off is already in flight or the device
+        is already off — prevents race conditions in area-targeted turn_off
+        that cause firmware glitches on RGBIC devices (issue #16).
+        """
+        device_state = self.coordinator.get_state(self._device_id)
+        device_already_off = device_state is not None and not device_state.power_state
+        power_off_pending = self.coordinator.is_power_off_pending(self._device_id)
+
+        if not device_already_off and not power_off_pending:
+            command = SegmentColorCommand(
+                segment_indices=(self._segment_index,),
+                color=RGBColor(r=0, g=0, b=0),
+            )
+            await self.coordinator.async_control_device(self._device_id, command)
+        else:
+            _LOGGER.debug(
+                "Skipping segment %d turn_off for %s (power_off_pending=%s, device_already_off=%s)",
+                self._segment_index,
+                self._device_id,
+                power_off_pending,
+                device_already_off,
+            )
 
         self._is_on = False
         self.async_write_ha_state()

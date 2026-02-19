@@ -132,6 +132,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             ensure_device_topic=self._ensure_device_topic,
         )
 
+        # Track in-flight power-off commands so segment entities can
+        # avoid racing with a concurrent device power-off (issue #16).
+        self._pending_power_off: set[str] = set()
+
         # Track rate limit state to avoid spamming repair issues
         self._rate_limited: bool = False
 
@@ -190,6 +194,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def get_state(self, device_id: str) -> GoveeDeviceState | None:
         """Get current state for a device."""
         return self._states.get(device_id)
+
+    def is_power_off_pending(self, device_id: str) -> bool:
+        """Return True if a power-off command is in flight for this device.
+
+        Segment entities use this to avoid racing with a concurrent power-off.
+        """
+        return device_id in self._pending_power_off
 
     def register_observer(self, observer: IStateObserver) -> None:
         """Register a state change observer."""
@@ -538,6 +549,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.error("Unknown device: %s", device_id)
             return False
 
+        # Track power-off commands so segment entities can detect them
+        # before the first await, ensuring concurrent coroutines see the flag.
+        is_power_off = isinstance(command, PowerCommand) and not command.power_on
+        if is_power_off:
+            self._pending_power_off.add(device_id)
+
         try:
             success = await self._api_client.control_device(
                 device_id,
@@ -557,6 +574,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         except GoveeApiError as err:
             _LOGGER.error("Control command failed: %s", err)
             return False
+        finally:
+            if is_power_off:
+                self._pending_power_off.discard(device_id)
 
     async def _ensure_device_topic(self, device_id: str) -> str | None:
         """Get device MQTT topic, refreshing if needed.
