@@ -60,6 +60,8 @@ Enter your API key. Want instant updates? Add your Govee email/password for MQTT
 | **LED Lights & Strips** | On/off, brightness, RGB, color temp |
 | **RGBIC Strips** | All the above + per-segment colors |
 | **Fans** | On/off, speed (Low/Medium/High), oscillation, preset modes |
+| **Heaters** | On/off, target temperature (16-35°C), fan speed control |
+| **Air Purifiers** | On/off, mode selection (Sleep/Low/High/Custom) |
 | **HDMI Sync Boxes** | On/off, HDMI input selection (1-4) |
 
 > **Note:** Cloud-enabled devices only. Bluetooth-only devices need a different integration.
