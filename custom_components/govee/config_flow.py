@@ -564,13 +564,6 @@ class GoveeOptionsFlow(OptionsFlow):
 
         current_device_modes = self._config_entry.options.get("segment_mode_by_device", {})
 
-        # Friendly labels for segment modes
-        mode_options = {
-            SEGMENT_MODE_DISABLED: "Disabled (hide segment entities)",
-            SEGMENT_MODE_GROUPED: "Grouped (control all together)",
-            SEGMENT_MODE_INDIVIDUAL: "Individual (separate control per segment)",
-        }
-
         for device_id in self._selected_devices:
             device = coordinator.devices.get(device_id)
             if not device:
@@ -587,7 +580,7 @@ class GoveeOptionsFlow(OptionsFlow):
                 field_key,
                 description=device_label,
                 default=default_mode,
-            )] = vol.In(mode_options)
+            )] = vol.In([SEGMENT_MODE_DISABLED, SEGMENT_MODE_GROUPED, SEGMENT_MODE_INDIVIDUAL])
 
         _LOGGER.debug("Showing per-device configuration form for %d devices", len(self._selected_devices))
 
