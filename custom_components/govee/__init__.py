@@ -25,13 +25,11 @@ from .const import (
     CONF_ENABLE_SEGMENTS,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
-    CONF_SEGMENT_MODE,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_ENABLE_SEGMENTS,
     DEFAULT_POLL_INTERVAL,
-    DEFAULT_SEGMENT_MODE,
     DOMAIN,
     KEY_IOT_CREDENTIALS,
     KEY_IOT_LOGIN_FAILED,
@@ -261,7 +259,6 @@ async def _async_cleanup_orphaned_entities(
 
     # Get current options
     options = entry.options
-    global_segment_mode = options.get(CONF_SEGMENT_MODE, DEFAULT_SEGMENT_MODE)
     device_modes = options.get("segment_mode_by_device", {})
     # For backward compatibility, check old enable_segments boolean
     enable_segments_old = options.get(CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS)
@@ -269,8 +266,7 @@ async def _async_cleanup_orphaned_entities(
     enable_diy_scenes = options.get(CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES)
 
     _LOGGER.debug(
-        "Orphan cleanup: global_segment_mode=%s, device_modes=%s, enable_scenes=%s, enable_diy_scenes=%s",
-        global_segment_mode,
+        "Orphan cleanup: device_modes=%s, enable_scenes=%s, enable_diy_scenes=%s",
         len(device_modes),
         enable_scenes,
         enable_diy_scenes,
@@ -302,8 +298,8 @@ async def _async_cleanup_orphaned_entities(
 
         # Check feature toggles first
         if device_id:
-            # Get per-device mode, fallback to global
-            segment_mode = device_modes.get(device_id, global_segment_mode)
+            # Get per-device mode (default to individual)
+            segment_mode = device_modes.get(device_id, SEGMENT_MODE_INDIVIDUAL)
             suffix = unique_id[len(device_id) :]
 
             # Use explicit suffix matching to avoid false positives

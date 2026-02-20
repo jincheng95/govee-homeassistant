@@ -68,18 +68,8 @@
           "poll_interval": "Polling interval (seconds)",
           "enable_groups": "Enable group devices",
           "enable_scenes": "Enable scene selector",
-          "enable_diy_scenes": "Enable DIY scene selector",
-          "segment_mode": "Segment control mode"
+          "enable_diy_scenes": "Enable DIY scene selector"
         }
-      }
-    }
-  },
-  "selector": {
-    "segment_mode": {
-      "options": {
-        "disabled": "Disabled (no segment entities)",
-        "grouped": "Grouped (single control for all segments)",
-        "individual": "Individual (separate control for each segment)"
       }
     }
   },

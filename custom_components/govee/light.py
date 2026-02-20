@@ -26,8 +26,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
-    CONF_SEGMENT_MODE,
-    DEFAULT_SEGMENT_MODE,
     SEGMENT_MODE_DISABLED,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
@@ -61,25 +59,23 @@ async def async_setup_entry(
 
     entities: list[LightEntity] = []
 
-    # Get per-device and global segment modes
+    # Get per-device segment modes
     device_modes = entry.options.get("segment_mode_by_device", {})
-    global_segment_mode = entry.options.get(CONF_SEGMENT_MODE, DEFAULT_SEGMENT_MODE)
 
     for device in coordinator.devices.values():
         # Only create light entities for devices with power control (not fans)
         if device.supports_power and not device.is_fan:
             entities.append(GoveeLightEntity(coordinator, device))
 
-        # Create segment entities for RGBIC devices based on per-device or global mode
+        # Create segment entities for RGBIC devices based on per-device mode
         if device.supports_segments and device.segment_count > 0:
-            # Get per-device mode, fallback to global
-            segment_mode = device_modes.get(device.device_id, global_segment_mode)
+            # Use per-device mode if set, otherwise default to individual
+            segment_mode = device_modes.get(device.device_id, SEGMENT_MODE_INDIVIDUAL)
 
             _LOGGER.debug(
-                "Segment check for %s: device_mode=%s, global_mode=%s, supports_segments=%s, segment_count=%d",
+                "Segment check for %s: device_mode=%s, supports_segments=%s, segment_count=%d",
                 device.name,
-                device_modes.get(device.device_id, "not set"),
-                global_segment_mode,
+                device_modes.get(device.device_id, "default (individual)"),
                 device.supports_segments,
                 device.segment_count,
             )

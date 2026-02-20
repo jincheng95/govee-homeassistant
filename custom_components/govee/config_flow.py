@@ -488,13 +488,6 @@ class GoveeOptionsFlow(OptionsFlow):
                             CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES
                         ),
                     ): bool,
-                    vol.Optional(
-                        CONF_SEGMENT_MODE,
-                        default=options.get(
-                            CONF_SEGMENT_MODE,
-                            SEGMENT_MODE_INDIVIDUAL if options.get(CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS) else SEGMENT_MODE_DISABLED,
-                        ),
-                    ): vol.In([SEGMENT_MODE_DISABLED, SEGMENT_MODE_GROUPED, SEGMENT_MODE_INDIVIDUAL]),
                 }
             ),
         )
@@ -567,15 +560,21 @@ class GoveeOptionsFlow(OptionsFlow):
         schema_dict: dict[vol.Marker, vol.Schema] = {}
 
         current_device_modes = self._config_entry.options.get("segment_mode_by_device", {})
-        global_mode = self._global_options.get(CONF_SEGMENT_MODE, DEFAULT_SEGMENT_MODE)
+
+        # Friendly labels for segment modes
+        mode_options = {
+            SEGMENT_MODE_DISABLED: "Disabled (hide segment entities)",
+            SEGMENT_MODE_GROUPED: "Grouped (control all together)",
+            SEGMENT_MODE_INDIVIDUAL: "Individual (separate control per segment)",
+        }
 
         for device_id in self._selected_devices:
             device = coordinator.devices.get(device_id)
             if not device:
                 continue
 
-            # Get current mode for this device
-            default_mode = current_device_modes.get(device_id, global_mode)
+            # Get current mode for this device (default to individual)
+            default_mode = current_device_modes.get(device_id, SEGMENT_MODE_INDIVIDUAL)
 
             # Create field key and label for this device
             field_key = f"segment_mode_{device_id}"
@@ -585,7 +584,7 @@ class GoveeOptionsFlow(OptionsFlow):
                 field_key,
                 description=device_label,
                 default=default_mode,
-            )] = vol.In([SEGMENT_MODE_DISABLED, SEGMENT_MODE_GROUPED, SEGMENT_MODE_INDIVIDUAL])
+            )] = vol.In(mode_options)
 
         _LOGGER.debug("Showing per-device configuration form for %d devices", len(self._selected_devices))
 

@@ -68,8 +68,7 @@
           "poll_interval": "Polling interval (seconds)",
           "enable_groups": "Enable group devices",
           "enable_scenes": "Enable scene selector",
-          "enable_diy_scenes": "Enable DIY scene selector",
-          "enable_segments": "Enable segment entities"
+          "enable_diy_scenes": "Enable DIY scene selector"
         }
       }
     }
