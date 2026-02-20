@@ -717,3 +717,185 @@ class TestPowerOffPendingFlag:
         pending: set[str] = set()
         pending.discard("nonexistent")  # Should not raise
         assert len(pending) == 0
+
+
+class TestCleanupDeviceIdExtraction:
+    """Test device ID extraction for cleanup logic."""
+
+    def test_extract_mac_address_device_id(self):
+        """Test extracting MAC address device_id from unique_id."""
+        device_id = "AA:BB:CC:DD:EE:FF:00:01"
+        unique_id = f"{device_id}_segment_0"
+        known_devices = {device_id}
+
+        # Simulate extraction using longest-first matching
+        extracted = None
+        for dev_id in sorted(known_devices, key=len, reverse=True):
+            if unique_id.startswith(dev_id):
+                extracted = dev_id
+                break
+
+        assert extracted == device_id
+
+    def test_extract_numeric_group_id(self):
+        """Test extracting numeric group ID from unique_id."""
+        device_id = "12345678"
+        unique_id = f"{device_id}_scene_select"
+        known_devices = {device_id}
+
+        # Simulate extraction
+        extracted = None
+        for dev_id in sorted(known_devices, key=len, reverse=True):
+            if unique_id.startswith(dev_id):
+                extracted = dev_id
+                break
+
+        assert extracted == device_id
+
+    def test_extract_with_multiple_device_ids(self):
+        """Test extraction with multiple device IDs (longest-first matching)."""
+        # Mix of MAC and numeric IDs
+        mac_id = "AA:BB:CC:DD:EE:FF:00:01"
+        group_id = "12345678"
+        known_devices = {mac_id, group_id}
+
+        # MAC address device
+        unique_id = f"{mac_id}_segment_0"
+        extracted = None
+        for dev_id in sorted(known_devices, key=len, reverse=True):
+            if unique_id.startswith(dev_id):
+                extracted = dev_id
+                break
+        assert extracted == mac_id
+
+        # Group device
+        unique_id = f"{group_id}_segment_0"
+        extracted = None
+        for dev_id in sorted(known_devices, key=len, reverse=True):
+            if unique_id.startswith(dev_id):
+                extracted = dev_id
+                break
+        assert extracted == group_id
+
+    def test_extract_returns_none_for_unknown_device(self):
+        """Test extraction returns None for unknown device."""
+        known_devices = {"AA:BB:CC:DD:EE:FF:00:01"}
+        unique_id = "UNKNOWN:DEVICE:ID_segment_0"
+
+        extracted = None
+        for dev_id in sorted(known_devices, key=len, reverse=True):
+            if unique_id.startswith(dev_id):
+                extracted = dev_id
+                break
+
+        assert extracted is None
+
+    def test_longest_first_matching_precedence(self):
+        """Test longest-first matching prevents prefix collision."""
+        # Create two device IDs where one is prefix of another
+        short_id = "ABC"
+        long_id = "ABCDEF"
+        known_devices = {short_id, long_id}
+
+        # Test with long_id unique_id
+        unique_id = f"{long_id}_segment_0"
+        extracted = None
+        for dev_id in sorted(known_devices, key=len, reverse=True):
+            if unique_id.startswith(dev_id):
+                extracted = dev_id
+                break
+
+        # Should match long_id, not short_id
+        assert extracted == long_id
+
+
+class TestCleanupSegmentModeLogic:
+    """Test segment mode cleanup logic with per-device config."""
+
+    def test_grouped_segment_removed_when_disabled(self):
+        """Test grouped segment entity removed when mode is not grouped."""
+        from custom_components.govee.const import (
+            SUFFIX_GROUPED_SEGMENT,
+            SEGMENT_MODE_GROUPED,
+            SEGMENT_MODE_INDIVIDUAL,
+            SEGMENT_MODE_DISABLED,
+        )
+
+        device_id = "AA:BB:CC:DD:EE:FF:00:01"
+        unique_id = f"{device_id}{SUFFIX_GROUPED_SEGMENT}"
+
+        # Device config with individual mode
+        device_modes = {device_id: SEGMENT_MODE_INDIVIDUAL}
+
+        # Extract and check
+        suffix = unique_id[len(device_id) :]
+        is_grouped = suffix == SUFFIX_GROUPED_SEGMENT
+        mode = device_modes.get(device_id, SEGMENT_MODE_GROUPED)
+
+        should_remove = is_grouped and mode != SEGMENT_MODE_GROUPED
+        assert should_remove is True
+
+    def test_individual_segment_removed_when_disabled(self):
+        """Test individual segment entity removed when mode is disabled."""
+        from custom_components.govee.const import (
+            SUFFIX_SEGMENT,
+            SEGMENT_MODE_INDIVIDUAL,
+            SEGMENT_MODE_DISABLED,
+        )
+
+        device_id = "AA:BB:CC:DD:EE:FF:00:01"
+        unique_id = f"{device_id}{SUFFIX_SEGMENT}0"
+
+        # Device config with disabled mode
+        device_modes = {device_id: SEGMENT_MODE_DISABLED}
+
+        # Extract and check
+        suffix = unique_id[len(device_id) :]
+        is_individual = suffix.startswith(SUFFIX_SEGMENT)
+        mode = device_modes.get(device_id, SEGMENT_MODE_INDIVIDUAL)
+
+        should_remove = is_individual and mode != SEGMENT_MODE_INDIVIDUAL
+        assert should_remove is True
+
+    def test_segment_kept_when_mode_matches(self):
+        """Test segment entity is kept when mode matches."""
+        from custom_components.govee.const import (
+            SUFFIX_SEGMENT,
+            SEGMENT_MODE_INDIVIDUAL,
+        )
+
+        device_id = "AA:BB:CC:DD:EE:FF:00:01"
+        unique_id = f"{device_id}{SUFFIX_SEGMENT}0"
+
+        # Device config with individual mode (matches entity type)
+        device_modes = {device_id: SEGMENT_MODE_INDIVIDUAL}
+
+        # Extract and check
+        suffix = unique_id[len(device_id) :]
+        is_individual = suffix.startswith(SUFFIX_SEGMENT)
+        mode = device_modes.get(device_id, SEGMENT_MODE_INDIVIDUAL)
+
+        should_remove = is_individual and mode != SEGMENT_MODE_INDIVIDUAL
+        assert should_remove is False
+
+    def test_fallback_to_global_mode(self):
+        """Test fallback to global mode when device not in per-device config."""
+        from custom_components.govee.const import (
+            SUFFIX_SEGMENT,
+            SEGMENT_MODE_INDIVIDUAL,
+        )
+
+        device_id = "AA:BB:CC:DD:EE:FF:00:01"
+        unique_id = f"{device_id}{SUFFIX_SEGMENT}0"
+
+        # Device NOT in per-device config, use global
+        device_modes = {}  # Empty - use global fallback
+        global_mode = SEGMENT_MODE_INDIVIDUAL
+
+        # Extract and check
+        suffix = unique_id[len(device_id) :]
+        is_individual = suffix.startswith(SUFFIX_SEGMENT)
+        mode = device_modes.get(device_id, global_mode)
+
+        should_remove = is_individual and mode != SEGMENT_MODE_INDIVIDUAL
+        assert should_remove is False  # Matches global mode

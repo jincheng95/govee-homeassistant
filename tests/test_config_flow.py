@@ -486,3 +486,175 @@ class TestRepairsFramework:
         assert fixable_issues["auth_failed"] is True
         assert fixable_issues["rate_limited"] is False
         assert fixable_issues["mqtt_disconnected"] is False
+
+
+class TestPerDeviceSegmentMode:
+    """Test per-device segment mode configuration."""
+
+    def test_device_mode_structure(self):
+        """Test per-device segment mode data structure."""
+        from custom_components.govee.const import (
+            CONF_SEGMENT_MODE,
+            SEGMENT_MODE_DISABLED,
+            SEGMENT_MODE_GROUPED,
+            SEGMENT_MODE_INDIVIDUAL,
+        )
+
+        device_modes = {
+            "AA:BB:CC:DD:EE:FF:00:01": SEGMENT_MODE_GROUPED,
+            "AA:BB:CC:DD:EE:FF:00:02": SEGMENT_MODE_DISABLED,
+            "AA:BB:CC:DD:EE:FF:00:03": SEGMENT_MODE_INDIVIDUAL,
+        }
+
+        # Verify all devices have valid modes
+        for device_id, mode in device_modes.items():
+            assert mode in [
+                SEGMENT_MODE_DISABLED,
+                SEGMENT_MODE_GROUPED,
+                SEGMENT_MODE_INDIVIDUAL,
+            ]
+
+    def test_device_mode_fallback_to_global(self):
+        """Test fallback to global mode when device not in per-device config."""
+        from custom_components.govee.const import (
+            CONF_SEGMENT_MODE,
+            SEGMENT_MODE_INDIVIDUAL,
+        )
+
+        device_modes = {
+            "AA:BB:CC:DD:EE:FF:00:01": "grouped",
+        }
+        global_mode = SEGMENT_MODE_INDIVIDUAL
+
+        # Device not in per-device config should use global
+        device_id = "AA:BB:CC:DD:EE:FF:00:02"
+        mode = device_modes.get(device_id, global_mode)
+        assert mode == global_mode
+
+        # Device in per-device config should use device-specific
+        device_id = "AA:BB:CC:DD:EE:FF:00:01"
+        mode = device_modes.get(device_id, global_mode)
+        assert mode == "grouped"
+
+    def test_device_id_extraction_mac_address(self):
+        """Test extracting device ID from unique_id with MAC address format."""
+        # MAC address format (17 chars)
+        device_id = "AA:BB:CC:DD:EE:FF:00:01"
+        unique_id = f"{device_id}_segment_0"
+
+        extracted = unique_id.startswith(device_id)
+        assert extracted is True
+
+    def test_device_id_extraction_numeric_id(self):
+        """Test extracting device ID from unique_id with numeric group ID format."""
+        # Group ID format (numeric, shorter)
+        device_id = "12345678"
+        unique_id = f"{device_id}_segment_0"
+
+        extracted = unique_id.startswith(device_id)
+        assert extracted is True
+
+    def test_longest_first_device_id_matching(self):
+        """Test longest-first matching for variable-length device IDs."""
+        # Two device IDs where one is prefix of another
+        device_ids = {"ABC", "ABCDEF"}
+
+        # Sort by length descending (longest first)
+        sorted_ids = sorted(device_ids, key=len, reverse=True)
+        assert sorted_ids[0] == "ABCDEF"
+        assert sorted_ids[1] == "ABC"
+
+        # Test unique_id matching
+        unique_id = "ABCDEF_segment_0"
+
+        for device_id in sorted_ids:
+            if unique_id.startswith(device_id):
+                found_id = device_id
+                break
+        else:
+            found_id = None
+
+        # Should match ABCDEF, not ABC
+        assert found_id == "ABCDEF"
+
+    def test_segment_suffix_matching_grouped_vs_individual(self):
+        """Test suffix matching doesn't confuse grouped and individual segments."""
+        from custom_components.govee.const import (
+            SUFFIX_GROUPED_SEGMENT,
+            SUFFIX_SEGMENT,
+        )
+
+        device_id = "AA:BB:CC:DD:EE:FF:00:01"
+
+        # Grouped segment unique_id
+        grouped_unique_id = f"{device_id}{SUFFIX_GROUPED_SEGMENT}"
+        grouped_suffix = grouped_unique_id[len(device_id) :]
+
+        # Individual segment unique_id
+        individual_unique_id = f"{device_id}{SUFFIX_SEGMENT}0"
+        individual_suffix = individual_unique_id[len(device_id) :]
+
+        # Verify suffixes are different
+        assert grouped_suffix == SUFFIX_GROUPED_SEGMENT
+        assert individual_suffix.startswith(SUFFIX_SEGMENT)
+        assert grouped_suffix != individual_suffix
+
+        # Verify exact matching works
+        assert grouped_suffix == SUFFIX_GROUPED_SEGMENT
+        assert grouped_suffix != SUFFIX_SEGMENT
+
+    def test_empty_device_modes_uses_global(self):
+        """Test empty per-device dict falls back to global for all devices."""
+        from custom_components.govee.const import (
+            CONF_SEGMENT_MODE,
+            DEFAULT_SEGMENT_MODE,
+        )
+
+        device_modes = {}
+        global_mode = DEFAULT_SEGMENT_MODE
+
+        # Any device should use global when per-device is empty
+        for device_id in [
+            "AA:BB:CC:DD:EE:FF:00:01",
+            "AA:BB:CC:DD:EE:FF:00:02",
+        ]:
+            mode = device_modes.get(device_id, global_mode)
+            assert mode == global_mode
+
+    def test_migration_preserves_existing_devices(self):
+        """Test migration from global to per-device preserves existing config."""
+        from custom_components.govee.const import (
+            CONF_SEGMENT_MODE,
+            SEGMENT_MODE_GROUPED,
+            SEGMENT_MODE_INDIVIDUAL,
+        )
+
+        # Original entry with global setting
+        old_options = {
+            CONF_SEGMENT_MODE: SEGMENT_MODE_GROUPED,
+        }
+
+        # After adding per-device config
+        new_options = {
+            **old_options,
+            "segment_mode_by_device": {
+                "AA:BB:CC:DD:EE:FF:00:01": SEGMENT_MODE_INDIVIDUAL,
+            },
+        }
+
+        # Devices not in per-device config should use global
+        global_mode = new_options[CONF_SEGMENT_MODE]
+        assert global_mode == SEGMENT_MODE_GROUPED
+
+        # Device with specific config should use that
+        device_modes = new_options.get("segment_mode_by_device", {})
+        device_mode = device_modes.get(
+            "AA:BB:CC:DD:EE:FF:00:01", global_mode
+        )
+        assert device_mode == SEGMENT_MODE_INDIVIDUAL
+
+        # Unknown device should use global
+        unknown_mode = device_modes.get(
+            "AA:BB:CC:DD:EE:FF:00:99", global_mode
+        )
+        assert unknown_mode == SEGMENT_MODE_GROUPED

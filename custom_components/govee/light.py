@@ -61,23 +61,29 @@ async def async_setup_entry(
 
     entities: list[LightEntity] = []
 
-    # Check segment mode
-    segment_mode = entry.options.get(CONF_SEGMENT_MODE, DEFAULT_SEGMENT_MODE)
+    # Get per-device and global segment modes
+    device_modes = entry.options.get("segment_mode_by_device", {})
+    global_segment_mode = entry.options.get(CONF_SEGMENT_MODE, DEFAULT_SEGMENT_MODE)
 
     for device in coordinator.devices.values():
         # Only create light entities for devices with power control (not fans)
         if device.supports_power and not device.is_fan:
             entities.append(GoveeLightEntity(coordinator, device))
 
-        # Create segment entities for RGBIC devices based on mode
-        _LOGGER.debug(
-            "Segment check for %s: segment_mode=%s, supports_segments=%s, segment_count=%d",
-            device.name,
-            segment_mode,
-            device.supports_segments,
-            device.segment_count,
-        )
+        # Create segment entities for RGBIC devices based on per-device or global mode
         if device.supports_segments and device.segment_count > 0:
+            # Get per-device mode, fallback to global
+            segment_mode = device_modes.get(device.device_id, global_segment_mode)
+
+            _LOGGER.debug(
+                "Segment check for %s: device_mode=%s, global_mode=%s, supports_segments=%s, segment_count=%d",
+                device.name,
+                device_modes.get(device.device_id, "not set"),
+                global_segment_mode,
+                device.supports_segments,
+                device.segment_count,
+            )
+
             if segment_mode == SEGMENT_MODE_GROUPED:
                 _LOGGER.debug(
                     "Creating grouped segment entity for %s",
