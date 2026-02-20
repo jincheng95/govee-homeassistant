@@ -406,12 +406,34 @@ class GoveeDevice:
     def get_purifier_mode_options(self) -> list[dict[str, Any]]:
         """Extract purifier mode options from capability.
 
+        Supports two patterns:
+        1. Simple CAPABILITY_MODE with options (e.g., H6006)
+        2. Complex CAPABILITY_WORK_MODE with nested modeValue options (e.g., H7127)
+
         Returns list of {"name": "Sleep", "value": 1} dicts.
+        For work_mode capabilities, extracts gearMode options.
         """
+        # Pattern 1: Simple CAPABILITY_MODE (e.g., H6006)
         for cap in self.capabilities:
             if cap.type == CAPABILITY_MODE and cap.instance == INSTANCE_PURIFIER_MODE:
                 options: list[dict[str, Any]] = cap.parameters.get("options", [])
                 return options
+
+        # Pattern 2: Complex CAPABILITY_WORK_MODE (e.g., H7127)
+        # Some purifiers use work_mode like fans, with modeValue options
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_WORK_MODE and cap.instance == "workMode":
+                # Extract gear mode options from modeValue field in STRUCT
+                fields = cap.parameters.get("fields", [])
+                for f in fields:
+                    if f.get("fieldName") == "modeValue":
+                        options = f.get("options", [])
+                        # Find the gearMode options within the nested structure
+                        for opt in options:
+                            if opt.get("name") == "gearMode":
+                                gear_options = opt.get("options", [])
+                                if gear_options:
+                                    return gear_options
         return []
 
     @property
