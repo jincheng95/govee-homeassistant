@@ -560,7 +560,7 @@ class GoveeOptionsFlow(OptionsFlow):
 
         # Build form for each selected device
         coordinator = self._config_entry.runtime_data
-        schema_dict: dict[vol.Marker, vol.Schema] = {}
+        schema_dict: dict[Any, Any] = {}
 
         current_device_modes = self._config_entry.options.get("segment_mode_by_device", {})
 
