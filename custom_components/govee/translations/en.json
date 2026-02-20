@@ -80,6 +80,9 @@
       },
       "govee_segment": {
         "name": "{device_name} Segment {segment_index}"
+      },
+      "govee_grouped_segment": {
+        "name": "{device_name} Segments"
       }
     },
     "number": {
