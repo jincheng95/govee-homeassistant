@@ -507,8 +507,11 @@ class GoveeOptionsFlow(OptionsFlow):
         if user_input is not None:
             # User selected devices to configure
             self._selected_devices = user_input.get("devices", list(rgbic_devices.keys()))
-            _LOGGER.debug("Selected %d devices for per-device configuration: %s",
-                         len(self._selected_devices), self._selected_devices)
+            _LOGGER.debug(
+                "Selected %d devices for per-device configuration: %s",
+                len(self._selected_devices),
+                self._selected_devices,
+            )
 
             if self._selected_devices:
                 return await self.async_step_configure_device_modes()

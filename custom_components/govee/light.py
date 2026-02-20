@@ -26,7 +26,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
-    SEGMENT_MODE_DISABLED,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
 )

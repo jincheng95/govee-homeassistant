@@ -33,7 +33,6 @@ from .const import (
     DOMAIN,
     KEY_IOT_CREDENTIALS,
     KEY_IOT_LOGIN_FAILED,
-    SEGMENT_MODE_DISABLED,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
     SUFFIX_DIY_SCENE_SELECT,
@@ -260,8 +259,6 @@ async def _async_cleanup_orphaned_entities(
     # Get current options
     options = entry.options
     device_modes = options.get("segment_mode_by_device", {})
-    # For backward compatibility, check old enable_segments boolean
-    enable_segments_old = options.get(CONF_ENABLE_SEGMENTS, DEFAULT_ENABLE_SEGMENTS)
     enable_scenes = options.get(CONF_ENABLE_SCENES, DEFAULT_ENABLE_SCENES)
     enable_diy_scenes = options.get(CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES)
 

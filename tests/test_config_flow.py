@@ -494,7 +494,6 @@ class TestPerDeviceSegmentMode:
     def test_device_mode_structure(self):
         """Test per-device segment mode data structure."""
         from custom_components.govee.const import (
-            CONF_SEGMENT_MODE,
             SEGMENT_MODE_DISABLED,
             SEGMENT_MODE_GROUPED,
             SEGMENT_MODE_INDIVIDUAL,
@@ -517,7 +516,6 @@ class TestPerDeviceSegmentMode:
     def test_device_mode_fallback_to_global(self):
         """Test fallback to global mode when device not in per-device config."""
         from custom_components.govee.const import (
-            CONF_SEGMENT_MODE,
             SEGMENT_MODE_INDIVIDUAL,
         )
 
@@ -606,7 +604,6 @@ class TestPerDeviceSegmentMode:
     def test_empty_device_modes_uses_global(self):
         """Test empty per-device dict falls back to global for all devices."""
         from custom_components.govee.const import (
-            CONF_SEGMENT_MODE,
             DEFAULT_SEGMENT_MODE,
         )
 
@@ -624,37 +621,26 @@ class TestPerDeviceSegmentMode:
     def test_migration_preserves_existing_devices(self):
         """Test migration from global to per-device preserves existing config."""
         from custom_components.govee.const import (
-            CONF_SEGMENT_MODE,
             SEGMENT_MODE_GROUPED,
             SEGMENT_MODE_INDIVIDUAL,
         )
 
-        # Original entry with global setting
-        old_options = {
-            CONF_SEGMENT_MODE: SEGMENT_MODE_GROUPED,
-        }
-
-        # After adding per-device config
+        # Options with per-device config
         new_options = {
-            **old_options,
             "segment_mode_by_device": {
                 "AA:BB:CC:DD:EE:FF:00:01": SEGMENT_MODE_INDIVIDUAL,
             },
         }
 
-        # Devices not in per-device config should use global
-        global_mode = new_options[CONF_SEGMENT_MODE]
-        assert global_mode == SEGMENT_MODE_GROUPED
-
         # Device with specific config should use that
         device_modes = new_options.get("segment_mode_by_device", {})
         device_mode = device_modes.get(
-            "AA:BB:CC:DD:EE:FF:00:01", global_mode
+            "AA:BB:CC:DD:EE:FF:00:01", SEGMENT_MODE_GROUPED
         )
         assert device_mode == SEGMENT_MODE_INDIVIDUAL
 
-        # Unknown device should use global
+        # Unknown device should use default (individual)
         unknown_mode = device_modes.get(
-            "AA:BB:CC:DD:EE:FF:00:99", global_mode
+            "AA:BB:CC:DD:EE:FF:00:99", SEGMENT_MODE_INDIVIDUAL
         )
-        assert unknown_mode == SEGMENT_MODE_GROUPED
+        assert unknown_mode == SEGMENT_MODE_INDIVIDUAL
