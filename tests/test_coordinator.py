@@ -818,7 +818,6 @@ class TestCleanupSegmentModeLogic:
             SUFFIX_GROUPED_SEGMENT,
             SEGMENT_MODE_GROUPED,
             SEGMENT_MODE_INDIVIDUAL,
-            SEGMENT_MODE_DISABLED,
         )
 
         device_id = "AA:BB:CC:DD:EE:FF:00:01"
