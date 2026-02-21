@@ -446,7 +446,7 @@ class GoveeDevice:
                         # Find the gearMode options within the nested structure
                         for opt in options:
                             if opt.get("name") == "gearMode":
-                                gear_options = opt.get("options", [])
+                                gear_options: list[dict[str, Any]] = opt.get("options", [])
                                 if gear_options:
                                     return gear_options
         return []
