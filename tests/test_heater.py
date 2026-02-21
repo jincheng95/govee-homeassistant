@@ -183,11 +183,14 @@ class TestHeaterTemperatureNumberEntity:
         """Create a heater temperature entity for testing."""
         from custom_components.govee.number import GoveeHeaterTemperatureNumber
 
-        return GoveeHeaterTemperatureNumber(
+        entity = GoveeHeaterTemperatureNumber(
             coordinator=mock_coordinator,
             device=mock_heater_device,
             temp_range=(16, 35),
         )
+        entity.hass = MagicMock()
+        entity.async_write_ha_state = MagicMock()
+        return entity
 
     def test_temp_entity_init(self, heater_temp_entity, mock_heater_device):
         """Test temperature entity initialization."""
@@ -299,11 +302,14 @@ class TestFanSpeedSelectEntity:
         from custom_components.govee.select import GoveeFanSpeedSelectEntity
 
         options = mock_heater_device.get_fan_speed_options()
-        return GoveeFanSpeedSelectEntity(
+        entity = GoveeFanSpeedSelectEntity(
             coordinator=mock_coordinator,
             device=mock_heater_device,
             options=options,
         )
+        entity.hass = MagicMock()
+        entity.async_write_ha_state = MagicMock()
+        return entity
 
     def test_fan_speed_entity_init(self, fan_speed_entity, mock_heater_device):
         """Test fan speed entity initialization."""

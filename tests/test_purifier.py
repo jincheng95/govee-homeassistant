@@ -155,11 +155,14 @@ class TestPurifierModeSelectEntity:
         from custom_components.govee.select import GoveePurifierModeSelectEntity
 
         options = mock_purifier_device.get_purifier_mode_options()
-        return GoveePurifierModeSelectEntity(
+        entity = GoveePurifierModeSelectEntity(
             coordinator=mock_coordinator,
             device=mock_purifier_device,
             options=options,
         )
+        entity.hass = MagicMock()
+        entity.async_write_ha_state = MagicMock()
+        return entity
 
     def test_purifier_mode_entity_init(self, purifier_mode_entity, mock_purifier_device):
         """Test purifier mode entity initialization."""
