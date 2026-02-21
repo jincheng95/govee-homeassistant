@@ -437,6 +437,8 @@ class GoveeOptionsFlow(OptionsFlow):
         self._config_entry = config_entry
         self._global_options: dict[str, Any] = {}
         self._selected_devices: list[str] = []
+        self._device_modes: dict[str, str] = {}
+        self._device_index: int = 0
 
     async def async_step_init(
         self,
@@ -514,7 +516,9 @@ class GoveeOptionsFlow(OptionsFlow):
             )
 
             if self._selected_devices:
-                return await self.async_step_configure_device_modes()
+                self._device_index = 0
+                self._device_modes = {}
+                return await self.async_step_configure_device_mode()
             else:
                 # No devices selected, save global options only
                 _LOGGER.debug("No devices selected, saving global options only")
@@ -536,55 +540,54 @@ class GoveeOptionsFlow(OptionsFlow):
             ),
         )
 
-    async def async_step_configure_device_modes(
+    async def async_step_configure_device_mode(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Configure segment mode for each selected device."""
+        """Configure segment mode for one device at a time."""
         if user_input is not None:
-            # Collect per-device modes
-            device_modes: dict[str, str] = {}
-            for device_id in self._selected_devices:
-                mode_key = f"segment_mode_{device_id}"
-                if mode_key in user_input:
-                    device_modes[device_id] = user_input[mode_key]
+            device_id = self._selected_devices[self._device_index]
+            self._device_modes[device_id] = user_input["segment_mode"]
+            self._device_index += 1
 
-            # Build final options data
-            new_data = {**self._global_options}
-            if device_modes:
-                new_data["segment_mode_by_device"] = device_modes
+            # More devices? Loop back. Otherwise save.
+            if self._device_index < len(self._selected_devices):
+                return await self.async_step_configure_device_mode()
 
+            # Done — build final data and save
+            new_data = {**self._global_options, "segment_mode_by_device": self._device_modes}
             _LOGGER.info("Options saved: %s", new_data)
-            _LOGGER.debug("Device modes configured: %s", device_modes)
+            _LOGGER.debug("Device modes configured: %s", self._device_modes)
             return self.async_create_entry(title="", data=new_data)
 
-        # Build form for each selected device
+        # Show form for the current device
         coordinator = self._config_entry.runtime_data
-        schema_dict: dict[Any, Any] = {}
-
         current_device_modes = self._config_entry.options.get("segment_mode_by_device", {})
 
-        for device_id in self._selected_devices:
-            device = coordinator.devices.get(device_id)
-            if not device:
-                continue
+        device_id = self._selected_devices[self._device_index]
+        device = coordinator.devices.get(device_id)
+        device_name = device.name if device else device_id
+        default_mode = current_device_modes.get(device_id, SEGMENT_MODE_INDIVIDUAL)
 
-            # Get current mode for this device (default to individual)
-            default_mode = current_device_modes.get(device_id, SEGMENT_MODE_INDIVIDUAL)
-
-            # Create field key and label for this device
-            field_key = f"segment_mode_{device_id}"
-            device_label = f"{device.name} ({device.device_id})"
-
-            schema_dict[vol.Optional(
-                field_key,
-                description=device_label,
-                default=default_mode,
-            )] = vol.In([SEGMENT_MODE_DISABLED, SEGMENT_MODE_GROUPED, SEGMENT_MODE_INDIVIDUAL])
-
-        _LOGGER.debug("Showing per-device configuration form for %d devices", len(self._selected_devices))
+        _LOGGER.debug(
+            "Showing segment mode form for device %d/%d: %s (%s)",
+            self._device_index + 1,
+            len(self._selected_devices),
+            device_name,
+            device_id,
+        )
 
         return self.async_show_form(
-            step_id="configure_device_modes",
-            data_schema=vol.Schema(schema_dict),
+            step_id="configure_device_mode",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("segment_mode", default=default_mode): vol.In(
+                        [SEGMENT_MODE_DISABLED, SEGMENT_MODE_GROUPED, SEGMENT_MODE_INDIVIDUAL]
+                    ),
+                }
+            ),
+            description_placeholders={
+                "device_name": device_name,
+                "device_id": device_id,
+            },
         )

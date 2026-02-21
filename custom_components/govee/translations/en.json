@@ -64,11 +64,26 @@
     "step": {
       "init": {
         "title": "Govee Options",
+        "description": "If you have RGBIC devices, per-device segment settings will appear after submitting.",
         "data": {
           "poll_interval": "Polling interval (seconds)",
           "enable_groups": "Enable group devices",
           "enable_scenes": "Enable scene selector",
           "enable_diy_scenes": "Enable DIY scene selector"
+        }
+      },
+      "select_segment_devices": {
+        "title": "Select Segment Devices",
+        "description": "Choose which RGBIC devices to configure segment modes for.",
+        "data": {
+          "devices": "Devices to configure"
+        }
+      },
+      "configure_device_mode": {
+        "title": "Segment Mode: {device_name}",
+        "description": "Choose how segments are created for **{device_name}** (`{device_id}`): **disabled** creates no segment entities, **grouped** creates a single entity for all segments, **individual** creates a separate entity per segment.",
+        "data": {
+          "segment_mode": "Segment mode"
         }
       }
     }
