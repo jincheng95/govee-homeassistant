@@ -6,6 +6,7 @@ to reduce its responsibility surface.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -24,8 +25,9 @@ class SceneCacheManager:
     """Manages scene and DIY scene caches with TTL.
 
     Provides lazy-loading scene data from the Govee API with a 24-hour
-    cache to avoid rate limit pressure. Stale entries for removed devices
-    are cleaned up when requested.
+    cache to avoid rate limit pressure. Concurrent requests for the same
+    device are deduplicated so only one API call is made. Stale entries
+    for removed devices are cleaned up when requested.
     """
 
     def __init__(
@@ -45,6 +47,10 @@ class SceneCacheManager:
 
         # DIY scene cache {device_id: (timestamp, [scenes])}
         self._diy_scene_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+        # In-flight request deduplication
+        self._scene_inflight: dict[str, asyncio.Task[list[dict[str, Any]]]] = {}
+        self._diy_scene_inflight: dict[str, asyncio.Task[list[dict[str, Any]]]] = {}
 
     @property
     def scene_cache_count(self) -> int:
@@ -78,6 +84,9 @@ class SceneCacheManager:
     ) -> list[dict[str, Any]]:
         """Get available scenes for a device.
 
+        Concurrent requests for the same device are deduplicated so only
+        one API call is made; additional callers share the result.
+
         Args:
             device_id: Device identifier.
             device: Device instance (needed for sku on cache miss).
@@ -107,6 +116,30 @@ class SceneCacheManager:
             _LOGGER.warning("Device %s not found for scene fetch", device_id)
             return []
 
+        # Deduplicate concurrent requests for the same device
+        if device_id in self._scene_inflight:
+            _LOGGER.debug("Joining in-flight scene request for %s", device.name)
+            return await self._scene_inflight[device_id]
+
+        task = asyncio.ensure_future(self._fetch_and_cache_scenes(device_id, device))
+        self._scene_inflight[device_id] = task
+        try:
+            return await task
+        finally:
+            self._scene_inflight.pop(device_id, None)
+
+    async def _fetch_and_cache_scenes(
+        self, device_id: str, device: GoveeDevice
+    ) -> list[dict[str, Any]]:
+        """Fetch scenes from API and update cache.
+
+        Args:
+            device_id: Device identifier.
+            device: Device instance.
+
+        Returns:
+            List of scene definitions.
+        """
         _LOGGER.debug(
             "Fetching scenes from API for %s (sku=%s)",
             device.name,
@@ -142,6 +175,9 @@ class SceneCacheManager:
     ) -> list[dict[str, Any]]:
         """Get available DIY scenes for a device.
 
+        Concurrent requests for the same device are deduplicated so only
+        one API call is made; additional callers share the result.
+
         Args:
             device_id: Device identifier.
             device: Device instance (needed for sku on cache miss).
@@ -171,6 +207,32 @@ class SceneCacheManager:
             _LOGGER.warning("Device %s not found for DIY scene fetch", device_id)
             return []
 
+        # Deduplicate concurrent requests for the same device
+        if device_id in self._diy_scene_inflight:
+            _LOGGER.debug("Joining in-flight DIY scene request for %s", device.name)
+            return await self._diy_scene_inflight[device_id]
+
+        task = asyncio.ensure_future(
+            self._fetch_and_cache_diy_scenes(device_id, device)
+        )
+        self._diy_scene_inflight[device_id] = task
+        try:
+            return await task
+        finally:
+            self._diy_scene_inflight.pop(device_id, None)
+
+    async def _fetch_and_cache_diy_scenes(
+        self, device_id: str, device: GoveeDevice
+    ) -> list[dict[str, Any]]:
+        """Fetch DIY scenes from API and update cache.
+
+        Args:
+            device_id: Device identifier.
+            device: Device instance.
+
+        Returns:
+            List of DIY scene definitions.
+        """
         _LOGGER.debug(
             "Fetching DIY scenes from API for %s (sku=%s)",
             device.name,

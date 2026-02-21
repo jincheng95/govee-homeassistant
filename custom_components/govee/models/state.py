@@ -246,6 +246,9 @@ class GoveeDeviceState:
         self.last_scene_id = scene_id
         self.last_scene_name = scene_name
         self.source = "optimistic"
+        # Clear stale color — scenes run dynamic patterns, no single color is accurate
+        self.color = None
+        self.color_temp_kelvin = None
         # Mutual exclusion: clear other modes when activating scene
         self.dreamview_enabled = False
         self.music_mode_enabled = False

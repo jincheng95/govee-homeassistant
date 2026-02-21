@@ -652,6 +652,20 @@ class TestGoveeDeviceState:
         assert state.active_scene is None
         assert state.active_scene_name is None
 
+    def test_scene_clears_color_and_color_temp(self):
+        """Test activating scene clears stale color and color temp.
+
+        Scenes run dynamic patterns so the previous RGB/color-temp is
+        misleading.  Clearing lets the light card show on + brightness only.
+        """
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color = RGBColor(255, 0, 0)
+        state.color_temp_kelvin = 4000
+        state.apply_optimistic_scene("123", "Sunrise")
+        assert state.active_scene == "123"
+        assert state.color is None
+        assert state.color_temp_kelvin is None
+
     def test_active_scene_name_not_cleared_by_brightness(self):
         """Test brightness change does NOT clear scene state."""
         state = GoveeDeviceState.create_empty("test_id")
