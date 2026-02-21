@@ -6,6 +6,7 @@ following the WLED pattern for segment control.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -131,6 +132,11 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         is already off — prevents race conditions in area-targeted turn_off
         that cause firmware glitches on RGBIC devices (issue #16).
         """
+        # Yield to the event loop so that a concurrent PowerCommand (from the
+        # main light entity in an area-targeted turn_off) gets a chance to set
+        # the _pending_power_off flag before we check it.
+        await asyncio.sleep(0)
+
         device_state = self.coordinator.get_state(self._device_id)
         device_already_off = device_state is not None and not device_state.power_state
         power_off_pending = self.coordinator.is_power_off_pending(self._device_id)

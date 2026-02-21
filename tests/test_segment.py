@@ -7,12 +7,14 @@ race conditions that cause RGBIC firmware glitches.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from custom_components.govee.models import (
     GoveeDeviceState,
+    PowerCommand,
     RGBColor,
     SegmentColorCommand,
 )
@@ -138,3 +140,93 @@ class TestSegmentTurnOffLogic:
 
         # When state is None, device_already_off is False, so command should be sent
         entity.coordinator.async_control_device.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_turn_off_yields_before_flag_check(self):
+        """asyncio.sleep(0) is called before checking the power-off flag."""
+        entity = _make_segment_entity(power_state=True, power_off_pending=False)
+
+        call_order: list[str] = []
+        original_sleep = asyncio.sleep
+
+        async def tracking_sleep(delay: float, *args: object) -> None:
+            if delay == 0:
+                call_order.append("sleep_0")
+            await original_sleep(delay)
+
+        entity.coordinator.is_power_off_pending = MagicMock(
+            side_effect=lambda _: (call_order.append("flag_check"), False)[1]
+        )
+
+        with patch("asyncio.sleep", side_effect=tracking_sleep):
+            await entity.async_turn_off()
+
+        assert call_order == ["sleep_0", "flag_check"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_turn_off_with_main_entity(self):
+        """Concurrent area turn_off: segment defers to main entity's PowerCommand.
+
+        Simulates asyncio.gather(main_turn_off, segment_turn_off) and verifies
+        the segment skips its SegmentColorCommand because the main entity sets
+        the power-off flag first.
+        """
+        coordinator = MagicMock()
+        coordinator.last_update_success = True
+
+        state = GoveeDeviceState.create_empty("AA:BB:CC:DD:EE:FF:00:11")
+        state.power_state = True
+        coordinator.get_state = MagicMock(return_value=state)
+
+        # Track commands sent and implement real pending-power-off logic
+        pending_power_off: set[str] = set()
+        commands_sent: list[object] = []
+
+        # Use an event so the mock API call holds the flag until the
+        # segment has had a chance to check it (mirrors real API latency).
+        api_done = asyncio.Event()
+
+        async def mock_control(device_id: str, command: object) -> bool:
+            is_power_off = isinstance(command, PowerCommand) and not command.power_on
+            if is_power_off:
+                pending_power_off.add(device_id)
+            commands_sent.append(command)
+            if is_power_off:
+                await api_done.wait()
+                pending_power_off.discard(device_id)
+            return True
+
+        coordinator.async_control_device = mock_control
+        coordinator.is_power_off_pending = lambda did: did in pending_power_off
+
+        # Build segment entity
+        with patch.object(GoveeSegmentEntity, "__init__", lambda self, *a, **kw: None):
+            segment = GoveeSegmentEntity.__new__(GoveeSegmentEntity)
+        segment.coordinator = coordinator
+        segment._device_id = "AA:BB:CC:DD:EE:FF:00:11"
+        segment._segment_index = 0
+        segment._is_on = True
+        segment._brightness = 255
+        segment._rgb_color = (255, 255, 255)
+        segment.async_write_ha_state = MagicMock()
+
+        # Simulate main entity turn_off (sends PowerCommand directly)
+        async def main_turn_off() -> None:
+            await coordinator.async_control_device(
+                "AA:BB:CC:DD:EE:FF:00:11",
+                PowerCommand(power_on=False),
+            )
+
+        async def run_both() -> None:
+            await asyncio.gather(main_turn_off(), segment.async_turn_off())
+
+        # Let both coroutines run, then release the API mock
+        task = asyncio.create_task(run_both())
+        await asyncio.sleep(0)  # let gather start both coroutines
+        await asyncio.sleep(0)  # let segment's sleep(0) yield
+        api_done.set()
+        await task
+
+        # Only PowerCommand should have been sent, not SegmentColorCommand
+        assert len(commands_sent) == 1
+        assert isinstance(commands_sent[0], PowerCommand)
