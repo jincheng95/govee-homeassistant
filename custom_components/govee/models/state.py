@@ -83,6 +83,7 @@ class GoveeDeviceState:
     color: RGBColor | None = None
     color_temp_kelvin: int | None = None
     active_scene: str | None = None
+    active_scene_name: str | None = None  # Display name of active scene
     active_diy_scene: str | None = None  # DIY scene ID (separate from regular scenes)
     segments: list[SegmentState] = field(default_factory=list)
     diy_style: str | None = None  # DIY animation style (Fade, Jumping, etc.)
@@ -110,7 +111,9 @@ class GoveeDeviceState:
     fan_speed: int | None = None  # Fan speed mode value (1=Low, 2=Medium, 3=High)
 
     # Purifier state
-    purifier_mode: int | None = None  # Purifier mode value (1=Sleep, 2=Low, 3=High, etc.)
+    purifier_mode: int | None = (
+        None  # Purifier mode value (1=Sleep, 2=Low, 3=High, etc.)
+    )
 
     # Last activated scene (for restoring after music mode off)
     last_scene_id: str | None = None
@@ -205,6 +208,7 @@ class GoveeDeviceState:
         # Clear scene when turning off (scene is no longer active)
         if not power_on:
             self.active_scene = None
+            self.active_scene_name = None
 
     def apply_optimistic_brightness(self, brightness: int) -> None:
         """Apply optimistic brightness update."""
@@ -216,12 +220,18 @@ class GoveeDeviceState:
         self.color = color
         self.color_temp_kelvin = None  # RGB mode
         self.source = "optimistic"
+        # Setting a color overrides any running scene
+        self.active_scene = None
+        self.active_scene_name = None
 
     def apply_optimistic_color_temp(self, kelvin: int) -> None:
         """Apply optimistic color temperature update."""
         self.color_temp_kelvin = kelvin
         self.color = None  # Color temp mode
         self.source = "optimistic"
+        # Setting color temp overrides any running scene
+        self.active_scene = None
+        self.active_scene_name = None
 
     def apply_optimistic_scene(
         self, scene_id: str, scene_name: str | None = None
@@ -232,6 +242,7 @@ class GoveeDeviceState:
         When a Scene is activated, DreamView, music mode, and DIY scene are cleared.
         """
         self.active_scene = scene_id
+        self.active_scene_name = scene_name
         self.last_scene_id = scene_id
         self.last_scene_name = scene_name
         self.source = "optimistic"
@@ -256,6 +267,7 @@ class GoveeDeviceState:
         self.music_mode_value = None
         self.music_mode_name = None
         self.active_scene = None
+        self.active_scene_name = None
 
     def apply_optimistic_diy_style(
         self, style: str, style_value: int | None = None
@@ -282,6 +294,7 @@ class GoveeDeviceState:
         if enabled:
             self.dreamview_enabled = False
             self.active_scene = None
+            self.active_scene_name = None
             self.active_diy_scene = None
 
     def apply_optimistic_music_mode_struct(
@@ -308,6 +321,7 @@ class GoveeDeviceState:
         # Mutual exclusion: clear other modes when enabling music mode
         self.dreamview_enabled = False
         self.active_scene = None
+        self.active_scene_name = None
         self.active_diy_scene = None
 
     def apply_optimistic_oscillation(self, oscillating: bool) -> None:
@@ -340,6 +354,7 @@ class GoveeDeviceState:
             self.music_mode_value = None
             self.music_mode_name = None
             self.active_scene = None
+            self.active_scene_name = None
             self.active_diy_scene = None
 
     @classmethod

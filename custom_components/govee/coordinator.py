@@ -472,6 +472,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     existing_state, state, device_id, "active_scene", "scene"
                 )
                 self._preserve_optimistic_field(
+                    existing_state, state, device_id, "active_scene_name", "scene name"
+                )
+                self._preserve_optimistic_field(
                     existing_state, state, device_id, "dreamview_enabled", "DreamView"
                 )
                 self._preserve_optimistic_field(
@@ -944,6 +947,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         state = self._states.get(device_id)
         if state:
             state.active_scene = None
+            state.active_scene_name = None
             state.source = "optimistic"
 
     def clear_diy_scene(self, device_id: str) -> None:
