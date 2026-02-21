@@ -18,7 +18,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, SUFFIX_HEATER_TEMPERATURE, SUFFIX_MUSIC_SENSITIVITY
 from .coordinator import GoveeCoordinator
-from .models import GoveeDevice, MusicModeCommand, RangeCommand
+from .models import GoveeDevice, MusicModeCommand, TemperatureSettingCommand
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -306,9 +306,8 @@ class GoveeHeaterTemperatureNumber(
         """
         temperature = int(value)
 
-        command = RangeCommand(
-            range_instance="temperature",
-            value=temperature,
+        command = TemperatureSettingCommand(
+            temperature=temperature,
         )
 
         success = await self.coordinator.async_control_device(

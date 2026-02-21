@@ -22,6 +22,7 @@ CAPABILITY_TOGGLE = "devices.capabilities.toggle"
 CAPABILITY_WORK_MODE = "devices.capabilities.work_mode"
 CAPABILITY_PROPERTY = "devices.capabilities.property"
 CAPABILITY_MODE = "devices.capabilities.mode"
+CAPABILITY_TEMPERATURE_SETTING = "devices.capabilities.temperature_setting"
 
 # Device type constants
 DEVICE_TYPE_LIGHT = "devices.types.light"
@@ -48,6 +49,7 @@ INSTANCE_HDMI_SOURCE = "hdmiSource"
 INSTANCE_MUSIC_MODE = "musicMode"
 INSTANCE_DREAMVIEW = "dreamViewToggle"
 INSTANCE_TEMPERATURE = "temperature"
+INSTANCE_TARGET_TEMPERATURE = "targetTemperature"
 INSTANCE_FAN_SPEED = "fanSpeed"
 INSTANCE_PURIFIER_MODE = "purifierMode"
 
@@ -381,26 +383,39 @@ class GoveeDevice:
     def get_temperature_range(self) -> tuple[int, int]:
         """Extract temperature range from capability.
 
+        Parses STRUCT-based temperature_setting capability where the range
+        is nested inside the fields array under the 'temperature' field.
+
         Returns (min, max) tuple, defaulting to (16, 35) Celsius.
         """
         for cap in self.capabilities:
-            if cap.type == CAPABILITY_RANGE and cap.instance == INSTANCE_TEMPERATURE:
-                range_data = cap.parameters.get("range", {})
-                return (
-                    int(range_data.get("min", 16)),
-                    int(range_data.get("max", 35)),
-                )
+            if (
+                cap.type == CAPABILITY_TEMPERATURE_SETTING
+                and cap.instance == INSTANCE_TARGET_TEMPERATURE
+            ):
+                for f in cap.parameters.get("fields", []):
+                    if f.get("fieldName") == "temperature":
+                        range_data = f.get("range", {})
+                        return (
+                            int(range_data.get("min", 16)),
+                            int(range_data.get("max", 35)),
+                        )
         return (16, 35)
 
     def get_fan_speed_options(self) -> list[dict[str, Any]]:
-        """Extract fan speed mode options from capability.
+        """Extract fan speed options from work_mode capability.
+
+        Heater fan speed options are inside the STRUCT-based work_mode
+        capability, in the 'workMode' field's options array.
 
         Returns list of {"name": "Low", "value": 1} dicts.
         """
         for cap in self.capabilities:
-            if cap.type == CAPABILITY_MODE and cap.instance == INSTANCE_FAN_SPEED:
-                options: list[dict[str, Any]] = cap.parameters.get("options", [])
-                return options
+            if cap.type == CAPABILITY_WORK_MODE and cap.instance == INSTANCE_WORK_MODE:
+                for f in cap.parameters.get("fields", []):
+                    if f.get("fieldName") == "workMode":
+                        options: list[dict[str, Any]] = f.get("options", [])
+                        return options
         return []
 
     def get_purifier_mode_options(self) -> list[dict[str, Any]]:

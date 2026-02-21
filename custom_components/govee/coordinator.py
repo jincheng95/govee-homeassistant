@@ -40,6 +40,7 @@ from .models.commands import (
     MusicModeCommand,
     PowerCommand,
     SceneCommand,
+    TemperatureSettingCommand,
     ToggleCommand,
     create_dreamview_command,
 )
@@ -883,6 +884,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         elif isinstance(command, ModeCommand):
             if command.mode_instance == INSTANCE_HDMI_SOURCE:
                 state.apply_optimistic_hdmi_source(command.value)
+        elif isinstance(command, TemperatureSettingCommand):
+            state.heater_temperature = command.temperature
         elif isinstance(command, MusicModeCommand):
             # Look up mode name from device capabilities for display
             device = self._devices.get(device_id)

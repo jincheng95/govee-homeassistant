@@ -36,8 +36,9 @@ from .models import (
     ModeCommand,
     MusicModeCommand,
     SceneCommand,
+    WorkModeCommand,
 )
-from .models.device import INSTANCE_FAN_SPEED, INSTANCE_HDMI_SOURCE, INSTANCE_PURIFIER_MODE
+from .models.device import INSTANCE_HDMI_SOURCE, INSTANCE_PURIFIER_MODE
 
 # DIY Style options for select entity
 DIY_STYLE_OPTIONS = list(DIY_STYLE_NAMES.keys())
@@ -773,10 +774,9 @@ class GoveeFanSpeedSelectEntity(GoveeEntity, SelectEntity):
     def current_option(self) -> str | None:
         """Return current selected option from state."""
         state = self.coordinator.get_state(self._device_id)
-        if state and state.fan_speed is not None:
-            # Find option name matching the current value
+        if state and state.work_mode is not None:
             for name, value in self._option_map.items():
-                if value == state.fan_speed:
+                if value == state.work_mode:
                     return name
         # Return first option as default if available
         return self._attr_options[0] if self._attr_options else None
@@ -788,9 +788,9 @@ class GoveeFanSpeedSelectEntity(GoveeEntity, SelectEntity):
             _LOGGER.warning("Unknown fan speed option: %s", option)
             return
 
-        command = ModeCommand(
-            mode_instance=INSTANCE_FAN_SPEED,
-            value=value,
+        command = WorkModeCommand(
+            work_mode=value,
+            mode_value=0,
         )
 
         success = await self.coordinator.async_control_device(
