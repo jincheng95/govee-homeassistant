@@ -405,17 +405,63 @@ class GoveeDevice:
     def get_fan_speed_options(self) -> list[dict[str, Any]]:
         """Extract fan speed options from work_mode capability.
 
-        Heater fan speed options are inside the STRUCT-based work_mode
-        capability, in the 'workMode' field's options array.
+        Parses both workMode and modeValue fields, flattening nested
+        sub-options. For example, H7131 has gearMode containing
+        Low/Medium/High sub-options in the modeValue field.
 
-        Returns list of {"name": "Low", "value": 1} dicts.
+        Returns list of {"name": "Low", "work_mode": 1, "mode_value": 0} dicts.
         """
         for cap in self.capabilities:
             if cap.type == CAPABILITY_WORK_MODE and cap.instance == INSTANCE_WORK_MODE:
+                work_mode_field: dict[str, Any] | None = None
+                mode_value_field: dict[str, Any] | None = None
                 for f in cap.parameters.get("fields", []):
                     if f.get("fieldName") == "workMode":
-                        options: list[dict[str, Any]] = f.get("options", [])
-                        return options
+                        work_mode_field = f
+                    elif f.get("fieldName") == "modeValue":
+                        mode_value_field = f
+
+                if not work_mode_field:
+                    return []
+
+                # Build modeValue lookup by name
+                mv_lookup: dict[str, dict[str, Any]] = {}
+                if mode_value_field:
+                    for mv_opt in mode_value_field.get("options", []):
+                        name = mv_opt.get("name", "")
+                        if name:
+                            mv_lookup[name] = mv_opt
+
+                result: list[dict[str, Any]] = []
+                for wm_opt in work_mode_field.get("options", []):
+                    wm_name = wm_opt.get("name", "")
+                    wm_value = wm_opt.get("value")
+                    if not wm_name or wm_value is None:
+                        continue
+
+                    # Check for nested sub-options (e.g., gearMode → Low/Medium/High)
+                    mv_entry = mv_lookup.get(wm_name, {})
+                    sub_options: list[dict[str, Any]] = mv_entry.get("options", [])
+
+                    if sub_options:
+                        for sub_opt in sub_options:
+                            sub_name = sub_opt.get("name", "")
+                            sub_value = sub_opt.get("value")
+                            if sub_name and sub_value is not None:
+                                result.append({
+                                    "name": sub_name,
+                                    "work_mode": wm_value,
+                                    "mode_value": sub_value,
+                                })
+                    else:
+                        default_mv: int = mv_entry.get("defaultValue", 0)
+                        result.append({
+                            "name": wm_name,
+                            "work_mode": wm_value,
+                            "mode_value": default_mv,
+                        })
+
+                return result
         return []
 
     def get_purifier_mode_options(self) -> list[dict[str, Any]]:

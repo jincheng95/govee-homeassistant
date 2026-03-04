@@ -754,15 +754,16 @@ class GoveeFanSpeedSelectEntity(GoveeEntity, SelectEntity):
         """
         super().__init__(coordinator, device)
 
-        # Build option mapping: display name -> value
-        self._option_map: dict[str, int] = {}
+        # Build option mapping: display name -> (work_mode, mode_value)
+        self._option_map: dict[str, tuple[int, int]] = {}
         option_names: list[str] = []
 
         for opt in options:
             name = opt.get("name", "")
-            value = opt.get("value")
-            if name and value is not None:
-                self._option_map[name] = value
+            work_mode = opt.get("work_mode")
+            mode_value = opt.get("mode_value")
+            if name and work_mode is not None and mode_value is not None:
+                self._option_map[name] = (work_mode, mode_value)
                 option_names.append(name)
 
         self._attr_options = option_names
@@ -775,22 +776,29 @@ class GoveeFanSpeedSelectEntity(GoveeEntity, SelectEntity):
         """Return current selected option from state."""
         state = self.coordinator.get_state(self._device_id)
         if state and state.work_mode is not None:
-            for name, value in self._option_map.items():
-                if value == state.work_mode:
+            # Try matching both work_mode and mode_value
+            if state.mode_value is not None:
+                for name, (wm, mv) in self._option_map.items():
+                    if wm == state.work_mode and mv == state.mode_value:
+                        return name
+            # Fallback: match on work_mode only
+            for name, (wm, _mv) in self._option_map.items():
+                if wm == state.work_mode:
                     return name
         # Return first option as default if available
         return self._attr_options[0] if self._attr_options else None
 
     async def async_select_option(self, option: str) -> None:
         """Handle fan speed selection."""
-        value = self._option_map.get(option)
-        if value is None:
+        values = self._option_map.get(option)
+        if values is None:
             _LOGGER.warning("Unknown fan speed option: %s", option)
             return
 
+        work_mode, mode_value = values
         command = WorkModeCommand(
-            work_mode=value,
-            mode_value=0,
+            work_mode=work_mode,
+            mode_value=mode_value,
         )
 
         success = await self.coordinator.async_control_device(
@@ -801,9 +809,10 @@ class GoveeFanSpeedSelectEntity(GoveeEntity, SelectEntity):
         if success:
             self.async_write_ha_state()
             _LOGGER.debug(
-                "Set fan speed '%s' (value=%d) on %s",
+                "Set fan speed '%s' (work_mode=%d, mode_value=%d) on %s",
                 option,
-                value,
+                work_mode,
+                mode_value,
                 self._device.name,
             )
         else:
