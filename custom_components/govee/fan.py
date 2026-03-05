@@ -2,7 +2,7 @@
 
 Provides fan entities with support for:
 - On/Off control
-- Speed control (Low/Medium/High)
+- Speed control (dynamic speed count from device capabilities)
 - Oscillation
 - Preset modes (Normal, Auto)
 """
@@ -26,9 +26,6 @@ from .entity import GoveeEntity
 from .models import GoveeDevice, OscillationCommand, PowerCommand, WorkModeCommand
 
 _LOGGER = logging.getLogger(__name__)
-
-# Fan speed names mapped to mode_value
-ORDERED_NAMED_FAN_SPEEDS = ["low", "medium", "high"]
 
 # Preset modes: Normal uses gearMode (manual speed), Auto uses auto mode
 PRESET_MODE_NORMAL = "Normal"
@@ -76,7 +73,6 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
     """
 
     _attr_translation_key = "govee_fan"
-    _attr_speed_count = len(ORDERED_NAMED_FAN_SPEEDS)
 
     def __init__(
         self,
@@ -88,6 +84,14 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
 
         # Set name (uses has_entity_name = True)
         self._attr_name = None  # Use device name
+
+        # Detect speed count from device capabilities
+        gear_speeds = [
+            opt for opt in device.get_fan_speed_options()
+            if opt["work_mode"] == WORK_MODE_GEAR
+        ]
+        self._fan_speeds = [opt["mode_value"] for opt in gear_speeds] if gear_speeds else [1, 2, 3]
+        self._attr_speed_count = len(self._fan_speeds)
 
         # Build supported features based on device capabilities
         features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
@@ -112,7 +116,7 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
     def percentage(self) -> int | None:
         """Return the current speed as a percentage.
 
-        Maps mode_value 1/2/3 to Low/Medium/High.
+        Maps mode_value to percentage using the device's speed list.
         Only applies when in gearMode (work_mode=1).
         """
         state = self.device_state
@@ -122,11 +126,10 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
         # Only return percentage when in manual gear mode
         if state.work_mode == WORK_MODE_GEAR and state.mode_value is not None:
             try:
-                speed_name = ORDERED_NAMED_FAN_SPEEDS[state.mode_value - 1]
                 return ordered_list_item_to_percentage(
-                    ORDERED_NAMED_FAN_SPEEDS, speed_name
+                    self._fan_speeds, state.mode_value
                 )
-            except (IndexError, ValueError):
+            except ValueError:
                 _LOGGER.debug("Unknown mode_value: %s", state.mode_value)
 
         return None
@@ -183,23 +186,19 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
         """Set the speed percentage.
 
         0% turns off the fan.
-        Other percentages map to Low/Medium/High.
+        Other percentages map to the device's speed levels.
         """
         if percentage == 0:
             await self.async_turn_off()
             return
 
-        # Convert percentage to speed name (low/medium/high)
-        speed_name = percentage_to_ordered_list_item(
-            ORDERED_NAMED_FAN_SPEEDS, percentage
+        mode_value = percentage_to_ordered_list_item(
+            self._fan_speeds, percentage
         )
-        # Convert to mode_value (1/2/3)
-        mode_value = ORDERED_NAMED_FAN_SPEEDS.index(speed_name) + 1
 
         _LOGGER.debug(
-            "Setting fan speed: percentage=%d, speed_name=%s, mode_value=%d",
+            "Setting fan speed: percentage=%d, mode_value=%d",
             percentage,
-            speed_name,
             mode_value,
         )
 

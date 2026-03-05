@@ -8,7 +8,6 @@ import pytest
 
 from custom_components.govee.fan import (
     GoveeFanEntity,
-    ORDERED_NAMED_FAN_SPEEDS,
     PRESET_MODE_NORMAL,
     PRESET_MODE_AUTO,
     WORK_MODE_GEAR,
@@ -61,7 +60,6 @@ class TestGoveeFanEntity:
 
     def test_speed_count(self, fan_entity):
         """Test speed count is correctly set."""
-        assert fan_entity.speed_count == len(ORDERED_NAMED_FAN_SPEEDS)
         assert fan_entity.speed_count == 3
 
     def test_preset_modes(self, fan_entity):
@@ -290,3 +288,61 @@ class TestGoveeFanEntityControls:
         call_args = mock_coordinator.async_control_device.call_args
         assert isinstance(call_args[0][1], OscillationCommand)
         assert call_args[0][1].oscillating is False
+
+
+# ==============================================================================
+# 8-Speed Fan Entity Tests
+# ==============================================================================
+
+
+class TestGoveeFanEntity8Speed:
+    """Test GoveeFanEntity with 8-speed device (H7101)."""
+
+    @pytest.fixture
+    def mock_coordinator(self, mock_fan_8speed_device):
+        """Create a mock coordinator for testing."""
+        coordinator = MagicMock()
+        coordinator.devices = {mock_fan_8speed_device.device_id: mock_fan_8speed_device}
+        state = MagicMock()
+        state.power_state = True
+        state.oscillating = False
+        state.work_mode = WORK_MODE_GEAR
+        state.mode_value = 1
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        return coordinator
+
+    @pytest.fixture
+    def fan_entity(self, mock_coordinator, mock_fan_8speed_device):
+        """Create an 8-speed fan entity for testing."""
+        return GoveeFanEntity(mock_coordinator, mock_fan_8speed_device)
+
+    def test_speed_count_8(self, fan_entity):
+        """Test speed count is 8 for H7101."""
+        assert fan_entity.speed_count == 8
+
+    def test_percentage_speed_1(self, fan_entity):
+        """Test percentage for speed 1 (lowest)."""
+        # speed 1 of 8 => 12% (1*100//8 = 12)
+        assert fan_entity.percentage == 12
+
+    def test_percentage_speed_4(self, fan_entity, mock_coordinator):
+        """Test percentage for speed 4 (mid)."""
+        mock_coordinator.get_state.return_value.mode_value = 4
+        assert fan_entity.percentage == 50
+
+    def test_percentage_speed_8(self, fan_entity, mock_coordinator):
+        """Test percentage for speed 8 (max)."""
+        mock_coordinator.get_state.return_value.mode_value = 8
+        assert fan_entity.percentage == 100
+
+    @pytest.mark.asyncio
+    async def test_set_percentage_sends_correct_mode_value(self, fan_entity, mock_coordinator):
+        """Test that 50% maps to mode_value=4 for 8-speed fan."""
+        await fan_entity.async_set_percentage(50)
+
+        mock_coordinator.async_control_device.assert_called_once()
+        call_args = mock_coordinator.async_control_device.call_args
+        assert isinstance(call_args[0][1], WorkModeCommand)
+        assert call_args[0][1].work_mode == WORK_MODE_GEAR
+        assert call_args[0][1].mode_value == 4

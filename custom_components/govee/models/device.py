@@ -447,7 +447,9 @@ class GoveeDevice:
                         for sub_opt in sub_options:
                             sub_name = sub_opt.get("name", "")
                             sub_value = sub_opt.get("value")
-                            if sub_name and sub_value is not None:
+                            if sub_value is not None:
+                                if not sub_name:
+                                    sub_name = f"Speed {sub_value}"
                                 result.append({
                                     "name": sub_name,
                                     "work_mode": wm_value,

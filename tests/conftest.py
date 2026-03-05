@@ -310,7 +310,7 @@ def mqtt_state_message() -> dict[str, Any]:
 
 @pytest.fixture
 def fan_capabilities() -> tuple[GoveeCapability, ...]:
-    """Create capabilities for a fan device (H7101)."""
+    """Create capabilities for a fan device (3-speed with named options)."""
     return (
         GoveeCapability(
             type=CAPABILITY_ON_OFF,
@@ -326,12 +326,101 @@ def fan_capabilities() -> tuple[GoveeCapability, ...]:
             type=CAPABILITY_WORK_MODE,
             instance=INSTANCE_WORK_MODE,
             parameters={
-                "options": [
-                    {"name": "gearMode", "value": {"workMode": 1, "modeValue": [1, 2, 3]}},
-                    {"name": "Auto", "value": {"workMode": 3, "modeValue": [0]}},
+                "dataType": "STRUCT",
+                "fields": [
+                    {
+                        "fieldName": "workMode",
+                        "dataType": "ENUM",
+                        "options": [
+                            {"name": "gearMode", "value": 1},
+                            {"name": "Auto", "value": 3},
+                        ],
+                    },
+                    {
+                        "fieldName": "modeValue",
+                        "dataType": "ENUM",
+                        "options": [
+                            {"name": "gearMode", "options": [
+                                {"name": "Low", "value": 1},
+                                {"name": "Medium", "value": 2},
+                                {"name": "High", "value": 3},
+                            ]},
+                            {"defaultValue": 0, "name": "Auto"},
+                        ],
+                    },
                 ],
             },
         ),
+    )
+
+
+@pytest.fixture
+def fan_8speed_capabilities() -> tuple[GoveeCapability, ...]:
+    """Create capabilities for an 8-speed fan device (H7101 with unnamed options)."""
+    return (
+        GoveeCapability(
+            type=CAPABILITY_ON_OFF,
+            instance=INSTANCE_POWER,
+            parameters={},
+        ),
+        GoveeCapability(
+            type=CAPABILITY_TOGGLE,
+            instance=INSTANCE_OSCILLATION,
+            parameters={},
+        ),
+        GoveeCapability(
+            type=CAPABILITY_WORK_MODE,
+            instance=INSTANCE_WORK_MODE,
+            parameters={
+                "dataType": "STRUCT",
+                "fields": [
+                    {
+                        "fieldName": "workMode",
+                        "dataType": "ENUM",
+                        "options": [
+                            {"name": "FanSpeed", "value": 1},
+                            {"name": "Custom", "value": 2},
+                            {"name": "Auto", "value": 3},
+                            {"name": "Sleep", "value": 5},
+                            {"name": "Nature", "value": 6},
+                        ],
+                    },
+                    {
+                        "fieldName": "modeValue",
+                        "dataType": "ENUM",
+                        "options": [
+                            {"name": "FanSpeed", "options": [
+                                {"value": 1},
+                                {"value": 2},
+                                {"value": 3},
+                                {"value": 4},
+                                {"value": 5},
+                                {"value": 6},
+                                {"value": 7},
+                                {"value": 8},
+                            ]},
+                            {"defaultValue": 0, "name": "Custom"},
+                            {"defaultValue": 0, "name": "Auto"},
+                            {"defaultValue": 0, "name": "Sleep"},
+                            {"defaultValue": 0, "name": "Nature"},
+                        ],
+                    },
+                ],
+            },
+        ),
+    )
+
+
+@pytest.fixture
+def mock_fan_8speed_device(fan_8speed_capabilities) -> GoveeDevice:
+    """Create a mock 8-speed fan device (H7101)."""
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:00:55",
+        sku="H7101",
+        name="Bedroom Fan",
+        device_type=DEVICE_TYPE_FAN,
+        capabilities=fan_8speed_capabilities,
+        is_group=False,
     )
 
 
@@ -379,9 +468,28 @@ def api_fan_device_response() -> dict[str, Any]:
                 "type": CAPABILITY_WORK_MODE,
                 "instance": INSTANCE_WORK_MODE,
                 "parameters": {
-                    "options": [
-                        {"name": "gearMode", "value": {"workMode": 1, "modeValue": [1, 2, 3]}},
-                        {"name": "Auto", "value": {"workMode": 3, "modeValue": [0]}},
+                    "dataType": "STRUCT",
+                    "fields": [
+                        {
+                            "fieldName": "workMode",
+                            "dataType": "ENUM",
+                            "options": [
+                                {"name": "gearMode", "value": 1},
+                                {"name": "Auto", "value": 3},
+                            ],
+                        },
+                        {
+                            "fieldName": "modeValue",
+                            "dataType": "ENUM",
+                            "options": [
+                                {"name": "gearMode", "options": [
+                                    {"name": "Low", "value": 1},
+                                    {"name": "Medium", "value": 2},
+                                    {"name": "High", "value": 3},
+                                ]},
+                                {"defaultValue": 0, "name": "Auto"},
+                            ],
+                        },
                     ],
                 },
             },

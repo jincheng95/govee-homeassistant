@@ -317,6 +317,27 @@ class TestGoveeDevice:
         assert device.supports_oscillation is True
         assert device.supports_work_mode is True
 
+    def test_get_fan_speed_options_named(self, mock_fan_device):
+        """Test get_fan_speed_options with named sub-options (3-speed)."""
+        options = mock_fan_device.get_fan_speed_options()
+        gear_options = [o for o in options if o["work_mode"] == 1]
+        assert len(gear_options) == 3
+        assert gear_options[0] == {"name": "Low", "work_mode": 1, "mode_value": 1}
+        assert gear_options[1] == {"name": "Medium", "work_mode": 1, "mode_value": 2}
+        assert gear_options[2] == {"name": "High", "work_mode": 1, "mode_value": 3}
+
+    def test_get_fan_speed_options_unnamed(self, mock_fan_8speed_device):
+        """Test get_fan_speed_options with unnamed sub-options (H7101 8-speed)."""
+        options = mock_fan_8speed_device.get_fan_speed_options()
+        gear_options = [o for o in options if o["work_mode"] == 1]
+        assert len(gear_options) == 8
+        for i in range(1, 9):
+            assert gear_options[i - 1] == {
+                "name": f"Speed {i}",
+                "work_mode": 1,
+                "mode_value": i,
+            }
+
     def test_immutable(self, mock_light_device):
         """Test that GoveeDevice is immutable (frozen)."""
         with pytest.raises(AttributeError):
