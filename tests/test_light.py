@@ -1,13 +1,26 @@
-"""Test Govee light entity effect support."""
+"""Test Govee light entity effect and color mode support."""
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.components.light import ColorMode
 
 from custom_components.govee.light import GoveeLightEntity
-from custom_components.govee.models import SceneCommand
+from custom_components.govee.models import (
+    GoveeCapability,
+    GoveeDevice,
+    GoveeDeviceState,
+    RGBColor,
+    SceneCommand,
+)
+from custom_components.govee.models.device import (
+    CAPABILITY_ON_OFF,
+    CAPABILITY_RANGE,
+    INSTANCE_BRIGHTNESS,
+    INSTANCE_POWER,
+)
 
 
 @pytest.fixture
@@ -311,3 +324,129 @@ class TestLightEffectSupport:
 
         mock_coordinator.async_get_scenes.assert_not_called()
         assert entity.effect_list is None
+
+
+@pytest.fixture
+def brightness_only_capabilities():
+    """Create capabilities for a brightness-only device (no color)."""
+    return (
+        GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+        GoveeCapability(
+            type=CAPABILITY_RANGE,
+            instance=INSTANCE_BRIGHTNESS,
+            parameters={"range": {"min": 0, "max": 100}},
+        ),
+    )
+
+
+@pytest.fixture
+def mock_brightness_device(brightness_only_capabilities):
+    """Create a mock brightness-only device."""
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:00:99",
+        sku="H6000",
+        name="Simple Light",
+        device_type="devices.types.light",
+        capabilities=brightness_only_capabilities,
+        is_group=False,
+    )
+
+
+class TestColorMode:
+    """Test color_mode property returns valid modes."""
+
+    def test_color_mode_rgb_when_color_in_state(
+        self, mock_coordinator, mock_light_device, mock_device_state
+    ):
+        """Test color_mode returns RGB when state has color set."""
+        mock_device_state.color = RGBColor(r=255, g=0, b=0)
+        mock_device_state.color_temp_kelvin = None
+
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        assert entity.color_mode == ColorMode.RGB
+
+    def test_color_mode_color_temp_when_temp_in_state(
+        self, mock_coordinator, mock_light_device, mock_device_state
+    ):
+        """Test color_mode returns COLOR_TEMP when state has color_temp set."""
+        mock_device_state.color = None
+        mock_device_state.color_temp_kelvin = 4000
+
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        assert entity.color_mode == ColorMode.COLOR_TEMP
+
+    def test_color_mode_color_temp_takes_priority(
+        self, mock_coordinator, mock_light_device, mock_device_state
+    ):
+        """Test COLOR_TEMP takes priority when both color and color_temp are set."""
+        mock_device_state.color = RGBColor(r=0, g=0, b=0)
+        mock_device_state.color_temp_kelvin = 6667
+
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        assert entity.color_mode == ColorMode.COLOR_TEMP
+
+    def test_color_mode_valid_when_no_state(
+        self, mock_coordinator, mock_light_device
+    ):
+        """Test color_mode returns a valid mode when device_state is None."""
+        mock_coordinator.get_state.return_value = None
+
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        assert entity.color_mode in entity.supported_color_modes
+
+    def test_color_mode_valid_when_empty_state(
+        self, mock_coordinator, mock_light_device, mock_device_state_off
+    ):
+        """Test color_mode returns valid mode when color and color_temp are both None."""
+        mock_coordinator.get_state.return_value = mock_device_state_off
+
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        assert entity.color_mode in entity.supported_color_modes
+
+    def test_color_mode_onoff_for_onoff_only_device(
+        self, mock_coordinator, mock_plug_device
+    ):
+        """Test color_mode returns ONOFF for device with only power control."""
+        mock_coordinator.get_state.return_value = None
+
+        entity = GoveeLightEntity(mock_coordinator, mock_plug_device, enable_scenes=False)
+        assert entity.color_mode == ColorMode.ONOFF
+        assert entity.supported_color_modes == {ColorMode.ONOFF}
+
+    def test_color_mode_brightness_for_brightness_only_device(
+        self, mock_coordinator, mock_brightness_device
+    ):
+        """Test color_mode returns BRIGHTNESS for brightness-only device."""
+        mock_coordinator.get_state.return_value = None
+
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_brightness_device, enable_scenes=False
+        )
+        assert entity.color_mode == ColorMode.BRIGHTNESS
+        assert entity.supported_color_modes == {ColorMode.BRIGHTNESS}
+
+    def test_color_mode_always_in_supported_modes(
+        self, mock_coordinator, mock_light_device, mock_device_state
+    ):
+        """Test color_mode is always in supported_color_modes across state transitions."""
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+
+        # With RGB color
+        mock_device_state.color = RGBColor(r=255, g=0, b=0)
+        mock_device_state.color_temp_kelvin = None
+        assert entity.color_mode in entity.supported_color_modes
+
+        # With color temp
+        mock_device_state.color = None
+        mock_device_state.color_temp_kelvin = 5000
+        assert entity.color_mode in entity.supported_color_modes
+
+        # With no state
+        mock_coordinator.get_state.return_value = None
+        assert entity.color_mode in entity.supported_color_modes
+
+        # With empty state
+        mock_device_state.color = None
+        mock_device_state.color_temp_kelvin = None
+        mock_coordinator.get_state.return_value = mock_device_state
+        assert entity.color_mode in entity.supported_color_modes

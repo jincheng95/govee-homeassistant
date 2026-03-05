@@ -141,8 +141,6 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
 
         # Determine supported color modes
         self._attr_supported_color_modes = self._determine_color_modes()
-        self._attr_color_mode = self._get_current_color_mode()
-
         # Get device brightness range
         self._brightness_min, self._brightness_max = device.brightness_range
 
@@ -174,8 +172,13 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
 
         return modes
 
-    def _get_current_color_mode(self) -> ColorMode:
-        """Get current color mode based on state."""
+    @property
+    def color_mode(self) -> ColorMode:
+        """Return current color mode based on device state.
+
+        Dynamically computed so it always reflects actual state and
+        is guaranteed to be in supported_color_modes.
+        """
         state = self.device_state
         modes = self._attr_supported_color_modes or set()
 
@@ -189,6 +192,12 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
 
         if ColorMode.BRIGHTNESS in modes:
             return ColorMode.BRIGHTNESS
+
+        # Always return a mode from supported_color_modes
+        if modes:
+            if ColorMode.COLOR_TEMP in modes:
+                return ColorMode.COLOR_TEMP
+            return next(iter(modes))
 
         return ColorMode.ONOFF
 
@@ -307,8 +316,6 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
                 ColorCommand(color=color),
             ):
                 _LOGGER.warning("Color command failed for %s", self._device_id)
-            else:
-                self._attr_color_mode = ColorMode.RGB
 
         # Handle color temperature
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
@@ -318,8 +325,6 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
                 ColorTempCommand(kelvin=kelvin),
             ):
                 _LOGGER.warning("Color temp command failed for %s", self._device_id)
-            else:
-                self._attr_color_mode = ColorMode.COLOR_TEMP
 
         # Only send power command if light is off or no attributes were set
         has_attribute = any(
