@@ -196,7 +196,7 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
             return ColorMode.BRIGHTNESS
         if ColorMode.COLOR_TEMP in modes:
             return ColorMode.COLOR_TEMP
-        return next(iter(modes))
+        return ColorMode(next(iter(modes)))
 
     @property
     def is_on(self) -> bool | None:
