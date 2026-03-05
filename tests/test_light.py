@@ -11,7 +11,6 @@ from custom_components.govee.light import GoveeLightEntity
 from custom_components.govee.models import (
     GoveeCapability,
     GoveeDevice,
-    GoveeDeviceState,
     RGBColor,
     SceneCommand,
 )
