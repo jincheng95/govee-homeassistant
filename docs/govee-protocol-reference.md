@@ -2,11 +2,12 @@
 
 A comprehensive technical reference for Govee device communication protocols, compiled from official documentation, PCAP analysis of the Android app, and community reverse engineering efforts.
 
-**Last Updated:** January 24, 2026
+**Last Updated:** March 4, 2026
 **Data Sources:**
 - `docs/PCAPdroid_24_Jan_16_00_31.pcap` - Android app network capture
 - `logs/PCAPdroid_09_Jan_19_27_26.pcap` - Reference capture
 - Live AWS IoT MQTT capture sessions (January 2026)
+- User-submitted API responses from GitHub issues (February–March 2026)
 
 ---
 
@@ -1512,7 +1513,8 @@ These states are NOT returned by the API:
 | `devices.capabilities.dynamic_scene` | Scene selection |
 | `devices.capabilities.diy_color_setting` | DIY scenes |
 | `devices.capabilities.music_setting` | Music mode |
-| `devices.capabilities.work_mode` | Appliance modes |
+| `devices.capabilities.work_mode` | Appliance modes (fans, heaters) |
+| `devices.capabilities.mode` | Simple mode selection (HDMI source, purifier mode) |
 | `devices.capabilities.online` | Online status |
 | `devices.capabilities.event` | Real-time events |
 
@@ -1521,12 +1523,14 @@ These states are NOT returned by the API:
 | Capability | Instances |
 |------------|-----------|
 | on_off | `powerSwitch` |
-| toggle | `gradientToggle`, `nightlightToggle`, `oscillationToggle`, `warmMistToggle` |
-| range | `brightness`, `humidity`, `volume` |
+| toggle | `gradientToggle`, `nightlightToggle`, `oscillationToggle`, `warmMistToggle`, `dreamViewToggle` |
+| range | `brightness`, `humidity`, `volume`, `targetTemperature`, `temperature`, `fanSpeed` |
 | color_setting | `colorRgb`, `colorTemperatureK` |
 | segment_color_setting | `segmentedColorRgb`, `segmentedBrightness` |
 | dynamic_scene | `lightScene`, `diyScene`, `snapshot` |
 | music_setting | `musicMode` |
+| work_mode | `workMode` |
+| mode | `hdmiSource`, `purifierMode` |
 
 ### 8.3 Device Type Detection
 
@@ -1576,8 +1580,105 @@ def detect_capabilities(device_response):
 | `devices.types.air_purifier` | Air purifiers |
 | `devices.types.humidifier` | Humidifiers |
 | `devices.types.heater` | Space heaters |
+| `devices.types.fan` | Tower fans, desk fans |
 | `devices.types.thermometer` | Temp/humidity sensors |
 | `devices.types.sensor` | Motion, presence sensors |
+
+### 8.5 Known Device Capability Profiles
+
+Real API responses collected from user reports and testing.
+
+#### H6099 — TV Backlight 3 Lite (`devices.types.light`)
+
+Camera-based TV backlight. Note: DreamView/video mode uses local camera (BLE), **not** exposed via cloud API.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.toggle", "instance": "gradientToggle"},
+    {"type": "devices.capabilities.range", "instance": "brightness", "range": {"min": 1, "max": 100}},
+    {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "segments": 15},
+    {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "segments": 15},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "range": {"min": 2000, "max": 9000}},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+    {"type": "devices.capabilities.music_setting", "instance": "musicMode", "modes": 11},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"}
+  ]
+}
+```
+
+Key observations:
+- Has `gradientToggle` but **not** `dreamViewToggle` — camera-based video sync is BLE-only
+- 15 RGBIC segments (`elementRange.max = 14`, so 0-14 = 15 segments)
+- Music mode has 11 options (Rhythm, Spectrum, Rolling, Separation, Hopping, PianoKeys, Fountain, DayAndNight, Sprouting, Shiny, Energic) with sensitivity (0-100) and optional autoColor/rgb fields
+- 236 scenes available via `/device/scenes` endpoint
+
+#### H7101 — Smart Tower Fan (`devices.types.fan`)
+
+8-speed tower fan with `work_mode` STRUCT format. Sub-options have **no names** (just `{"value": N}`).
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.toggle", "instance": "oscillationToggle"},
+    {
+      "type": "devices.capabilities.work_mode",
+      "instance": "workMode",
+      "parameters": {
+        "dataType": "STRUCT",
+        "fields": [
+          {
+            "fieldName": "workMode",
+            "dataType": "ENUM",
+            "options": [
+              {"name": "FanSpeed", "value": 1},
+              {"name": "Custom", "value": 2},
+              {"name": "Auto", "value": 3},
+              {"name": "Sleep", "value": 5},
+              {"name": "Nature", "value": 6}
+            ]
+          },
+          {
+            "fieldName": "modeValue",
+            "dataType": "ENUM",
+            "options": [
+              {"name": "FanSpeed", "options": [
+                {"value": 1}, {"value": 2}, {"value": 3}, {"value": 4},
+                {"value": 5}, {"value": 6}, {"value": 7}, {"value": 8}
+              ]},
+              {"defaultValue": 0, "name": "Custom"},
+              {"defaultValue": 0, "name": "Auto"},
+              {"defaultValue": 0, "name": "Sleep"},
+              {"defaultValue": 0, "name": "Nature"}
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Key observations:
+- `work_mode` uses STRUCT with `fields` array (not flat `options` format)
+- FanSpeed sub-options are **unnamed** (`{"value": 1}` not `{"name": "Low", "value": 1}`)
+- 5 work modes but only FanSpeed (value=1) has sub-options (8 speed levels)
+- Other modes (Custom, Auto, Sleep, Nature) use `defaultValue: 0`
+
+### 8.6 DreamView vs Camera-based Video Sync
+
+| Feature | DreamView (HDMI) | Camera Video Sync |
+|---------|-----------------|-------------------|
+| **Mechanism** | Hardware HDMI passthrough | Phone/device camera |
+| **API capability** | `dreamViewToggle` | Not exposed |
+| **Cloud controllable** | Yes | No (BLE only) |
+| **Example devices** | HDMI sync boxes | H6099, TV backlights |
+
+Devices with hardware HDMI passthrough expose `dreamViewToggle` via the cloud API. Camera-based video sync is a local feature controlled via BLE/the Govee app and cannot be toggled through the API.
 
 ---
 
