@@ -205,10 +205,6 @@ class GoveeDeviceState:
         """Apply optimistic power state update."""
         self.power_state = power_on
         self.source = "optimistic"
-        # Clear scene when turning off (scene is no longer active)
-        if not power_on:
-            self.active_scene = None
-            self.active_scene_name = None
 
     def apply_optimistic_brightness(self, brightness: int) -> None:
         """Apply optimistic brightness update."""

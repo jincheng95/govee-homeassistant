@@ -176,11 +176,12 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
     def color_mode(self) -> ColorMode:
         """Return current color mode based on device state.
 
-        Dynamically computed so it always reflects actual state and
-        is guaranteed to be in supported_color_modes.
+        Dynamically computed so it always reflects actual state.
+        Always returns a value from supported_color_modes to satisfy
+        HA Core validation (color_mode must be in supported_color_modes).
         """
         state = self.device_state
-        modes = self._attr_supported_color_modes or set()
+        modes = self.supported_color_modes or {ColorMode.ONOFF}
 
         if state and state.color_temp_kelvin is not None:
             if ColorMode.COLOR_TEMP in modes:
@@ -190,16 +191,12 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
             if ColorMode.RGB in modes:
                 return ColorMode.RGB
 
+        # Default to first supported mode (prefer COLOR_TEMP > BRIGHTNESS > any)
         if ColorMode.BRIGHTNESS in modes:
             return ColorMode.BRIGHTNESS
-
-        # Always return a mode from supported_color_modes
-        if modes:
-            if ColorMode.COLOR_TEMP in modes:
-                return ColorMode.COLOR_TEMP
-            return next(iter(modes))
-
-        return ColorMode.ONOFF
+        if ColorMode.COLOR_TEMP in modes:
+            return ColorMode.COLOR_TEMP
+        return next(iter(modes))
 
     @property
     def is_on(self) -> bool | None:

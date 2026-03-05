@@ -469,17 +469,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # Clear them when device is turned off (no longer active).
             existing_state = self._states.get(device_id)
             if existing_state:
-                self._preserve_optimistic_field(
-                    existing_state, state, device_id, "active_scene", "scene"
-                )
-                self._preserve_optimistic_field(
-                    existing_state, state, device_id, "active_scene_name", "scene name"
-                )
+                # Scenes persist on device across power cycles — always preserve
+                if existing_state.active_scene:
+                    state.active_scene = existing_state.active_scene
+                if existing_state.active_scene_name:
+                    state.active_scene_name = existing_state.active_scene_name
+                # DIY scenes also persist across power cycles
+                if existing_state.active_diy_scene:
+                    state.active_diy_scene = existing_state.active_diy_scene
                 self._preserve_optimistic_field(
                     existing_state, state, device_id, "dreamview_enabled", "DreamView"
-                )
-                self._preserve_optimistic_field(
-                    existing_state, state, device_id, "active_diy_scene", "DIY scene"
                 )
                 # Music mode has extra fields to preserve alongside the flag
                 if existing_state.music_mode_enabled:

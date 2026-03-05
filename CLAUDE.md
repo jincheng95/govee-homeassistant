@@ -203,8 +203,8 @@ segment_count = element_range["max"] + 1
 ### Scene State
 - **Limitation**: API doesn't reliably return active scene
 - **Solution**: Preserve scene via optimistic state
-- **Clear when**: Device is turned off (scene is no longer active)
-- **Implementation**: `coordinator.py` preserves `active_scene` on API poll if device is ON
+- **Clear when**: A different mode is activated (color, color_temp, music, DreamView, DIY scene)
+- **Implementation**: `coordinator.py` always preserves `active_scene` on API poll regardless of power state
 
 ### Segment Colors
 - **Limitation**: API returns empty strings for segment colors

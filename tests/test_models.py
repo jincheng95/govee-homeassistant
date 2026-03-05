@@ -628,13 +628,13 @@ class TestGoveeDeviceState:
         assert state.active_scene == "123"
         assert state.active_scene_name == "Sunrise"
 
-    def test_active_scene_name_cleared_on_power_off(self):
-        """Test active_scene_name is cleared when turning off."""
+    def test_active_scene_name_preserved_on_power_off(self):
+        """Test active_scene_name is preserved when turning off."""
         state = GoveeDeviceState.create_empty("test_id")
         state.apply_optimistic_scene("123", "Sunrise")
         state.apply_optimistic_power(False)
-        assert state.active_scene is None
-        assert state.active_scene_name is None
+        assert state.active_scene == "123"
+        assert state.active_scene_name == "Sunrise"
 
     def test_active_scene_name_cleared_on_color_change(self):
         """Test active_scene_name is cleared when setting RGB color."""
