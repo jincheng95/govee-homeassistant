@@ -950,7 +950,6 @@ class TestClearSceneLogic:
         state.last_color = RGBColor(255, 0, 0)
 
         color = state.color or state.last_color
-        color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
 
         # Should pick ColorCommand path
         assert color == RGBColor(255, 0, 0)
