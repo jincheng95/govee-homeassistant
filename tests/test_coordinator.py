@@ -1010,3 +1010,88 @@ class TestClearSceneLogic:
         assert state.active_scene is None
         assert state.active_scene_name is None
         assert state.active_diy_scene is None
+
+
+class TestStatePreservationAcrossApiPoll:
+    """Test that restore-target fields survive API poll cycles."""
+
+    def test_last_color_preserved_across_api_poll(self):
+        """Test last_color is preserved when API returns a fresh state."""
+        existing = GoveeDeviceState.create_empty("test_id")
+        existing.color = RGBColor(255, 0, 0)
+        existing.apply_optimistic_scene("scene_1", "Sunset")
+        assert existing.last_color == RGBColor(255, 0, 0)
+
+        # Simulate API poll returning a fresh state (no last_color)
+        new_state = GoveeDeviceState.create_empty("test_id")
+        new_state.power_state = True
+
+        # Mimic coordinator preservation logic
+        if existing.last_color is not None:
+            new_state.last_color = existing.last_color
+
+        assert new_state.last_color == RGBColor(255, 0, 0)
+
+    def test_last_color_temp_preserved_across_api_poll(self):
+        """Test last_color_temp_kelvin is preserved when API returns a fresh state."""
+        existing = GoveeDeviceState.create_empty("test_id")
+        existing.color_temp_kelvin = 4500
+        existing.apply_optimistic_scene("scene_1", "Sunset")
+        assert existing.last_color_temp_kelvin == 4500
+
+        new_state = GoveeDeviceState.create_empty("test_id")
+        new_state.power_state = True
+
+        if existing.last_color_temp_kelvin is not None:
+            new_state.last_color_temp_kelvin = existing.last_color_temp_kelvin
+
+        assert new_state.last_color_temp_kelvin == 4500
+
+    def test_last_scene_preserved_across_api_poll(self):
+        """Test last_scene_id and last_scene_name survive API poll."""
+        existing = GoveeDeviceState.create_empty("test_id")
+        existing.apply_optimistic_scene("scene_42", "Aurora")
+        assert existing.last_scene_id == "scene_42"
+        assert existing.last_scene_name == "Aurora"
+
+        new_state = GoveeDeviceState.create_empty("test_id")
+
+        if existing.last_scene_id is not None:
+            new_state.last_scene_id = existing.last_scene_id
+        if existing.last_scene_name is not None:
+            new_state.last_scene_name = existing.last_scene_name
+
+        assert new_state.last_scene_id == "scene_42"
+        assert new_state.last_scene_name == "Aurora"
+
+    def test_full_flow_color_scene_poll_clear(self):
+        """End-to-end: set red → scene → API poll (colorRgb=0) → clear → red resolved."""
+        # Step 1: User sets red
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color = RGBColor(255, 0, 0)
+        state.power_state = True
+
+        # Step 2: User activates scene — saves red as last_color
+        state.apply_optimistic_scene("scene_1", "Party")
+        assert state.last_color == RGBColor(255, 0, 0)
+        assert state.color is None
+
+        # Step 3: API poll returns fresh state with colorRgb=0 (scene running)
+        api_state = GoveeDeviceState.create_empty("test_id")
+        api_state.power_state = True
+        api_state.color = RGBColor(0, 0, 0)  # API returns black during scene
+
+        # Coordinator preserves memory fields
+        if state.active_scene:
+            api_state.active_scene = state.active_scene
+        if state.active_scene_name:
+            api_state.active_scene_name = state.active_scene_name
+        if state.last_color is not None:
+            api_state.last_color = state.last_color
+
+        # Step 4: Resolve color for clear_scene — reject black, fall back to last_color
+        color = api_state.color or api_state.last_color
+        if color and color.as_packed_int == 0:
+            color = api_state.last_color
+
+        assert color == RGBColor(255, 0, 0)

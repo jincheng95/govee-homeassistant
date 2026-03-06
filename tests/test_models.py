@@ -780,6 +780,24 @@ class TestGoveeDeviceState:
         state.apply_optimistic_diy_scene("2")
         assert state.last_color == RGBColor(128, 128, 0)
 
+    def test_scene_does_not_save_black(self):
+        """Test that RGBColor(0,0,0) is not saved as last_color.
+
+        The API returns colorRgb=0 when a scene is running, which is not a
+        meaningful color to restore.
+        """
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color = RGBColor(0, 0, 0)
+        state.apply_optimistic_scene("123", "Sunrise")
+        assert state.last_color is None
+
+    def test_diy_scene_does_not_save_black(self):
+        """Test that RGBColor(0,0,0) is not saved as last_color for DIY scenes."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color = RGBColor(0, 0, 0)
+        state.apply_optimistic_diy_scene("456")
+        assert state.last_color is None
+
 
 # ==============================================================================
 # Command Tests

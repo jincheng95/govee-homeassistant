@@ -477,6 +477,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 # DIY scenes also persist across power cycles
                 if existing_state.active_diy_scene:
                     state.active_diy_scene = existing_state.active_diy_scene
+                # Preserve restore-target fields across API polls.
+                # These are "memory" fields — always preserved regardless of power state.
+                if existing_state.last_color is not None:
+                    state.last_color = existing_state.last_color
+                if existing_state.last_color_temp_kelvin is not None:
+                    state.last_color_temp_kelvin = existing_state.last_color_temp_kelvin
+                if existing_state.last_scene_id is not None:
+                    state.last_scene_id = existing_state.last_scene_id
+                if existing_state.last_scene_name is not None:
+                    state.last_scene_name = existing_state.last_scene_name
+
                 self._preserve_optimistic_field(
                     existing_state, state, device_id, "dreamview_enabled", "DreamView"
                 )
@@ -961,7 +972,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self.clear_diy_scene(device_id)
             return
 
+        # Resolve the color to restore. Skip RGBColor(0,0,0) — the API returns
+        # colorRgb=0 when a scene is running, which is not a meaningful restore target.
         color = state.color or state.last_color
+        if color and color.as_packed_int == 0:
+            color = state.last_color
         color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
 
         success = False

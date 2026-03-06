@@ -248,7 +248,9 @@ class GoveeDeviceState:
         self.source = "optimistic"
         # Save current color/color_temp before clearing so we can restore on scene clear.
         # Only save when a value exists so scene A → scene B → clear restores pre-A color.
-        if self.color is not None:
+        # Skip RGBColor(0,0,0) — the API returns colorRgb=0 when a scene is running,
+        # which is not a meaningful color to restore.
+        if self.color is not None and self.color.as_packed_int != 0:
             self.last_color = self.color
             self.last_color_temp_kelvin = None
         elif self.color_temp_kelvin is not None:
@@ -273,7 +275,7 @@ class GoveeDeviceState:
         self.active_diy_scene = scene_id
         self.source = "optimistic"
         # Save current color/color_temp before clearing (same logic as regular scenes)
-        if self.color is not None:
+        if self.color is not None and self.color.as_packed_int != 0:
             self.last_color = self.color
             self.last_color_temp_kelvin = None
         elif self.color_temp_kelvin is not None:
