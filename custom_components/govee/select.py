@@ -272,8 +272,8 @@ class GoveeSceneSelectEntity(GoveeEntity, SelectEntity):
         Selecting a scene clears Music Mode and DreamView states.
         """
         if option == SCENE_NONE:
-            # Clear the scene state via coordinator
-            self.coordinator.clear_scene(self._device_id)
+            # Send a color/color_temp command to exit the scene on the device
+            await self.coordinator.async_clear_scene(self._device_id)
             self.async_write_ha_state()
             return
 
@@ -396,8 +396,8 @@ class GoveeDIYSceneSelectEntity(GoveeEntity, SelectEntity):
         Selecting a DIY scene clears Music Mode and DreamView states.
         """
         if option == SCENE_NONE:
-            # Clear the DIY scene state via coordinator
-            self.coordinator.clear_diy_scene(self._device_id)
+            # Send a color/color_temp command to exit the scene on the device
+            await self.coordinator.async_clear_scene(self._device_id)
             self.async_write_ha_state()
             return
 

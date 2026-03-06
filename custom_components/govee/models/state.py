@@ -119,6 +119,10 @@ class GoveeDeviceState:
     last_scene_id: str | None = None
     last_scene_name: str | None = None
 
+    # Last color/color_temp (for restoring when scene is cleared)
+    last_color: RGBColor | None = None
+    last_color_temp_kelvin: int | None = None
+
     # Source tracking for state management
     # "api" = from REST poll, "mqtt" = from push, "optimistic" = from command
     source: str = "api"
@@ -242,6 +246,14 @@ class GoveeDeviceState:
         self.last_scene_id = scene_id
         self.last_scene_name = scene_name
         self.source = "optimistic"
+        # Save current color/color_temp before clearing so we can restore on scene clear.
+        # Only save when a value exists so scene A → scene B → clear restores pre-A color.
+        if self.color is not None:
+            self.last_color = self.color
+            self.last_color_temp_kelvin = None
+        elif self.color_temp_kelvin is not None:
+            self.last_color_temp_kelvin = self.color_temp_kelvin
+            self.last_color = None
         # Clear stale color — scenes run dynamic patterns, no single color is accurate
         self.color = None
         self.color_temp_kelvin = None
@@ -260,6 +272,13 @@ class GoveeDeviceState:
         """
         self.active_diy_scene = scene_id
         self.source = "optimistic"
+        # Save current color/color_temp before clearing (same logic as regular scenes)
+        if self.color is not None:
+            self.last_color = self.color
+            self.last_color_temp_kelvin = None
+        elif self.color_temp_kelvin is not None:
+            self.last_color_temp_kelvin = self.color_temp_kelvin
+            self.last_color = None
         # Mutual exclusion: clear other modes when activating DIY scene
         self.dreamview_enabled = False
         self.music_mode_enabled = False

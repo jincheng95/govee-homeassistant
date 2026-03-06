@@ -727,6 +727,59 @@ class TestGoveeDeviceState:
         assert state.active_scene is None
         assert state.active_scene_name is None
 
+    def test_scene_saves_last_color(self):
+        """Test activating a scene saves the current color for later restore."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color = RGBColor(255, 0, 0)
+        state.apply_optimistic_scene("123", "Sunrise")
+        assert state.last_color == RGBColor(255, 0, 0)
+        assert state.last_color_temp_kelvin is None
+        assert state.color is None
+
+    def test_scene_saves_last_color_temp(self):
+        """Test activating a scene saves the current color_temp for later restore."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color_temp_kelvin = 4000
+        state.apply_optimistic_scene("123", "Sunrise")
+        assert state.last_color_temp_kelvin == 4000
+        assert state.last_color is None
+        assert state.color_temp_kelvin is None
+
+    def test_scene_chain_preserves_first_color(self):
+        """Test scene A → scene B doesn't overwrite the saved color from before A."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color = RGBColor(0, 255, 0)
+        state.apply_optimistic_scene("1", "Scene A")
+        assert state.last_color == RGBColor(0, 255, 0)
+        # Scene B: color is now None, so last_color should NOT be overwritten
+        state.apply_optimistic_scene("2", "Scene B")
+        assert state.last_color == RGBColor(0, 255, 0)
+
+    def test_diy_scene_saves_last_color(self):
+        """Test activating a DIY scene saves the current color for later restore."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color = RGBColor(0, 0, 255)
+        state.apply_optimistic_diy_scene("456")
+        assert state.last_color == RGBColor(0, 0, 255)
+        assert state.last_color_temp_kelvin is None
+
+    def test_diy_scene_saves_last_color_temp(self):
+        """Test activating a DIY scene saves the current color_temp."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color_temp_kelvin = 5000
+        state.apply_optimistic_diy_scene("456")
+        assert state.last_color_temp_kelvin == 5000
+        assert state.last_color is None
+
+    def test_diy_scene_chain_preserves_first_color(self):
+        """Test DIY scene A → DIY scene B preserves original saved color."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.color = RGBColor(128, 128, 0)
+        state.apply_optimistic_diy_scene("1")
+        assert state.last_color == RGBColor(128, 128, 0)
+        state.apply_optimistic_diy_scene("2")
+        assert state.last_color == RGBColor(128, 128, 0)
+
 
 # ==============================================================================
 # Command Tests

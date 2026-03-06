@@ -29,7 +29,7 @@ from .api.auth import GoveeAuthClient
 from .api.ble_packet import DIY_STYLE_NAMES
 from .ble_passthrough import BlePassthroughManager
 from .const import DOMAIN
-from .models import GoveeDevice, GoveeDeviceState
+from .models import GoveeDevice, GoveeDeviceState, RGBColor
 from .models.commands import (
     BrightnessCommand,
     ColorCommand,
@@ -943,6 +943,54 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """
         device = self._devices.get(device_id)
         return await self._scene_cache.async_get_diy_scenes(device_id, device, refresh)
+
+    async def async_clear_scene(self, device_id: str) -> None:
+        """Clear active scene by sending a color/color_temp command to exit it on the device.
+
+        Brightness commands don't exit scenes, so we must send a color or color_temp
+        command. Restores the last known color/color_temp when available.
+        """
+        state = self._states.get(device_id)
+        device = self._devices.get(device_id)
+        if not state or not device:
+            return
+
+        # Nothing to clear if no scene is active
+        if not state.active_scene and not state.active_diy_scene:
+            self.clear_scene(device_id)
+            self.clear_diy_scene(device_id)
+            return
+
+        color = state.color or state.last_color
+        color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
+
+        success = False
+        if color and device.supports_rgb:
+            success = await self.async_control_device(device_id, ColorCommand(color=color))
+        elif color_temp and device.supports_color_temp:
+            success = await self.async_control_device(
+                device_id, ColorTempCommand(kelvin=color_temp)
+            )
+        elif device.supports_color_temp:
+            # Default to midpoint of device's color temp range
+            ct_range = device.color_temp_range
+            if ct_range:
+                midpoint = (ct_range.min_kelvin + ct_range.max_kelvin) // 2
+            else:
+                midpoint = 4000
+            success = await self.async_control_device(
+                device_id, ColorTempCommand(kelvin=midpoint)
+            )
+        elif device.supports_rgb:
+            success = await self.async_control_device(
+                device_id, ColorCommand(color=RGBColor(255, 255, 255))
+            )
+
+        if success:
+            # ColorCommand/ColorTempCommand already clear active_scene via optimistic handlers,
+            # but we also need to clear active_diy_scene explicitly.
+            self.clear_scene(device_id)
+            self.clear_diy_scene(device_id)
 
     def clear_scene(self, device_id: str) -> None:
         """Clear active scene for a device."""

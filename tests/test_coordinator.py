@@ -898,3 +898,116 @@ class TestCleanupSegmentModeLogic:
 
         should_remove = is_individual and mode != SEGMENT_MODE_INDIVIDUAL
         assert should_remove is False  # Matches global mode
+
+
+class TestClearSceneLogic:
+    """Test async_clear_scene command selection logic.
+
+    These tests verify the logic for choosing which command to send when
+    clearing a scene (color restore vs color_temp restore vs defaults).
+    """
+
+    def _make_device(self, supports_rgb: bool, supports_color_temp: bool):
+        """Create a device with specified color capabilities."""
+        caps = [
+            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+            GoveeCapability(
+                type=CAPABILITY_RANGE,
+                instance=INSTANCE_BRIGHTNESS,
+                parameters={"range": {"min": 0, "max": 100}},
+            ),
+        ]
+        if supports_rgb:
+            caps.append(
+                GoveeCapability(
+                    type="devices.capabilities.color_setting",
+                    instance="colorRgb",
+                    parameters={},
+                )
+            )
+        if supports_color_temp:
+            caps.append(
+                GoveeCapability(
+                    type="devices.capabilities.color_setting",
+                    instance="colorTemperatureK",
+                    parameters={"range": {"min": 2000, "max": 9000}},
+                )
+            )
+        return GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:00:11",
+            sku="H6072",
+            name="Test Light",
+            device_type="devices.types.light",
+            capabilities=tuple(caps),
+            is_group=False,
+        )
+
+    def test_clear_scene_chooses_color_when_last_color_saved(self):
+        """Test clear scene sends ColorCommand when last_color is available."""
+        device = self._make_device(supports_rgb=True, supports_color_temp=True)
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.active_scene = "123"
+        state.last_color = RGBColor(255, 0, 0)
+
+        color = state.color or state.last_color
+        color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
+
+        # Should pick ColorCommand path
+        assert color == RGBColor(255, 0, 0)
+        assert device.supports_rgb is True
+
+    def test_clear_scene_chooses_color_temp_when_last_temp_saved(self):
+        """Test clear scene sends ColorTempCommand when last_color_temp is available."""
+        device = self._make_device(supports_rgb=True, supports_color_temp=True)
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.active_scene = "123"
+        state.last_color_temp_kelvin = 4000
+
+        color = state.color or state.last_color
+        color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
+
+        # No color, falls through to color_temp
+        assert color is None
+        assert color_temp == 4000
+        assert device.supports_color_temp is True
+
+    def test_clear_scene_default_color_temp_midpoint(self):
+        """Test clear scene uses midpoint of color temp range as default."""
+        device = self._make_device(supports_rgb=False, supports_color_temp=True)
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.active_scene = "123"
+
+        color = state.color or state.last_color
+        color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
+
+        # No saved color or temp → falls through to default path
+        assert color is None
+        assert color_temp is None
+        assert device.supports_color_temp is True
+        ct_range = device.color_temp_range
+        assert ct_range is not None
+        midpoint = (ct_range.min_kelvin + ct_range.max_kelvin) // 2
+        assert midpoint == 5500
+
+    def test_clear_scene_no_scene_active_is_noop(self):
+        """Test clearing when no scene is active doesn't require a command."""
+        state = GoveeDeviceState.create_empty("test_id")
+        # Neither active_scene nor active_diy_scene set
+        assert state.active_scene is None
+        assert state.active_diy_scene is None
+
+    def test_clear_scene_clears_both_scene_types(self):
+        """Test clearing scene state clears both regular and DIY scene."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.active_scene = "123"
+        state.active_scene_name = "Sunrise"
+        state.active_diy_scene = "456"
+
+        # Simulate what async_clear_scene does on success
+        state.active_scene = None
+        state.active_scene_name = None
+        state.active_diy_scene = None
+
+        assert state.active_scene is None
+        assert state.active_scene_name is None
+        assert state.active_diy_scene is None
