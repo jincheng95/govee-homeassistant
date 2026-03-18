@@ -261,20 +261,22 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
     def _ha_to_device_brightness(self, ha_brightness: int) -> int:
         """Convert HA brightness (0-255) to device range, respecting min."""
         ratio = ha_brightness / HA_BRIGHTNESS_MAX
-        return int(
+        result = int(
             self._brightness_min + ratio * (self._brightness_max - self._brightness_min)
         )
+        return max(self._brightness_min, min(self._brightness_max, result))
 
     def _device_to_ha_brightness(self, device_brightness: int) -> int:
         """Convert device brightness to HA range (0-255), respecting min."""
         device_range = self._brightness_max - self._brightness_min
         if device_range <= 0:
             return 0
-        return int(
+        result = int(
             (device_brightness - self._brightness_min)
             / device_range
             * HA_BRIGHTNESS_MAX
         )
+        return max(0, min(HA_BRIGHTNESS_MAX, result))
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on with optional parameters."""

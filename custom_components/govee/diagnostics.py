@@ -49,6 +49,7 @@ async def async_get_config_entry_diagnostics(
                 {
                     "type": cap.type,
                     "instance": cap.instance,
+                    "parameters": cap.parameters,
                 }
                 for cap in device.capabilities
             ],

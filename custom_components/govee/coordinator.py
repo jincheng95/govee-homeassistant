@@ -473,6 +473,22 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # Clear them when device is turned off (no longer active).
             existing_state = self._states.get(device_id)
             if existing_state:
+                # Log state transitions from API for debugging stale-state issues
+                if existing_state.power_state != state.power_state:
+                    _LOGGER.debug(
+                        "API state change for %s: power %s -> %s (was source=%s)",
+                        device_id,
+                        existing_state.power_state,
+                        state.power_state,
+                        existing_state.source,
+                    )
+                if existing_state.brightness != state.brightness:
+                    _LOGGER.debug(
+                        "API state change for %s: brightness %s -> %s",
+                        device_id,
+                        existing_state.brightness,
+                        state.brightness,
+                    )
                 # Scenes persist on device across power cycles — always preserve
                 if existing_state.active_scene:
                     state.active_scene = existing_state.active_scene

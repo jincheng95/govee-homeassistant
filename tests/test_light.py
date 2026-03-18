@@ -15,9 +15,12 @@ from custom_components.govee.models import (
     SceneCommand,
 )
 from custom_components.govee.models.device import (
+    CAPABILITY_COLOR_SETTING,
     CAPABILITY_ON_OFF,
     CAPABILITY_RANGE,
     INSTANCE_BRIGHTNESS,
+    INSTANCE_COLOR_RGB,
+    INSTANCE_COLOR_TEMP,
     INSTANCE_POWER,
 )
 
@@ -449,3 +452,75 @@ class TestColorMode:
         mock_device_state.color_temp_kelvin = None
         mock_coordinator.get_state.return_value = mock_device_state
         assert entity.color_mode in entity.supported_color_modes
+
+
+class TestBrightnessConversion:
+    """Test brightness conversion between HA (0-255) and device scales."""
+
+    def test_device_to_ha_normal(self, mock_coordinator, mock_light_device):
+        """Test normal brightness conversion from device (0-100) to HA (0-255)."""
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=False)
+        # Device range is (0, 100); device=50 → 50% → 127
+        assert entity._device_to_ha_brightness(50) == 127
+        assert entity._device_to_ha_brightness(100) == 255
+        assert entity._device_to_ha_brightness(0) == 0
+
+    def test_device_to_ha_clamped_when_exceeding_range(
+        self, mock_coordinator, mock_light_device
+    ):
+        """Test brightness is clamped to 255 when device value exceeds declared range.
+
+        Regression test for GitHub issue #24: H6104 returns brightness=254
+        from API despite declaring range (0, 100), causing HA to show 255%.
+        """
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=False)
+        # Device claims range (0, 100) but API returns 254 → unclamped would be 647
+        assert entity._device_to_ha_brightness(254) == 255
+
+    def test_device_to_ha_clamped_at_zero(self, mock_coordinator, mock_light_device):
+        """Test brightness is clamped to 0 for negative device values."""
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=False)
+        assert entity._device_to_ha_brightness(-10) == 0
+
+    def test_ha_to_device_clamped_to_device_range(
+        self, mock_coordinator, mock_light_device
+    ):
+        """Test HA-to-device conversion is clamped to device range."""
+        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=False)
+        # Device range is (0, 100)
+        assert entity._ha_to_device_brightness(255) == 100
+        assert entity._ha_to_device_brightness(0) == 0
+
+    def test_device_to_ha_with_254_range(self, mock_coordinator):
+        """Test brightness conversion with 0-254 device range."""
+        device = GoveeDevice(
+            device_id="TEST:ID:00:00:00:00:00:00",
+            sku="H6104",
+            name="Test Light",
+            device_type="devices.types.light",
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
+                ),
+                GoveeCapability(
+                    type=CAPABILITY_RANGE,
+                    instance=INSTANCE_BRIGHTNESS,
+                    parameters={"range": {"min": 0, "max": 254}},
+                ),
+                GoveeCapability(
+                    type=CAPABILITY_COLOR_SETTING,
+                    instance=INSTANCE_COLOR_RGB,
+                    parameters={},
+                ),
+                GoveeCapability(
+                    type=CAPABILITY_COLOR_SETTING,
+                    instance=INSTANCE_COLOR_TEMP,
+                    parameters={"range": {"min": 2000, "max": 9000}},
+                ),
+            ),
+            is_group=False,
+        )
+        entity = GoveeLightEntity(mock_coordinator, device, enable_scenes=False)
+        assert entity._device_to_ha_brightness(254) == 255
+        assert entity._device_to_ha_brightness(127) == 127
+        assert entity._device_to_ha_brightness(0) == 0
