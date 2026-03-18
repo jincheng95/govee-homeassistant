@@ -7,11 +7,13 @@ import base64
 import pytest
 
 from custom_components.govee.api.ble_packet import (
+    DIY_MODE_INDICATOR,
     DREAMVIEW_COMMAND,
     DREAMVIEW_INDICATOR,
     MUSIC_MODE_COMMAND,
     MUSIC_MODE_INDICATOR,
     MUSIC_PACKET_PREFIX,
+    build_diy_scene_packet,
     build_dreamview_packet,
     build_music_mode_packet,
     build_packet,
@@ -441,3 +443,134 @@ class TestDreamviewPacketIntegration:
         assert decoded == packet
         assert decoded[2] == 0x04  # DreamView indicator
         assert decoded[3] == 0x00  # Disabled
+
+
+# ==============================================================================
+# DIY Scene Packet Tests
+# ==============================================================================
+
+
+class TestBuildDiyScenePacket:
+    """Test DIY scene packet building."""
+
+    def test_packet_length(self):
+        """Test DIY scene packet is 20 bytes."""
+        packet = build_diy_scene_packet(21104832)
+        assert len(packet) == 20
+
+    def test_packet_header(self):
+        """Test DIY scene packet has correct header."""
+        packet = build_diy_scene_packet(21104832)
+
+        # Byte 0: Standard command prefix (0x33)
+        assert packet[0] == MUSIC_PACKET_PREFIX
+        assert packet[0] == 0x33
+
+        # Byte 1: Mode command (0x05)
+        assert packet[1] == MUSIC_MODE_COMMAND
+        assert packet[1] == 0x05
+
+        # Byte 2: DIY mode indicator (0x0A)
+        assert packet[2] == DIY_MODE_INDICATOR
+        assert packet[2] == 0x0A
+
+    def test_scene_id_little_endian(self):
+        """Test scene ID is encoded as 4-byte little-endian."""
+        # 21104832 = 0x014208C0
+        # Little-endian: C0 08 42 01
+        packet = build_diy_scene_packet(21104832)
+        assert packet[3] == 0xC0
+        assert packet[4] == 0x08
+        assert packet[5] == 0x42
+        assert packet[6] == 0x01
+
+    def test_scene_id_small_value(self):
+        """Test scene ID encoding for a small value."""
+        # 256 = 0x00000100
+        # Little-endian: 00 01 00 00
+        packet = build_diy_scene_packet(256)
+        assert packet[3] == 0x00
+        assert packet[4] == 0x01
+        assert packet[5] == 0x00
+        assert packet[6] == 0x00
+
+    def test_scene_id_zero(self):
+        """Test scene ID encoding for zero."""
+        packet = build_diy_scene_packet(0)
+        assert packet[3] == 0x00
+        assert packet[4] == 0x00
+        assert packet[5] == 0x00
+        assert packet[6] == 0x00
+
+    def test_padding_after_scene_id(self):
+        """Test that bytes after scene ID are zero-padded."""
+        packet = build_diy_scene_packet(21104832)
+        for i in range(7, 19):
+            assert packet[i] == 0x00
+
+    def test_valid_checksum(self):
+        """Test packet has valid checksum."""
+        packet = build_diy_scene_packet(21104832)
+
+        # Recalculate checksum from first 19 bytes
+        expected_checksum = calculate_checksum(list(packet[:19]))
+        assert packet[19] == expected_checksum
+
+    def test_different_from_music_and_dreamview(self):
+        """Test DIY scene packet differs from music and DreamView packets."""
+        diy_packet = build_diy_scene_packet(1)
+        music_packet = build_music_mode_packet(True, 50)
+        dreamview_packet = build_dreamview_packet(True)
+
+        # Byte 2 should differ (0x0A vs 0x01 vs 0x04)
+        assert diy_packet[2] == 0x0A
+        assert music_packet[2] == 0x01
+        assert dreamview_packet[2] == 0x04
+
+    @pytest.mark.parametrize("scene_id", [1, 100, 21104832, 0xFFFFFFFF])
+    def test_various_scene_ids(self, scene_id: int):
+        """Test packet generation for various scene IDs."""
+        packet = build_diy_scene_packet(scene_id)
+
+        # Verify header
+        assert packet[0] == 0x33
+        assert packet[1] == 0x05
+        assert packet[2] == 0x0A
+
+        # Verify scene ID round-trips
+        id_bytes = int.from_bytes(packet[3:7], byteorder="little")
+        assert id_bytes == scene_id
+
+        # Verify checksum
+        expected_checksum = calculate_checksum(list(packet[:19]))
+        assert packet[19] == expected_checksum
+
+
+# ==============================================================================
+# Integration Tests for DIY Scene Packet
+# ==============================================================================
+
+
+class TestDiyScenePacketIntegration:
+    """Integration tests for DIY scene packet generation."""
+
+    def test_full_workflow(self):
+        """Test complete DIY scene packet generation workflow."""
+        scene_id = 21104832
+
+        # Build packet
+        packet = build_diy_scene_packet(scene_id)
+        assert len(packet) == 20
+
+        # Encode for transmission
+        encoded = encode_packet_base64(packet)
+        assert isinstance(encoded, str)
+
+        # Verify can be decoded back
+        decoded = base64.b64decode(encoded)
+        assert decoded == packet
+        assert decoded[2] == 0x0A  # DIY mode indicator
+
+        # Verify scene ID preserved
+        recovered_id = int.from_bytes(decoded[3:7], byteorder="little")
+        assert recovered_id == scene_id
