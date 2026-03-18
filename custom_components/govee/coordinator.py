@@ -497,6 +497,18 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 # DIY scenes also persist across power cycles
                 if existing_state.active_diy_scene:
                     state.active_diy_scene = existing_state.active_diy_scene
+
+                # Govee API returns colorRgb=0 when the device is in certain
+                # modes (scenes, color_temp, music, etc.).  This sentinel value
+                # is not meaningful — preserve the last known real color so the
+                # HA UI doesn't flash black after every poll cycle.
+                if (
+                    state.color is not None
+                    and state.color.as_packed_int == 0
+                    and existing_state.color is not None
+                    and existing_state.color.as_packed_int != 0
+                ):
+                    state.color = existing_state.color
                 # Preserve restore-target fields across API polls.
                 # These are "memory" fields — always preserved regardless of power state.
                 if existing_state.last_color is not None:
@@ -1071,6 +1083,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         color = state.color or state.last_color
         if color and color.as_packed_int == 0:
             color = state.last_color
+        # Final guard: never restore black even if last_color is somehow (0,0,0)
+        if color and color.as_packed_int == 0:
+            color = None
         color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
 
         success = False
@@ -1082,8 +1097,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             success = await self.async_control_device(
                 device_id, ColorTempCommand(kelvin=color_temp)
             )
+        elif device.supports_rgb:
+            # Prefer RGB white — Govee API reflects this value reliably
+            # (colorRgb=16777215), unlike color_temp which may return 0.
+            success = await self.async_control_device(
+                device_id, ColorCommand(color=RGBColor(255, 255, 255))
+            )
         elif device.supports_color_temp:
-            # Default to midpoint of device's color temp range
+            # Fallback for color-temp-only devices
             ct_range = device.color_temp_range
             if ct_range:
                 midpoint = (ct_range.min_kelvin + ct_range.max_kelvin) // 2
@@ -1091,10 +1112,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 midpoint = 4000
             success = await self.async_control_device(
                 device_id, ColorTempCommand(kelvin=midpoint)
-            )
-        elif device.supports_rgb:
-            success = await self.async_control_device(
-                device_id, ColorCommand(color=RGBColor(255, 255, 255))
             )
 
         if success:

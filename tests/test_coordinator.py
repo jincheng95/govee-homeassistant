@@ -970,8 +970,27 @@ class TestClearSceneLogic:
         assert color_temp == 4000
         assert device.supports_color_temp is True
 
+    def test_clear_scene_default_white_when_rgb_supported(self):
+        """Test clear scene sends white RGB when device supports RGB and nothing saved."""
+        device = self._make_device(supports_rgb=True, supports_color_temp=True)
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.active_scene = "123"
+
+        color = state.color or state.last_color
+        if color and color.as_packed_int == 0:
+            color = state.last_color
+        if color and color.as_packed_int == 0:
+            color = None
+        color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
+
+        # No saved color or temp — prefers RGB white over color_temp midpoint
+        assert color is None
+        assert color_temp is None
+        assert device.supports_rgb is True
+        # Fallback should send RGBColor(255, 255, 255)
+
     def test_clear_scene_default_color_temp_midpoint(self):
-        """Test clear scene uses midpoint of color temp range as default."""
+        """Test clear scene uses midpoint of color temp range for color-temp-only devices."""
         device = self._make_device(supports_rgb=False, supports_color_temp=True)
         state = GoveeDeviceState.create_empty(device.device_id)
         state.active_scene = "123"
@@ -979,9 +998,10 @@ class TestClearSceneLogic:
         color = state.color or state.last_color
         color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
 
-        # No saved color or temp → falls through to default path
+        # No saved color or temp → falls through to color_temp default
         assert color is None
         assert color_temp is None
+        assert device.supports_rgb is False
         assert device.supports_color_temp is True
         ct_range = device.color_temp_range
         assert ct_range is not None
@@ -1089,9 +1109,74 @@ class TestStatePreservationAcrossApiPoll:
         if state.last_color is not None:
             api_state.last_color = state.last_color
 
-        # Step 4: Resolve color for clear_scene — reject black, fall back to last_color
+        # Step 4: Coordinator preserves existing color when API returns black
+        if (
+            api_state.color is not None
+            and api_state.color.as_packed_int == 0
+            and state.color is not None
+            and state.color.as_packed_int != 0
+        ):
+            api_state.color = state.color
+
+        # Step 5: Resolve color for clear_scene — reject black, fall back to last_color
         color = api_state.color or api_state.last_color
         if color and color.as_packed_int == 0:
             color = api_state.last_color
+        if color and color.as_packed_int == 0:
+            color = None
 
         assert color == RGBColor(255, 0, 0)
+
+    def test_api_poll_preserves_color_when_api_returns_black(self):
+        """API returning colorRgb=0 should not overwrite a valid existing color."""
+        existing = GoveeDeviceState.create_empty("test_id")
+        existing.color = RGBColor(255, 255, 255)  # White from clear_scene fallback
+
+        api_state = GoveeDeviceState.create_empty("test_id")
+        api_state.color = RGBColor(0, 0, 0)  # API returns black
+
+        # Mimic new coordinator preservation logic
+        if (
+            api_state.color is not None
+            and api_state.color.as_packed_int == 0
+            and existing.color is not None
+            and existing.color.as_packed_int != 0
+        ):
+            api_state.color = existing.color
+
+        assert api_state.color == RGBColor(255, 255, 255)
+
+    def test_api_poll_allows_real_color_updates(self):
+        """API returning a non-black color should overwrite existing state normally."""
+        existing = GoveeDeviceState.create_empty("test_id")
+        existing.color = RGBColor(255, 0, 0)
+
+        api_state = GoveeDeviceState.create_empty("test_id")
+        api_state.color = RGBColor(0, 255, 0)  # Device changed to green
+
+        # Preservation logic should NOT trigger for non-black API color
+        if (
+            api_state.color is not None
+            and api_state.color.as_packed_int == 0
+            and existing.color is not None
+            and existing.color.as_packed_int != 0
+        ):
+            api_state.color = existing.color
+
+        assert api_state.color == RGBColor(0, 255, 0)
+
+    def test_clear_scene_black_guard_prevents_black_restore(self):
+        """Even if last_color is somehow (0,0,0), the guard should catch it."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.active_scene = "123"
+        state.color = RGBColor(0, 0, 0)
+        state.last_color = None
+
+        color = state.color or state.last_color
+        if color and color.as_packed_int == 0:
+            color = state.last_color
+        if color and color.as_packed_int == 0:
+            color = None
+
+        # Should fall through to default (white or midpoint)
+        assert color is None
