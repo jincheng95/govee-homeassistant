@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -74,6 +75,8 @@ GOVEE_LOGIN_URL = "https://app2.govee.com/account/rest/account/v1/login"
 GOVEE_IOT_KEY_URL = "https://app2.govee.com/app/v1/account/iot/key"
 GOVEE_DEVICE_LIST_URL = "https://app2.govee.com/device/rest/devices/v1/list"
 GOVEE_CLIENT_TYPE = "1"  # Android client type
+GOVEE_APP_VERSION = "6.5.02"
+GOVEE_IOT_VERSION = "0"
 
 
 def _extract_p12_credentials(
@@ -400,9 +403,15 @@ class GoveeAuthClient:
             "clientType": GOVEE_CLIENT_TYPE,
         }
 
+        timestamp_ms = str(int(time.time() * 1000))
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "appVersion": GOVEE_APP_VERSION,
+            "clientId": client_id,
+            "clientType": GOVEE_CLIENT_TYPE,
+            "iotVersion": GOVEE_IOT_VERSION,
+            "timestamp": timestamp_ms,
         }
 
         _LOGGER.debug("Attempting Govee account login")
