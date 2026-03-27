@@ -366,12 +366,7 @@ class GoveeDIYSceneSelectEntity(GoveeEntity, SelectEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available.
-
-        Requires MQTT connection for DIY scene control (no REST endpoint).
-        """
-        if not self.coordinator.mqtt_connected:
-            return False
+        """Return True if entity is available."""
         return super().available
 
     @property
