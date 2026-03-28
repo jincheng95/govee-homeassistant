@@ -16,6 +16,6 @@
     "cryptography>=41.0.0"
   ],
   "ssdp": [],
-  "version": "2026.3.5",
+  "version": "2026.3.6",
   "zeroconf": []
 }
