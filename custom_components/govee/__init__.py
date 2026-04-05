@@ -14,7 +14,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .api import GoveeApiClient, GoveeAuthError, GoveeIotCredentials
+from homeassistant.helpers import issue_registry as ir
+
+from .api import Govee2FARequiredError, GoveeApiClient, GoveeAuthError, GoveeIotCredentials
 from .api.auth import GoveeAuthClient
 from .const import (
     CONF_API_KEY,
@@ -126,15 +128,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
                         entry.entry_id
                     ] = iot_credentials
 
+            except Govee2FARequiredError:
+                _LOGGER.warning(
+                    "Govee account requires email verification (2FA). "
+                    "Use Reconfigure to re-enter credentials with a "
+                    "verification code. Continuing with polling-only mode."
+                )
+                if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
+                    hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}
+                hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED][entry.entry_id] = (
+                    "2FA verification required"
+                )
+                ir.async_create_issue(
+                    hass,
+                    DOMAIN,
+                    f"mqtt_2fa_required_{entry.entry_id}",
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key="mqtt_2fa_required",
+                    translation_placeholders={"entry_title": entry.title},
+                )
             except GoveeAuthError as err:
                 _LOGGER.warning("Failed to get MQTT credentials: %s", err)
-                # Record failure to prevent repeated attempts
                 if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
                     hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}
                 hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED][entry.entry_id] = str(err)
             except Exception as err:
                 _LOGGER.warning("MQTT setup failed: %s", err)
-                # Record failure to prevent repeated attempts
                 if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
                     hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}
                 hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED][entry.entry_id] = str(err)

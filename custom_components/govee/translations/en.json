@@ -30,6 +30,16 @@
           "api_key": "API Key"
         }
       },
+      "verification_code": {
+        "title": "Govee Verification Code",
+        "description": "A verification code has been sent to **{email}**. Enter the code below. The code expires in approximately 15 minutes.",
+        "data": {
+          "verification_code": "Verification code"
+        },
+        "data_description": {
+          "verification_code": "Check your email for a code from Govee"
+        }
+      },
       "reconfigure": {
         "title": "Reconfigure Govee",
         "description": "Update your credentials. Current email: {current_email}",
@@ -53,6 +63,8 @@
       "password_without_email": "Please enter both email and password, or leave both empty to skip.",
       "email_without_password": "Please enter both email and password, or leave both empty to skip.",
       "cannot_connect": "Failed to connect to Govee API. Check your internet connection.",
+      "invalid_verification_code": "Invalid or expired verification code. Please check your email and try again.",
+      "login_rejected": "Govee rejected the login request. This may indicate a temporary server issue — please try again later.",
       "unknown": "Unexpected error occurred"
     },
     "abort": {
@@ -195,6 +207,10 @@
     "mqtt_disconnected": {
       "title": "Govee MQTT disconnected",
       "description": "Real-time updates for {entry_title} are unavailable. Reason: {reason}. The integration will continue to work using polling. Check your Govee account credentials if this persists."
+    },
+    "mqtt_2fa_required": {
+      "title": "Govee account requires verification",
+      "description": "Your Govee account now requires email verification (2FA) to enable real-time MQTT updates for {entry_title}. Go to the integration page and select **Reconfigure** to re-enter your credentials with a verification code.\n\nThe integration will continue to work using polling until this is resolved."
     }
   }
 }

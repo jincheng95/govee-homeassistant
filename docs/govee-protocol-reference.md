@@ -698,7 +698,7 @@ This protocol provides real-time device state updates and is used by the Govee m
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  1. Login to app2.govee.com                                       │
-│     POST /account/rest/account/v1/login                          │
+│     POST /account/rest/account/v2/login                          │
 │     Body: { email, password, client }                            │
 │     Returns: { token, accountId, topic }                         │
 ├──────────────────────────────────────────────────────────────────┤
@@ -916,14 +916,20 @@ Used by the Govee mobile app for extended functionality not available in the pub
 | Parameter | Value |
 |-----------|-------|
 | **Base URL** | `https://app2.govee.com` |
-| **User-Agent** | `GoveeHome/5.6.01 (com.ihoment.GoVeeSensor; build:2; iOS 16.5.0) Alamofire/5.6.4` |
+| **User-Agent** | `GoveeHome/7.4.10 (com.ihoment.GoVeeSensor; build:2; iOS 18.4.0) Alamofire/5.10.2` |
 
 ### 4.2 Authentication
 
 **Login Request:**
 ```http
-POST /account/rest/account/v1/login
+POST /account/rest/account/v2/login
 Content-Type: application/json
+appVersion: 7.4.10
+clientId: {uuid}
+clientType: 1
+iotVersion: 0
+timestamp: {epoch_ms}
+User-Agent: GoveeHome/7.4.10 (com.ihoment.GoVeeSensor; build:2; iOS 18.4.0) Alamofire/5.10.2
 
 {
   "email": "user@example.com",
@@ -931,6 +937,54 @@ Content-Type: application/json
   "client": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
+
+> **Note:** The v1 endpoint (`/account/rest/account/v1/login`) is deprecated. Always use v2.
+
+### Two-Factor Authentication (2FA)
+
+Since March 2026, Govee requires email verification for some account logins. The login
+endpoint returns JSON `{"status": 454}` (HTTP 200) when a verification code is required.
+
+**Step 1 — Login returns 454 (2FA required):**
+```json
+{"status": 454, "message": ""}
+```
+
+**Step 2 — Request verification code:**
+```http
+POST /account/rest/account/v1/verification
+Content-Type: application/json
+appVersion: 7.4.10
+clientId: {same-uuid-as-login}
+clientType: 1
+iotVersion: 0
+timestamp: {epoch_ms}
+User-Agent: GoveeHome/7.4.10 (com.ihoment.GoVeeSensor; build:2; iOS 18.4.0) Alamofire/5.10.2
+
+{
+  "type": 8,
+  "email": "user@example.com"
+}
+```
+
+Govee sends a 4-digit code to the user's email. Code expires in ~15 minutes.
+
+**Step 3 — Retry login with code:**
+```http
+POST /account/rest/account/v2/login
+
+{
+  "email": "user@example.com",
+  "password": "password123",
+  "client": "550e8400-e29b-41d4-a716-446655440000",
+  "code": "1234"
+}
+```
+
+On success, returns the normal login response. On invalid/expired code, returns `{"status": 454}` again.
+
+> **Important:** The `clientId` header and `client` payload field must be the same UUID across
+> the initial login, verification request, and retry-with-code.
 
 **Login Response:**
 ```json
@@ -952,18 +1006,19 @@ Content-Type: application/json
 **Authenticated Request Headers:**
 ```http
 Authorization: Bearer {token}
-appVersion: 5.6.01
+appVersion: 7.4.10
 clientId: {uuid}
 clientType: 1
 iotVersion: 0
 timestamp: 1704812400000
+User-Agent: GoveeHome/7.4.10 (com.ihoment.GoVeeSensor; build:2; iOS 18.4.0) Alamofire/5.10.2
 ```
 
 ### 4.3 Key Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/account/rest/account/v1/login` | POST | User login |
+| `/account/rest/account/v2/login` | POST | User login |
 | `/account/rest/v1/first/refresh-tokens` | POST | Refresh auth tokens |
 | `/app/v1/account/iot/key` | GET | Get AWS IoT credentials |
 | `/device/rest/devices/v1/list` | POST | List devices with full details |
@@ -977,7 +1032,7 @@ timestamp: 1704812400000
 
 ```http
 GET /appsku/v1/light-effect-libraries?sku=H6072
-AppVersion: 5.6.01
+AppVersion: 7.3.30
 ```
 
 **Response:**

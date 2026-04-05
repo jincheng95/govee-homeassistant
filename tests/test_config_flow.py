@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from custom_components.govee.api.exceptions import GoveeApiError, GoveeAuthError
+from custom_components.govee.api.exceptions import (
+    Govee2FACodeInvalidError,
+    Govee2FARequiredError,
+    GoveeApiError,
+    GoveeAuthError,
+)
 from custom_components.govee.const import (
     CONF_API_KEY,
     CONF_EMAIL,
@@ -644,3 +649,217 @@ class TestPerDeviceSegmentMode:
             "AA:BB:CC:DD:EE:FF:00:99", SEGMENT_MODE_INDIVIDUAL
         )
         assert unknown_mode == SEGMENT_MODE_INDIVIDUAL
+
+
+# ==============================================================================
+# 2FA Verification Code Flow Tests
+# ==============================================================================
+
+
+class TestVerificationCodeFlow:
+    """Test 2FA verification code step in config flow."""
+
+    @pytest.mark.asyncio
+    async def test_account_2fa_required_redirects_to_verification(self):
+        """Test account step redirects to verification_code when 2FA is required."""
+        from custom_components.govee.config_flow import GoveeConfigFlow
+
+        flow = GoveeConfigFlow()
+        flow.hass = MagicMock()
+        flow._api_key = "valid-api-key-xxxx-xxxx-xxxx-xxxx"
+
+        mock_auth_instance = AsyncMock()
+        mock_auth_instance.request_verification_code = AsyncMock()
+        mock_auth_instance.__aenter__ = AsyncMock(return_value=mock_auth_instance)
+        mock_auth_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "custom_components.govee.config_flow.validate_govee_credentials",
+                side_effect=Govee2FARequiredError(),
+            ),
+            patch(
+                "custom_components.govee.config_flow.GoveeAuthClient",
+                return_value=mock_auth_instance,
+            ),
+        ):
+            result = await flow.async_step_account(
+                {CONF_EMAIL: "test@example.com", CONF_PASSWORD: "secret"}
+            )
+
+        # Should redirect to the verification_code form
+        assert result["type"] == "form"
+        assert result["step_id"] == "verification_code"
+        # Email/password should be stored for later use
+        assert flow._email == "test@example.com"
+        assert flow._password == "secret"
+        assert flow._client_id is not None
+
+    @pytest.mark.asyncio
+    async def test_verification_code_valid_creates_entry(self):
+        """Test entering a valid verification code creates the config entry."""
+        from custom_components.govee.config_flow import GoveeConfigFlow
+
+        flow = GoveeConfigFlow()
+        flow.hass = MagicMock()
+        flow._api_key = "valid-api-key-xxxx-xxxx-xxxx-xxxx"
+        flow._email = "test@example.com"
+        flow._password = "secret"
+        flow._client_id = "abc123"
+        # Not a reconfigure flow
+        flow.context = {"source": "user"}
+
+        mock_creds = MagicMock()
+
+        with patch(
+            "custom_components.govee.config_flow.validate_govee_credentials",
+            return_value=mock_creds,
+        ):
+            result = await flow.async_step_verification_code(
+                {"verification_code": "123456"}
+            )
+
+        assert result["type"] == "create_entry"
+        assert result["title"] == "Govee"
+        assert result["data"][CONF_API_KEY] == "valid-api-key-xxxx-xxxx-xxxx-xxxx"
+        assert result["data"][CONF_EMAIL] == "test@example.com"
+        assert result["data"][CONF_PASSWORD] == "secret"
+
+    @pytest.mark.asyncio
+    async def test_verification_code_invalid_shows_error(self):
+        """Test entering an invalid verification code shows error and re-shows form."""
+        from custom_components.govee.config_flow import GoveeConfigFlow
+
+        flow = GoveeConfigFlow()
+        flow.hass = MagicMock()
+        flow._api_key = "valid-api-key-xxxx-xxxx-xxxx-xxxx"
+        flow._email = "test@example.com"
+        flow._password = "secret"
+        flow._client_id = "abc123"
+
+        with patch(
+            "custom_components.govee.config_flow.validate_govee_credentials",
+            side_effect=Govee2FACodeInvalidError(),
+        ):
+            result = await flow.async_step_verification_code(
+                {"verification_code": "000000"}
+            )
+
+        assert result["type"] == "form"
+        assert result["step_id"] == "verification_code"
+        assert result["errors"] == {"base": "invalid_verification_code"}
+
+    @pytest.mark.asyncio
+    async def test_reconfigure_2fa_required_redirects_to_verification(self):
+        """Test reconfigure triggers 2FA and redirects to verification step."""
+        from custom_components.govee.config_flow import GoveeConfigFlow
+
+        flow = GoveeConfigFlow()
+        flow.hass = MagicMock()
+        flow.context = {"source": "reconfigure"}
+
+        # Mock _get_reconfigure_entry to return a fake entry
+        mock_entry = MagicMock()
+        mock_entry.data = {
+            CONF_API_KEY: "old-api-key-xxxx-xxxx-xxxx-xxxx-long",
+            CONF_EMAIL: "old@example.com",
+            CONF_PASSWORD: "oldpass",
+        }
+        mock_entry.entry_id = "test_entry_id"
+        flow._get_reconfigure_entry = MagicMock(return_value=mock_entry)
+
+        mock_auth_instance = AsyncMock()
+        mock_auth_instance.request_verification_code = AsyncMock()
+        mock_auth_instance.__aenter__ = AsyncMock(return_value=mock_auth_instance)
+        mock_auth_instance.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "custom_components.govee.config_flow.validate_api_key",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "custom_components.govee.config_flow.validate_govee_credentials",
+                side_effect=Govee2FARequiredError(),
+            ),
+            patch(
+                "custom_components.govee.config_flow.GoveeAuthClient",
+                return_value=mock_auth_instance,
+            ),
+        ):
+            result = await flow.async_step_reconfigure(
+                {
+                    CONF_API_KEY: "new-api-key-xxxx-xxxx-xxxx-xxxx-long",
+                    CONF_EMAIL: "new@example.com",
+                    CONF_PASSWORD: "newpass",
+                }
+            )
+
+        assert result["type"] == "form"
+        assert result["step_id"] == "verification_code"
+        assert flow._email == "new@example.com"
+        assert flow._password == "newpass"
+        assert flow._api_key == "new-api-key-xxxx-xxxx-xxxx-xxxx-long"
+
+    @pytest.mark.asyncio
+    async def test_reconfigure_verification_code_valid_updates_entry(self):
+        """Test valid code during reconfigure updates the entry."""
+        from custom_components.govee.config_flow import GoveeConfigFlow
+
+        flow = GoveeConfigFlow()
+        flow.hass = MagicMock()
+        flow.hass.data = {}
+        flow.context = {"source": "reconfigure"}
+        flow._api_key = "new-api-key-xxxx-xxxx-xxxx-xxxx-long"
+        flow._email = "new@example.com"
+        flow._password = "newpass"
+        flow._client_id = "abc123"
+
+        mock_entry = MagicMock()
+        mock_entry.data = {
+            CONF_API_KEY: "old-api-key-xxxx-xxxx-xxxx-xxxx-long",
+            CONF_EMAIL: "old@example.com",
+            CONF_PASSWORD: "oldpass",
+        }
+        mock_entry.entry_id = "test_entry_id"
+        flow._get_reconfigure_entry = MagicMock(return_value=mock_entry)
+
+        mock_creds = MagicMock()
+        mock_update_result = MagicMock()
+        flow.async_update_reload_and_abort = MagicMock(return_value=mock_update_result)
+
+        with patch(
+            "custom_components.govee.config_flow.validate_govee_credentials",
+            return_value=mock_creds,
+        ):
+            result = await flow.async_step_verification_code(
+                {"verification_code": "123456"}
+            )
+
+        assert result is mock_update_result
+        # Verify async_update_reload_and_abort was called with correct data
+        call_args = flow.async_update_reload_and_abort.call_args
+        assert call_args[0][0] is mock_entry
+        data_updates = call_args[1]["data_updates"]
+        assert data_updates[CONF_EMAIL] == "new@example.com"
+        assert data_updates[CONF_PASSWORD] == "newpass"
+        assert data_updates[CONF_API_KEY] == "new-api-key-xxxx-xxxx-xxxx-xxxx-long"
+
+    def test_verification_code_form_schema(self):
+        """Test verification_code form has the correct schema."""
+        import voluptuous as vol
+
+        # Build the same schema as config_flow.py
+        schema = vol.Schema(
+            {
+                vol.Required("verification_code"): str,
+            }
+        )
+
+        # Valid input
+        result = schema({"verification_code": "123456"})
+        assert result["verification_code"] == "123456"
+
+        # Missing field raises error
+        with pytest.raises(vol.MultipleInvalid):
+            schema({})

@@ -9,6 +9,7 @@ Reference: homebridge-govee, govee2mqtt implementations
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import time
 import uuid
@@ -23,7 +24,13 @@ from cryptography.hazmat.primitives.serialization import (
     pkcs12,
 )
 
-from .exceptions import GoveeApiError, GoveeAuthError
+from .exceptions import (
+    Govee2FACodeInvalidError,
+    Govee2FARequiredError,
+    GoveeApiError,
+    GoveeAuthError,
+    GoveeLoginRejectedError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,12 +78,19 @@ def _sanitize_response_for_logging(data: Any) -> Any:
 
 
 # Govee Account API endpoints
-GOVEE_LOGIN_URL = "https://app2.govee.com/account/rest/account/v1/login"
+GOVEE_LOGIN_URL = "https://app2.govee.com/account/rest/account/v2/login"
+GOVEE_VERIFICATION_URL = (
+    "https://app2.govee.com/account/rest/account/v1/verification"
+)
 GOVEE_IOT_KEY_URL = "https://app2.govee.com/app/v1/account/iot/key"
 GOVEE_DEVICE_LIST_URL = "https://app2.govee.com/device/rest/devices/v1/list"
-GOVEE_CLIENT_TYPE = "1"  # Android client type
-GOVEE_APP_VERSION = "6.5.02"
+GOVEE_CLIENT_TYPE = "1"
+GOVEE_APP_VERSION = "7.4.10"
 GOVEE_IOT_VERSION = "0"
+GOVEE_USER_AGENT = (
+    f"GoveeHome/{GOVEE_APP_VERSION} "
+    "(com.ihoment.GoVeeSensor; build:2; iOS 18.4.0) Alamofire/5.10.2"
+)
 
 
 def _extract_p12_credentials(
@@ -212,6 +226,22 @@ class GoveeAuthClient:
             await self._session.close()
             self._session = None
 
+    @staticmethod
+    def _build_govee_headers(client_id: str | None = None) -> dict[str, str]:
+        """Build standard Govee app headers for API requests."""
+        if client_id is None:
+            client_id = uuid.uuid4().hex
+        return {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "appVersion": GOVEE_APP_VERSION,
+            "clientId": client_id,
+            "clientType": GOVEE_CLIENT_TYPE,
+            "iotVersion": GOVEE_IOT_VERSION,
+            "timestamp": str(int(time.time() * 1000)),
+            "User-Agent": GOVEE_USER_AGENT,
+        }
+
     async def get_iot_key(self, token: str) -> dict[str, Any]:
         """Fetch IoT credentials from Govee API.
 
@@ -228,11 +258,8 @@ class GoveeAuthClient:
             self._session = aiohttp.ClientSession()
             self._owns_session = True
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+        headers = self._build_govee_headers()
+        headers["Authorization"] = f"Bearer {token}"
 
         _LOGGER.debug("Fetching IoT credentials from Govee API")
 
@@ -290,11 +317,8 @@ class GoveeAuthClient:
             self._session = aiohttp.ClientSession()
             self._owns_session = True
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+        headers = self._build_govee_headers()
+        headers["Authorization"] = f"Bearer {token}"
 
         try:
             async with self._session.post(
@@ -324,8 +348,6 @@ class GoveeAuthClient:
                     device_ext = device.get("deviceExt", {})
                     if isinstance(device_ext, str):
                         try:
-                            import json
-
                             device_ext = json.loads(device_ext)
                         except (json.JSONDecodeError, TypeError):
                             device_ext = {}
@@ -334,8 +356,6 @@ class GoveeAuthClient:
                     device_settings = device_ext.get("deviceSettings", {})
                     if isinstance(device_settings, str):
                         try:
-                            import json
-
                             device_settings = json.loads(device_settings)
                         except (json.JSONDecodeError, TypeError):
                             device_settings = {}
@@ -369,11 +389,53 @@ class GoveeAuthClient:
                 f"Connection error fetching device topics: {err}"
             ) from err
 
+    async def request_verification_code(
+        self,
+        email: str,
+        client_id: str,
+    ) -> None:
+        """Request Govee to send a 2FA verification code to the user's email.
+
+        Args:
+            email: Govee account email.
+            client_id: Client ID to use in headers (must match login request).
+
+        Raises:
+            GoveeApiError: If the request fails.
+        """
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+            self._owns_session = True
+
+        headers = self._build_govee_headers(client_id)
+        payload = {"type": 8, "email": email}
+
+        _LOGGER.debug("Requesting Govee verification code for %s", email)
+
+        try:
+            async with self._session.post(
+                GOVEE_VERIFICATION_URL,
+                json=payload,
+                headers=headers,
+            ) as response:
+                if response.status != 200:
+                    raise GoveeApiError(
+                        f"Failed to request verification code: HTTP {response.status}"
+                    )
+                _LOGGER.debug(
+                    "Verification code requested for %s", email
+                )
+        except aiohttp.ClientError as err:
+            raise GoveeApiError(
+                f"Connection error requesting verification code: {err}"
+            ) from err
+
     async def login(
         self,
         email: str,
         password: str,
         client_id: str | None = None,
+        code: str | None = None,
     ) -> GoveeIotCredentials:
         """Login to Govee account to obtain AWS IoT credentials.
 
@@ -381,11 +443,14 @@ class GoveeAuthClient:
             email: Govee account email.
             password: Govee account password.
             client_id: Optional client ID (32-char UUID). Generated if not provided.
+            code: Optional 2FA verification code from email.
 
         Returns:
             GoveeIotCredentials with AWS IoT connection details.
 
         Raises:
+            Govee2FARequiredError: 2FA code needed (status 454, no code provided).
+            Govee2FACodeInvalidError: Provided code was invalid (status 454, code provided).
             GoveeAuthError: Invalid credentials or login failed.
             GoveeApiError: API communication error.
         """
@@ -396,23 +461,16 @@ class GoveeAuthClient:
         if client_id is None:
             client_id = uuid.uuid4().hex
 
-        payload = {
+        payload: dict[str, Any] = {
             "email": email,
             "password": password,
             "client": client_id,
             "clientType": GOVEE_CLIENT_TYPE,
         }
+        if code:
+            payload["code"] = code
 
-        timestamp_ms = str(int(time.time() * 1000))
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "appVersion": GOVEE_APP_VERSION,
-            "clientId": client_id,
-            "clientType": GOVEE_CLIENT_TYPE,
-            "iotVersion": GOVEE_IOT_VERSION,
-            "timestamp": timestamp_ms,
-        }
+        headers = self._build_govee_headers(client_id)
 
         _LOGGER.debug("Attempting Govee account login")
 
@@ -448,8 +506,8 @@ class GoveeAuthClient:
                             else data
                         ),
                     )
-                    raise GoveeApiError(
-                        f"Login failed: {message}", code=response.status
+                    raise GoveeLoginRejectedError(
+                        f"Login rejected (HTTP {response.status}): {message}"
                     )
 
                 # Check response status code within JSON
@@ -466,9 +524,15 @@ class GoveeAuthClient:
                             else data
                         ),
                     )
+                    if status == 454:
+                        if code:
+                            raise Govee2FACodeInvalidError()
+                        raise Govee2FARequiredError()
                     if status == 401 or "password" in message.lower():
                         raise GoveeAuthError(message, code=status)
-                    raise GoveeApiError(f"Login failed: {message}", code=status)
+                    raise GoveeLoginRejectedError(
+                        f"Login rejected (status {status}): {message}"
+                    )
 
                 client_data = data.get("client", {})
 
@@ -538,6 +602,8 @@ class GoveeAuthClient:
 async def validate_govee_credentials(
     email: str,
     password: str,
+    code: str | None = None,
+    client_id: str | None = None,
     session: aiohttp.ClientSession | None = None,
 ) -> GoveeIotCredentials:
     """Validate Govee account credentials and return IoT credentials.
@@ -547,14 +613,18 @@ async def validate_govee_credentials(
     Args:
         email: Govee account email.
         password: Govee account password.
+        code: Optional 2FA verification code.
+        client_id: Optional client ID (reuse from code request).
         session: Optional aiohttp session.
 
     Returns:
         GoveeIotCredentials if valid.
 
     Raises:
+        Govee2FARequiredError: 2FA verification code needed.
+        Govee2FACodeInvalidError: Provided code was invalid.
         GoveeAuthError: Invalid credentials.
         GoveeApiError: API communication error.
     """
     async with GoveeAuthClient(session=session) as client:
-        return await client.login(email, password)
+        return await client.login(email, password, client_id=client_id, code=code)

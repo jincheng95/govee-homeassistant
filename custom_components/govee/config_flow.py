@@ -2,11 +2,13 @@
 
 Fresh version 1 - no migration complexity.
 Supports API key authentication with optional account login for MQTT.
+Handles Govee 2FA (email verification code) when required.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 import voluptuous as vol
@@ -20,9 +22,13 @@ from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 
 from .api import (
+    Govee2FACodeInvalidError,
+    Govee2FARequiredError,
     GoveeApiError,
+    GoveeAuthClient,
     GoveeAuthError,
     GoveeIotCredentials,
+    GoveeLoginRejectedError,
     validate_govee_credentials,
 )
 from .api.client import validate_api_key
@@ -91,6 +97,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
         self._api_key: str | None = None
         self._email: str | None = None
         self._password: str | None = None
+        self._client_id: str | None = None
         self._iot_credentials: GoveeIotCredentials | None = None
 
     @staticmethod
@@ -176,15 +183,37 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "password_without_email"
             else:
                 # Both provided - validate with API
+                # Generate client_id upfront so the same ID is used for
+                # the initial login attempt and the verification code request
+                self._client_id = uuid.uuid4().hex
                 try:
                     self._iot_credentials = await validate_govee_credentials(
-                        email, password
+                        email, password, client_id=self._client_id,
                     )
                     self._email = email
                     self._password = password
 
                     return self._create_entry()
 
+                except Govee2FARequiredError:
+                    _LOGGER.info(
+                        "Govee 2FA required for '%s' — requesting verification code",
+                        email,
+                    )
+                    self._email = email
+                    self._password = password
+                    try:
+                        async with GoveeAuthClient() as client:
+                            await client.request_verification_code(
+                                email, self._client_id
+                            )
+                    except GoveeApiError as err:
+                        _LOGGER.warning(
+                            "Failed to request verification code: %s", err
+                        )
+                        errors["base"] = "cannot_connect"
+                    else:
+                        return await self.async_step_verification_code()
                 except GoveeAuthError as err:
                     _LOGGER.warning(
                         "Govee account validation failed for '%s': %s (code=%s)",
@@ -193,6 +222,9 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                         getattr(err, "code", None),
                     )
                     errors["base"] = "invalid_account"
+                except GoveeLoginRejectedError as err:
+                    _LOGGER.warning("Govee login rejected: %s", err)
+                    errors["base"] = "login_rejected"
                 except GoveeApiError as err:
                     _LOGGER.error("Account validation failed: %s", err)
                     errors["base"] = "cannot_connect"
@@ -211,10 +243,73 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_verification_code(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Handle 2FA verification code entry.
+
+        Shown when Govee requires a verification code sent to the user's email.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            code = user_input["verification_code"].strip()
+            try:
+                self._iot_credentials = await validate_govee_credentials(
+                    self._email,
+                    self._password,
+                    code=code,
+                    client_id=self._client_id,
+                )
+                # Route based on flow source
+                if self.source == "reconfigure":
+                    reconfigure_entry = self._get_reconfigure_entry()
+                    new_data: dict[str, Any] = {
+                        **reconfigure_entry.data,
+                        CONF_EMAIL: self._email,
+                        CONF_PASSWORD: self._password,
+                    }
+                    if self._api_key:
+                        new_data[CONF_API_KEY] = self._api_key
+                    self._clear_mqtt_cache(reconfigure_entry.entry_id)
+                    return self.async_update_reload_and_abort(
+                        reconfigure_entry,
+                        data_updates=new_data,
+                    )
+                return self._create_entry()
+
+            except Govee2FACodeInvalidError:
+                _LOGGER.warning("Govee 2FA code invalid or expired")
+                errors["base"] = "invalid_verification_code"
+            except GoveeAuthError as err:
+                _LOGGER.warning("Govee auth failed during 2FA: %s", err)
+                errors["base"] = "invalid_account"
+            except GoveeApiError as err:
+                _LOGGER.warning("API error during 2FA verification: %s", err)
+                errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected error during 2FA verification")
+                errors["base"] = "unknown"
+
+        return self.async_show_form(
+            step_id="verification_code",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("verification_code"): str,
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "email": self._email or "",
+            },
+        )
+
     def _clear_mqtt_cache(self, entry_id: str) -> None:
         """Clear cached MQTT credentials and login failure for an entry.
 
         This allows a fresh login attempt after reconfigure.
+        Also dismisses any 2FA repairs issue for this entry.
         """
         if DOMAIN not in self.hass.data:
             return
@@ -226,6 +321,11 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
         # Clear login failure flag
         if KEY_IOT_LOGIN_FAILED in self.hass.data[DOMAIN]:
             self.hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED].pop(entry_id, None)
+
+        # Dismiss 2FA repairs issue if it exists
+        from homeassistant.helpers import issue_registry as ir
+
+        ir.async_delete_issue(self.hass, DOMAIN, f"mqtt_2fa_required_{entry_id}")
 
         _LOGGER.debug("Cleared MQTT cache for entry %s", entry_id)
 
@@ -349,10 +449,35 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
 
                     if email and password:
                         # Validate account credentials if provided
+                        # Generate client_id upfront for consistent 2FA flow
+                        self._client_id = uuid.uuid4().hex
                         try:
-                            await validate_govee_credentials(email, password)
+                            await validate_govee_credentials(
+                                email, password, client_id=self._client_id,
+                            )
                             new_data[CONF_EMAIL] = email
                             new_data[CONF_PASSWORD] = password
+                        except Govee2FARequiredError:
+                            _LOGGER.info(
+                                "Govee 2FA required during reconfigure for '%s'",
+                                email,
+                            )
+                            self._email = email
+                            self._password = password
+                            self._api_key = cleaned_key
+                            try:
+                                async with GoveeAuthClient() as client:
+                                    await client.request_verification_code(
+                                        email, self._client_id
+                                    )
+                            except GoveeApiError as err:
+                                _LOGGER.warning(
+                                    "Failed to request verification code: %s",
+                                    err,
+                                )
+                                errors["base"] = "cannot_connect"
+                            else:
+                                return await self.async_step_verification_code()
                         except GoveeAuthError as err:
                             _LOGGER.warning(
                                 "Govee account validation failed for '%s' during reconfigure: %s (code=%s)",
@@ -361,7 +486,11 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                                 getattr(err, "code", None),
                             )
                             errors["base"] = "invalid_account"
-                            # Continue to show form with error
+                        except GoveeLoginRejectedError as err:
+                            _LOGGER.warning(
+                                "Govee login rejected during reconfigure: %s", err
+                            )
+                            errors["base"] = "login_rejected"
                         except GoveeApiError as err:
                             _LOGGER.warning(
                                 "Account validation failed during reconfigure: %s", err
