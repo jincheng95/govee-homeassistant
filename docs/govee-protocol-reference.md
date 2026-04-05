@@ -1671,6 +1671,59 @@ Key observations:
 - Music mode has 11 options (Rhythm, Spectrum, Rolling, Separation, Hopping, PianoKeys, Fountain, DayAndNight, Sprouting, Shiny, Energic) with sensitivity (0-100) and optional autoColor/rgb fields
 - 236 scenes available via `/device/scenes` endpoint
 
+#### H6159 — WiFi RGB Light (`devices.types.light`)
+
+Basic RGB light without segments. Note: color temp range 2000-9000K (wider than some models).
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.range", "instance": "brightness", "range": {"min": 1, "max": 100}},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "range": {"min": 2000, "max": 9000}},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+    {"type": "devices.capabilities.music_setting", "instance": "musicMode", "modes": ["Rhythm", "Sprouting", "Shiny"]},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"}
+  ]
+}
+```
+
+Key observations:
+- No segments — basic RGB light
+- No `gradientToggle` or `dreamViewToggle`
+- Music mode has 3 options (vs 11 on H6099)
+- Music mode includes `autoColor` and `rgb` optional fields
+
+#### H619C / H6198 / H610A — RGBIC LED Strip (`devices.types.light`)
+
+RGBIC LED strips with 15 segments and DreamView toggle. From issue #28 diagnostics.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.toggle", "instance": "gradientToggle"},
+    {"type": "devices.capabilities.range", "instance": "brightness", "range": {"min": 1, "max": 100}},
+    {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "segments": 15},
+    {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "segments": 15},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "range": {"min": 2000, "max": 9000}},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+    {"type": "devices.capabilities.music_setting", "instance": "musicMode", "modes": ["Rhythm", "Sprouting", "Shiny", "Spectrum", "Energic"]},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"}
+  ]
+}
+```
+
+Key observations:
+- H6198 also has `dreamViewToggle` (hardware HDMI passthrough)
+- H619C and H610A have `gradientToggle` but NOT `dreamViewToggle`
+- All have 15 segments (elementRange 0-14)
+- Music mode has 5 options (more than H6159, fewer than H6099)
+- `snapshot` capability present — user-saved snapshot scenes
+
 #### H7101 — Smart Tower Fan (`devices.types.fan`)
 
 8-speed tower fan with `work_mode` STRUCT format. Sub-options have **no names** (just `{"value": N}`).
@@ -1938,9 +1991,16 @@ All connections use Perfect Forward Secrecy (PFS), preventing decryption with pr
 
 ### Community Projects
 - [wez/govee2mqtt](https://github.com/wez/govee2mqtt) - Rust, AWS IoT + LAN
-- [homebridge-govee](https://github.com/bwp91/homebridge-govee) - Homebridge plugin
+- [homebridge-govee](https://github.com/homebridge-plugins/homebridge-govee) - Homebridge plugin (first to implement 2FA)
 - [egold555/Govee-Reverse-Engineering](https://github.com/egold555/Govee-Reverse-Engineering) - BLE docs
 - [BeauJBurroughs/Govee-H6127-Reverse-Engineering](https://github.com/BeauJBurroughs/Govee-H6127-Reverse-Engineering)
+
+### 2FA Authentication References
+- [homebridge-govee 2FA commit](https://github.com/homebridge-plugins/homebridge-govee/commit/25f9e52b32c80e4c22d561d43e5f16753f91f71f) - Reference implementation
+- [homebridge-govee 2FA wiki](https://github.com/homebridge-plugins/homebridge-govee/wiki/AWS-Control#two-factor-authentication-2fa) - Flow explanation
+- [govee2mqtt #628](https://github.com/wez/govee2mqtt/issues/628) - "Service not enabled" after auth changes
+- [govee2mqtt #637](https://github.com/wez/govee2mqtt/issues/637) - "App version too low" crash
+- [homebridge-govee #1253](https://github.com/homebridge-plugins/homebridge-govee/issues/1253) - Accessories not displaying
 
 ### Reverse Engineering
 - [coding.kiwi - Reverse Engineering Govee](https://blog.coding.kiwi/reverse-engineering-govee-smart-lights/)

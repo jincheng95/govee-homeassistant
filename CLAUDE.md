@@ -65,7 +65,7 @@ custom_components/govee/
 │   └── state.py         # IStateProvider, IStateObserver
 └── api/                 # API layer
     ├── client.py        # GoveeApiClient (REST)
-    ├── auth.py          # GoveeAuthClient (account login)
+    ├── auth.py          # GoveeAuthClient (account login + 2FA)
     ├── mqtt.py          # GoveeAwsIotClient (AWS IoT MQTT)
     └── exceptions.py    # Exception hierarchy
 ```
@@ -110,21 +110,32 @@ REST client with:
 - Parallel state fetching
 - Command serialization
 
+### GoveeAuthClient
+Account login for MQTT credentials:
+- 2FA email verification flow (since March 2026)
+- Login: `/account/rest/account/v2/login` -> status 454 = 2FA required
+- Verification: `/account/rest/account/v1/verification` with `{"type": 8, "email": "..."}`
+- Retry login with `"code"` field -> returns token + IoT certs
+- App version must be `7.4.10` with matching User-Agent
+- IoT credentials cached in `hass.data` to survive entry reloads
+
 ### GoveeAwsIotClient
 MQTT client for real-time updates:
 - AWS IoT Core connection
-- Certificate-based auth
+- Certificate-based auth (P12/PEM from login)
 - State push notifications
+- Only started when IoT credentials available (email/password configured + 2FA verified)
 
 ## Testing
 
 | File | Tests | Focus |
 |------|-------|-------|
 | test_models.py | 50 | RGBColor, Device, State, Commands |
-| test_config_flow.py | 41 | Config, options, reauth, reconfigure |
+| test_config_flow.py | 55 | Config, options, reauth, reconfigure, 2FA |
 | test_coordinator.py | 32 | Observer pattern, commands, state |
 | test_api_client.py | 28 | Exceptions, client, rate limits |
-| **Total** | **151** | |
+| test_auth.py | 54 | Login, 2FA, headers, IoT key, P12 |
+| **Total** | **535+** | |
 
 ## Code Style
 
@@ -163,6 +174,37 @@ MQTT client for real-time updates:
 - Coordinator manages all state - entities are observers
 - MQTT is optional - polling is the fallback
 - Rate limits: 100/min, 10,000/day
+
+## 2FA Authentication Flow
+
+Govee requires email verification (2FA) for account login since March 2026.
+
+### Flow
+1. `login(email, password)` -> JSON `{"status": 454}` = 2FA required
+2. `request_verification_code(email)` -> Govee sends 4-digit code to email
+3. `login(email, password, code="1234")` -> success, returns token + IoT certs
+
+### Config Flow Integration
+- `async_step_account()` catches `Govee2FARequiredError` -> triggers code send -> `async_step_verification_code()`
+- Same flow in `async_step_reconfigure()`
+- `client_id` (UUID hex) must be generated BEFORE the first login and reused across all steps
+- IoT credentials from config flow are pre-cached in `hass.data[DOMAIN][KEY_IOT_CREDENTIALS]` so the entry reload finds them (avoids re-login hitting 2FA again)
+
+### Startup Behavior
+- `Govee2FARequiredError` at startup -> log warning, record failure, create repairs issue, continue polling-only
+- Cannot prompt for code at startup — only config/reconfigure flows are interactive
+
+### Key Constants
+- `GOVEE_APP_VERSION = "7.4.10"`
+- `GOVEE_VERIFICATION_URL = "https://app2.govee.com/account/rest/account/v1/verification"`
+- Verification payload: `{"type": 8, "email": "..."}`
+- Code expires in ~15 minutes
+
+### Exception Hierarchy for Auth
+- `Govee2FARequiredError` — status 454, no code provided
+- `Govee2FACodeInvalidError` — status 454, code provided but wrong/expired
+- `GoveeAuthError` — status 401, bad credentials
+- `GoveeLoginRejectedError` — other non-200 status codes
 
 ## Govee API v2.0 Patterns
 
