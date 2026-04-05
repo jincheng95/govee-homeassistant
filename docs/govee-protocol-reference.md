@@ -1572,8 +1572,9 @@ These states are NOT returned by the API:
 | `devices.capabilities.temperature_setting` | Temperature control (heaters) |
 | `devices.capabilities.work_mode` | Appliance modes (fans, heaters, purifiers) |
 | `devices.capabilities.mode` | Simple mode selection (HDMI source, purifier mode) |
+| `devices.capabilities.property` | Read-only sensor/status data (thermometers, purifiers, CO2 monitors) |
 | `devices.capabilities.online` | Online status |
-| `devices.capabilities.event` | Real-time events |
+| `devices.capabilities.event` | Real-time events (water full, ice full, lack water) |
 
 ### 8.2 Instance Names
 
@@ -1589,7 +1590,9 @@ These states are NOT returned by the API:
 | movie_setting | `movieMode` |
 | temperature_setting | `targetTemperature` |
 | work_mode | `workMode` |
-| mode | `hdmiSource`, `purifierMode` |
+| mode | `hdmiSource`, `purifierMode`, `nightlightScene` |
+| property | `sensorTemperature`, `sensorHumidity`, `carbonDioxideConcentration`, `filterLifetime`, `airQuality` |
+| event | `lackWaterEvent`, `iceFullEvent`, `waterFullEvent` |
 
 ### 8.3 Device Type Detection
 
@@ -1634,13 +1637,16 @@ def detect_capabilities(device_response):
 
 | Type | Examples |
 |------|----------|
-| `devices.types.light` | LED strips (H619C, H6198), bulbs (H6006, H6159), bars, TV backlights (H6099, H66A0), sync boxes (H6604) |
+| `devices.types.light` | LED strips (H619C, H6198, H61A5), bulbs (H6006, H6159), bars, TV backlights (H6099, H66A0), sync boxes (H6604) |
 | `devices.types.socket` | Smart plugs |
-| `devices.types.air_purifier` | Air purifiers (H7127, H7123) |
-| `devices.types.humidifier` | Humidifiers |
+| `devices.types.air_purifier` | Air purifiers (H7120, H7122, H7123, H7124, H7127) |
+| `devices.types.humidifier` | Humidifiers (H7140) |
+| `devices.types.dehumidifier` | Dehumidifiers (H7151) |
 | `devices.types.heater` | Space heaters (H7130, H7131, H721C) |
-| `devices.types.fan` | Tower fans (H7101) |
+| `devices.types.fan` | Tower fans (H7101, H7107) |
+| `devices.types.ice_maker` | Ice makers (H7172) |
 | `devices.types.thermometer` | Temp/humidity sensors (H5179) |
+| `devices.types.air_quality_monitor` | CO2/air quality monitors (H5140) |
 | `devices.types.sensor` | Motion, presence sensors |
 
 ### 8.5 Known Device Capability Profiles
@@ -1922,7 +1928,195 @@ Key observations:
 - Work mode values: Low→`workMode=1,modeValue=1`, Medium→`1,2`, High→`1,3`, Fan→`9,0`, Auto→`3,0`
 - See also issue #29: H721C/H713C heaters use the same pattern with `autoHold` preference
 
-### 8.6 DreamView vs Camera-based Video Sync
+#### H7107 — Tower Fan (`devices.types.fan`)
+
+12-speed tower fan with oscillation toggle. From govee2mqtt #438.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.toggle", "instance": "oscillationToggle"},
+    {"type": "devices.capabilities.work_mode", "instance": "workMode",
+     "parameters": {"dataType": "STRUCT", "fields": [
+       {"fieldName": "workMode", "options": [
+         {"name": "FanSpeed", "value": 1}, {"name": "Auto", "value": 2},
+         {"name": "Sleep", "value": 3}, {"name": "Nature", "value": 4},
+         {"name": "Custom", "value": 5}
+       ]},
+       {"fieldName": "modeValue", "note": "FanSpeed/Sleep/Nature support 1-12 levels"}
+     ]}}
+  ]
+}
+```
+
+Key observations:
+- 12 speed levels (vs 8 on H7101) — fan speed count varies by model
+- Different work mode numbering than H7101 (Auto=2 vs Auto=3)
+- `oscillationToggle` for fan oscillation control
+
+#### H7120/H7122/H7123/H7124 — Air Purifiers (`devices.types.air_purifier`)
+
+Air purifiers with filter tracking and optional nightlight. From govee2mqtt #297.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.work_mode", "instance": "workMode",
+     "parameters": {"dataType": "STRUCT", "fields": [
+       {"fieldName": "workMode", "options": [
+         {"name": "gearMode", "value": 1}, {"name": "Custom", "value": 2},
+         {"name": "Auto", "value": 3}, {"name": "Sleep", "value": 5},
+         {"name": "Turbo", "value": 7}
+       ]},
+       {"fieldName": "modeValue", "note": "gearMode: Low(1)/Medium(2)/High(3)"}
+     ]}},
+    {"type": "devices.capabilities.property", "instance": "filterLifetime"},
+    {"type": "devices.capabilities.property", "instance": "airQuality"}
+  ]
+}
+```
+
+Key observations:
+- **`property`** is a read-only capability type for sensor/status data (not controllable)
+- H7124 has Turbo mode (value 7) — unique to larger purifiers
+- H7120/H7124 add nightlight sub-pattern: `nightlightToggle` + `brightness` + `colorRgb` + `nightlightScene`
+- H7122 Custom mode accepts range 1-13 (unusual)
+- `filterLifetime` tracks filter replacement status
+- `airQuality` provides air quality sensor readings
+
+#### H7151 — Smart Dehumidifier Max (`devices.types.dehumidifier`)
+
+Dehumidifier with target humidity and water tank events. From govee2mqtt #145.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.range", "instance": "humidity",
+     "parameters": {"dataType": "INTEGER", "range": {"min": 30, "max": 80, "precision": 1}}},
+    {"type": "devices.capabilities.work_mode", "instance": "workMode",
+     "parameters": {"dataType": "STRUCT", "fields": [
+       {"fieldName": "workMode", "options": [
+         {"name": "gearMode", "value": 1}, {"name": "Auto", "value": 3},
+         {"name": "Dryer", "value": 8}
+       ]},
+       {"fieldName": "modeValue", "note": "gearMode: Low/Medium/High"}
+     ]}},
+    {"type": "devices.capabilities.event", "instance": "waterFullEvent",
+     "note": "alarmType 58: Water bucket full or removed"}
+  ]
+}
+```
+
+Key observations:
+- `humidity` range instance for target humidity (30-80%)
+- Dryer mode (value 8) — clothes drying function
+- `event` capability for water tank alerts (alarmType 58)
+
+#### H7140 — Smart Humidifier Lite (`devices.types.humidifier`)
+
+Humidifier with 9-speed mist and full nightlight. From goveelife #6.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.work_mode", "instance": "workMode",
+     "parameters": {"dataType": "STRUCT", "fields": [
+       {"fieldName": "workMode", "options": [
+         {"name": "Manual", "value": 1}, {"name": "Custom", "value": 2},
+         {"name": "Auto", "value": 3}
+       ]},
+       {"fieldName": "modeValue", "note": "Manual: 9 levels (1-9)"}
+     ]}},
+    {"type": "devices.capabilities.range", "instance": "humidity", "range": {"min": 40, "max": 80}},
+    {"type": "devices.capabilities.toggle", "instance": "nightlightToggle"},
+    {"type": "devices.capabilities.range", "instance": "brightness"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.mode", "instance": "nightlightScene",
+     "parameters": {"options": ["Forest", "Ocean", "Wetland", "Leisurely", "Sleep"]}},
+    {"type": "devices.capabilities.event", "instance": "lackWaterEvent"}
+  ]
+}
+```
+
+Key observations:
+- Full nightlight sub-pattern: toggle + brightness + color + scene selector
+- `nightlightScene` uses `mode` capability type (not `dynamic_scene`)
+- 9-speed manual mist control
+- `lackWaterEvent` for low water alerts
+
+#### H7172 — Smart Ice Maker (`devices.types.ice_maker`)
+
+Ice maker with ice size selection and status events. From govee2mqtt #343.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.work_mode", "instance": "workMode",
+     "parameters": {"dataType": "STRUCT", "fields": [
+       {"fieldName": "workMode", "options": [
+         {"name": "LargeIce", "value": 1}, {"name": "MediumIce", "value": 2},
+         {"name": "SmallIce", "value": 3}
+       ]}
+     ]}},
+    {"type": "devices.capabilities.event", "instance": "lackWaterEvent", "note": "alarmType 51"},
+    {"type": "devices.capabilities.event", "instance": "iceFullEvent", "note": "alarmType 58"}
+  ]
+}
+```
+
+Key observations:
+- Unique device type — ice maker
+- work_mode options represent ice sizes, not speed/modes
+- Two event capabilities for operational status
+
+#### H5179 — WiFi Thermometer (`devices.types.thermometer`)
+
+Sensor-only device with no controllable capabilities. From goveelife #6.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.property", "instance": "sensorTemperature"},
+    {"type": "devices.capabilities.property", "instance": "sensorHumidity"}
+  ]
+}
+```
+
+#### H5140 — Smart CO2 Monitor (`devices.types.air_quality_monitor`)
+
+Air quality monitor with CO2, temperature, and humidity sensors. From HA discussions #1410.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.property", "instance": "carbonDioxideConcentration"},
+    {"type": "devices.capabilities.property", "instance": "sensorTemperature"},
+    {"type": "devices.capabilities.property", "instance": "sensorHumidity"}
+  ]
+}
+```
+
+Key observations for sensor devices:
+- **Sensor-only pattern**: only `property` capabilities, no controllable capabilities
+- `property` instances are read-only — report values but cannot be commanded
+- Important for future sensor platform implementation
+
+### 8.7 Appliance Capability Patterns
+
+Non-light devices follow consistent patterns:
+
+| Pattern | Capabilities | Example Devices |
+|---------|-------------|-----------------|
+| **Appliance** | `on_off` + `work_mode` (STRUCT) + optional `event`/`range` | Fans, purifiers, humidifiers, ice makers |
+| **Sensor-only** | `property` instances only (read-only) | Thermometers, CO2 monitors |
+| **Nightlight sub-pattern** | `nightlightToggle` + `brightness` + `colorRgb` + `nightlightScene` | H7120, H7124, H7140 (embedded in appliance) |
+
+### 8.8 DreamView vs Camera-based Video Sync
 
 | Feature | DreamView (HDMI) | Camera Video Sync |
 |---------|-----------------|-------------------|
