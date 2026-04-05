@@ -1568,7 +1568,9 @@ These states are NOT returned by the API:
 | `devices.capabilities.dynamic_scene` | Scene selection |
 | `devices.capabilities.diy_color_setting` | DIY scenes |
 | `devices.capabilities.music_setting` | Music mode |
-| `devices.capabilities.work_mode` | Appliance modes (fans, heaters) |
+| `devices.capabilities.movie_setting` | Movie/DreamView mode (H66A0) |
+| `devices.capabilities.temperature_setting` | Temperature control (heaters) |
+| `devices.capabilities.work_mode` | Appliance modes (fans, heaters, purifiers) |
 | `devices.capabilities.mode` | Simple mode selection (HDMI source, purifier mode) |
 | `devices.capabilities.online` | Online status |
 | `devices.capabilities.event` | Real-time events |
@@ -1584,6 +1586,8 @@ These states are NOT returned by the API:
 | segment_color_setting | `segmentedColorRgb`, `segmentedBrightness` |
 | dynamic_scene | `lightScene`, `diyScene`, `snapshot` |
 | music_setting | `musicMode` |
+| movie_setting | `movieMode` |
+| temperature_setting | `targetTemperature` |
 | work_mode | `workMode` |
 | mode | `hdmiSource`, `purifierMode` |
 
@@ -1630,13 +1634,13 @@ def detect_capabilities(device_response):
 
 | Type | Examples |
 |------|----------|
-| `devices.types.light` | LED strips, bulbs, bars |
+| `devices.types.light` | LED strips (H619C, H6198), bulbs (H6006, H6159), bars, TV backlights (H6099, H66A0), sync boxes (H6604) |
 | `devices.types.socket` | Smart plugs |
-| `devices.types.air_purifier` | Air purifiers |
+| `devices.types.air_purifier` | Air purifiers (H7127, H7123) |
 | `devices.types.humidifier` | Humidifiers |
-| `devices.types.heater` | Space heaters |
-| `devices.types.fan` | Tower fans, desk fans |
-| `devices.types.thermometer` | Temp/humidity sensors |
+| `devices.types.heater` | Space heaters (H7130, H7131, H721C) |
+| `devices.types.fan` | Tower fans (H7101) |
+| `devices.types.thermometer` | Temp/humidity sensors (H5179) |
 | `devices.types.sensor` | Motion, presence sensors |
 
 ### 8.5 Known Device Capability Profiles
@@ -1776,6 +1780,147 @@ Key observations:
 - FanSpeed sub-options are **unnamed** (`{"value": 1}` not `{"name": "Low", "value": 1}`)
 - 5 work modes but only FanSpeed (value=1) has sub-options (8 speed levels)
 - Other modes (Custom, Auto, Sleep, Nature) use `defaultValue: 0`
+
+#### H6604 — AI Sync Box (`devices.types.light`)
+
+HDMI sync box with input selection. From issue #3.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.range", "instance": "brightness"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK"},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+    {"type": "devices.capabilities.mode", "instance": "hdmiSource",
+     "parameters": {"dataType": "ENUM", "options": [
+       {"name": "HDMI 1", "value": 1}, {"name": "HDMI 2", "value": 2},
+       {"name": "HDMI 3", "value": 3}, {"name": "HDMI 4", "value": 4}
+     ]}}
+  ]
+}
+```
+
+Key observations:
+- Has `devices.capabilities.mode` / `hdmiSource` — a unique capability for HDMI input selection
+- Exposed as `select` entity in HA (implemented in v2026.1.52)
+- 4 HDMI inputs
+
+#### H66A0 — TV Backlight 3 Pro (`devices.types.light`)
+
+TV backlight with **movie mode** — a capability not seen on other devices. From issue #14.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.toggle", "instance": "gradientToggle"},
+    {"type": "devices.capabilities.range", "instance": "brightness"},
+    {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness"},
+    {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK"},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+    {"type": "devices.capabilities.music_setting", "instance": "musicMode"},
+    {"type": "devices.capabilities.movie_setting", "instance": "movieMode"},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+    {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle"}
+  ]
+}
+```
+
+Key observations:
+- **`movie_setting` / `movieMode`** is a new capability type — hardware DreamView/movie mode
+- Has both `gradientToggle` AND `dreamViewToggle` (hardware HDMI passthrough)
+- Not currently exposed by the integration (feature request in issue #14)
+
+#### H6104 — WiFi RGB Light (`devices.types.light`)
+
+Basic WiFi light with no segments. From issue #24. Notable for API brightness bug.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.range", "instance": "brightness"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK"},
+    {"type": "devices.capabilities.music_setting", "instance": "musicMode"},
+    {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"}
+  ]
+}
+```
+
+Key observations:
+- No `lightScene` capability — only DIY scenes
+- API returned brightness value of 254 (should be 0-100 range) — may be a firmware quirk
+- No segments, no gradient, no snapshot
+
+#### H7127 — Air Purifier (`devices.types.air_purifier`)
+
+Air purifier with complex `work_mode` STRUCT. From issue #11.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.work_mode", "instance": "workMode",
+     "parameters": {"dataType": "STRUCT", "fields": [
+       {"fieldName": "workMode", "dataType": "ENUM", "options": [
+         {"name": "gearMode", "value": 1},
+         {"name": "Custom", "value": 2},
+         {"name": "Auto", "value": 3}
+       ]},
+       {"fieldName": "modeValue", "dataType": "ENUM", "options": [
+         {"name": "gearMode", "options": [
+           {"name": "Sleep", "value": 1},
+           {"name": "Low", "value": 2},
+           {"name": "High", "value": 3}
+         ]}
+       ]}
+     ]}}
+  ]
+}
+```
+
+Key observations:
+- Uses `work_mode` STRUCT pattern (same as fans)
+- `gearMode` sub-options have names (Sleep/Low/High) unlike fan speed values
+- Also supports Auto and Custom modes
+
+#### H7130/H7131 — Space Heater (`devices.types.heater`)
+
+Heaters with temperature control and work mode. From issue #13. **Critical**: temperature STRUCT requires `autoStop` field.
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.temperature_setting", "instance": "targetTemperature",
+     "parameters": {"dataType": "STRUCT", "fields": [
+       {"fieldName": "temperature", "dataType": "INTEGER", "range": {"min": 16, "max": 35}},
+       {"fieldName": "unit", "dataType": "ENUM", "options": [
+         {"name": "Celsius", "value": 0}, {"name": "Fahrenheit", "value": 1}
+       ]},
+       {"fieldName": "autoStop", "dataType": "ENUM", "options": [
+         {"name": "Maintain", "value": 0}, {"name": "Stop", "value": 1}
+       ]}
+     ]}},
+    {"type": "devices.capabilities.work_mode", "instance": "workMode",
+     "note": "H7131 modes: Low(1,1), Medium(1,2), High(1,3), Fan(9,0), Auto(3,0)"}
+  ]
+}
+```
+
+Key observations:
+- **`temperature_setting` / `targetTemperature`** uses STRUCT with 3 required fields
+- Omitting `autoStop` causes the device to silently ignore the command (HTTP 200 but no effect)
+- H7131 also has a light capability (`toggle` / `nightLight`)
+- Work mode values: Low→`workMode=1,modeValue=1`, Medium→`1,2`, High→`1,3`, Fan→`9,0`, Auto→`3,0`
+- See also issue #29: H721C/H713C heaters use the same pattern with `autoHold` preference
 
 ### 8.6 DreamView vs Camera-based Video Sync
 
