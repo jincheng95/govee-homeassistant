@@ -273,6 +273,9 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     if self._api_key:
                         new_data[CONF_API_KEY] = self._api_key
                     self._clear_mqtt_cache(reconfigure_entry.entry_id)
+                    # Pre-cache the IoT credentials so the reload
+                    # doesn't try to login again (which would hit 2FA)
+                    self._cache_iot_credentials(reconfigure_entry.entry_id)
                     return self.async_update_reload_and_abort(
                         reconfigure_entry,
                         data_updates=new_data,
@@ -304,6 +307,24 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                 "email": self._email or "",
             },
         )
+
+    def _cache_iot_credentials(self, entry_id: str) -> None:
+        """Pre-cache IoT credentials so the entry reload can skip login.
+
+        When 2FA is required, the config flow obtains IoT credentials during
+        the verification step. Without caching, the reload would try to login
+        again (without the code) and hit 2FA again.
+        """
+        if not self._iot_credentials:
+            return
+
+        self.hass.data.setdefault(DOMAIN, {})
+        if KEY_IOT_CREDENTIALS not in self.hass.data[DOMAIN]:
+            self.hass.data[DOMAIN][KEY_IOT_CREDENTIALS] = {}
+        self.hass.data[DOMAIN][KEY_IOT_CREDENTIALS][entry_id] = (
+            self._iot_credentials
+        )
+        _LOGGER.debug("Pre-cached IoT credentials for entry %s", entry_id)
 
     def _clear_mqtt_cache(self, entry_id: str) -> None:
         """Clear cached MQTT credentials and login failure for an entry.
@@ -452,8 +473,10 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                         # Generate client_id upfront for consistent 2FA flow
                         self._client_id = uuid.uuid4().hex
                         try:
-                            await validate_govee_credentials(
-                                email, password, client_id=self._client_id,
+                            self._iot_credentials = (
+                                await validate_govee_credentials(
+                                    email, password, client_id=self._client_id,
+                                )
                             )
                             new_data[CONF_EMAIL] = email
                             new_data[CONF_PASSWORD] = password
@@ -519,6 +542,8 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     if not errors:
                         # Clear cached MQTT credentials/failure to allow fresh login attempt
                         self._clear_mqtt_cache(reconfigure_entry.entry_id)
+                        # Pre-cache IoT credentials so reload doesn't re-login
+                        self._cache_iot_credentials(reconfigure_entry.entry_id)
 
                         return self.async_update_reload_and_abort(
                             reconfigure_entry,
