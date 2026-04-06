@@ -885,7 +885,65 @@ The `op.command` array contains base64-encoded BLE packets representing device s
 }
 ```
 
-### 3.6 PCAP Traffic Analysis
+### 3.6 Command Envelope Details
+
+All MQTT commands follow this envelope:
+```json
+{
+  "msg": {
+    "cmd": "<command_name>",
+    "data": { ... },
+    "cmdVersion": <0|1|2>,
+    "transaction": "v_{ms_timestamp}000",
+    "type": <0|1>
+  }
+}
+```
+
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `type` | 0 | Query/status request |
+| `type` | 1 | Control command |
+| `cmdVersion` | 0 | Standard (wez/govee2mqtt uses this) |
+| `cmdVersion` | 1 | Alternate (TheOneOgre/govee-cloud, some device models) |
+| `cmdVersion` | 2 | Status request default |
+| `transaction` | `v_{epoch_ms}000` | Timestamp with 3 trailing zeros |
+
+### 3.7 Command Variants and Fallbacks
+
+**Color commands**: Two variants exist:
+- `colorwc` (preferred): `{"color": {"r":N,"g":N,"b":N}, "colorTemInKelvin": N}` — combines RGB and CT
+- `color` (legacy): `{"r":N,"g":N,"b":N}` — RGB only, `cmdVersion: 1`
+
+Some devices only respond to `color`, not `colorwc`. The govee-cloud implementation tries `colorwc` first, watches for a state update confirmation on the GA/ topic within 5 seconds, then falls back to legacy `color` if no confirmation.
+
+**Color temperature**: Similarly `colorwc` with `colorTemInKelvin > 0` vs legacy `colorTem` (percentage-based 0-100).
+
+### 3.8 Device-Specific Quirks
+
+| Device | Quirk |
+|--------|-------|
+| H5080, H5083 | Power values are `17` (on) / `16` (off) instead of `1` / `0` |
+| H6121 | Needs `cmdVersion: 1` for status requests (not `cmdVersion: 2`) |
+| Some older devices | Only respond to `color` cmd, not `colorwc` |
+
+### 3.9 State Update op Fields
+
+The `op` object in state updates contains base64-encoded BLE packets for device-specific data:
+
+| Field | Purpose |
+|-------|---------|
+| `command` | General BLE command/status responses |
+| `modeValue` | Current mode setting (e.g., scene, music mode) |
+| `sleepValue` | Sleep timer data |
+| `wakeupValue` | Wake-up timer data |
+| `timerValue` | Timer schedule data |
+
+### 3.10 Important: Do Not Subscribe to Device Topics
+
+Subscribing to individual device topics (`GD/...`) causes the AWS IoT server to close the connection. Only subscribe to the account topic (`GA/...`). All state updates for all devices arrive on the account topic.
+
+### 3.11 PCAP Traffic Analysis
 
 From PCAP analysis (January 2026 captures):
 
@@ -1251,8 +1309,12 @@ Direct Bluetooth Low Energy control for devices without WiFi or for local-only o
 | Parameter | Value |
 |-----------|-------|
 | **Service UUID** | `00010203-0405-0607-0809-0a0b0c0d1910` |
-| **Write Characteristic** | `00010203-0405-0607-0809-0a0b0c0d2b11` |
-| **Read Characteristic** | `00010203-0405-0607-0809-0a0b0c0d2b10` |
+| **Write Characteristic** | `00010203-0405-0607-0809-0a0b0c0d2b11` (H6127, H6199) |
+| **Write Characteristic (alt)** | `00010203-0405-0607-0809-0a0b0c0d2b10` (H615B) |
+| **Notify Characteristic** | `00010203-0405-0607-0809-0a0b0c0d2b11` (H615B) |
+
+> **Note:** The write characteristic UUID differs between models (`0x2b10` vs `0x2b11`).
+> No BLE authentication is required — any device can send commands.
 
 ### 6.2 Packet Structure
 
@@ -1273,17 +1335,39 @@ All commands are **20 bytes** with XOR checksum:
 | `0xA1` | DIY mode data |
 | `0xA3` | Multi-packet/scene data |
 
+### 6.3b Keep-Alive
+
+Sent every 2 seconds to maintain BLE connection:
+```
+AA 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 AB
+```
+
 ### 6.4 Command Types (0x33 prefix)
 
 | Command | Byte | Description |
 |---------|------|-------------|
 | Power | `0x01` | On/Off control |
 | Brightness | `0x04` | Brightness level (0-255) |
-| Color/Mode | `0x05` | Color and mode operations |
+| Color/Mode | `0x05` | Color and mode operations (sub-command in byte 3) |
 | Segment | `0x0B` | Segment control |
 | Gradient | `0x14` | Gradient toggle |
 | Scene | `0x21` | Scene activation |
 | Nightlight | `0x36` | Nightlight mode toggle (confirmed) |
+
+**Color/Mode sub-commands (byte 3 of 0x33 0x05 packets):**
+
+| Byte 3 | Description | Models |
+|--------|-------------|--------|
+| `0x00` | Video/DreamView mode | H6199 |
+| `0x01` | Music mode | H6127 |
+| `0x02` | Manual color | H6127: `33 05 02 RR GG BB ...` |
+| `0x04` | Scene preset | All: `33 05 04 [scene_code] ...` |
+| `0x0A` | DIY custom animation | All |
+| `0x0B` | Segment color + color temp | H6199: `33 05 0B RR GG BB [CT_HI CT_LO] [SEG_L SEG_R] ...` |
+| `0x0C` | Music mode | H6199 variant |
+| `0x0D` | Manual color | H615B: `33 05 0D RR GG BB ...` |
+
+> **Important:** The color sub-command byte differs between models (0x02 for H6127, 0x0B for H6199, 0x0D for H615B). Device-specific codec selection is required.
 
 **Nightlight Command (0x33 0x36):**
 
@@ -1462,6 +1546,22 @@ async def control_light(address: str):
 
 asyncio.run(control_light("AA:BB:CC:DD:EE:FF"))
 ```
+
+### 6.7 Cross-Protocol Relationship
+
+The BLE 20-byte packet format is the canonical low-level protocol. MQTT and LAN tunnel these packets via `ptReal` commands for anything beyond basic operations:
+
+| Operation | REST API | MQTT (direct) | MQTT (ptReal) | LAN (direct) | LAN (ptReal) | BLE |
+|-----------|----------|---------------|----------------|---------------|---------------|-----|
+| Power | Yes | `turn` | - | `turn` | - | `0x33 0x01` |
+| Brightness | Yes | `brightness` | - | `brightness` | - | `0x33 0x04` |
+| Color | Yes | `colorwc` | - | `colorwc` | - | `0x33 0x05 0x02` |
+| Color Temp | Yes | `colorwc` | - | `colorwc` | - | `0x33 0x05 0x0B` |
+| Scenes | Yes | - | Yes | - | Yes | `0x33 0x05 0x04` |
+| DIY/Segments | Yes | - | Yes | - | Yes | `0x33 0x05 0x0B` |
+| Music Mode | Yes | - | Yes | - | Yes | `0x33 0x05 0x01` |
+
+`ptReal` commands wrap base64-encoded BLE packets, making BLE the universal escape hatch for features not supported by the high-level JSON commands.
 
 ---
 
