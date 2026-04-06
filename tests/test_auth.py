@@ -32,6 +32,7 @@ from custom_components.govee.api.auth import (
     GOVEE_USER_AGENT,
     GoveeAuthClient,
     GoveeIotCredentials,
+    _derive_client_id,
 )
 from custom_components.govee.api.exceptions import (
     Govee2FACodeInvalidError,
@@ -1222,3 +1223,212 @@ class Test2FAFlow:
         assert credentials.is_valid is True
         assert credentials.token == "test-token-abc123"
         assert credentials.client_id == "AP/99001/cid-2fa"
+
+
+# ==============================================================================
+# Deterministic client_id tests
+# ==============================================================================
+
+
+class TestDeterministicClientId:
+    """Test stable client_id derivation and propagation across calls.
+
+    Govee's account API caches (email, client_id) pairs and rejects
+    inconsistent client_ids within a session or across restarts.
+    These tests verify we match the reference implementations'
+    deterministic-per-email pattern.
+    """
+
+    def test_derive_client_id_is_deterministic(self):
+        """Same email should always produce the same client_id."""
+        cid_1 = _derive_client_id("user@example.com")
+        cid_2 = _derive_client_id("user@example.com")
+        assert cid_1 == cid_2
+
+    def test_derive_client_id_is_case_insensitive(self):
+        """Email case should not affect client_id — Govee normalizes emails."""
+        cid_lower = _derive_client_id("user@example.com")
+        cid_upper = _derive_client_id("USER@EXAMPLE.COM")
+        cid_mixed = _derive_client_id("User@Example.Com")
+        assert cid_lower == cid_upper == cid_mixed
+
+    def test_derive_client_id_strips_whitespace(self):
+        """Leading/trailing whitespace should not affect client_id."""
+        cid_clean = _derive_client_id("user@example.com")
+        cid_spaces = _derive_client_id("  user@example.com  ")
+        assert cid_clean == cid_spaces
+
+    def test_derive_client_id_different_for_different_emails(self):
+        """Different emails should produce different client_ids."""
+        cid_a = _derive_client_id("alice@example.com")
+        cid_b = _derive_client_id("bob@example.com")
+        assert cid_a != cid_b
+
+    def test_derive_client_id_is_32_char_hex(self):
+        """client_id should be a 32-character hex string (uuid hex format)."""
+        cid = _derive_client_id("user@example.com")
+        assert len(cid) == 32
+        assert all(c in "0123456789abcdef" for c in cid)
+
+    def test_derive_client_id_empty_email(self):
+        """Empty email should produce a stable (even if not useful) client_id."""
+        cid_a = _derive_client_id("")
+        cid_b = _derive_client_id("")
+        assert cid_a == cid_b
+        assert len(cid_a) == 32
+
+    async def test_login_uses_deterministic_client_id_when_none_provided(self):
+        """login() without explicit client_id should derive from email."""
+        # Arrange
+        captured_bodies: list[dict[str, Any]] = []
+        login_resp = make_mock_response(200, create_login_response())
+        iot_resp = make_mock_response(200, create_iot_key_response())
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+        session.get = lambda *a, **kw: _async_cm(iot_resp)
+
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+            captured_bodies.append(json)
+            return _async_cm(login_resp)
+
+        session.post = _post
+        client = GoveeAuthClient(session=session)
+
+        # Act
+        await client.login("user@example.com", "s3cr3t")
+
+        # Assert: client field in payload matches _derive_client_id(email)
+        assert len(captured_bodies) == 1
+        assert captured_bodies[0]["client"] == _derive_client_id("user@example.com")
+
+    async def test_login_stores_client_id_on_instance(self):
+        """After login(), self._client_id should be set to the login's client_id."""
+        # Arrange
+        login_resp = make_mock_response(200, create_login_response())
+        iot_resp = make_mock_response(200, create_iot_key_response())
+        session = make_session_post_get(login_resp, iot_resp)
+        client = GoveeAuthClient(session=session)
+
+        # Act
+        await client.login("alice@example.com", "pw", client_id="explicit-cid")
+
+        # Assert
+        assert client._client_id == "explicit-cid"
+
+    async def test_get_iot_key_uses_stored_client_id(self):
+        """get_iot_key() after login() should reuse the login's client_id."""
+        # Arrange
+        captured_headers: list[dict[str, str]] = []
+
+        login_resp = make_mock_response(200, create_login_response())
+        iot_resp = make_mock_response(200, create_iot_key_response())
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+        session.post = lambda *a, **kw: _async_cm(login_resp)
+
+        def _get(_url: str, *_args: Any, headers: dict[str, str] | None = None, **_kwargs: Any):
+            captured_headers.append(headers or {})
+            return _async_cm(iot_resp)
+
+        session.get = _get
+        client = GoveeAuthClient(session=session)
+
+        # Act
+        await client.login("user@example.com", "s3cr3t", client_id="stable-id-123")
+
+        # Assert: the IoT key GET headers have the SAME clientId as login
+        assert len(captured_headers) == 1
+        assert captured_headers[0]["clientId"] == "stable-id-123"
+
+    async def test_get_iot_key_explicit_client_id_overrides_stored(self):
+        """Explicit client_id on get_iot_key() should win over stored."""
+        # Arrange
+        captured_headers: list[dict[str, str]] = []
+        iot_resp = make_mock_response(200, create_iot_key_response())
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+
+        def _get(_url: str, *_args: Any, headers: dict[str, str] | None = None, **_kwargs: Any):
+            captured_headers.append(headers or {})
+            return _async_cm(iot_resp)
+
+        session.get = _get
+        client = GoveeAuthClient(session=session)
+        client._client_id = "stored-id"
+
+        # Act
+        await client.get_iot_key("token123", client_id="override-id")
+
+        # Assert
+        assert captured_headers[0]["clientId"] == "override-id"
+
+    async def test_fetch_device_topics_uses_stored_client_id(self):
+        """fetch_device_topics() should reuse the login's client_id."""
+        # Arrange
+        captured_headers: list[dict[str, str]] = []
+        topics_resp = make_mock_response(
+            200, {"devices": []}
+        )
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+
+        def _post(_url: str, *_args: Any, headers: dict[str, str] | None = None, **_kwargs: Any):
+            captured_headers.append(headers or {})
+            return _async_cm(topics_resp)
+
+        session.post = _post
+        client = GoveeAuthClient(session=session)
+        client._client_id = "login-cid-xyz"
+
+        # Act
+        await client.fetch_device_topics("token123")
+
+        # Assert
+        assert captured_headers[0]["clientId"] == "login-cid-xyz"
+
+    async def test_two_logins_same_email_produce_same_client_id(self):
+        """Two separate login() calls for the same email should use the same client_id."""
+        # Arrange
+        captured_client_ids: list[str] = []
+        login_resp = make_mock_response(200, create_login_response())
+        iot_resp = make_mock_response(200, create_iot_key_response())
+
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+        session.get = lambda *a, **kw: _async_cm(iot_resp)
+
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+            if json and "client" in json:
+                captured_client_ids.append(json["client"])
+            return _async_cm(login_resp)
+
+        session.post = _post
+
+        # Act: two separate login calls
+        client_1 = GoveeAuthClient(session=session)
+        await client_1.login("user@example.com", "pw")
+
+        client_2 = GoveeAuthClient(session=session)
+        await client_2.login("user@example.com", "pw")
+
+        # Assert: both logins used the same client_id
+        assert len(captured_client_ids) == 2
+        assert captured_client_ids[0] == captured_client_ids[1]
+
+    def test_derive_client_id_is_namespaced(self):
+        """Our derivation should be namespaced so it doesn't collide with other clients.
+
+        Other Govee integrations (homebridge-govee, govee2mqtt, TheOneOgre)
+        use their own prefixes. We use 'hacs-govee:' to avoid collisions.
+        """
+        import uuid as _uuid
+        expected = _uuid.uuid5(_uuid.NAMESPACE_DNS, "hacs-govee:user@example.com").hex
+        assert _derive_client_id("user@example.com") == expected
+
+        # Verify we do NOT produce the same as a naked uuid5 (no namespace)
+        naked = _uuid.uuid5(_uuid.NAMESPACE_DNS, "user@example.com").hex
+        assert _derive_client_id("user@example.com") != naked

@@ -93,6 +93,27 @@ GOVEE_USER_AGENT = (
 )
 
 
+def _derive_client_id(email: str) -> str:
+    """Derive a stable client_id from the account email.
+
+    Govee's account API caches (email, client_id) pairs after first login.
+    Sending a different client_id on subsequent calls or across HA restarts
+    looks like a new device to Govee and triggers 2FA hardening or outright
+    rejection on newer/stricter accounts.
+
+    All reference implementations derive client_id deterministically from
+    the username/email:
+    - homebridge-govee: uuid.generate(username)
+    - wez/govee2mqtt: Uuid::new_v5(NAMESPACE_DNS, email)
+    - TheOneOgre/govee-cloud: uuid.uuid5(NAMESPACE_DNS, email).hex
+
+    We match that pattern, prefixed with "hacs-govee:" to namespace our IDs
+    and avoid collisions with other clients using the same derivation scheme.
+    """
+    normalized = (email or "").strip().lower()
+    return uuid.uuid5(uuid.NAMESPACE_DNS, f"hacs-govee:{normalized}").hex
+
+
 def _extract_p12_credentials(
     p12_base64: str, password: str | None = None
 ) -> tuple[str, str]:
@@ -209,6 +230,10 @@ class GoveeAuthClient:
         """
         self._session = session
         self._owns_session = session is None
+        # Stored after login() so subsequent calls (get_iot_key,
+        # fetch_device_topics) reuse the same client_id. Govee rejects
+        # inconsistent client_ids within a single auth session.
+        self._client_id: str | None = None
 
     async def __aenter__(self) -> GoveeAuthClient:
         """Async context manager entry."""
@@ -242,11 +267,18 @@ class GoveeAuthClient:
             "User-Agent": GOVEE_USER_AGENT,
         }
 
-    async def get_iot_key(self, token: str) -> dict[str, Any]:
+    async def get_iot_key(
+        self,
+        token: str,
+        client_id: str | None = None,
+    ) -> dict[str, Any]:
         """Fetch IoT credentials from Govee API.
 
         Args:
             token: Authentication token from login response.
+            client_id: Client ID to use in headers. Defaults to the one
+                stored during login() (which is what Govee expects —
+                the Bearer token is bound to the login's client_id).
 
         Returns:
             Dict with keys: p12, p12_pass, endpoint, etc.
@@ -258,7 +290,8 @@ class GoveeAuthClient:
             self._session = aiohttp.ClientSession()
             self._owns_session = True
 
-        headers = self._build_govee_headers()
+        cid = client_id or self._client_id
+        headers = self._build_govee_headers(cid)
         headers["Authorization"] = f"Bearer {token}"
 
         _LOGGER.debug("Fetching IoT credentials from Govee API")
@@ -298,7 +331,11 @@ class GoveeAuthClient:
             )
             raise GoveeApiError(f"Connection error getting IoT key: {err}") from err
 
-    async def fetch_device_topics(self, token: str) -> dict[str, str]:
+    async def fetch_device_topics(
+        self,
+        token: str,
+        client_id: str | None = None,
+    ) -> dict[str, str]:
         """Fetch device-specific MQTT topics from undocumented Govee API.
 
         This API returns device_ext.device_settings.topic for each device,
@@ -306,6 +343,9 @@ class GoveeAuthClient:
 
         Args:
             token: Authentication token from login response.
+            client_id: Client ID to use in headers. Defaults to the one
+                stored during login() — must match the login's client_id
+                or Govee will reject the Bearer token.
 
         Returns:
             Dict mapping device_id to MQTT topic.
@@ -317,7 +357,8 @@ class GoveeAuthClient:
             self._session = aiohttp.ClientSession()
             self._owns_session = True
 
-        headers = self._build_govee_headers()
+        cid = client_id or self._client_id
+        headers = self._build_govee_headers(cid)
         headers["Authorization"] = f"Bearer {token}"
 
         try:
@@ -459,7 +500,14 @@ class GoveeAuthClient:
             self._owns_session = True
 
         if client_id is None:
-            client_id = uuid.uuid4().hex
+            # Derive a stable client_id from the email so every login for
+            # the same account uses the same ID. Govee caches
+            # (email, client_id) and rejects new IDs on hardened accounts.
+            client_id = _derive_client_id(email)
+
+        # Store on instance so get_iot_key() and fetch_device_topics()
+        # can reuse the same client_id without a fresh random UUID
+        self._client_id = client_id
 
         payload: dict[str, Any] = {
             "email": email,

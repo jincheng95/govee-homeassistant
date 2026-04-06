@@ -17,7 +17,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 from .api import Govee2FARequiredError, GoveeApiClient, GoveeAuthError, GoveeIotCredentials
-from .api.auth import GoveeAuthClient
+from .api.auth import GoveeAuthClient, _derive_client_id
 from .const import (
     CONF_API_KEY,
     CONF_EMAIL,
@@ -118,7 +118,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
             # Attempt fresh login
             try:
                 async with GoveeAuthClient() as auth_client:
-                    iot_credentials = await auth_client.login(email, password)
+                    iot_credentials = await auth_client.login(
+                        email,
+                        password,
+                        client_id=_derive_client_id(email),
+                    )
                     _LOGGER.info("MQTT credentials obtained for real-time updates")
 
                     # Cache successful credentials
@@ -131,8 +135,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
             except Govee2FARequiredError:
                 _LOGGER.warning(
                     "Govee account requires email verification (2FA). "
-                    "Use Reconfigure to re-enter credentials with a "
-                    "verification code. Continuing with polling-only mode."
+                    "If you do not need real-time MQTT updates, use Reconfigure "
+                    "to remove the email and password — the API key alone is "
+                    "sufficient for polling. Otherwise, use Reconfigure to "
+                    "re-enter credentials with a verification code. "
+                    "Continuing with polling-only mode."
                 )
                 if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
                     hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}

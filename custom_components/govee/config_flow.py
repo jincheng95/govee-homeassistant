@@ -8,7 +8,6 @@ Handles Govee 2FA (email verification code) when required.
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
 import voluptuous as vol
@@ -31,6 +30,7 @@ from .api import (
     GoveeLoginRejectedError,
     validate_govee_credentials,
 )
+from .api.auth import _derive_client_id
 from .api.client import validate_api_key
 from .const import (
     CONF_API_KEY,
@@ -183,9 +183,10 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "password_without_email"
             else:
                 # Both provided - validate with API
-                # Generate client_id upfront so the same ID is used for
-                # the initial login attempt and the verification code request
-                self._client_id = uuid.uuid4().hex
+                # Derive deterministic client_id from email so the same
+                # ID is used across login, verification code request,
+                # and all subsequent reconfigurations for this account
+                self._client_id = _derive_client_id(email)
                 try:
                     self._iot_credentials = await validate_govee_credentials(
                         email, password, client_id=self._client_id,
@@ -470,8 +471,8 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
 
                     if email and password:
                         # Validate account credentials if provided
-                        # Generate client_id upfront for consistent 2FA flow
-                        self._client_id = uuid.uuid4().hex
+                        # Derive deterministic client_id from email
+                        self._client_id = _derive_client_id(email)
                         try:
                             self._iot_credentials = (
                                 await validate_govee_credentials(
