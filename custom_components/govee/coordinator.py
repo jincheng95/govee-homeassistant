@@ -28,6 +28,19 @@ from .api import (
 from .api.auth import GoveeAuthClient
 from .api.ble_packet import DIY_STYLE_NAMES
 from .ble_passthrough import BlePassthroughManager
+
+# BLE direct support — conditionally imported to avoid hard Bluetooth dependency
+try:
+    from homeassistant.components import bluetooth
+    from homeassistant.components.bluetooth import (
+        BluetoothCallbackMatcher,
+        BluetoothScanningMode,
+    )
+    from .api.ble import GoveeBLEDevice, SEGMENTED_MODELS
+
+    HAS_BLUETOOTH = True
+except ImportError:  # pragma: no cover — HA installs without Bluetooth
+    HAS_BLUETOOTH = False
 from .const import DOMAIN
 from .models import GoveeDevice, GoveeDeviceState, RGBColor
 from .models.commands import (
@@ -65,6 +78,25 @@ _LOGGER = logging.getLogger(__name__)
 
 # State fetch timeout per device
 STATE_FETCH_TIMEOUT = 30
+
+# BLE advertising name prefixes used by Govee devices
+_BLE_NAME_PREFIXES = ("Govee_*", "ihoment_*", "GBK_*")
+
+
+def _sku_from_ble_name(name: str | None) -> str | None:
+    """Extract SKU from BLE advertising name like ``Govee_H6072_754B``.
+
+    Govee BLE lights advertise with names following the pattern
+    ``<Prefix>_<SKU>_<Suffix>`` where the SKU starts with ``H`` followed
+    by 3-4 alphanumeric characters. Returns ``None`` if no SKU can be
+    parsed (device will be skipped for BLE correlation).
+    """
+    if not name:
+        return None
+    for part in name.split("_"):
+        if part.startswith("H") and len(part) >= 4 and part[1:].isalnum():
+            return part
+    return None
 
 
 class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
@@ -137,6 +169,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             device_topics=self._device_topics,
             ensure_device_topic=self._ensure_device_topic,
         )
+
+        # BLE direct transport — per-device GoveeBLEDevice instances
+        # populated dynamically from Bluetooth advertisements.
+        self._ble_devices: dict[str, GoveeBLEDevice] = {} if HAS_BLUETOOTH else {}
 
         # Track in-flight power-off commands so segment entities can
         # avoid racing with a concurrent device power-off (issue #16).
@@ -217,6 +253,93 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """Unregister a state change observer."""
         if observer in self._observers:
             self._observers.remove(observer)
+
+    # ------------------------------------------------------------------ #
+    # BLE direct transport
+    # ------------------------------------------------------------------ #
+
+    def setup_ble_subscriptions(self) -> list:
+        """Subscribe to BLE advertisements for nearby Govee devices.
+
+        Called from ``async_setup_entry`` after the coordinator is created.
+        Returns a list of unsubscribe callables to pass to
+        ``entry.async_on_unload``.
+
+        This is a no-op when ``HAS_BLUETOOTH`` is False (HA installs
+        without Bluetooth hardware or the ``bluetooth`` component).
+        """
+        if not HAS_BLUETOOTH:
+            return []
+
+        unsubs = []
+
+        @callback
+        def _on_ble_advertisement(service_info, change) -> None:
+            self._handle_ble_advertisement(service_info)
+
+        for prefix in _BLE_NAME_PREFIXES:
+            unsub = bluetooth.async_register_callback(
+                self.hass,
+                _on_ble_advertisement,
+                BluetoothCallbackMatcher(local_name=prefix, connectable=True),
+                BluetoothScanningMode.ACTIVE,
+            )
+            unsubs.append(unsub)
+
+        _LOGGER.debug("BLE advertisement subscription active for %s", _BLE_NAME_PREFIXES)
+        return unsubs
+
+    @callback
+    def _handle_ble_advertisement(self, service_info) -> None:
+        """Correlate a BLE advertisement with a known cloud device.
+
+        Matching strategy (see ``docs/_research/2026-04-09_multi-transport-single-entity.md``):
+
+        1. Extract SKU from the advertising name (``Govee_H6072_754B`` → ``H6072``).
+        2. Find cloud devices with that SKU (ignoring group devices).
+        3. If exactly one match → unambiguous correlation.
+        4. If multiple same-SKU → try MAC-prefix heuristic as tiebreaker.
+        5. If no match or ambiguous → skip (device remains cloud-only).
+        """
+        ble_sku = _sku_from_ble_name(service_info.name)
+        if not ble_sku:
+            return
+
+        candidates = [
+            (did, dev)
+            for did, dev in self._devices.items()
+            if dev.sku == ble_sku and not dev.is_group
+        ]
+
+        matched_id: str | None = None
+        if len(candidates) == 1:
+            matched_id = candidates[0][0]
+        elif len(candidates) > 1:
+            # Multiple same-SKU — MAC-prefix tiebreaker (unproven but plausible)
+            ble_mac = service_info.address.upper()
+            for did, _dev in candidates:
+                if did.upper().startswith(ble_mac):
+                    matched_id = did
+                    break
+
+        if matched_id is None:
+            return
+
+        if matched_id not in self._ble_devices:
+            self._ble_devices[matched_id] = GoveeBLEDevice(
+                service_info.device,
+                segmented=ble_sku in SEGMENTED_MODELS,
+            )
+            _LOGGER.info(
+                "BLE transport available for %s (SKU=%s, BLE=%s)",
+                self._devices[matched_id].name,
+                ble_sku,
+                service_info.address,
+            )
+        else:
+            self._ble_devices[matched_id].set_ble_device_and_advertisement_data(
+                service_info.device, service_info.advertisement,
+            )
 
     def _notify_observers(self, device_id: str, state: GoveeDeviceState) -> None:
         """Notify all observers of state change."""
@@ -609,6 +732,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._pending_power_off.add(device_id)
 
         try:
+            # BLE-first dispatch: if a BLE transport is available for this
+            # device, try it before the cloud REST API. BLE is ~10x faster
+            # (~50ms local vs ~500ms cloud) and works when internet is down.
+            if HAS_BLUETOOTH and device_id in self._ble_devices:
+                if await self._try_ble_command(device_id, command):
+                    self._apply_optimistic_update(device_id, command)
+                    self.async_set_updated_data(self._states)
+                    return True
+                # BLE failed — fall through to REST
+
             success = await self._api_client.control_device(
                 device_id,
                 device.sku,
@@ -630,6 +763,42 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         finally:
             if is_power_off:
                 self._pending_power_off.discard(device_id)
+
+    async def _try_ble_command(self, device_id: str, command: DeviceCommand) -> bool:
+        """Attempt to send a command via BLE. Returns True on success.
+
+        Only power, brightness, and RGB color commands are BLE-capable.
+        Scenes, color_temp, work modes, etc. fall through to REST.
+        """
+        ble_device = self._ble_devices.get(device_id)
+        if ble_device is None:
+            return False
+
+        try:
+            if isinstance(command, PowerCommand):
+                if command.power_on:
+                    await ble_device.turn_on()
+                else:
+                    await ble_device.turn_off()
+            elif isinstance(command, BrightnessCommand):
+                await ble_device.set_brightness(command.brightness)
+            elif isinstance(command, ColorCommand):
+                await ble_device.set_rgb(
+                    command.color.r, command.color.g, command.color.b,
+                )
+            else:
+                # Not BLE-capable (scenes, color_temp, work modes, etc.)
+                return False
+        except Exception:
+            _LOGGER.debug(
+                "BLE command failed for %s, falling back to REST",
+                device_id,
+                exc_info=True,
+            )
+            return False
+        else:
+            _LOGGER.debug("BLE command succeeded for %s: %s", device_id, type(command).__name__)
+            return True
 
     async def _ensure_device_topic(self, device_id: str) -> str | None:
         """Get device MQTT topic, refreshing if needed.
@@ -1155,6 +1324,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
     async def async_shutdown(self) -> None:
         """Shutdown coordinator and cleanup resources."""
+        # Disconnect all BLE devices
+        for ble_device in self._ble_devices.values():
+            await ble_device.stop()
+        self._ble_devices.clear()
+
         if self._mqtt_client:
             await self._mqtt_client.async_stop()
             self._mqtt_client = None

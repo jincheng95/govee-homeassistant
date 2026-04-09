@@ -198,6 +198,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
     # Store coordinator in entry
     entry.runtime_data = coordinator
 
+    # Subscribe to BLE advertisements for nearby Govee devices (transparent
+    # local transport enhancement — no user configuration needed).
+    for unsub in coordinator.setup_ble_subscriptions():
+        entry.async_on_unload(unsub)
+
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

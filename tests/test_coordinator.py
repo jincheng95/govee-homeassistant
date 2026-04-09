@@ -1180,3 +1180,295 @@ class TestStatePreservationAcrossApiPoll:
 
         # Should fall through to default (white or midpoint)
         assert color is None
+
+
+# ==============================================================================
+# BLE Transport Dispatch Tests
+# ==============================================================================
+
+
+class TestSkuFromBleName:
+    """Test the SKU extraction helper for BLE advertising names."""
+
+    def test_standard_govee_name(self):
+        from custom_components.govee.coordinator import _sku_from_ble_name
+
+        assert _sku_from_ble_name("Govee_H6072_754B") == "H6072"
+
+    def test_ihoment_name(self):
+        from custom_components.govee.coordinator import _sku_from_ble_name
+
+        assert _sku_from_ble_name("ihoment_H6159_A3F2") == "H6159"
+
+    def test_gbk_name(self):
+        from custom_components.govee.coordinator import _sku_from_ble_name
+
+        assert _sku_from_ble_name("GBK_H6102_1234") == "H6102"
+
+    def test_name_without_suffix(self):
+        from custom_components.govee.coordinator import _sku_from_ble_name
+
+        assert _sku_from_ble_name("Govee_H6072") == "H6072"
+
+    def test_no_sku_found(self):
+        from custom_components.govee.coordinator import _sku_from_ble_name
+
+        assert _sku_from_ble_name("SomeOtherDevice") is None
+
+    def test_none_name(self):
+        from custom_components.govee.coordinator import _sku_from_ble_name
+
+        assert _sku_from_ble_name(None) is None
+
+    def test_empty_name(self):
+        from custom_components.govee.coordinator import _sku_from_ble_name
+
+        assert _sku_from_ble_name("") is None
+
+    def test_five_char_sku(self):
+        """Some newer SKUs have 5 characters like H601F."""
+        from custom_components.govee.coordinator import _sku_from_ble_name
+
+        assert _sku_from_ble_name("Govee_H601F_ABCD") == "H601F"
+
+
+class TestBleAdvertisementHandling:
+    """Test BLE advertisement correlation with cloud devices."""
+
+    def _make_coordinator_with_devices(self, devices: dict[str, GoveeDevice]):
+        """Build a minimal coordinator-like object for testing _handle_ble_advertisement.
+
+        Patches GoveeBLEDevice and SEGMENTED_MODELS into the coordinator module
+        since HAS_BLUETOOTH=False in the test env (missing serial for
+        homeassistant.components.bluetooth).
+        """
+        import custom_components.govee.coordinator as coord_mod
+        from custom_components.govee.api.ble import GoveeBLEDevice as RealBLEDevice
+        from custom_components.govee.api.ble import SEGMENTED_MODELS as RealSegModels
+
+        # Inject the names that the conditional import would have set
+        coord_mod.GoveeBLEDevice = RealBLEDevice
+        coord_mod.SEGMENTED_MODELS = RealSegModels
+
+        coord = object.__new__(coord_mod.GoveeCoordinator)
+        coord._devices = devices
+        coord._ble_devices = {}
+        return coord
+
+    def _make_service_info(self, name: str, address: str):
+        """Build a minimal mock BluetoothServiceInfoBleak."""
+        info = MagicMock()
+        info.name = name
+        info.address = address
+        info.device = MagicMock()
+        info.device.address = address
+        info.device.name = name
+        info.advertisement = MagicMock()
+        return info
+
+    def test_single_sku_match_creates_ble_device(self, sample_device):
+        """BLE advertisement matching a single cloud device by SKU creates a GoveeBLEDevice."""
+        coord = self._make_coordinator_with_devices(
+            {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
+        )
+        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+
+        coord._handle_ble_advertisement(info)
+
+        assert "AA:BB:CC:DD:EE:FF:00:11" in coord._ble_devices
+
+    def test_no_sku_match_skips(self, sample_device):
+        """BLE advertisement with non-matching SKU is ignored."""
+        coord = self._make_coordinator_with_devices(
+            {"AA:BB:CC:DD:EE:FF:00:11": sample_device}  # SKU=H6072
+        )
+        info = self._make_service_info("Govee_H6199_ABCD", "11:22:33:44:55:66")
+
+        coord._handle_ble_advertisement(info)
+
+        assert len(coord._ble_devices) == 0
+
+    def test_no_sku_in_name_skips(self):
+        """Advertisement with unparseable name is ignored."""
+        coord = self._make_coordinator_with_devices({})
+        info = self._make_service_info("RandomDevice", "AA:BB:CC:DD:EE:FF")
+
+        coord._handle_ble_advertisement(info)
+
+        assert len(coord._ble_devices) == 0
+
+    def test_group_devices_excluded(self, sample_capabilities):
+        """Group devices should never match BLE advertisements."""
+        group = GoveeDevice(
+            device_id="12345",
+            sku="H6072",
+            name="All Lights",
+            device_type="devices.types.group",
+            capabilities=sample_capabilities,
+            is_group=True,
+        )
+        coord = self._make_coordinator_with_devices({"12345": group})
+        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+
+        coord._handle_ble_advertisement(info)
+
+        assert len(coord._ble_devices) == 0
+
+    def test_multiple_same_sku_uses_mac_tiebreaker(self, sample_capabilities):
+        """Multiple cloud devices with same SKU: MAC-prefix tiebreaker."""
+        dev1 = GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:00:11",
+            sku="H6072",
+            name="Living Room",
+            device_type="devices.types.light",
+            capabilities=sample_capabilities,
+        )
+        dev2 = GoveeDevice(
+            device_id="11:22:33:44:55:66:00:22",
+            sku="H6072",
+            name="Bedroom",
+            device_type="devices.types.light",
+            capabilities=sample_capabilities,
+        )
+        coord = self._make_coordinator_with_devices({
+            "AA:BB:CC:DD:EE:FF:00:11": dev1,
+            "11:22:33:44:55:66:00:22": dev2,
+        })
+        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+
+        coord._handle_ble_advertisement(info)
+
+        # Should match dev1 (MAC prefix matches)
+        assert "AA:BB:CC:DD:EE:FF:00:11" in coord._ble_devices
+        assert "11:22:33:44:55:66:00:22" not in coord._ble_devices
+
+    def test_multiple_same_sku_no_mac_match_skips(self, sample_capabilities):
+        """Multiple same-SKU devices with no MAC prefix match → skip."""
+        dev1 = GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:00:11",
+            sku="H6072",
+            name="Light 1",
+            device_type="devices.types.light",
+            capabilities=sample_capabilities,
+        )
+        dev2 = GoveeDevice(
+            device_id="11:22:33:44:55:66:00:22",
+            sku="H6072",
+            name="Light 2",
+            device_type="devices.types.light",
+            capabilities=sample_capabilities,
+        )
+        coord = self._make_coordinator_with_devices({
+            "AA:BB:CC:DD:EE:FF:00:11": dev1,
+            "11:22:33:44:55:66:00:22": dev2,
+        })
+        # BLE MAC doesn't match either device's prefix
+        info = self._make_service_info("Govee_H6072_754B", "99:88:77:66:55:44")
+
+        coord._handle_ble_advertisement(info)
+
+        assert len(coord._ble_devices) == 0
+
+    def test_repeated_advertisement_refreshes_existing(self, sample_device):
+        """Second advertisement for same device refreshes the BLEDevice reference."""
+        coord = self._make_coordinator_with_devices(
+            {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
+        )
+        info1 = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info2 = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+
+        coord._handle_ble_advertisement(info1)
+        coord._handle_ble_advertisement(info2)
+
+        # Still only one entry, but the BLEDevice ref was refreshed
+        assert len(coord._ble_devices) == 1
+
+
+class TestTryBleCommand:
+    """Test the _try_ble_command method."""
+
+    def _make_coordinator_with_mock_ble(self):
+        """Build a coordinator with a mocked BLE device."""
+        from unittest.mock import AsyncMock
+        from custom_components.govee.coordinator import GoveeCoordinator
+
+        coord = object.__new__(GoveeCoordinator)
+        coord._ble_devices = {}
+
+        mock_ble = MagicMock()
+        mock_ble.turn_on = AsyncMock()
+        mock_ble.turn_off = AsyncMock()
+        mock_ble.set_brightness = AsyncMock()
+        mock_ble.set_rgb = AsyncMock()
+        mock_ble.stop = AsyncMock()
+        coord._ble_devices["AA:BB:CC:DD:EE:FF:00:11"] = mock_ble
+        return coord, mock_ble
+
+    @pytest.mark.asyncio
+    async def test_power_on_via_ble(self):
+        coord, ble = self._make_coordinator_with_mock_ble()
+        result = await coord._try_ble_command(
+            "AA:BB:CC:DD:EE:FF:00:11", PowerCommand(power_on=True)
+        )
+        assert result is True
+        ble.turn_on.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_power_off_via_ble(self):
+        coord, ble = self._make_coordinator_with_mock_ble()
+        result = await coord._try_ble_command(
+            "AA:BB:CC:DD:EE:FF:00:11", PowerCommand(power_on=False)
+        )
+        assert result is True
+        ble.turn_off.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_brightness_via_ble(self):
+        coord, ble = self._make_coordinator_with_mock_ble()
+        result = await coord._try_ble_command(
+            "AA:BB:CC:DD:EE:FF:00:11", BrightnessCommand(brightness=128)
+        )
+        assert result is True
+        ble.set_brightness.assert_awaited_once_with(128)
+
+    @pytest.mark.asyncio
+    async def test_color_via_ble(self):
+        coord, ble = self._make_coordinator_with_mock_ble()
+        result = await coord._try_ble_command(
+            "AA:BB:CC:DD:EE:FF:00:11", ColorCommand(color=RGBColor(r=255, g=0, b=128))
+        )
+        assert result is True
+        ble.set_rgb.assert_awaited_once_with(255, 0, 128)
+
+    @pytest.mark.asyncio
+    async def test_unsupported_command_returns_false(self):
+        """Scene, color_temp, etc. are not BLE-capable and must return False."""
+        coord, _ble = self._make_coordinator_with_mock_ble()
+        result = await coord._try_ble_command(
+            "AA:BB:CC:DD:EE:FF:00:11",
+            SceneCommand(scene_id=123, scene_name="Sunset"),
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_ble_failure_returns_false(self):
+        """BLE write failure returns False so REST fallback is triggered."""
+        coord, ble = self._make_coordinator_with_mock_ble()
+        from unittest.mock import AsyncMock
+        ble.turn_on = AsyncMock(side_effect=Exception("BLE link lost"))
+        result = await coord._try_ble_command(
+            "AA:BB:CC:DD:EE:FF:00:11", PowerCommand(power_on=True)
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_no_ble_device_returns_false(self):
+        """No BLE device for this ID → immediate False."""
+        from custom_components.govee.coordinator import GoveeCoordinator
+
+        coord = object.__new__(GoveeCoordinator)
+        coord._ble_devices = {}
+        result = await coord._try_ble_command(
+            "AA:BB:CC:DD:EE:FF:00:11", PowerCommand(power_on=True)
+        )
+        assert result is False
