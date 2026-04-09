@@ -30,7 +30,7 @@ DEVICE_TYPE_PLUG = "devices.types.socket"
 DEVICE_TYPE_HEATER = "devices.types.heater"
 DEVICE_TYPE_HUMIDIFIER = "devices.types.humidifier"
 DEVICE_TYPE_FAN = "devices.types.fan"
-DEVICE_TYPE_PURIFIER = "devices.types.purifier"
+DEVICE_TYPE_PURIFIER = "devices.types.air_purifier"
 
 # Instance constants
 INSTANCE_POWER = "powerSwitch"
@@ -290,8 +290,13 @@ class GoveeDevice:
 
     @property
     def is_fan(self) -> bool:
-        """Check if device is a fan."""
-        return self.device_type == DEVICE_TYPE_FAN
+        """Check if device is a fan or air purifier.
+
+        Air purifiers (devices.types.air_purifier, e.g. H7126) expose the same
+        workMode capability shape as fans — gearMode speeds (Sleep/Low/High)
+        plus an Auto preset — so they map onto the Home Assistant fan entity.
+        """
+        return self.device_type in (DEVICE_TYPE_FAN, DEVICE_TYPE_PURIFIER)
 
     @property
     def is_heater(self) -> bool:

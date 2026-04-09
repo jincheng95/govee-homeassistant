@@ -269,6 +269,35 @@ class TestGoveeDevice:
         assert mock_fan_device.is_light_device is False
         assert mock_fan_device.supports_power is True
 
+    def test_air_purifier_is_purifier(self, mock_air_purifier_device):
+        """H7126 (devices.types.air_purifier) must match is_purifier."""
+        assert mock_air_purifier_device.is_purifier is True
+
+    def test_air_purifier_is_fan(self, mock_air_purifier_device):
+        """Air purifiers should also match is_fan so a fan entity gets created.
+
+        Air purifiers expose the same workMode/gearMode capability shape as
+        fans, so they are represented in Home Assistant via the fan platform.
+        """
+        assert mock_air_purifier_device.is_fan is True
+
+    def test_air_purifier_not_light(self, mock_air_purifier_device):
+        """Air purifiers must not be detected as light devices."""
+        assert mock_air_purifier_device.is_light_device is False
+        assert mock_air_purifier_device.is_plug is False
+
+    def test_air_purifier_mode_options(self, mock_air_purifier_device):
+        """get_purifier_mode_options should extract nested gearMode options."""
+        options = mock_air_purifier_device.get_purifier_mode_options()
+        names = [o.get("name") for o in options]
+        assert "Sleep" in names
+        assert "Low" in names
+        assert "High" in names
+
+    def test_fan_is_not_purifier(self, mock_fan_device):
+        """A plain fan (devices.types.fan) must not match is_purifier."""
+        assert mock_fan_device.is_purifier is False
+
     def test_supports_hdmi_source(self, mock_hdmi_device):
         """Test HDMI source support detection."""
         assert mock_hdmi_device.supports_hdmi_source is True

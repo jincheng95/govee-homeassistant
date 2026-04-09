@@ -42,6 +42,7 @@ from custom_components.govee.models.device import (
 DEVICE_TYPE_LIGHT = "devices.types.light"
 DEVICE_TYPE_PLUG = "devices.types.socket"
 DEVICE_TYPE_FAN = "devices.types.fan"
+DEVICE_TYPE_AIR_PURIFIER = "devices.types.air_purifier"
 
 
 @pytest.fixture
@@ -433,6 +434,72 @@ def mock_fan_device(fan_capabilities) -> GoveeDevice:
         name="Living Room Fan",
         device_type=DEVICE_TYPE_FAN,
         capabilities=fan_capabilities,
+        is_group=False,
+    )
+
+
+@pytest.fixture
+def air_purifier_capabilities() -> tuple[GoveeCapability, ...]:
+    """Create capabilities for an H7126 air purifier (nested gearMode shape).
+
+    Mirrors the real API response captured in disforw/goveelife's H7126 fixture:
+    workMode options = [gearMode, Custom, Auto]; modeValue.gearMode options =
+    [Sleep, Low, High].
+    """
+    return (
+        GoveeCapability(
+            type=CAPABILITY_ON_OFF,
+            instance=INSTANCE_POWER,
+            parameters={},
+        ),
+        GoveeCapability(
+            type=CAPABILITY_WORK_MODE,
+            instance=INSTANCE_WORK_MODE,
+            parameters={
+                "dataType": "STRUCT",
+                "fields": [
+                    {
+                        "fieldName": "workMode",
+                        "dataType": "ENUM",
+                        "options": [
+                            {"name": "gearMode", "value": 1},
+                            {"name": "Custom", "value": 2},
+                            {"name": "Auto", "value": 3},
+                        ],
+                    },
+                    {
+                        "fieldName": "modeValue",
+                        "dataType": "ENUM",
+                        "options": [
+                            {"name": "gearMode", "options": [
+                                {"name": "Sleep", "value": 1},
+                                {"name": "Low", "value": 2},
+                                {"name": "High", "value": 3},
+                            ]},
+                            {"defaultValue": 0, "name": "Custom"},
+                            {"defaultValue": 0, "name": "Auto"},
+                        ],
+                    },
+                ],
+            },
+        ),
+    )
+
+
+@pytest.fixture
+def mock_air_purifier_device(air_purifier_capabilities) -> GoveeDevice:
+    """Create a mock H7126 air purifier device.
+
+    Uses the canonical ``devices.types.air_purifier`` device type as reported
+    by the real Govee API v2.0 (confirmed against multiple independent fixtures
+    and the official Govee Developer API docs).
+    """
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:00:66",
+        sku="H7126",
+        name="Bedroom Air Purifier",
+        device_type=DEVICE_TYPE_AIR_PURIFIER,
+        capabilities=air_purifier_capabilities,
         is_group=False,
     )
 
