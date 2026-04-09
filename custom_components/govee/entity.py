@@ -4,11 +4,12 @@ Provides common functionality for all Govee entities:
 - Device info
 - Coordinator integration
 - State updates
+- Transport diagnostics (Cloud API / MQTT / BLE)
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -84,6 +85,21 @@ class GoveeEntity(CoordinatorEntity["GoveeCoordinator"]):
     def device_state(self) -> GoveeDeviceState | None:
         """Get current device state from coordinator."""
         return self.coordinator.get_state(self._device_id)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return transport protocol diagnostics for this device.
+
+        Shows which communication channels are active:
+        - cloud_api: always True (REST API is the baseline transport)
+        - mqtt: True when AWS IoT MQTT push is connected
+        - ble: True when a local Bluetooth connection is available
+        """
+        return {
+            "transport_cloud_api": True,
+            "transport_mqtt": self.coordinator.mqtt_connected,
+            "transport_ble": self.coordinator.is_ble_available(self._device_id),
+        }
 
     @staticmethod
     def _infer_area_from_name(name: str) -> str | None:

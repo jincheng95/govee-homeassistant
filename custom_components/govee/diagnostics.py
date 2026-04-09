@@ -61,6 +61,11 @@ async def async_get_config_entry_diagnostics(
                 "color_temp_kelvin": state.color_temp_kelvin if state else None,
                 "source": state.source if state else None,
             },
+            "transport": {
+                "cloud_api": True,
+                "mqtt": coordinator.mqtt_connected,
+                "ble": coordinator.is_ble_available(device_id),
+            },
         }
 
     # Collect MQTT status
