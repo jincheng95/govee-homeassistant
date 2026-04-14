@@ -77,6 +77,21 @@ BLE_DISCOVERY_NAMES: tuple[str, ...] = ("Govee_", "ihoment_", "GBK_")
 # Beshelmek/govee_ble_lights `SEGMENTED_MODELS` (light.py:35).
 SEGMENTED_MODELS: frozenset[str] = frozenset({"H6053", "H6072", "H6102", "H6199"})
 
+# SKUs with verified BLE command support. BLE command dispatch is only
+# attempted for devices on this list — advertising over BLE is not
+# sufficient proof that the device will accept our command frames.
+# Issue #59: multiple RGBIC SKUs (H6072, H61E1, H60B0, H612A) advertise
+# BLE but silently drop our writes, leaving commands unacknowledged and
+# the UI flipflopping. Until we can programmatically probe a device for
+# real BLE command capability, this allowlist is the correctness floor.
+#
+# How to extend: confirm via field testing that BLE commands (power,
+# brightness, RGB) actually change device state, then add the SKU here
+# and note the test result in the PR.
+BLE_COMMAND_SUPPORTED_MODELS: frozenset[str] = frozenset({
+    "H6199",  # RGBIC — confirmed working per issue #59 (at-9 report, ~10s lag).
+})
+
 # Packet head byte used for all command frames.
 _PACKET_HEAD_COMMAND = 0x33
 

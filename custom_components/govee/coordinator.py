@@ -37,7 +37,11 @@ try:
         BluetoothCallbackMatcher,
         BluetoothScanningMode,
     )
-    from .api.ble import GoveeBLEDevice, SEGMENTED_MODELS
+    from .api.ble import (
+        BLE_COMMAND_SUPPORTED_MODELS,
+        GoveeBLEDevice,
+        SEGMENTED_MODELS,
+    )
 
     HAS_BLUETOOTH = True
 except ImportError:  # pragma: no cover — HA installs without Bluetooth
@@ -209,6 +213,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # BLE direct transport — per-device GoveeBLEDevice instances
         # populated dynamically from Bluetooth advertisements.
         self._ble_devices: dict[str, GoveeBLEDevice] = {} if HAS_BLUETOOTH else {}
+
+        # SKUs for which we've already logged "advertised but not on the
+        # BLE command allowlist" — avoid spamming the log on every advert.
+        self._ble_ignored_skus_logged: set[str] = set()
 
         # Track in-flight power-off commands so segment entities can
         # avoid racing with a concurrent device power-off (issue #16).
@@ -464,6 +472,24 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     break
 
         if matched_id is None:
+            return
+
+        # BLE advertisement visibility is not the same as BLE command
+        # capability (issue #59). Some SKUs advertise BLE but silently
+        # drop command frames — enrolling them in the dispatch path
+        # makes every control command disappear. Only enroll SKUs whose
+        # BLE command set is verified.
+        if ble_sku not in BLE_COMMAND_SUPPORTED_MODELS:
+            if ble_sku not in self._ble_ignored_skus_logged:
+                self._ble_ignored_skus_logged.add(ble_sku)
+                _LOGGER.info(
+                    "%s (SKU=%s) is advertising BLE but is not on the BLE "
+                    "command allowlist. Staying cloud-only. If BLE commands "
+                    "are known to work for this SKU, please open a GitHub "
+                    "issue referencing #59 so it can be added.",
+                    self._devices[matched_id].name,
+                    ble_sku,
+                )
             return
 
         if matched_id not in self._ble_devices:

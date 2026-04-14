@@ -1249,12 +1249,19 @@ class TestBleAdvertisementHandling:
         # Inject the names that the conditional import would have set
         coord_mod.GoveeBLEDevice = RealBLEDevice
         coord_mod.SEGMENTED_MODELS = RealSegModels
+        # Broad allowlist so the enrollment-path tests exercise real logic
+        # regardless of the production-default allowlist content. The
+        # enforcement path is covered by its own dedicated test.
+        coord_mod.BLE_COMMAND_SUPPORTED_MODELS = frozenset(
+            {"H6053", "H6072", "H6102", "H6199", "H6076", "H6126"}
+        )
 
         coord = object.__new__(coord_mod.GoveeCoordinator)
         coord._devices = devices
         coord._ble_devices = {}
         coord._transport_health = {}
         coord._states = {}
+        coord._ble_ignored_skus_logged = set()
         return coord
 
     def _make_service_info(self, name: str, address: str):
@@ -1267,6 +1274,32 @@ class TestBleAdvertisementHandling:
         info.device.name = name
         info.advertisement = MagicMock()
         return info
+
+    def test_sku_not_on_allowlist_is_ignored(self, sample_device):
+        """Advertisements for SKUs outside the BLE allowlist must not enroll
+        the device for command dispatch (issue #59). Advertising BLE is not
+        proof the device will accept BLE command frames."""
+        import custom_components.govee.coordinator as coord_mod
+        from custom_components.govee.api.ble import GoveeBLEDevice as RealBLEDevice
+        from custom_components.govee.api.ble import SEGMENTED_MODELS as RealSegModels
+
+        coord_mod.GoveeBLEDevice = RealBLEDevice
+        coord_mod.SEGMENTED_MODELS = RealSegModels
+        # Narrow allowlist — does NOT include the advertised SKU below.
+        coord_mod.BLE_COMMAND_SUPPORTED_MODELS = frozenset({"H9999"})
+
+        coord = object.__new__(coord_mod.GoveeCoordinator)
+        coord._devices = {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
+        coord._ble_devices = {}
+        coord._transport_health = {}
+        coord._states = {}
+        coord._ble_ignored_skus_logged = set()
+
+        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        coord._handle_ble_advertisement(info)
+
+        assert "AA:BB:CC:DD:EE:FF:00:11" not in coord._ble_devices
+        assert "H6072" in coord._ble_ignored_skus_logged
 
     def test_single_sku_match_creates_ble_device(self, sample_device):
         """BLE advertisement matching a single cloud device by SKU creates a GoveeBLEDevice."""
