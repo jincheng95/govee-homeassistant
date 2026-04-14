@@ -5,6 +5,7 @@ Mutable state that changes with device updates from API or MQTT.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -128,6 +129,21 @@ class GoveeDeviceState:
     # "api" = from REST poll, "mqtt" = from push, "optimistic" = from command
     source: str = "api"
 
+    # Monotonic timestamp of the most recent optimistic write. Used by the
+    # coordinator to apply a short grace period during which API polls don't
+    # overwrite optimistic power/brightness — covers out-of-range BLE devices
+    # and slow cloud round-trips. Reset by MQTT push confirmations.
+    last_optimistic_update: float | None = None
+
+    def _stamp_optimistic(self) -> None:
+        """Record that an optimistic write just happened."""
+        self.source = "optimistic"
+        self.last_optimistic_update = time.monotonic()
+
+    def clear_optimistic_window(self) -> None:
+        """End the optimistic grace period (e.g. on confirmed MQTT push)."""
+        self.last_optimistic_update = None
+
     def update_from_api(self, data: dict[str, Any]) -> None:
         """Update state from API response.
 
@@ -206,21 +222,25 @@ class GoveeDeviceState:
             temp = data["colorTemInKelvin"]
             self.color_temp_kelvin = int(temp) if temp else None
 
+        # A confirmed push ends the optimistic grace window — from this point
+        # on API polls are authoritative again for power/brightness.
+        self.clear_optimistic_window()
+
     def apply_optimistic_power(self, power_on: bool) -> None:
         """Apply optimistic power state update."""
         self.power_state = power_on
-        self.source = "optimistic"
+        self._stamp_optimistic()
 
     def apply_optimistic_brightness(self, brightness: int) -> None:
         """Apply optimistic brightness update."""
         self.brightness = brightness
-        self.source = "optimistic"
+        self._stamp_optimistic()
 
     def apply_optimistic_color(self, color: RGBColor) -> None:
         """Apply optimistic color update."""
         self.color = color
         self.color_temp_kelvin = None  # RGB mode
-        self.source = "optimistic"
+        self._stamp_optimistic()
         # Setting a color overrides any running scene
         self.active_scene = None
         self.active_scene_name = None
@@ -229,7 +249,7 @@ class GoveeDeviceState:
         """Apply optimistic color temperature update."""
         self.color_temp_kelvin = kelvin
         self.color = None  # Color temp mode
-        self.source = "optimistic"
+        self._stamp_optimistic()
         # Setting color temp overrides any running scene
         self.active_scene = None
         self.active_scene_name = None
@@ -246,7 +266,7 @@ class GoveeDeviceState:
         self.active_scene_name = scene_name
         self.last_scene_id = scene_id
         self.last_scene_name = scene_name
-        self.source = "optimistic"
+        self._stamp_optimistic()
         # Save current color/color_temp before clearing so we can restore on scene clear.
         # Only save when a value exists so scene A → scene B → clear restores pre-A color.
         # Skip RGBColor(0,0,0) — the API returns colorRgb=0 when a scene is running,
@@ -274,7 +294,7 @@ class GoveeDeviceState:
         When a DIY Scene is activated, DreamView, music mode, and regular scene are cleared.
         """
         self.active_diy_scene = scene_id
-        self.source = "optimistic"
+        self._stamp_optimistic()
         # Save current color/color_temp before clearing (same logic as regular scenes)
         if self.color is not None and self.color.as_packed_int != 0:
             self.last_color = self.color
@@ -301,7 +321,7 @@ class GoveeDeviceState:
         """
         self.diy_style = style
         self.diy_style_value = style_value
-        self.source = "optimistic"
+        self._stamp_optimistic()
 
     def apply_optimistic_music_mode(self, enabled: bool) -> None:
         """Apply optimistic music mode update (legacy BLE).
@@ -310,7 +330,7 @@ class GoveeDeviceState:
         When Music Mode is enabled, DreamView and scenes are cleared.
         """
         self.music_mode_enabled = enabled
-        self.source = "optimistic"
+        self._stamp_optimistic()
         # Mutual exclusion: clear other modes when enabling music mode
         if enabled:
             self.dreamview_enabled = False
@@ -338,7 +358,7 @@ class GoveeDeviceState:
         self.music_sensitivity = sensitivity
         self.music_mode_name = mode_name
         self.music_mode_enabled = True  # Also set enabled for switch state
-        self.source = "optimistic"
+        self._stamp_optimistic()
         # Mutual exclusion: clear other modes when enabling music mode
         self.dreamview_enabled = False
         self.active_scene = None
@@ -348,18 +368,18 @@ class GoveeDeviceState:
     def apply_optimistic_oscillation(self, oscillating: bool) -> None:
         """Apply optimistic oscillation update (fans)."""
         self.oscillating = oscillating
-        self.source = "optimistic"
+        self._stamp_optimistic()
 
     def apply_optimistic_work_mode(self, work_mode: int, mode_value: int) -> None:
         """Apply optimistic work mode update (fans)."""
         self.work_mode = work_mode
         self.mode_value = mode_value
-        self.source = "optimistic"
+        self._stamp_optimistic()
 
     def apply_optimistic_hdmi_source(self, source: int) -> None:
         """Apply optimistic HDMI source update."""
         self.hdmi_source = source
-        self.source = "optimistic"
+        self._stamp_optimistic()
 
     def apply_optimistic_dreamview(self, enabled: bool) -> None:
         """Apply optimistic DreamView (Movie Mode) update.
@@ -368,7 +388,7 @@ class GoveeDeviceState:
         When DreamView is enabled, music mode and scenes are cleared.
         """
         self.dreamview_enabled = enabled
-        self.source = "optimistic"
+        self._stamp_optimistic()
         # Mutual exclusion: clear other modes when enabling DreamView
         if enabled:
             self.music_mode_enabled = False

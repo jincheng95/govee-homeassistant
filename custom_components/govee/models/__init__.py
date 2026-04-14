@@ -29,6 +29,7 @@ from .device import (
     SegmentCapability,
 )
 from .state import GoveeDeviceState, RGBColor, SegmentState
+from .transport import TRANSPORT_KINDS, TransportHealth, TransportKind
 
 __all__ = [
     # Device
@@ -58,4 +59,8 @@ __all__ = [
     "TemperatureSettingCommand",
     "create_dreamview_command",
     "create_night_light_command",
+    # Transport health
+    "TransportHealth",
+    "TransportKind",
+    "TRANSPORT_KINDS",
 ]

@@ -16,6 +16,7 @@ CONF_ENABLE_SCENES: Final = "enable_scenes"
 CONF_ENABLE_DIY_SCENES: Final = "enable_diy_scenes"
 CONF_ENABLE_SEGMENTS: Final = "enable_segments"
 CONF_SEGMENT_MODE: Final = "segment_mode"
+CONF_EXPOSE_TRANSPORT_ENTITIES: Final = "expose_transport_entities"
 
 # Defaults
 DEFAULT_POLL_INTERVAL: Final = 60  # seconds
@@ -24,6 +25,20 @@ DEFAULT_ENABLE_SCENES: Final = True
 DEFAULT_ENABLE_DIY_SCENES: Final = True
 DEFAULT_ENABLE_SEGMENTS: Final = True
 DEFAULT_SEGMENT_MODE: Final = "individual"  # "disabled", "grouped", or "individual"
+DEFAULT_EXPOSE_TRANSPORT_ENTITIES: Final = False
+
+# Optimistic state handling
+# Grace window (seconds) during which API polls do NOT overwrite optimistic
+# power/brightness. Masks out-of-range BLE devices and slow cloud responses
+# without producing the "UI flipflop" that longer windows would. MQTT push
+# confirmations clear the window early.
+OPTIMISTIC_GRACE_CAP_SECONDS: Final = 15
+
+# BLE constants
+# Govee AWS/BLE advert manufacturer ID. Verified against
+# Bluetooth-Devices/govee-ble (used by H5127 and related). Additional IDs
+# remain unverified and are omitted until observed in the wild.
+GOVEE_BLE_MANUFACTURER_IDS: Final = (0x8803,)  # 34819
 
 # Segment mode options
 SEGMENT_MODE_DISABLED: Final = "disabled"

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -41,8 +42,19 @@ try:
     HAS_BLUETOOTH = True
 except ImportError:  # pragma: no cover — HA installs without Bluetooth
     HAS_BLUETOOTH = False
-from .const import DOMAIN
-from .models import GoveeDevice, GoveeDeviceState, RGBColor
+from .const import (
+    DOMAIN,
+    GOVEE_BLE_MANUFACTURER_IDS,
+    OPTIMISTIC_GRACE_CAP_SECONDS,
+)
+from .models import (
+    GoveeDevice,
+    GoveeDeviceState,
+    RGBColor,
+    TRANSPORT_KINDS,
+    TransportHealth,
+    TransportKind,
+)
 from .models.commands import (
     BrightnessCommand,
     ColorCommand,
@@ -53,6 +65,7 @@ from .models.commands import (
     MusicModeCommand,
     PowerCommand,
     SceneCommand,
+    SegmentColorCommand,
     TemperatureSettingCommand,
     ToggleCommand,
     WorkModeCommand,
@@ -78,6 +91,17 @@ _LOGGER = logging.getLogger(__name__)
 
 # State fetch timeout per device
 STATE_FETCH_TIMEOUT = 30
+
+# Segment command pacing — Govee silently rate-limits bursts of segment
+# updates on RGBIC strips (H80A1 has 14 segments). Serialize per-device
+# with a small gap so a "scene" that hits every segment doesn't drop
+# commands with empty JSON responses (issue #53).
+SEGMENT_COMMAND_PACING_SECONDS = 0.12
+
+# BLE advertisement staleness threshold. When the last advertisement
+# seen for a BLE device is older than this, mark the BLE transport
+# unavailable. Govee devices typically re-advertise every few seconds.
+BLE_STALE_SECONDS = 120
 
 # BLE advertising name prefixes used by Govee devices
 _BLE_NAME_PREFIXES = ("Govee_*", "ihoment_*", "GBK_*")
@@ -137,6 +161,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             config_entry=config_entry,
             name=DOMAIN,
             update_interval=timedelta(seconds=poll_interval),
+            always_update=False,
         )
 
         self._config_entry = config_entry
@@ -149,6 +174,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # State cache
         self._states: dict[str, GoveeDeviceState] = {}
+
+        # Per-device transport health: device_id -> kind -> TransportHealth.
+        # Drives the optional per-device connectivity binary_sensors and
+        # feeds the existing transport diagnostic attributes.
+        self._transport_health: dict[str, dict[TransportKind, TransportHealth]] = {}
+
+        # Per-device asyncio.Lock for serializing segment commands. Govee
+        # rate-limits parallel segment dispatch with empty-body 200s; the
+        # lock keeps one in flight at a time, paced by
+        # SEGMENT_COMMAND_PACING_SECONDS to stay under the 100/min cap.
+        self._segment_locks: dict[str, asyncio.Lock] = {}
 
         # Scene cache manager
         self._scene_cache = SceneCacheManager(api_client)
@@ -228,6 +264,90 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """Return True if a BLE transport is active for this device."""
         return device_id in self._ble_devices
 
+    # ------------------------------------------------------------------ #
+    # Transport health (per-device connectivity tracking)
+    # ------------------------------------------------------------------ #
+
+    def _ensure_transport_health(self, device_id: str) -> None:
+        """Initialize transport-health entries for a device if missing."""
+        if device_id in self._transport_health:
+            return
+        self._transport_health[device_id] = {
+            kind: TransportHealth(transport=kind) for kind in TRANSPORT_KINDS
+        }
+
+    def get_transport_health(
+        self,
+        device_id: str,
+        transport: TransportKind,
+    ) -> TransportHealth | None:
+        """Return health for (device, transport), or None if untracked."""
+        per_device = self._transport_health.get(device_id)
+        if per_device is None:
+            return None
+        return per_device.get(transport)
+
+    def _record_transport_success(
+        self,
+        device_id: str,
+        transport: TransportKind,
+    ) -> None:
+        """Stamp a successful transport use."""
+        self._ensure_transport_health(device_id)
+        self._transport_health[device_id][transport].mark_success(
+            datetime.now(timezone.utc)
+        )
+
+    def _record_transport_failure(
+        self,
+        device_id: str,
+        transport: TransportKind,
+        reason: str,
+    ) -> None:
+        """Stamp a failed transport use."""
+        self._ensure_transport_health(device_id)
+        self._transport_health[device_id][transport].mark_failure(
+            datetime.now(timezone.utc), reason
+        )
+
+    def _refresh_mqtt_health(self) -> None:
+        """Propagate MQTT client connection state to all device health entries.
+
+        MVP uses polling each coordinator cycle; a push callback from the
+        MQTT client is a follow-up enhancement.
+        """
+        connected = self.mqtt_connected
+        for device_id in self._devices:
+            self._ensure_transport_health(device_id)
+            mqtt = self._transport_health[device_id]["mqtt"]
+            if connected:
+                # Don't backdate last_success_ts here — only real pushes do that.
+                mqtt.is_available = True
+                mqtt.last_failure_reason = None
+            else:
+                mqtt.is_available = False
+                if self._mqtt_client is None:
+                    mqtt.last_failure_reason = "not_configured"
+                else:
+                    mqtt.last_failure_reason = "disconnected"
+
+    def _refresh_ble_staleness(self) -> None:
+        """Mark BLE unavailable for devices whose last advertisement is stale."""
+        now = datetime.now(timezone.utc)
+        for device_id in self._devices:
+            self._ensure_transport_health(device_id)
+            ble = self._transport_health[device_id]["ble"]
+            # Not connected at all
+            if device_id not in self._ble_devices:
+                ble.is_available = False
+                continue
+            last = ble.last_success_ts
+            if last is None:
+                continue
+            if (now - last).total_seconds() > BLE_STALE_SECONDS:
+                ble.is_available = False
+                ble.last_failure_reason = "stale_advertisement"
+
     @property
     def states(self) -> dict[str, GoveeDeviceState]:
         """Get current states for all devices."""
@@ -290,7 +410,24 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             )
             unsubs.append(unsub)
 
-        _LOGGER.debug("BLE advertisement subscription active for %s", _BLE_NAME_PREFIXES)
+        # Some Govee SKUs (H6053 / H6076 / H6126, issue #58) don't deliver
+        # reliably via name-prefix matchers in all HA Bluetooth setups.
+        # Register a complementary manufacturer-ID callback so adverts
+        # with the Govee company ID are always captured.
+        for mfg_id in GOVEE_BLE_MANUFACTURER_IDS:
+            unsub = bluetooth.async_register_callback(
+                self.hass,
+                _on_ble_advertisement,
+                BluetoothCallbackMatcher(manufacturer_id=mfg_id, connectable=True),
+                BluetoothScanningMode.ACTIVE,
+            )
+            unsubs.append(unsub)
+
+        _LOGGER.debug(
+            "BLE advertisement subscription active for names=%s manufacturer_ids=%s",
+            _BLE_NAME_PREFIXES,
+            GOVEE_BLE_MANUFACTURER_IDS,
+        )
         return unsubs
 
     @callback
@@ -344,6 +481,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._ble_devices[matched_id].set_ble_device_and_advertisement_data(
                 service_info.device, service_info.advertisement,
             )
+
+        # Stamp last-seen for the BLE connectivity sensor and notify entities.
+        self._record_transport_success(matched_id, "ble")
+        # async_set_updated_data requires super().__init__ to have run — guard
+        # for tests that instantiate the coordinator via object.__new__().
+        try:
+            if self.data is not None:
+                self.async_set_updated_data(self._states)
+        except AttributeError:
+            pass
 
     def _notify_observers(self, device_id: str, state: GoveeDeviceState) -> None:
         """Notify all observers of state change."""
@@ -410,6 +557,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 self._states[device.device_id] = GoveeDeviceState.create_empty(
                     device.device_id
                 )
+                self._ensure_transport_health(device.device_id)
 
             _LOGGER.info(
                 "Discovered %d Govee devices (enable_groups=%s)",
@@ -505,6 +653,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # Update state from MQTT data
         state.update_from_mqtt(state_data)
 
+        # Confirmed push — record transport health and end the optimistic
+        # grace window for this device (state.update_from_mqtt also calls
+        # clear_optimistic_window, but recording MQTT health is our job).
+        self._record_transport_success(device_id, "mqtt")
+
         # Update coordinator data and notify HA
         self.async_set_updated_data(self._states)
 
@@ -569,6 +722,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             )
             await async_delete_rate_limit_issue(self.hass, self._config_entry)
 
+        # Refresh transport-health snapshots tied to coordinator cadence.
+        self._refresh_mqtt_health()
+        self._refresh_ble_staleness()
+
         return self._states
 
     async def _fetch_device_state(
@@ -595,11 +752,41 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         try:
             state = await self._api_client.get_device_state(device_id, device.sku)
+            self._record_transport_success(device_id, "cloud_api")
 
             # Preserve optimistic state fields that API doesn't reliably return.
             # Clear them when device is turned off (no longer active).
             existing_state = self._states.get(device_id)
             if existing_state:
+                # Optimistic grace period (issue #60): if a control command
+                # just fired, the device may not yet be visible to the cloud
+                # (e.g. BLE-out-of-range or slow AWS propagation). Preserve
+                # the optimistic power/brightness for a short window instead
+                # of flipflopping the UI. MQTT pushes clear the window early.
+                grace_cap = OPTIMISTIC_GRACE_CAP_SECONDS
+                grace_window = min(
+                    2 * self.update_interval.total_seconds(), grace_cap
+                )
+                optimistic_ts = existing_state.last_optimistic_update
+                in_grace = (
+                    existing_state.source == "optimistic"
+                    and optimistic_ts is not None
+                    and (time.monotonic() - optimistic_ts) < grace_window
+                )
+                if in_grace and existing_state.power_state != state.power_state:
+                    _LOGGER.debug(
+                        "Preserving optimistic power for %s during %ds grace "
+                        "(API=%s optimistic=%s)",
+                        device_id,
+                        int(grace_window),
+                        state.power_state,
+                        existing_state.power_state,
+                    )
+                    state.power_state = existing_state.power_state
+                    state.brightness = existing_state.brightness
+                    state.source = "optimistic"
+                    state.last_optimistic_update = optimistic_ts
+
                 # Log state transitions from API for debugging stale-state issues
                 if existing_state.power_state != state.power_state:
                     _LOGGER.debug(
@@ -708,6 +895,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             return existing if existing else GoveeDeviceState.create_empty(device_id)
 
         except Exception as err:
+            self._record_transport_failure(device_id, "cloud_api", str(err))
             return err
 
     async def async_control_device(
@@ -746,6 +934,20 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     return True
                 # BLE failed — fall through to REST
 
+            # Serialize segment commands per device. Govee silently drops
+            # parallel segment requests (issue #53); sequential dispatch
+            # with a small gap respects the 100/min rate limit. Optimistic
+            # state is applied before entering the lock so UI feedback is
+            # immediate; the actual REST write trails by <~1.5s for a
+            # full 14-segment burst on RGBIC strips.
+            if isinstance(command, SegmentColorCommand):
+                self._apply_optimistic_update(device_id, command)
+                self.async_set_updated_data(self._states)
+                success = await self._dispatch_segment_command(
+                    device_id, device.sku, command
+                )
+                return success
+
             success = await self._api_client.control_device(
                 device_id,
                 device.sku,
@@ -753,20 +955,67 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             )
 
             if success:
+                self._record_transport_success(device_id, "cloud_api")
                 # Apply optimistic update
                 self._apply_optimistic_update(device_id, command)
                 self.async_set_updated_data(self._states)
+            else:
+                self._record_transport_failure(
+                    device_id, "cloud_api", "control_returned_false"
+                )
 
             return success
 
         except GoveeAuthError as err:
+            self._record_transport_failure(device_id, "cloud_api", "auth_failed")
             raise ConfigEntryAuthFailed("Invalid API key") from err
         except GoveeApiError as err:
             _LOGGER.error("Control command failed: %s", err)
+            self._record_transport_failure(device_id, "cloud_api", str(err))
             return False
         finally:
             if is_power_off:
                 self._pending_power_off.discard(device_id)
+
+    async def _dispatch_segment_command(
+        self,
+        device_id: str,
+        sku: str,
+        command: SegmentColorCommand,
+    ) -> bool:
+        """Send a single segment command under a per-device lock.
+
+        Pacing: after each REST call we hold the lock for a short delay so
+        the next segment command has to wait — this bounds the effective
+        dispatch rate for a multi-segment burst to stay within Govee's
+        rate limit without adding a separate queue.
+        """
+        lock = self._segment_locks.setdefault(device_id, asyncio.Lock())
+        async with lock:
+            try:
+                success = await self._api_client.control_device(
+                    device_id, sku, command
+                )
+            except GoveeAuthError:
+                self._record_transport_failure(device_id, "cloud_api", "auth_failed")
+                raise
+            except GoveeApiError as err:
+                _LOGGER.error(
+                    "Segment command failed for %s: %s", device_id, err
+                )
+                self._record_transport_failure(device_id, "cloud_api", str(err))
+                return False
+
+            if success:
+                self._record_transport_success(device_id, "cloud_api")
+            else:
+                self._record_transport_failure(
+                    device_id, "cloud_api", "segment_returned_false"
+                )
+
+            # Pace the next acquire so bursts don't trip silent rate limiting.
+            await asyncio.sleep(SEGMENT_COMMAND_PACING_SECONDS)
+            return success
 
     async def _try_ble_command(self, device_id: str, command: DeviceCommand) -> bool:
         """Attempt to send a command via BLE. Returns True on success.
@@ -793,15 +1042,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             else:
                 # Not BLE-capable (scenes, color_temp, work modes, etc.)
                 return False
-        except Exception:
+        except Exception as err:
             _LOGGER.debug(
                 "BLE command failed for %s, falling back to REST",
                 device_id,
                 exc_info=True,
             )
+            self._record_transport_failure(device_id, "ble", str(err))
             return False
         else:
             _LOGGER.debug("BLE command succeeded for %s: %s", device_id, type(command).__name__)
+            self._record_transport_success(device_id, "ble")
             return True
 
     async def _ensure_device_topic(self, device_id: str) -> str | None:

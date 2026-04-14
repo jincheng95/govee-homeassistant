@@ -1,6 +1,12 @@
 {
   "domain": "govee",
   "name": "Govee Cloud Integration",
+  "bluetooth": [
+    {"local_name": "Govee_*", "connectable": true},
+    {"local_name": "ihoment_*", "connectable": true},
+    {"local_name": "GBK_*", "connectable": true},
+    {"manufacturer_id": 34819, "connectable": true}
+  ],
   "codeowners": ["@lasswellt"],
   "config_flow": true,
   "dependencies": [],
@@ -17,6 +23,6 @@
     "cryptography>=41.0.0"
   ],
   "ssdp": [],
-  "version": "2026.4.3",
+  "version": "2026.4.4",
   "zeroconf": []
 }

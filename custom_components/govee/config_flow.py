@@ -39,6 +39,7 @@ from .const import (
     CONF_ENABLE_GROUPS,
     CONF_ENABLE_SCENES,
     CONF_ENABLE_SEGMENTS,
+    CONF_EXPOSE_TRANSPORT_ENTITIES,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
     CONF_SEGMENT_MODE,
@@ -47,6 +48,7 @@ from .const import (
     DEFAULT_ENABLE_GROUPS,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_ENABLE_SEGMENTS,
+    DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_SEGMENT_MODE,
     DOMAIN,
@@ -643,6 +645,13 @@ class GoveeOptionsFlow(OptionsFlow):
                         CONF_ENABLE_DIY_SCENES,
                         default=options.get(
                             CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES
+                        ),
+                    ): bool,
+                    vol.Optional(
+                        CONF_EXPOSE_TRANSPORT_ENTITIES,
+                        default=options.get(
+                            CONF_EXPOSE_TRANSPORT_ENTITIES,
+                            DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
                         ),
                     ): bool,
                 }

@@ -1253,6 +1253,8 @@ class TestBleAdvertisementHandling:
         coord = object.__new__(coord_mod.GoveeCoordinator)
         coord._devices = devices
         coord._ble_devices = {}
+        coord._transport_health = {}
+        coord._states = {}
         return coord
 
     def _make_service_info(self, name: str, address: str):
@@ -1394,6 +1396,9 @@ class TestTryBleCommand:
 
         coord = object.__new__(GoveeCoordinator)
         coord._ble_devices = {}
+        coord._transport_health = {}
+        coord._devices = {}
+        coord._states = {}
 
         mock_ble = MagicMock()
         mock_ble.turn_on = AsyncMock()
