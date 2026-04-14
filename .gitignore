@@ -156,3 +156,8 @@ docs/legacy-*.md
 
 # GitHub profile README (not part of this project)
 profile-README.md
+# Blitz / Claude session artifacts (local tooling, not repo state)
+.cc-sessions/
+.claude/
+sprints/
+sprint-registry.json

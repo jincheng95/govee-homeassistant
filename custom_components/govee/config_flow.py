@@ -258,6 +258,10 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             code = user_input["verification_code"].strip()
+            if self._email is None or self._password is None:
+                # Defensive — the verification step should never be reached
+                # without these already set by the preceding account step.
+                return self.async_abort(reason="missing_credentials")
             try:
                 self._iot_credentials = await validate_govee_credentials(
                     self._email,

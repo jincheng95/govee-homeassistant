@@ -51,7 +51,7 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from bleak import BleakClient
-from bleak_retry_connector import (
+from bleak_retry_connector import (  # type: ignore[attr-defined]
     BleakClientWithServiceCache,
     BleakError,
     close_stale_connections_by_address,

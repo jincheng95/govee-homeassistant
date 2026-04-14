@@ -390,7 +390,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     # BLE direct transport
     # ------------------------------------------------------------------ #
 
-    def setup_ble_subscriptions(self) -> list:
+    def setup_ble_subscriptions(self) -> list[Any]:
         """Subscribe to BLE advertisements for nearby Govee devices.
 
         Called from ``async_setup_entry`` after the coordinator is created.
@@ -403,10 +403,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if not HAS_BLUETOOTH:
             return []
 
-        unsubs = []
+        unsubs: list[Any] = []
 
         @callback
-        def _on_ble_advertisement(service_info, change) -> None:
+        def _on_ble_advertisement(service_info: Any, change: Any) -> None:
             self._handle_ble_advertisement(service_info)
 
         for prefix in _BLE_NAME_PREFIXES:
@@ -439,7 +439,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         return unsubs
 
     @callback
-    def _handle_ble_advertisement(self, service_info) -> None:
+    def _handle_ble_advertisement(self, service_info: Any) -> None:
         """Correlate a BLE advertisement with a known cloud device.
 
         Matching strategy (see ``docs/_research/2026-04-09_multi-transport-single-entity.md``):
@@ -790,9 +790,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 # the optimistic power/brightness for a short window instead
                 # of flipflopping the UI. MQTT pushes clear the window early.
                 grace_cap = OPTIMISTIC_GRACE_CAP_SECONDS
-                grace_window = min(
-                    2 * self.update_interval.total_seconds(), grace_cap
+                poll_seconds = (
+                    self.update_interval.total_seconds()
+                    if self.update_interval is not None
+                    else 60.0
                 )
+                grace_window = min(2 * poll_seconds, grace_cap)
                 optimistic_ts = existing_state.last_optimistic_update
                 in_grace = (
                     existing_state.source == "optimistic"

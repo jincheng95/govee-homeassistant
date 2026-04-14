@@ -214,7 +214,6 @@ class GoveeDeviceState:
                         except (TypeError, ValueError):
                             pass
 
-
     def update_from_mqtt(self, data: dict[str, Any]) -> None:
         """Update state from MQTT push message.
 
