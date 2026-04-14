@@ -28,6 +28,7 @@ from .models import (
     GoveeDevice,
     MusicModeCommand,
     PowerCommand,
+    TemperatureSettingCommand,
     ToggleCommand,
     create_night_light_command,
 )
@@ -78,10 +79,30 @@ async def async_setup_entry(
             )
             _LOGGER.debug("Created BLE music mode switch entity for %s", device.name)
 
-        # Create switch for heater auto-stop toggle (H7130 thermostatToggle)
-        if device.supports_thermostat_toggle:
+        # Create switch for heater auto-stop toggle. Two shapes exist:
+        #  - H7130 exposes a dedicated ``thermostatToggle`` capability, or
+        #  - H713C / similar carry ``autoStop`` as a field of the
+        #    ``targetTemperature`` STRUCT. Both get the same switch entity;
+        #    the entity picks the right command at turn_on/off time
+        #    (issue #29).
+        if (
+            device.supports_thermostat_toggle
+            or device.supports_temperature_setting_auto_stop
+        ):
             entities.append(GoveeAutoStopSwitchEntity(coordinator, device))
             _LOGGER.debug("Created auto-stop switch entity for %s", device.name)
+
+        # Minimal power control for appliances that currently have no
+        # dedicated platform — heaters, dehumidifiers, and purifiers keep a
+        # switch for on/off so users aren't left without control after the
+        # light filter drops them (issue #54). Heaters also have a climate
+        # refactor pending; this keeps parity in the interim.
+        if (
+            device.supports_power
+            and not device.is_group
+            and (device.is_heater or device.is_humidifier)
+        ):
+            entities.append(GoveeAppliancePowerSwitchEntity(coordinator, device))
 
         # Create switch for DreamView (Movie Mode) toggle
         # Skip for group devices - groups don't support DreamView
@@ -415,22 +436,86 @@ class GoveeAutoStopSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
             return state.heater_auto_stop == 1
         return self._is_on
 
+    async def _send_auto_stop(self, enabled: bool) -> bool:
+        """Dispatch auto-stop using whichever shape the device supports.
+
+        Devices with a dedicated ``thermostatToggle`` capability use a
+        ToggleCommand. Devices that carry ``autoStop`` inside the
+        ``targetTemperature`` STRUCT need a TemperatureSettingCommand — we
+        must send the current target temperature alongside so the write
+        doesn't clobber it (issue #29).
+        """
+        if self._device.supports_thermostat_toggle:
+            return await self.coordinator.async_control_device(
+                self._device_id,
+                ToggleCommand(
+                    toggle_instance=INSTANCE_THERMOSTAT_TOGGLE, enabled=enabled
+                ),
+            )
+
+        state = self.coordinator.get_state(self._device_id)
+        current_temp = (
+            state.heater_temperature
+            if state and state.heater_temperature is not None
+            else 20
+        )
+        return await self.coordinator.async_control_device(
+            self._device_id,
+            TemperatureSettingCommand(
+                temperature=int(current_temp),
+                auto_stop=1 if enabled else 0,
+            ),
+        )
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn auto-stop on."""
-        success = await self.coordinator.async_control_device(
-            self._device_id,
-            ToggleCommand(toggle_instance=INSTANCE_THERMOSTAT_TOGGLE, enabled=True),
-        )
-        if success:
+        if await self._send_auto_stop(True):
             self._is_on = True
             self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn auto-stop off."""
-        success = await self.coordinator.async_control_device(
-            self._device_id,
-            ToggleCommand(toggle_instance=INSTANCE_THERMOSTAT_TOGGLE, enabled=False),
-        )
-        if success:
+        if await self._send_auto_stop(False):
             self._is_on = False
             self.async_write_ha_state()
+
+
+class GoveeAppliancePowerSwitchEntity(GoveeEntity, SwitchEntity):
+    """Power switch for appliances without a dedicated platform.
+
+    Heaters and (de)humidifiers no longer appear as lights after the
+    issue-#54 filter change; this entity restores basic on/off control
+    until the full climate and humidifier platforms land.
+    """
+
+    _attr_translation_key = "govee_appliance_power"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        """Initialize the appliance power switch entity."""
+        super().__init__(coordinator, device)
+        # Use the device's own name as the switch name.
+        self._attr_name = None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the appliance is on."""
+        state = self.device_state
+        return state.power_state if state else None
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the appliance on."""
+        await self.coordinator.async_control_device(
+            self._device_id,
+            PowerCommand(power_on=True),
+        )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the appliance off."""
+        await self.coordinator.async_control_device(
+            self._device_id,
+            PowerCommand(power_on=False),
+        )

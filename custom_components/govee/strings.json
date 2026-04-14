@@ -150,6 +150,9 @@
       },
       "govee_heater_auto_stop": {
         "name": "Auto Stop"
+      },
+      "govee_appliance_power": {
+        "name": "{device_name}"
       }
     },
     "sensor": {

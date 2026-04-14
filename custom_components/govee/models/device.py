@@ -309,6 +309,11 @@ class GoveeDevice:
         return self.device_type == DEVICE_TYPE_PURIFIER
 
     @property
+    def is_humidifier(self) -> bool:
+        """Check if device is a humidifier or dehumidifier."""
+        return self.device_type == DEVICE_TYPE_HUMIDIFIER
+
+    @property
     def supports_oscillation(self) -> bool:
         """Check if device supports oscillation (fans)."""
         return any(cap.is_oscillation for cap in self.capabilities)
@@ -325,6 +330,28 @@ class GoveeDevice:
             cap.type == CAPABILITY_TOGGLE and cap.instance == INSTANCE_THERMOSTAT_TOGGLE
             for cap in self.capabilities
         )
+
+    @property
+    def supports_temperature_setting_auto_stop(self) -> bool:
+        """Check if device exposes autoStop inside a temperature_setting STRUCT.
+
+        Some heaters (e.g. H713C) carry the auto-stop flag as a field of the
+        ``targetTemperature`` STRUCT rather than as a separate
+        ``thermostatToggle`` capability. The switch and number entities need
+        to know which shape a given device uses (issue #29).
+        """
+        for cap in self.capabilities:
+            if (
+                cap.type != CAPABILITY_TEMPERATURE_SETTING
+                or cap.instance != INSTANCE_TARGET_TEMPERATURE
+            ):
+                continue
+            fields = cap.parameters.get("fields") if cap.parameters else None
+            if not fields:
+                continue
+            if any(field.get("fieldName") == "autoStop" for field in fields):
+                return True
+        return False
 
     @property
     def supports_work_mode(self) -> bool:
@@ -522,7 +549,13 @@ class GoveeDevice:
     @property
     def is_light_device(self) -> bool:
         """Check if device is a light (not a plug, fan, or other appliance)."""
-        if self.is_fan or self.is_plug:
+        if (
+            self.is_fan
+            or self.is_plug
+            or self.is_heater
+            or self.is_purifier
+            or self.is_humidifier
+        ):
             return False
         return (
             self.device_type == DEVICE_TYPE_LIGHT

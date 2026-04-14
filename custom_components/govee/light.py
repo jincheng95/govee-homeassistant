@@ -69,8 +69,11 @@ async def async_setup_entry(
     enable_scenes = entry.options.get(CONF_ENABLE_SCENES, DEFAULT_ENABLE_SCENES)
 
     for device in coordinator.devices.values():
-        # Only create light entities for devices with power control (not fans)
-        if device.supports_power and not device.is_fan:
+        # Only create light entities for actual lights — appliances (heaters,
+        # fans, dehumidifiers, purifiers, plugs) are surfaced by their own
+        # platforms. Without this filter, e.g. an H7150 dehumidifier would
+        # appear as a light bulb (issue #54).
+        if device.is_light_device and device.supports_power:
             entities.append(GoveeLightEntity(coordinator, device, enable_scenes))
 
         # Create segment entities for RGBIC devices based on per-device mode

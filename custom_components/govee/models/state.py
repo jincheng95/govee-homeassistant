@@ -195,6 +195,26 @@ class GoveeDeviceState:
                 if instance == "hdmiSource":
                     self.hdmi_source = int(value) if value is not None else None
 
+            elif cap_type == "devices.capabilities.temperature_setting":
+                # Heaters report target temperature + autoStop in a STRUCT.
+                # Capturing autoStop here lets temperature-change commands
+                # preserve the user's choice instead of resetting it to 0
+                # (issue #29).
+                if instance == "targetTemperature" and isinstance(value, dict):
+                    temp_val = value.get("temperature")
+                    if temp_val is not None:
+                        try:
+                            self.heater_temperature = int(temp_val)
+                        except (TypeError, ValueError):
+                            pass
+                    auto_stop = value.get("autoStop")
+                    if auto_stop is not None:
+                        try:
+                            self.heater_auto_stop = int(auto_stop)
+                        except (TypeError, ValueError):
+                            pass
+
+
     def update_from_mqtt(self, data: dict[str, Any]) -> None:
         """Update state from MQTT push message.
 
