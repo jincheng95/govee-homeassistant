@@ -47,32 +47,65 @@ async def async_setup_entry(
     """Set up Govee binary sensors from a config entry."""
     coordinator: GoveeCoordinator = entry.runtime_data
 
-    if not entry.options.get(
-        CONF_EXPOSE_TRANSPORT_ENTITIES, DEFAULT_EXPOSE_TRANSPORT_ENTITIES
-    ):
-        _LOGGER.debug(
-            "Transport connectivity entities disabled via options; skipping"
-        )
-        return
-
     entities: list[BinarySensorEntity] = []
+
+    # Water-tank-full sensor for dehumidifiers — always exposed since it
+    # maps to a real device event and there's one per device, not 3×N.
     for device in coordinator.devices.values():
         if device.is_group:
             continue
-        for kind, translation_key, icon in _TRANSPORT_SPECS:
-            entities.append(
-                GoveeTransportConnectivity(
-                    coordinator=coordinator,
-                    device=device,
-                    transport=kind,
-                    translation_key=translation_key,
-                    icon=icon,
+        if device.supports_water_full_event:
+            entities.append(GoveeWaterFullBinarySensor(coordinator, device))
+
+    # Transport connectivity entities are opt-in to avoid creating 3×N
+    # diagnostic entities by default.
+    if entry.options.get(
+        CONF_EXPOSE_TRANSPORT_ENTITIES, DEFAULT_EXPOSE_TRANSPORT_ENTITIES
+    ):
+        for device in coordinator.devices.values():
+            if device.is_group:
+                continue
+            for kind, translation_key, icon in _TRANSPORT_SPECS:
+                entities.append(
+                    GoveeTransportConnectivity(
+                        coordinator=coordinator,
+                        device=device,
+                        transport=kind,
+                        translation_key=translation_key,
+                        icon=icon,
+                    )
                 )
-            )
+    else:
+        _LOGGER.debug(
+            "Transport connectivity entities disabled via options; skipping"
+        )
 
     if entities:
         async_add_entities(entities)
-        _LOGGER.debug("Set up %d transport connectivity entities", len(entities))
+        _LOGGER.debug("Set up %d binary sensor entities", len(entities))
+
+
+class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity):
+    """Binary sensor reporting the water-tank-full event for dehumidifiers."""
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_translation_key = "govee_water_full"
+    _attr_icon = "mdi:cup-water"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: Any,
+    ) -> None:
+        """Initialize the water-full binary sensor."""
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_water_full"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when the water tank is full."""
+        state = self.device_state
+        return state.water_full if state else None
 
 
 class GoveeTransportConnectivity(GoveeEntity, BinarySensorEntity):

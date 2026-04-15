@@ -117,6 +117,12 @@ class GoveeDeviceState:
         None  # Purifier mode value (1=Sleep, 2=Low, 3=High, etc.)
     )
 
+    # Humidifier / dehumidifier state.
+    # Target humidity (Auto mode) and manual speed are both carried in
+    # ``mode_value`` above; the humidifier entity interprets it based on
+    # ``work_mode``. Only the event flag needs its own field.
+    water_full: bool | None = None  # Dehumidifier water-tank-full event
+
     # Last activated scene (for restoring after music mode off)
     last_scene_id: str | None = None
     last_scene_name: str | None = None
@@ -194,6 +200,16 @@ class GoveeDeviceState:
             elif cap_type == "devices.capabilities.mode":
                 if instance == "hdmiSource":
                     self.hdmi_source = int(value) if value is not None else None
+
+            elif cap_type == "devices.capabilities.event":
+                # Event capabilities (e.g. waterFullEvent) report a boolean-
+                # ish value when the event is active. Some backends also
+                # nest it under a STRUCT; accept either shape.
+                if instance == "waterFullEvent":
+                    if isinstance(value, dict):
+                        self.water_full = bool(value.get("state") or value.get("value"))
+                    elif value is not None:
+                        self.water_full = bool(value)
 
             elif cap_type == "devices.capabilities.temperature_setting":
                 # Heaters report target temperature + autoStop in a STRUCT.

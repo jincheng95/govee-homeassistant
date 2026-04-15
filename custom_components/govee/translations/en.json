@@ -172,6 +172,24 @@
       },
       "ble_connectivity": {
         "name": "Bluetooth"
+      },
+      "govee_water_full": {
+        "name": "Water Tank Full"
+      }
+    },
+    "humidifier": {
+      "govee_humidifier": {
+        "name": "{device_name}",
+        "state_attributes": {
+          "mode": {
+            "state": {
+              "low": "Low",
+              "high": "High",
+              "auto": "Auto",
+              "dryer": "Dryer"
+            }
+          }
+        }
       }
     },
     "button": {

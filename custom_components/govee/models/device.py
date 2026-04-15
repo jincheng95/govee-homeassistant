@@ -23,12 +23,14 @@ CAPABILITY_WORK_MODE = "devices.capabilities.work_mode"
 CAPABILITY_PROPERTY = "devices.capabilities.property"
 CAPABILITY_MODE = "devices.capabilities.mode"
 CAPABILITY_TEMPERATURE_SETTING = "devices.capabilities.temperature_setting"
+CAPABILITY_EVENT = "devices.capabilities.event"
 
 # Device type constants
 DEVICE_TYPE_LIGHT = "devices.types.light"
 DEVICE_TYPE_PLUG = "devices.types.socket"
 DEVICE_TYPE_HEATER = "devices.types.heater"
 DEVICE_TYPE_HUMIDIFIER = "devices.types.humidifier"
+DEVICE_TYPE_DEHUMIDIFIER = "devices.types.dehumidifier"
 DEVICE_TYPE_FAN = "devices.types.fan"
 DEVICE_TYPE_PURIFIER = "devices.types.air_purifier"
 
@@ -53,6 +55,8 @@ INSTANCE_TARGET_TEMPERATURE = "targetTemperature"
 INSTANCE_FAN_SPEED = "fanSpeed"
 INSTANCE_PURIFIER_MODE = "purifierMode"
 INSTANCE_THERMOSTAT_TOGGLE = "thermostatToggle"
+INSTANCE_HUMIDITY = "humidity"
+INSTANCE_WATER_FULL_EVENT = "waterFullEvent"
 
 
 @dataclass(frozen=True)
@@ -310,8 +314,86 @@ class GoveeDevice:
 
     @property
     def is_humidifier(self) -> bool:
-        """Check if device is a humidifier or dehumidifier."""
-        return self.device_type == DEVICE_TYPE_HUMIDIFIER
+        """Check if device is a humidifier or dehumidifier.
+
+        Covers both ``devices.types.humidifier`` and
+        ``devices.types.dehumidifier`` so the humidifier platform handles
+        both shapes — the entity picks the right HA device class at
+        creation time (issue #54).
+        """
+        return self.device_type in (
+            DEVICE_TYPE_HUMIDIFIER,
+            DEVICE_TYPE_DEHUMIDIFIER,
+        )
+
+    @property
+    def is_dehumidifier(self) -> bool:
+        """Check if device is specifically a dehumidifier."""
+        return self.device_type == DEVICE_TYPE_DEHUMIDIFIER
+
+    @property
+    def supports_water_full_event(self) -> bool:
+        """Check if device exposes a water-tank-full event capability."""
+        return any(
+            cap.type == CAPABILITY_EVENT and cap.instance == INSTANCE_WATER_FULL_EVENT
+            for cap in self.capabilities
+        )
+
+    def get_humidity_range(self) -> tuple[int, int]:
+        """Extract target humidity range from the range.humidity capability.
+
+        Returns (min, max) tuple, defaulting to (30, 80) — the H7150 range.
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_RANGE and cap.instance == INSTANCE_HUMIDITY:
+                range_data = cap.parameters.get("range", {})
+                return (
+                    int(range_data.get("min", 30)),
+                    int(range_data.get("max", 80)),
+                )
+        return (30, 80)
+
+    def get_humidifier_work_mode_options(self) -> list[dict[str, Any]]:
+        """Extract top-level work mode options for humidifier/dehumidifier.
+
+        Unlike fans, humidifiers expose work modes at the workMode field
+        level (gearMode, Auto, Dryer), not as flattened speed options.
+        Returns list of {"name": str, "value": int} dicts.
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_WORK_MODE and cap.instance == INSTANCE_WORK_MODE:
+                for f in cap.parameters.get("fields", []):
+                    if f.get("fieldName") == "workMode":
+                        options: list[dict[str, Any]] = f.get("options", [])
+                        return [
+                            {"name": o.get("name", ""), "value": o.get("value")}
+                            for o in options
+                            if o.get("value") is not None
+                        ]
+        return []
+
+    def get_humidifier_gear_options(self) -> list[dict[str, Any]]:
+        """Extract gearMode sub-options (e.g. Low/High) for humidifiers.
+
+        Returns list of {"name": "Low", "value": 1} dicts from the
+        modeValue.gearMode sub-options.
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_WORK_MODE and cap.instance == INSTANCE_WORK_MODE:
+                for f in cap.parameters.get("fields", []):
+                    if f.get("fieldName") == "modeValue":
+                        for opt in f.get("options", []):
+                            if opt.get("name") == "gearMode":
+                                gears: list[dict[str, Any]] = opt.get("options", [])
+                                return [
+                                    {
+                                        "name": g.get("name", ""),
+                                        "value": g.get("value"),
+                                    }
+                                    for g in gears
+                                    if g.get("value") is not None
+                                ]
+        return []
 
     @property
     def supports_oscillation(self) -> bool:

@@ -92,15 +92,14 @@ async def async_setup_entry(
             entities.append(GoveeAutoStopSwitchEntity(coordinator, device))
             _LOGGER.debug("Created auto-stop switch entity for %s", device.name)
 
-        # Minimal power control for appliances that currently have no
-        # dedicated platform — heaters, dehumidifiers, and purifiers keep a
-        # switch for on/off so users aren't left without control after the
-        # light filter drops them (issue #54). Heaters also have a climate
-        # refactor pending; this keeps parity in the interim.
+        # Minimal power control for heaters that don't yet have a
+        # climate platform. Humidifiers/dehumidifiers now have their own
+        # dedicated platform (issue #54); a climate platform for heaters
+        # is still pending.
         if (
             device.supports_power
             and not device.is_group
-            and (device.is_heater or device.is_humidifier)
+            and device.is_heater
         ):
             entities.append(GoveeAppliancePowerSwitchEntity(coordinator, device))
 

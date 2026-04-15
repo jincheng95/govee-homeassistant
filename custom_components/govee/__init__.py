@@ -54,6 +54,7 @@ PLATFORMS: list[Platform] = [
     Platform.NUMBER,  # DIY speed controls
     Platform.LIGHT,  # Main light + segments
     Platform.FAN,  # Fan devices
+    Platform.HUMIDIFIER,  # Humidifiers / dehumidifiers
     Platform.SWITCH,
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
