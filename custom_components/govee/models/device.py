@@ -33,6 +33,7 @@ DEVICE_TYPE_HUMIDIFIER = "devices.types.humidifier"
 DEVICE_TYPE_DEHUMIDIFIER = "devices.types.dehumidifier"
 DEVICE_TYPE_FAN = "devices.types.fan"
 DEVICE_TYPE_PURIFIER = "devices.types.air_purifier"
+DEVICE_TYPE_KETTLE = "devices.types.kettle"
 
 # Instance constants
 INSTANCE_POWER = "powerSwitch"
@@ -325,6 +326,11 @@ class GoveeDevice:
             DEVICE_TYPE_HUMIDIFIER,
             DEVICE_TYPE_DEHUMIDIFIER,
         )
+
+    @property
+    def is_kettle(self) -> bool:
+        """Check if device is a smart kettle (e.g. H717A Smart Kettle Pro)."""
+        return self.device_type == DEVICE_TYPE_KETTLE
 
     @property
     def is_dehumidifier(self) -> bool:
@@ -637,6 +643,7 @@ class GoveeDevice:
             or self.is_heater
             or self.is_purifier
             or self.is_humidifier
+            or self.is_kettle
         ):
             return False
         return (

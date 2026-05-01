@@ -99,7 +99,7 @@ async def async_setup_entry(
         if (
             device.supports_power
             and not device.is_group
-            and device.is_heater
+            and (device.is_heater or device.is_kettle)
         ):
             entities.append(GoveeAppliancePowerSwitchEntity(coordinator, device))
 
@@ -482,9 +482,10 @@ class GoveeAutoStopSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
 class GoveeAppliancePowerSwitchEntity(GoveeEntity, SwitchEntity):
     """Power switch for appliances without a dedicated platform.
 
-    Heaters and (de)humidifiers no longer appear as lights after the
-    issue-#54 filter change; this entity restores basic on/off control
-    until the full climate and humidifier platforms land.
+    Heaters, kettles, and (de)humidifiers no longer appear as lights
+    after the issue-#54 filter change; this entity restores basic
+    on/off control until the full climate and humidifier platforms
+    land. Kettles use this for the on/off regression in issue #63.
     """
 
     _attr_translation_key = "govee_appliance_power"
