@@ -1548,3 +1548,139 @@ class TestTryBleCommand:
             "AA:BB:CC:DD:EE:FF:00:11", PowerCommand(power_on=True)
         )
         assert result is False
+
+
+class TestClearSceneOnHdmiSyncBox:
+    """Issue #48 — clearing a scene on H6604/H6605/etc must NOT lock the
+    device into manual color (the historical bug was sending ColorCommand
+    white, which produced 'a flat white image' instead of resuming Video
+    Sync). The integration must instead re-select the HDMI source so the
+    Sync Box returns to its native video sync mode."""
+
+    def _make_sync_box(self, hdmi_options=None):
+        """Build an H6604-style device with hdmiSource and dynamic_scene."""
+        from custom_components.govee.models.device import (
+            CAPABILITY_MODE,
+            INSTANCE_HDMI_SOURCE,
+        )
+        if hdmi_options is None:
+            hdmi_options = [
+                {"name": "HDMI 1", "value": 1},
+                {"name": "HDMI 2", "value": 2},
+                {"name": "HDMI 3", "value": 3},
+                {"name": "HDMI 4", "value": 4},
+            ]
+        caps = (
+            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+            GoveeCapability(
+                type=CAPABILITY_RANGE,
+                instance=INSTANCE_BRIGHTNESS,
+                parameters={"range": {"min": 1, "max": 100}},
+            ),
+            GoveeCapability(
+                type="devices.capabilities.color_setting",
+                instance="colorRgb",
+                parameters={},
+            ),
+            GoveeCapability(
+                type=CAPABILITY_MODE,
+                instance=INSTANCE_HDMI_SOURCE,
+                parameters={"options": hdmi_options},
+            ),
+            GoveeCapability(
+                type="devices.capabilities.dynamic_scene",
+                instance="lightScene",
+                parameters={"options": []},
+            ),
+            GoveeCapability(
+                type="devices.capabilities.dynamic_scene",
+                instance="diyScene",
+                parameters={"options": []},
+            ),
+        )
+        return GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:00:11",
+            sku="H6604",
+            name="Smart AI Sync Box",
+            device_type="devices.types.light",
+            capabilities=caps,
+            is_group=False,
+        )
+
+    def _make_coord(self, device):
+        from unittest.mock import AsyncMock
+        from custom_components.govee.coordinator import GoveeCoordinator
+
+        coord = object.__new__(GoveeCoordinator)
+        coord._devices = {device.device_id: device}
+        coord._states = {}
+        coord.async_control_device = AsyncMock(return_value=True)
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_clear_scene_reselects_known_hdmi_source(self):
+        """When state.hdmi_source is known, re-select that source — never
+        send a ColorCommand."""
+        from custom_components.govee.models.commands import ModeCommand
+        from custom_components.govee.models.device import INSTANCE_HDMI_SOURCE
+
+        device = self._make_sync_box()
+        coord = self._make_coord(device)
+
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.active_diy_scene = "1234"
+        state.hdmi_source = 2
+        coord._states[device.device_id] = state
+
+        await coord.async_clear_scene(device.device_id)
+
+        coord.async_control_device.assert_awaited_once()
+        sent_id, sent_command = coord.async_control_device.await_args.args
+        assert sent_id == device.device_id
+        assert isinstance(sent_command, ModeCommand)
+        assert sent_command.mode_instance == INSTANCE_HDMI_SOURCE
+        assert sent_command.value == 2
+        # And local scene state was cleared
+        assert state.active_diy_scene is None
+
+    @pytest.mark.asyncio
+    async def test_clear_scene_falls_back_to_first_hdmi_option(self):
+        """If state.hdmi_source is None, default to the first option from
+        the capability — better than guessing white."""
+        from custom_components.govee.models.commands import ModeCommand
+
+        device = self._make_sync_box(
+            hdmi_options=[{"name": "HDMI 1", "value": 1}, {"name": "HDMI 2", "value": 2}]
+        )
+        coord = self._make_coord(device)
+
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.active_scene = "9999"
+        coord._states[device.device_id] = state
+
+        await coord.async_clear_scene(device.device_id)
+
+        sent_id, sent_command = coord.async_control_device.await_args.args
+        assert isinstance(sent_command, ModeCommand)
+        assert sent_command.value == 1
+        assert state.active_scene is None
+
+    @pytest.mark.asyncio
+    async def test_clear_scene_does_not_send_color_command_to_sync_box(self):
+        """Regression guard: ColorCommand(white) is the bug from #48 —
+        verify that path is never taken on a device with hdmiSource."""
+        from custom_components.govee.models.commands import ModeCommand
+
+        device = self._make_sync_box()
+        coord = self._make_coord(device)
+
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.active_scene = "5555"
+        state.hdmi_source = 3
+        coord._states[device.device_id] = state
+
+        await coord.async_clear_scene(device.device_id)
+
+        _, sent_command = coord.async_control_device.await_args.args
+        assert not isinstance(sent_command, ColorCommand)
+        assert isinstance(sent_command, ModeCommand)

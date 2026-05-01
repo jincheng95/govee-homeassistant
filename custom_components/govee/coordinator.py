@@ -1558,6 +1558,26 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self.clear_diy_scene(device_id)
             return
 
+        # HDMI sync boxes (e.g., H6604 AI Sync Box) have no meaningful "static
+        # color" to restore — their default mode is video sync of the live HDMI
+        # feed. Sending ColorCommand(white) here would lock the device into
+        # manual color mode and lose the sync (issue #48: "Setting DIY scene
+        # to none just leaves a flat white image"). Re-selecting the HDMI
+        # source forces the device back into Video Sync.
+        if device.supports_hdmi_source:
+            source = state.hdmi_source
+            if source is None:
+                options = device.get_hdmi_source_options()
+                source = int(options[0]["value"]) if options else 1
+            success = await self.async_control_device(
+                device_id,
+                ModeCommand(mode_instance=INSTANCE_HDMI_SOURCE, value=int(source)),
+            )
+            if success:
+                self.clear_scene(device_id)
+                self.clear_diy_scene(device_id)
+            return
+
         # Resolve the color to restore. Skip RGBColor(0,0,0) — the API returns
         # colorRgb=0 when a scene is running, which is not a meaningful restore target.
         color = state.color or state.last_color
