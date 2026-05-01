@@ -4,14 +4,12 @@ aiomqtt>=2.0.0
 cryptography>=41.0.0
 
 # Test dependencies
-asynctest
 black
 colorlog
 coveralls
 dacite
 events
 flake8
-govee_api_laggat
 homeassistant
 jinja2
 markupsafe
