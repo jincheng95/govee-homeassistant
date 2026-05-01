@@ -240,6 +240,12 @@ class GoveeDeviceState:
         """
         self.source = "mqtt"
 
+        # Receiving an AWS IoT push from the device is direct proof of life.
+        # The Govee cloud's `online` flag can lag for many minutes after a
+        # power-cycle (issue #68); using the MQTT signal lets HA recover
+        # availability immediately without waiting for the cloud to catch up.
+        self.online = True
+
         if "onOff" in data:
             self.power_state = bool(data["onOff"])
 

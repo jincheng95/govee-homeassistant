@@ -442,6 +442,21 @@ class TestMqttIntegration:
 
         assert handled is False
 
+    def test_mqtt_push_recovers_offline_device(self, sample_state):
+        """Issue #68 — an MQTT push should restore the entity availability
+        even when the cloud's `online` flag is still stuck at False.
+
+        Verifies the regression at the state-application layer (the
+        coordinator-level entry point only adds logging on top)."""
+        sample_state.online = False
+        sample_state.power_state = False
+
+        sample_state.update_from_mqtt({"onOff": 1, "brightness": 60})
+
+        assert sample_state.online is True
+        assert sample_state.power_state is True
+        assert sample_state.brightness == 60
+
 
 class TestParallelStateFetching:
     """Test parallel state fetching patterns."""
@@ -1417,6 +1432,29 @@ class TestBleAdvertisementHandling:
 
         # Still only one entry, but the BLEDevice ref was refreshed
         assert len(coord._ble_devices) == 1
+
+    def test_ble_advertisement_restores_online_after_outage(self, sample_device):
+        """Regression for issue #68 — BLE advertisement is proof of life.
+
+        After a power-cycle the cloud may continue reporting `online: false`
+        long after the device returns. Receiving a BLE advertisement is direct
+        proof that the device is alive, so `_handle_ble_advertisement` must
+        flip `state.online` back to True.
+        """
+        from custom_components.govee.models import GoveeDeviceState
+
+        coord = self._make_coordinator_with_devices(
+            {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
+        )
+        # Stale "offline" state cached from the cloud.
+        offline_state = GoveeDeviceState.create_empty("AA:BB:CC:DD:EE:FF:00:11")
+        offline_state.online = False
+        coord._states["AA:BB:CC:DD:EE:FF:00:11"] = offline_state
+
+        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        coord._handle_ble_advertisement(info)
+
+        assert coord._states["AA:BB:CC:DD:EE:FF:00:11"].online is True
 
 
 class TestTryBleCommand:

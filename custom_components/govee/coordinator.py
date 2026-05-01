@@ -510,6 +510,18 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # Stamp last-seen for the BLE connectivity sensor and notify entities.
         self._record_transport_success(matched_id, "ble")
+
+        # A BLE advertisement from the device is direct proof of life — flip
+        # `online` back True if a stale `online: false` from the Govee cloud
+        # is masking a recovered device (issue #68).
+        existing_state = self._states.get(matched_id)
+        if existing_state is not None and not existing_state.online:
+            _LOGGER.info(
+                "BLE advertisement restored online status for %s (was offline per cloud)",
+                self._devices[matched_id].name,
+            )
+            existing_state.online = True
+
         # async_set_updated_data requires super().__init__ to have run — guard
         # for tests that instantiate the coordinator via object.__new__().
         try:
@@ -676,8 +688,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             state = GoveeDeviceState.create_empty(device_id)
             self._states[device_id] = state
 
-        # Update state from MQTT data
+        was_offline = not state.online
+
+        # Update state from MQTT data (also flips online back True — issue #68)
         state.update_from_mqtt(state_data)
+
+        if was_offline:
+            device = self._devices.get(device_id)
+            _LOGGER.info(
+                "MQTT push restored online status for %s (was offline per cloud)",
+                device.name if device else device_id,
+            )
 
         # Confirmed push — record transport health and end the optimistic
         # grace window for this device (state.update_from_mqtt also calls
@@ -1082,6 +1103,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         else:
             _LOGGER.debug("BLE command succeeded for %s: %s", device_id, type(command).__name__)
             self._record_transport_success(device_id, "ble")
+            # A successful BLE write reaches the device directly — flip
+            # `online` back True if a stale `online: false` from the cloud
+            # is masking a recovered device (issue #68).
+            ble_state = self._states.get(device_id)
+            if ble_state is not None and not ble_state.online:
+                ble_state.online = True
             return True
 
     async def _ensure_device_topic(self, device_id: str) -> str | None:

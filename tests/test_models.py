@@ -469,6 +469,34 @@ class TestGoveeDeviceState:
         state.update_from_mqtt({"colorTemInKelvin": 4000})
         assert state.color_temp_kelvin == 4000
 
+    def test_mqtt_push_restores_online(self):
+        """Regression for issue #68 — MQTT push must reset online=True.
+
+        When a device is power-cycled, the Govee cloud caches `online: false`
+        long after the device returns. Receiving any MQTT push from the device
+        is direct proof of life, so update_from_mqtt should flip online back
+        to True so HA stops showing the entity as unavailable.
+        """
+        state = GoveeDeviceState.create_empty("test_id")
+        state.online = False  # simulate stale cloud "offline" state
+
+        state.update_from_mqtt({"onOff": 1, "brightness": 80})
+
+        assert state.online is True
+        assert state.power_state is True
+        assert state.brightness == 80
+
+    def test_mqtt_empty_push_still_restores_online(self):
+        """Even an MQTT push without recognised state fields proves the
+        device is alive — issue #68 recovery should not require a specific
+        capability to be present."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.online = False
+
+        state.update_from_mqtt({})
+
+        assert state.online is True
+
     def test_optimistic_power(self):
         """Test optimistic power update."""
         state = GoveeDeviceState.create_empty("test_id")
