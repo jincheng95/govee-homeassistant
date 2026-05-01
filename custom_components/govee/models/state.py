@@ -123,6 +123,11 @@ class GoveeDeviceState:
     # ``work_mode``. Only the event flag needs its own field.
     water_full: bool | None = None  # Dehumidifier water-tank-full event
 
+    # Read-only sensor properties (devices.capabilities.property) for
+    # stand-alone sensors like H5109/H5179. None until first poll lands.
+    sensor_temperature: float | None = None  # Celsius (always; entity converts)
+    sensor_humidity: float | None = None  # Relative humidity 0-100 %
+
     # Last activated scene (for restoring after music mode off)
     last_scene_id: str | None = None
     last_scene_name: str | None = None
@@ -200,6 +205,34 @@ class GoveeDeviceState:
             elif cap_type == "devices.capabilities.mode":
                 if instance == "hdmiSource":
                     self.hdmi_source = int(value) if value is not None else None
+
+            elif cap_type == "devices.capabilities.property":
+                # Read-only sensor properties on devices like H5109 and
+                # H5179 (issue #62). The state shape varies by SKU — some
+                # return a plain number under "value", others return a
+                # STRUCT. Accept both, plus the legacy "currentX" field
+                # naming used by older WiFi sensors.
+                if instance in ("sensorTemperature", "sensorHumidity"):
+                    parsed: float | None = None
+                    if isinstance(value, (int, float)):
+                        parsed = float(value)
+                    elif isinstance(value, dict):
+                        for key in (
+                            "currentTemperature",
+                            "currentHumidity",
+                            "value",
+                            "temperature",
+                            "humidity",
+                        ):
+                            sub = value.get(key)
+                            if isinstance(sub, (int, float)):
+                                parsed = float(sub)
+                                break
+                    if parsed is not None:
+                        if instance == "sensorTemperature":
+                            self.sensor_temperature = parsed
+                        else:
+                            self.sensor_humidity = parsed
 
             elif cap_type == "devices.capabilities.event":
                 # Event capabilities (e.g. waterFullEvent) report a boolean-

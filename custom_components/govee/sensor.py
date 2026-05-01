@@ -3,6 +3,7 @@
 Provides sensor entities for:
 - Rate limit remaining (diagnostic)
 - MQTT connection status (diagnostic)
+- Temperature / humidity properties on stand-alone sensors (H5109, H5179)
 """
 
 from __future__ import annotations
@@ -15,7 +16,11 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
+from homeassistant.const import (
+    EntityCategory,
+    PERCENTAGE,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo  # type: ignore[attr-defined]
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -23,6 +28,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import GoveeCoordinator
+from .entity import GoveeEntity
+from .models import GoveeDevice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +49,18 @@ async def async_setup_entry(
     # Add MQTT status sensor if MQTT is configured
     if coordinator.mqtt_client is not None:
         entities.append(GoveeMqttStatusSensor(coordinator, entry.entry_id))
+
+    # Per-device temperature / humidity sensors for stand-alone sensors
+    # like H5109 and H5179 (issue #62). Anything that exposes the
+    # corresponding `property` capability gets the entity, regardless of
+    # device_type — the integration shouldn't have to know about every SKU.
+    for device in coordinator.devices.values():
+        if device.is_group:
+            continue
+        if device.supports_temperature_sensor:
+            entities.append(GoveeTemperatureSensor(coordinator, device))
+        if device.supports_humidity_sensor:
+            entities.append(GoveeHumiditySensor(coordinator, device))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee sensor entities", len(entities))
@@ -134,3 +153,54 @@ class GoveeMqttStatusSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity)
         if mqtt_client is None:
             return "unavailable"
         return "connected" if mqtt_client.connected else "disconnected"
+
+
+class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
+    """Read-only temperature reading from devices like H5109 and H5179.
+
+    Backed by the ``devices.capabilities.property`` / ``sensorTemperature``
+    capability. Values are pushed through the standard coordinator state
+    flow so MQTT updates and API polls both feed it.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "sensor_temperature"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_temperature"
+
+    @property
+    def native_value(self) -> float | None:
+        state = self.device_state
+        return state.sensor_temperature if state else None
+
+
+class GoveeHumiditySensor(GoveeEntity, SensorEntity):
+    """Read-only humidity reading from devices like H5109 and H5179."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "sensor_humidity"
+    _attr_device_class = SensorDeviceClass.HUMIDITY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_humidity"
+
+    @property
+    def native_value(self) -> float | None:
+        state = self.device_state
+        return state.sensor_humidity if state else None

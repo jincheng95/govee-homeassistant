@@ -59,6 +59,15 @@ INSTANCE_THERMOSTAT_TOGGLE = "thermostatToggle"
 INSTANCE_HUMIDITY = "humidity"
 INSTANCE_WATER_FULL_EVENT = "waterFullEvent"
 
+# Read-only sensor property instances (devices.capabilities.property).
+# These appear on stand-alone sensors like H5179 (WiFi Thermometer) and
+# H5109 (Smart Temperature Sensor) — issue #62.
+INSTANCE_SENSOR_TEMPERATURE = "sensorTemperature"
+INSTANCE_SENSOR_HUMIDITY = "sensorHumidity"
+
+# Device type for stand-alone temperature/humidity sensors.
+DEVICE_TYPE_THERMOMETER = "devices.types.thermometer"
+
 
 @dataclass(frozen=True)
 class ColorTempRange:
@@ -344,6 +353,30 @@ class GoveeDevice:
             cap.type == CAPABILITY_EVENT and cap.instance == INSTANCE_WATER_FULL_EVENT
             for cap in self.capabilities
         )
+
+    @property
+    def supports_temperature_sensor(self) -> bool:
+        """Check if device exposes a sensorTemperature property (e.g. H5109,
+        H5179). The capability is read-only — surfaced as an HA sensor."""
+        return any(
+            cap.type == CAPABILITY_PROPERTY
+            and cap.instance == INSTANCE_SENSOR_TEMPERATURE
+            for cap in self.capabilities
+        )
+
+    @property
+    def supports_humidity_sensor(self) -> bool:
+        """Check if device exposes a sensorHumidity property."""
+        return any(
+            cap.type == CAPABILITY_PROPERTY
+            and cap.instance == INSTANCE_SENSOR_HUMIDITY
+            for cap in self.capabilities
+        )
+
+    @property
+    def is_thermometer(self) -> bool:
+        """Check if device is a stand-alone thermometer/hygrometer."""
+        return self.device_type == DEVICE_TYPE_THERMOMETER
 
     def get_humidity_range(self) -> tuple[int, int]:
         """Extract target humidity range from the range.humidity capability.
