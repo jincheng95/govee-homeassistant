@@ -5,6 +5,8 @@ Provides debug information for troubleshooting without exposing sensitive data.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
@@ -26,7 +28,31 @@ TO_REDACT = {
     "iot_ca",
     "client_id",
     "account_topic",
+    "device_id",
+    "mac",
 }
+
+# Govee device IDs are MAC-derived: 8 colon-separated hex octets
+# (e.g., "03:9C:DC:06:75:4B:10:7C"). Group device IDs are numeric-only.
+_MAC_PATTERN = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5,7}$")
+
+
+def _looks_like_mac(value: str) -> bool:
+    """Return True if value matches the Govee MAC-derived device-id format."""
+    return bool(_MAC_PATTERN.match(value))
+
+
+def _anonymize_device_id(value: str) -> str:
+    """Replace a MAC-derived id with a stable short hash (PII redaction)."""
+    return f"device_{hashlib.sha256(value.encode()).hexdigest()[:8]}"
+
+
+def _anonymize_device_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """Replace MAC-format dict keys with stable hashes; leave other keys intact."""
+    return {
+        (_anonymize_device_id(k) if isinstance(k, str) and _looks_like_mac(k) else k): v
+        for k, v in data.items()
+    }
 
 
 async def async_get_config_entry_diagnostics(
@@ -37,7 +63,7 @@ async def async_get_config_entry_diagnostics(
     coordinator: GoveeCoordinator = entry.runtime_data
 
     # Collect device information
-    devices_info = {}
+    devices_info: dict[str, Any] = {}
     for device_id, device in coordinator.devices.items():
         state = coordinator.get_state(device_id)
         devices_info[device_id] = {
@@ -84,7 +110,8 @@ async def async_get_config_entry_diagnostics(
         "rate_limit_reset": coordinator.api_rate_limit_reset,
     }
 
-    # Build diagnostics data
+    # Build diagnostics data — anonymize MAC-format device-id keys before
+    # exposing the device map (MAC = PII per HA diagnostics guidance).
     diagnostics_data = {
         "config_entry": {
             "entry_id": entry.entry_id,
@@ -92,7 +119,7 @@ async def async_get_config_entry_diagnostics(
             "data": async_redact_data(dict(entry.data), TO_REDACT),
             "options": dict(entry.options),
         },
-        "devices": devices_info,
+        "devices": _anonymize_device_keys(devices_info),
         "device_count": len(coordinator.devices),
         "mqtt": mqtt_info,
         "api": api_info,
