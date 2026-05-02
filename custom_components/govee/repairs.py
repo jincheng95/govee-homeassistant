@@ -176,13 +176,12 @@ class AuthRepairFlow(RepairsFlow):
             if entry_id:
                 entry = self.hass.config_entries.async_get_entry(entry_id)
                 if entry:
-                    # Trigger reauth flow
-                    self.hass.async_create_task(
-                        self.hass.config_entries.flow.async_init(
-                            DOMAIN,
-                            context={"source": "reauth", "entry_id": entry_id},
-                            data=dict(entry.data),
-                        )
+                    # Trigger reauth flow — await directly so the task is
+                    # lifecycle-bound to this repair flow rather than detached.
+                    await self.hass.config_entries.flow.async_init(
+                        DOMAIN,
+                        context={"source": "reauth", "entry_id": entry_id},
+                        data=dict(entry.data),
                     )
                     return self.async_create_entry(data={})
 
