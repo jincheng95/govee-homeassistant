@@ -1433,6 +1433,53 @@ class TestBleAdvertisementHandling:
         # Still only one entry, but the BLEDevice ref was refreshed
         assert len(coord._ble_devices) == 1
 
+    def test_no_adapter_skips_enrollment(self, sample_device):
+        """Issue #59 follow-up — VMs without Bluetooth passthrough still
+        receive advertisements via the passive scanner stack but cannot
+        actually connect, costing ~40s per command before REST fallback.
+        Enrolling with zero connectable adapters must be skipped."""
+        import custom_components.govee.coordinator as coord_mod
+
+        # Simulate the bt_component module presence with scanner_count=0
+        bt = MagicMock()
+        bt.async_scanner_count = MagicMock(return_value=0)
+        coord_mod.bt_component = bt
+
+        coord = self._make_coordinator_with_devices(
+            {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
+        )
+        coord.hass = MagicMock()
+        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+
+        coord._handle_ble_advertisement(info)
+
+        assert "AA:BB:CC:DD:EE:FF:00:11" not in coord._ble_devices
+        bt.async_scanner_count.assert_called_once()
+
+        # Cleanup so we don't leak the patch into other tests
+        del coord_mod.bt_component
+
+    def test_adapter_present_enrolls_normally(self, sample_device):
+        """When a connectable adapter exists, BLE enrollment proceeds."""
+        import custom_components.govee.coordinator as coord_mod
+
+        bt = MagicMock()
+        bt.async_scanner_count = MagicMock(return_value=1)
+        coord_mod.bt_component = bt
+
+        coord = self._make_coordinator_with_devices(
+            {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
+        )
+        coord.hass = MagicMock()
+        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+
+        coord._handle_ble_advertisement(info)
+
+        assert "AA:BB:CC:DD:EE:FF:00:11" in coord._ble_devices
+        bt.async_scanner_count.assert_called_once()
+
+        del coord_mod.bt_component
+
     def test_ble_advertisement_restores_online_after_outage(self, sample_device):
         """Regression for issue #68 — BLE advertisement is proof of life.
 

@@ -33,6 +33,7 @@ from .ble_passthrough import BlePassthroughManager
 # BLE direct support — conditionally imported to avoid hard Bluetooth dependency
 try:
     from homeassistant.components import bluetooth
+    from homeassistant.components import bluetooth as bt_component
     from homeassistant.components.bluetooth import (
         BluetoothCallbackMatcher,
         BluetoothScanningMode,
@@ -492,7 +493,30 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 )
             return
 
+        # Don't enroll BLE without a connectable adapter — issue #59
+        # follow-up. On HA installs running in a VM without Bluetooth
+        # passthrough, advertisements still reach the integration via the
+        # passive bluetooth_le_scanner stack, but `BleakClient.connect()`
+        # then takes ~40s to time out per command (4 retries × ~10s) before
+        # REST fallback fires. Skip enrollment entirely when no connectable
+        # adapter is registered. Trade-off: adapters added after setup won't
+        # re-enable BLE until integration reload — acceptable edge case.
         if matched_id not in self._ble_devices:
+            try:
+                if bt_component.async_scanner_count(self.hass, connectable=True) == 0:
+                    if ble_sku not in self._ble_ignored_skus_logged:
+                        self._ble_ignored_skus_logged.add(ble_sku)
+                        _LOGGER.info(
+                            "%s (SKU=%s) advertising BLE but no connectable "
+                            "adapter is available — staying cloud-only. Reload "
+                            "the integration after attaching a Bluetooth adapter.",
+                            self._devices[matched_id].name,
+                            ble_sku,
+                        )
+                    return
+            except Exception as err:  # pragma: no cover — defensive
+                _LOGGER.debug("BLE adapter probe failed: %s", err)
+
             self._ble_devices[matched_id] = GoveeBLEDevice(
                 service_info.device,
                 segmented=ble_sku in SEGMENTED_MODELS,
