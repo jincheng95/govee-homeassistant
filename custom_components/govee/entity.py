@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_EXPOSE_TRANSPORT_ENTITIES, DOMAIN
 
 if TYPE_CHECKING:
     from .coordinator import GoveeCoordinator
@@ -90,11 +90,15 @@ class GoveeEntity(CoordinatorEntity["GoveeCoordinator"]):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return transport protocol diagnostics for this device.
 
-        Shows which communication channels are active:
-        - cloud_api: always True (REST API is the baseline transport)
-        - mqtt: True when AWS IoT MQTT push is connected
-        - ble: True when a local Bluetooth connection is available
+        Off by default to keep the state machine lean for installs with many
+        entities. The same data is available via dedicated diagnostic
+        binary_sensor entities. Set
+        ``CONF_EXPOSE_TRANSPORT_ENTITIES`` in entry options to True to opt in.
         """
+        if not self.coordinator.config_entry.options.get(
+            CONF_EXPOSE_TRANSPORT_ENTITIES, False
+        ):
+            return {}
         return {
             "transport_cloud_api": True,
             "transport_mqtt": self.coordinator.mqtt_connected,
