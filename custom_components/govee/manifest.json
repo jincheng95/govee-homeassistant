@@ -17,13 +17,13 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/lasswellt/govee-homeassistant/issues",
   "loggers": ["custom_components.govee", "aiohttp", "aiomqtt"],
+  "min_ha_version": "2024.1.0",
+  "quality_scale": "silver",
   "requirements": [
     "aiohttp-retry>=2.8.3",
     "aiomqtt>=2.0.0",
     "bleak-retry-connector>=3.0.0",
     "cryptography>=41.0.0"
   ],
-  "ssdp": [],
-  "version": "2026.5.3",
-  "zeroconf": []
+  "version": "2026.5.3"
 }
