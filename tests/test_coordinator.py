@@ -1503,6 +1503,37 @@ class TestBleAdvertisementHandling:
 
         assert coord._states["AA:BB:CC:DD:EE:FF:00:11"].online is True
 
+    def test_ble_recovery_replaces_state_object_not_mutates(self, sample_device):
+        """Regression for S3-007 (audit H2).
+
+        The recovery path must produce a *new* GoveeDeviceState instance via
+        ``dataclasses.replace`` and reassign into ``_states[matched_id]``.
+        In-place mutation of the existing instance causes
+        ``async_set_updated_data`` to pass the same dict-of-same-objects to
+        listeners, which can mask the change. This test pins the replace
+        semantic by asserting the dict slot now points at a different object.
+        """
+        from custom_components.govee.models import GoveeDeviceState
+
+        coord = self._make_coordinator_with_devices(
+            {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
+        )
+        offline_state = GoveeDeviceState.create_empty("AA:BB:CC:DD:EE:FF:00:11")
+        offline_state.online = False
+        coord._states["AA:BB:CC:DD:EE:FF:00:11"] = offline_state
+        original_id = id(offline_state)
+
+        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        coord._handle_ble_advertisement(info)
+
+        new_state = coord._states["AA:BB:CC:DD:EE:FF:00:11"]
+        # Different object identity — proves dataclasses.replace was used.
+        assert id(new_state) != original_id
+        # The original object was NOT mutated to True.
+        assert offline_state.online is False
+        # The replacement carries online=True.
+        assert new_state.online is True
+
 
 class TestTryBleCommand:
     """Test the _try_ble_command method."""
