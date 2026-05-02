@@ -7,6 +7,7 @@ Implements IStateProvider protocol for clean architecture.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -544,7 +545,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 "BLE advertisement restored online status for %s (was offline per cloud)",
                 self._devices[matched_id].name,
             )
-            existing_state.online = True
+            self._states[matched_id] = dataclasses.replace(existing_state, online=True)
 
         # async_set_updated_data requires super().__init__ to have run — guard
         # for tests that instantiate the coordinator via object.__new__().
@@ -817,8 +818,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if device.is_group:
             existing = self._states.get(device_id)
             if existing:
-                existing.online = True  # Group devices are always "available"
-                return existing
+                # Group devices are always "available"; return a new instance
+                # so listeners see a fresh object on identity comparison.
+                refreshed = dataclasses.replace(existing, online=True)
+                self._states[device_id] = refreshed
+                return refreshed
             return GoveeDeviceState.create_empty(device_id)
 
         try:
