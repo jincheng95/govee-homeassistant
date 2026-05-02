@@ -31,6 +31,8 @@ from .models import TransportKind
 
 _LOGGER = logging.getLogger(__name__)
 
+PARALLEL_UPDATES = 0
+
 
 _TRANSPORT_SPECS: tuple[tuple[TransportKind, str, str], ...] = (
     ("cloud_api", "cloud_api_connectivity", "mdi:cloud"),

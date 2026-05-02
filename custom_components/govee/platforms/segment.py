@@ -25,6 +25,8 @@ from ..models import GoveeDevice, RGBColor, SegmentColorCommand
 
 _LOGGER = logging.getLogger(__name__)
 
+PARALLEL_UPDATES = 0
+
 
 class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
     """Govee segment light entity.

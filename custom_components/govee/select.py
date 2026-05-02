@@ -44,6 +44,8 @@ DIY_STYLE_OPTIONS = list(DIY_STYLE_NAMES.keys())
 
 _LOGGER = logging.getLogger(__name__)
 
+PARALLEL_UPDATES = 0
+
 # Option for "no scene" / off state
 SCENE_NONE = "None"
 

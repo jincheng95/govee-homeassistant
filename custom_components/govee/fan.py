@@ -27,6 +27,8 @@ from .models import GoveeDevice, OscillationCommand, PowerCommand, WorkModeComma
 
 _LOGGER = logging.getLogger(__name__)
 
+PARALLEL_UPDATES = 0
+
 # Preset modes: Normal uses gearMode (manual speed), Auto uses auto mode
 PRESET_MODE_NORMAL = "Normal"
 PRESET_MODE_AUTO = "Auto"

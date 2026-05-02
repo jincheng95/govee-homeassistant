@@ -48,6 +48,8 @@ from .platforms.segment import GoveeSegmentEntity
 
 _LOGGER = logging.getLogger(__name__)
 
+PARALLEL_UPDATES = 0
+
 # Home Assistant brightness range
 HA_BRIGHTNESS_MAX = 255
 

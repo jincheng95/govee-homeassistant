@@ -32,6 +32,8 @@ from .models import GoveeDevice, PowerCommand, WorkModeCommand
 
 _LOGGER = logging.getLogger(__name__)
 
+PARALLEL_UPDATES = 0
+
 # Canonical mode names surfaced to Home Assistant. The set of modes offered
 # by a given device is intersected with these at entity-construction time.
 MODE_LOW = "low"
