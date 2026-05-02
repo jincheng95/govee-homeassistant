@@ -69,7 +69,7 @@ rules:
     comment: UpdateFailed exception logged when API fails
   parallel-updates:
     status: done
-    comment: DEFAULT_PARALLEL_UPDATES set per platform
+    comment: PARALLEL_UPDATES = 0 in all 11 platform modules (light, switch, select, sensor, button, fan, humidifier, binary_sensor, number, segment, grouped_segment) — coordinator-pushed updates are unbounded
   reauthentication-flow:
     status: done
     comment: Reauth flow implemented for expired API keys
@@ -151,7 +151,7 @@ rules:
     comment: All dependencies (aiohttp, aiomqtt) are async-native
   inject-websession:
     status: done
-    comment: Uses async_get_clientsession from homeassistant.helpers.aiohttp_client
+    comment: GoveeApiClient and GoveeAuthClient accept hass=hass; both call async_get_clientsession(hass) when no explicit session is passed (api/client.py, api/auth.py)
   strict-typing:
     status: done
     comment: Type hints throughout codebase
