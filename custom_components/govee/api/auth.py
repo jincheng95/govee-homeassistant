@@ -14,7 +14,10 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 import aiohttp
 from cryptography.hazmat.primitives.serialization import (
@@ -222,11 +225,15 @@ class GoveeAuthClient:
     def __init__(
         self,
         session: aiohttp.ClientSession | None = None,
+        hass: HomeAssistant | None = None,
     ) -> None:
         """Initialize the auth client.
 
         Args:
-            session: Optional shared aiohttp session.
+            session: Optional shared aiohttp session. Takes precedence over hass.
+            hass: Home Assistant instance — when provided (and no `session`),
+                the HA-managed clientsession is used so the client participates
+                in HA shutdown/DNS lifecycle (Platinum rule `inject-websession`).
         """
         self._session = session
         self._owns_session = session is None
@@ -235,10 +242,20 @@ class GoveeAuthClient:
         # inconsistent client_ids within a single auth session.
         self._client_id: str | None = None
 
+        if session is None and hass is not None:
+            from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+            self._session = async_get_clientsession(hass)
+            self._owns_session = False
+
     async def __aenter__(self) -> GoveeAuthClient:
         """Async context manager entry."""
         if self._session is None:
-            self._session = aiohttp.ClientSession()
+            raise RuntimeError(
+                "GoveeAuthClient requires either a `session` or `hass` parameter "
+                "at construction. Pass `hass=hass` so the HA-managed "
+                "clientsession is used (Platinum rule `inject-websession`)."
+            )
         return self
 
     async def __aexit__(self, *args: Any) -> None:
@@ -286,10 +303,6 @@ class GoveeAuthClient:
         Raises:
             GoveeApiError: If the request fails.
         """
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-            self._owns_session = True
-
         cid = client_id or self._client_id
         headers = self._build_govee_headers(cid)
         headers["Authorization"] = f"Bearer {token}"
@@ -353,10 +366,6 @@ class GoveeAuthClient:
         Raises:
             GoveeApiError: If the request fails.
         """
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-            self._owns_session = True
-
         cid = client_id or self._client_id
         headers = self._build_govee_headers(cid)
         headers["Authorization"] = f"Bearer {token}"
@@ -444,10 +453,6 @@ class GoveeAuthClient:
         Raises:
             GoveeApiError: If the request fails.
         """
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-            self._owns_session = True
-
         headers = self._build_govee_headers(client_id)
         payload = {"type": 8, "email": email}
 
@@ -495,10 +500,6 @@ class GoveeAuthClient:
             GoveeAuthError: Invalid credentials or login failed.
             GoveeApiError: API communication error.
         """
-        if self._session is None:
-            self._session = aiohttp.ClientSession()
-            self._owns_session = True
-
         if client_id is None:
             # Derive a stable client_id from the email so every login for
             # the same account uses the same ID. Govee caches
@@ -653,6 +654,7 @@ async def validate_govee_credentials(
     code: str | None = None,
     client_id: str | None = None,
     session: aiohttp.ClientSession | None = None,
+    hass: HomeAssistant | None = None,
 ) -> GoveeIotCredentials:
     """Validate Govee account credentials and return IoT credentials.
 
@@ -663,7 +665,9 @@ async def validate_govee_credentials(
         password: Govee account password.
         code: Optional 2FA verification code.
         client_id: Optional client ID (reuse from code request).
-        session: Optional aiohttp session.
+        session: Optional aiohttp session. Takes precedence over hass.
+        hass: HA instance — when provided (and no session), the HA-managed
+            clientsession is used.
 
     Returns:
         GoveeIotCredentials if valid.
@@ -674,5 +678,5 @@ async def validate_govee_credentials(
         GoveeAuthError: Invalid credentials.
         GoveeApiError: API communication error.
     """
-    async with GoveeAuthClient(session=session) as client:
+    async with GoveeAuthClient(session=session, hass=hass) as client:
         return await client.login(email, password, client_id=client_id, code=code)

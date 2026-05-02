@@ -681,7 +681,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             return
 
         try:
-            async with GoveeAuthClient() as auth_client:
+            async with GoveeAuthClient(hass=self.hass) as auth_client:
                 self._device_topics = await auth_client.fetch_device_topics(
                     self._iot_credentials.token
                 )

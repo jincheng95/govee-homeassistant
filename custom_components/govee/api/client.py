@@ -24,6 +24,8 @@ from .exceptions import (
 )
 
 if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
     from ..models.commands import DeviceCommand
 
 _LOGGER = logging.getLogger(__name__)
@@ -64,17 +66,27 @@ class GoveeApiClient:
         self,
         api_key: str,
         session: aiohttp.ClientSession | None = None,
+        hass: HomeAssistant | None = None,
     ) -> None:
         """Initialize the API client.
 
         Args:
             api_key: Govee API key from developer portal.
-            session: Optional shared aiohttp session.
+            session: Optional shared aiohttp session. Takes precedence over hass.
+            hass: Home Assistant instance — when provided (and no `session`),
+                the HA-managed clientsession is used so the client participates
+                in HA shutdown/DNS lifecycle (Platinum rule `inject-websession`).
         """
         self._api_key = api_key
         self._session = session
         self._owns_session = session is None
         self._retry_client: RetryClient | None = None
+
+        if session is None and hass is not None:
+            from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+            self._session = async_get_clientsession(hass)
+            self._owns_session = False
 
         # Rate limit tracking (updated from response headers)
         self.rate_limit_remaining: int = 100
@@ -94,10 +106,11 @@ class GoveeApiClient:
         """Ensure retry client is initialized."""
         if self._retry_client is None:
             if self._session is None:
-                self._session = aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=30),
+                raise RuntimeError(
+                    "GoveeApiClient requires either a `session` or `hass` parameter "
+                    "at construction. Pass `hass=hass` so the HA-managed "
+                    "clientsession is used (Platinum rule `inject-websession`)."
                 )
-                self._owns_session = True
 
             retry_options = ExponentialRetry(
                 attempts=RETRY_ATTEMPTS,

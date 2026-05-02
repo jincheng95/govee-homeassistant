@@ -88,8 +88,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
 
     api_key = entry.data[CONF_API_KEY]
 
-    # Create API client
-    api_client = GoveeApiClient(api_key)
+    # Create API client (uses HA-managed clientsession via hass=hass).
+    api_client = GoveeApiClient(api_key, hass=hass)
 
     # Optionally get IoT credentials for MQTT
     # Credentials are cached to avoid repeated login attempts on reload
@@ -123,7 +123,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
         else:
             # Attempt fresh login
             try:
-                async with GoveeAuthClient() as auth_client:
+                async with GoveeAuthClient(hass=hass) as auth_client:
                     iot_credentials = await auth_client.login(
                         email,
                         password,

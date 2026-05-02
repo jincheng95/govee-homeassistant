@@ -191,7 +191,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._client_id = _derive_client_id(email)
                 try:
                     self._iot_credentials = await validate_govee_credentials(
-                        email, password, client_id=self._client_id,
+                        email, password, client_id=self._client_id, hass=self.hass,
                     )
                     self._email = email
                     self._password = password
@@ -206,7 +206,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._email = email
                     self._password = password
                     try:
-                        async with GoveeAuthClient() as client:
+                        async with GoveeAuthClient(hass=self.hass) as client:
                             await client.request_verification_code(
                                 email, self._client_id
                             )
@@ -268,6 +268,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._password,
                     code=code,
                     client_id=self._client_id,
+                    hass=self.hass,
                 )
                 # Route based on flow source
                 if self.source == "reconfigure":
@@ -482,7 +483,10 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                         try:
                             self._iot_credentials = (
                                 await validate_govee_credentials(
-                                    email, password, client_id=self._client_id,
+                                    email,
+                                    password,
+                                    client_id=self._client_id,
+                                    hass=self.hass,
                                 )
                             )
                             new_data[CONF_EMAIL] = email
@@ -496,7 +500,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                             self._password = password
                             self._api_key = cleaned_key
                             try:
-                                async with GoveeAuthClient() as client:
+                                async with GoveeAuthClient(hass=self.hass) as client:
                                     await client.request_verification_code(
                                         email, self._client_id
                                     )
