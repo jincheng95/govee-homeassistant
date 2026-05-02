@@ -962,12 +962,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 )
                 if err.retry_after:
                     reset_time = f"{int(err.retry_after)} seconds"
-                self.hass.async_create_task(
+                self._config_entry.async_create_background_task(
+                    self.hass,
                     async_create_rate_limit_issue(
                         self.hass,
                         self._config_entry,
                         reset_time,
-                    )
+                    ),
+                    name="govee_rate_limit_issue",
                 )
             existing = self._states.get(device_id)
             return existing if existing else GoveeDeviceState.create_empty(device_id)

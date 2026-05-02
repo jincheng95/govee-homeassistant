@@ -43,7 +43,11 @@ from .const import (
     SUFFIX_SEGMENT,
 )
 from .coordinator import GoveeCoordinator
-from .services import async_setup_services, async_unload_services
+from .services import (
+    SERVICE_REFRESH_SCENES,
+    async_setup_services,
+    async_unload_services,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -208,14 +212,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Set up services (only once) and store coordinator
-    domain_data = hass.data.setdefault(DOMAIN, {})
-    if "_services_setup" not in domain_data:
-        domain_data["_services_setup"] = True
+    # Set up services (only once per HA lifetime; idempotent across reloads).
+    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH_SCENES):
         await async_setup_services(hass)
-
-    # Store coordinator in hass.data for services access
-    domain_data[entry.entry_id] = coordinator
 
     # Register update listener for options changes
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -241,11 +240,23 @@ async def async_unload_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bo
         coordinator = entry.runtime_data
         await coordinator.async_shutdown()
 
-        # Remove from hass.data
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        # Clean up IoT-cred caches in hass.data scoped to this entry. Services
+        # registered via has_service() guard are torn down only when the last
+        # entry unloads.
+        domain_data = hass.data.get(DOMAIN, {})
+        for key in (KEY_IOT_CREDENTIALS, KEY_IOT_LOGIN_FAILED):
+            sub = domain_data.get(key)
+            if isinstance(sub, dict):
+                sub.pop(entry.entry_id, None)
 
-        # Unload services if no more entries
-        if not hass.data[DOMAIN]:
+        # If no other entries remain (the IoT cred sub-dicts are empty), tear
+        # down services and clear the domain bucket.
+        remaining_entries = [
+            other
+            for other in hass.config_entries.async_entries(DOMAIN)
+            if other.entry_id != entry.entry_id
+        ]
+        if not remaining_entries:
             await async_unload_services(hass)
             hass.data.pop(DOMAIN, None)
 
@@ -371,14 +382,8 @@ async def _async_cleanup_orphaned_entities(
             entity_entry.platform,
         )
 
-        # Remove from state machine first (if exists)
-        if hass.states.get(entity_entry.entity_id):
-            _LOGGER.debug(
-                "Removing entity from state machine: %s", entity_entry.entity_id
-            )
-            hass.states.async_remove(entity_entry.entity_id)
-
-        # Remove from entity registry
+        # Entity registry removal cascades to the state machine; no manual
+        # async_remove() needed (and racing it can drop legitimate updates).
         entity_registry.async_remove(entity_entry.entity_id)
 
     if entries_to_remove:

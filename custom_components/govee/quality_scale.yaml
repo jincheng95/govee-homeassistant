@@ -142,8 +142,8 @@ rules:
     status: done
     comment: Repairs framework integration for auth failures, rate limits, and MQTT issues
   stale-devices:
-    status: todo
-    comment: Device removal detection not yet implemented
+    status: done
+    comment: _async_cleanup_orphaned_entities in __init__.py removes orphaned entities and devices on entry setup
 
   # Platinum tier requirements
   async-dependency:
