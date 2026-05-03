@@ -31,7 +31,6 @@ from custom_components.govee.models.device import (
     INSTANCE_POWER,
     INSTANCE_BRIGHTNESS,
 )
-from custom_components.govee.protocols import IStateObserver
 
 # ==============================================================================
 # Fixtures
@@ -141,59 +140,6 @@ class TestCoordinatorLogic:
         assert sample_state.color_temp_kelvin == 4000
         assert sample_state.color is None
         assert sample_state.source == "optimistic"
-
-
-class TestObserverPattern:
-    """Test observer pattern for state updates."""
-
-    def test_observer_registration(self):
-        """Test observer can be registered."""
-        observers: list[IStateObserver] = []
-
-        mock_observer = MagicMock(spec=IStateObserver)
-        observers.append(mock_observer)
-
-        assert mock_observer in observers
-
-    def test_observer_unregistration(self):
-        """Test observer can be unregistered."""
-        observers: list[IStateObserver] = []
-
-        mock_observer = MagicMock(spec=IStateObserver)
-        observers.append(mock_observer)
-        observers.remove(mock_observer)
-
-        assert mock_observer not in observers
-
-    def test_observer_notification(self, sample_state):
-        """Test observers are notified of state changes."""
-        mock_observer = MagicMock(spec=IStateObserver)
-        observers = [mock_observer]
-
-        device_id = "AA:BB:CC:DD:EE:FF:00:11"
-        for observer in observers:
-            observer.on_state_changed(device_id, sample_state)
-
-        mock_observer.on_state_changed.assert_called_once_with(device_id, sample_state)
-
-    def test_observer_exception_handling(self, sample_state):
-        """Test that observer exceptions don't propagate."""
-        bad_observer = MagicMock(spec=IStateObserver)
-        bad_observer.on_state_changed.side_effect = Exception("Observer error")
-
-        good_observer = MagicMock(spec=IStateObserver)
-        observers = [bad_observer, good_observer]
-
-        device_id = "AA:BB:CC:DD:EE:FF:00:11"
-
-        for observer in observers:
-            try:
-                observer.on_state_changed(device_id, sample_state)
-            except Exception:
-                pass  # Coordinator swallows observer exceptions
-
-        bad_observer.on_state_changed.assert_called_once()
-        good_observer.on_state_changed.assert_called_once()
 
 
 class TestCommandGeneration:

@@ -82,7 +82,6 @@ from .models.device import (
     INSTANCE_HDMI_SOURCE,
     INSTANCE_THERMOSTAT_TOGGLE,
 )
-from .protocols import IStateObserver
 from .scene_cache import SceneCacheManager
 from .repairs import (
     async_create_auth_issue,
@@ -196,7 +195,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._scene_cache = SceneCacheManager(api_client)
 
         # Observers for state changes
-        self._observers: list[IStateObserver] = []
 
         # MQTT client for real-time updates
         self._mqtt_client: GoveeAwsIotClient | None = None
@@ -378,16 +376,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """
         return device_id in self._pending_power_off
 
-    def register_observer(self, observer: IStateObserver) -> None:
-        """Register a state change observer."""
-        if observer not in self._observers:
-            self._observers.append(observer)
-
-    def unregister_observer(self, observer: IStateObserver) -> None:
-        """Unregister a state change observer."""
-        if observer in self._observers:
-            self._observers.remove(observer)
-
     # ------------------------------------------------------------------ #
     # BLE direct transport
     # ------------------------------------------------------------------ #
@@ -555,13 +543,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         except AttributeError:
             pass
 
-    def _notify_observers(self, device_id: str, state: GoveeDeviceState) -> None:
-        """Notify all observers of state change."""
-        for observer in self._observers:
-            try:
-                observer.on_state_changed(device_id, state)
-            except Exception as err:
-                _LOGGER.warning("Observer notification failed: %s", err)
 
     async def _async_setup(self) -> None:
         """Set up the coordinator - discover devices and start MQTT.
@@ -732,9 +713,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # Update coordinator data and notify HA
         self.async_set_updated_data(self._states)
-
-        # Notify observers
-        self._notify_observers(device_id, state)
 
         _LOGGER.debug(
             "MQTT state applied for %s: power=%s",

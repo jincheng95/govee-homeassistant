@@ -14,28 +14,6 @@ if TYPE_CHECKING:
 
 
 @runtime_checkable
-class IStateObserver(Protocol):
-    """Protocol for state change observers.
-
-    Implemented by entities and other components that need
-    to be notified when device state changes.
-    """
-
-    def on_state_changed(
-        self,
-        device_id: str,
-        state: GoveeDeviceState,
-    ) -> None:
-        """Called when device state changes.
-
-        Args:
-            device_id: Device that changed.
-            state: New device state.
-        """
-        ...
-
-
-@runtime_checkable
 class IStateProvider(Protocol):
     """Protocol for state providers.
 
@@ -73,20 +51,4 @@ class IStateProvider(Protocol):
     @property
     def states(self) -> dict[str, GoveeDeviceState]:
         """Current states for all devices."""
-        ...
-
-    def register_observer(self, observer: IStateObserver) -> None:
-        """Register a state change observer.
-
-        Args:
-            observer: Observer to register.
-        """
-        ...
-
-    def unregister_observer(self, observer: IStateObserver) -> None:
-        """Unregister a state change observer.
-
-        Args:
-            observer: Observer to unregister.
-        """
         ...
