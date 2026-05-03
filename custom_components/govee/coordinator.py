@@ -10,7 +10,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -500,7 +500,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 self.async_set_updated_data(self._states)
         except AttributeError:
             pass
-
 
     async def _async_setup(self) -> None:
         """Set up the coordinator - discover devices and start MQTT.
