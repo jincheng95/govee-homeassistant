@@ -7,6 +7,8 @@ Supports real-time state updates via AWS IoT MQTT.
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -70,6 +72,50 @@ PLATFORMS: list[Platform] = [
 type GoveeConfigEntry = ConfigEntry[GoveeCoordinator]
 
 
+def _creds_to_dict(creds: GoveeIotCredentials) -> dict[str, Any]:
+    """Serialize IoT credentials to a JSON-friendly dict for entry.data storage."""
+    return asdict(creds)
+
+
+def _creds_from_dict(d: Any) -> GoveeIotCredentials | None:
+    """Rehydrate IoT credentials from entry.data; returns None if missing/malformed."""
+    if not d:
+        return None
+    if isinstance(d, GoveeIotCredentials):
+        # Legacy in-memory shape (pre-v2 hass.data). Pass through.
+        return d
+    if not isinstance(d, dict):
+        return None
+    try:
+        return GoveeIotCredentials(**d)
+    except TypeError:
+        _LOGGER.warning("Stored IoT credentials are malformed; ignoring")
+        return None
+
+
+def _persist_iot_credentials(
+    hass: HomeAssistant,
+    entry: GoveeConfigEntry,
+    creds: GoveeIotCredentials | None,
+    login_failed_reason: str | None,
+) -> None:
+    """Write IoT cred state into entry.data (canonical post-v2 storage).
+
+    Either ``creds`` or ``login_failed_reason`` should be set; the other
+    field is cleared. Calling with both None clears both.
+    """
+    new_data = dict(entry.data)
+    if creds is not None:
+        new_data[KEY_IOT_CREDENTIALS] = _creds_to_dict(creds)
+        new_data.pop(KEY_IOT_LOGIN_FAILED, None)
+    elif login_failed_reason is not None:
+        new_data[KEY_IOT_LOGIN_FAILED] = login_failed_reason
+    else:
+        new_data.pop(KEY_IOT_CREDENTIALS, None)
+        new_data.pop(KEY_IOT_LOGIN_FAILED, None)
+    hass.config_entries.async_update_entry(entry, data=new_data)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bool:
     """Set up Govee from a config entry.
 
@@ -99,30 +145,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
     password = entry.data.get(CONF_PASSWORD)
 
     if email and password:
-        # Initialize domain data if needed (idempotent)
-        hass.data.setdefault(DOMAIN, {})
-
-        # Check for cached credentials or previous login failure
-        cached_creds = (
-            hass.data[DOMAIN].get(KEY_IOT_CREDENTIALS, {}).get(entry.entry_id)
-        )
-        login_failed = (
-            hass.data[DOMAIN].get(KEY_IOT_LOGIN_FAILED, {}).get(entry.entry_id)
-        )
+        # Read IoT-cred cache and login-failure marker from entry.data (v2 storage).
+        cached_creds = _creds_from_dict(entry.data.get(KEY_IOT_CREDENTIALS))
+        login_failed = entry.data.get(KEY_IOT_LOGIN_FAILED)
 
         if cached_creds:
-            # Reuse cached credentials
             iot_credentials = cached_creds
-            _LOGGER.debug("Using cached MQTT credentials")
+            _LOGGER.debug("Using cached MQTT credentials from entry.data")
         elif login_failed:
-            # Skip login attempt - previous failure recorded
             _LOGGER.debug(
                 "Skipping MQTT login - previous attempt failed: %s. "
                 "Reconfigure integration to retry.",
                 login_failed,
             )
         else:
-            # Attempt fresh login
+            # Attempt fresh login.
             try:
                 async with GoveeAuthClient(hass=hass) as auth_client:
                     iot_credentials = await auth_client.login(
@@ -131,13 +168,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
                         client_id=_derive_client_id(email),
                     )
                     _LOGGER.info("MQTT credentials obtained for real-time updates")
-
-                    # Cache successful credentials
-                    if KEY_IOT_CREDENTIALS not in hass.data[DOMAIN]:
-                        hass.data[DOMAIN][KEY_IOT_CREDENTIALS] = {}
-                    hass.data[DOMAIN][KEY_IOT_CREDENTIALS][
-                        entry.entry_id
-                    ] = iot_credentials
+                _persist_iot_credentials(hass, entry, iot_credentials, None)
 
             except Govee2FARequiredError:
                 _LOGGER.warning(
@@ -148,10 +179,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
                     "re-enter credentials with a verification code. "
                     "Continuing with polling-only mode."
                 )
-                if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
-                    hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}
-                hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED][entry.entry_id] = (
-                    "2FA verification required"
+                _persist_iot_credentials(
+                    hass, entry, None, "2FA verification required"
                 )
                 ir.async_create_issue(
                     hass,
@@ -164,14 +193,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
                 )
             except GoveeAuthError as err:
                 _LOGGER.warning("Failed to get MQTT credentials: %s", err)
-                if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
-                    hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}
-                hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED][entry.entry_id] = str(err)
+                _persist_iot_credentials(hass, entry, None, str(err))
             except Exception as err:
                 _LOGGER.warning("MQTT setup failed: %s", err)
-                if KEY_IOT_LOGIN_FAILED not in hass.data[DOMAIN]:
-                    hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED] = {}
-                hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED][entry.entry_id] = str(err)
+                _persist_iot_credentials(hass, entry, None, str(err))
 
     # Get options
     options = entry.options
@@ -242,9 +267,33 @@ async def async_migrate_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> b
         return False
 
     if entry.version < 2:
-        # v1 → v2 body lands in S4-002. Skeleton: stamp the version forward
-        # so the migration hook is invoked once and then becomes a no-op.
         new_data = dict(entry.data)
+        # Defensive: if a prior in-process v1 setup left IoT creds in hass.data,
+        # move them into entry.data so the v2 reader path finds them. After a
+        # normal HA reload, hass.data is already cleared by async_unload_entry
+        # so this branch is a no-op — fresh login will repopulate entry.data.
+        domain_data = hass.data.get(DOMAIN, {})
+        legacy_creds = (
+            domain_data.get(KEY_IOT_CREDENTIALS, {}).get(entry.entry_id)
+            if isinstance(domain_data.get(KEY_IOT_CREDENTIALS), dict)
+            else None
+        )
+        if legacy_creds is not None:
+            new_data[KEY_IOT_CREDENTIALS] = (
+                _creds_to_dict(legacy_creds)
+                if isinstance(legacy_creds, GoveeIotCredentials)
+                else legacy_creds
+            )
+            domain_data[KEY_IOT_CREDENTIALS].pop(entry.entry_id, None)
+        legacy_fail = (
+            domain_data.get(KEY_IOT_LOGIN_FAILED, {}).get(entry.entry_id)
+            if isinstance(domain_data.get(KEY_IOT_LOGIN_FAILED), dict)
+            else None
+        )
+        if legacy_fail is not None:
+            new_data[KEY_IOT_LOGIN_FAILED] = legacy_fail
+            domain_data[KEY_IOT_LOGIN_FAILED].pop(entry.entry_id, None)
+
         hass.config_entries.async_update_entry(entry, data=new_data, version=2)
         _LOGGER.info("Migrated config entry %s from v1 to v2", entry.entry_id)
 

@@ -317,7 +317,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     def _cache_iot_credentials(self, entry_id: str) -> None:
-        """Pre-cache IoT credentials so the entry reload can skip login.
+        """Pre-cache IoT credentials in entry.data so reload can skip login.
 
         When 2FA is required, the config flow obtains IoT credentials during
         the verification step. Without caching, the reload would try to login
@@ -326,30 +326,51 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._iot_credentials:
             return
 
-        self.hass.data.setdefault(DOMAIN, {})
-        if KEY_IOT_CREDENTIALS not in self.hass.data[DOMAIN]:
-            self.hass.data[DOMAIN][KEY_IOT_CREDENTIALS] = {}
-        self.hass.data[DOMAIN][KEY_IOT_CREDENTIALS][entry_id] = (
-            self._iot_credentials
-        )
+        from dataclasses import asdict, is_dataclass
+
+        entry = self.hass.config_entries.async_get_entry(entry_id)
+        if entry is None:
+            _LOGGER.debug("Cannot cache IoT creds — entry %s not found", entry_id)
+            return
+
+        creds = self._iot_credentials
+        if is_dataclass(creds) and not isinstance(creds, type):
+            cred_dict = asdict(creds)
+        else:
+            # Tolerate non-dataclass shapes (mocks, pre-serialized dicts).
+            cred_dict = dict(creds) if isinstance(creds, dict) else {
+                f: getattr(creds, f, None)
+                for f in (
+                    "token", "refresh_token", "account_topic",
+                    "iot_cert", "iot_key", "iot_ca",
+                    "client_id", "endpoint",
+                )
+            }
+
+        new_data = dict(entry.data)
+        new_data[KEY_IOT_CREDENTIALS] = cred_dict
+        new_data.pop(KEY_IOT_LOGIN_FAILED, None)
+        self.hass.config_entries.async_update_entry(entry, data=new_data)
         _LOGGER.debug("Pre-cached IoT credentials for entry %s", entry_id)
 
     def _clear_mqtt_cache(self, entry_id: str) -> None:
-        """Clear cached MQTT credentials and login failure for an entry.
+        """Clear cached MQTT credentials and login-failure marker.
 
         This allows a fresh login attempt after reconfigure.
         Also dismisses any 2FA repairs issue for this entry.
         """
-        if DOMAIN not in self.hass.data:
-            return
-
-        # Clear cached credentials
-        if KEY_IOT_CREDENTIALS in self.hass.data[DOMAIN]:
-            self.hass.data[DOMAIN][KEY_IOT_CREDENTIALS].pop(entry_id, None)
-
-        # Clear login failure flag
-        if KEY_IOT_LOGIN_FAILED in self.hass.data[DOMAIN]:
-            self.hass.data[DOMAIN][KEY_IOT_LOGIN_FAILED].pop(entry_id, None)
+        entry = self.hass.config_entries.async_get_entry(entry_id)
+        if entry is not None:
+            new_data = dict(entry.data)
+            mutated = False
+            if KEY_IOT_CREDENTIALS in new_data:
+                new_data.pop(KEY_IOT_CREDENTIALS, None)
+                mutated = True
+            if KEY_IOT_LOGIN_FAILED in new_data:
+                new_data.pop(KEY_IOT_LOGIN_FAILED, None)
+                mutated = True
+            if mutated:
+                self.hass.config_entries.async_update_entry(entry, data=new_data)
 
         # Dismiss 2FA repairs issue if it exists
         from homeassistant.helpers import issue_registry as ir
