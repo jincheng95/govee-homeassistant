@@ -284,10 +284,10 @@ class TestConfigFlowVersion:
     """Test config flow version."""
 
     def test_config_version(self):
-        """Test config version is 1."""
+        """Test config version is 2 (bumped in sprint-4 for IoT-cred migration)."""
         from custom_components.govee.const import CONFIG_VERSION
 
-        assert CONFIG_VERSION == 1
+        assert CONFIG_VERSION == 2
 
 
 class TestFormValidation:

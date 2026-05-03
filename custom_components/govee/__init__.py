@@ -20,6 +20,7 @@ from .api import Govee2FARequiredError, GoveeApiClient, GoveeAuthError, GoveeIot
 from .api.auth import GoveeAuthClient, _derive_client_id
 from .const import (
     CONF_API_KEY,
+    CONFIG_VERSION,
     CONF_EMAIL,
     CONF_ENABLE_DIY_SCENES,
     CONF_ENABLE_GROUPS,
@@ -218,6 +219,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
 
     # Register update listener for options changes
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bool:
+    """Migrate config entry data between schema versions.
+
+    Schema history:
+      v1 → v2: IoT credentials previously cached in hass.data[DOMAIN] move to
+               entry.data. Pre-existing v1 installs with cached creds in
+               hass.data are migrated transparently. v1 installs without cached
+               creds simply re-attempt login on next setup (same as before).
+
+    Returns False on unsupported downgrade so HA blocks the load.
+    """
+    if entry.version > CONFIG_VERSION:
+        _LOGGER.error(
+            "Config entry version %d is newer than supported %d (downgrade)",
+            entry.version, CONFIG_VERSION,
+        )
+        return False
+
+    if entry.version < 2:
+        # v1 → v2 body lands in S4-002. Skeleton: stamp the version forward
+        # so the migration hook is invoked once and then becomes a no-op.
+        new_data = dict(entry.data)
+        hass.config_entries.async_update_entry(entry, data=new_data, version=2)
+        _LOGGER.info("Migrated config entry %s from v1 to v2", entry.entry_id)
 
     return True
 

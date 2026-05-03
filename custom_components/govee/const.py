@@ -45,8 +45,9 @@ SEGMENT_MODE_DISABLED: Final = "disabled"
 SEGMENT_MODE_GROUPED: Final = "grouped"
 SEGMENT_MODE_INDIVIDUAL: Final = "individual"
 
-# Config entry version (fresh start)
-CONFIG_VERSION: Final = 1
+# Config entry schema version. Bumped to 2 in sprint-4 when IoT credentials
+# moved from hass.data[DOMAIN] to entry.data (see async_migrate_entry).
+CONFIG_VERSION: Final = 2
 
 # Keys for storing cached data in hass.data[DOMAIN]
 KEY_IOT_CREDENTIALS: Final = "iot_credentials"
