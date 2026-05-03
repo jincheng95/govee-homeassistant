@@ -82,9 +82,7 @@ def _sanitize_response_for_logging(data: Any) -> Any:
 
 # Govee Account API endpoints
 GOVEE_LOGIN_URL = "https://app2.govee.com/account/rest/account/v2/login"
-GOVEE_VERIFICATION_URL = (
-    "https://app2.govee.com/account/rest/account/v1/verification"
-)
+GOVEE_VERIFICATION_URL = "https://app2.govee.com/account/rest/account/v1/verification"
 GOVEE_IOT_KEY_URL = "https://app2.govee.com/app/v1/account/iot/key"
 GOVEE_DEVICE_LIST_URL = "https://app2.govee.com/device/rest/devices/v1/list"
 GOVEE_CLIENT_TYPE = "1"
@@ -473,9 +471,7 @@ class GoveeAuthClient:
                     raise GoveeApiError(
                         f"Failed to request verification code: HTTP {response.status}"
                     )
-                _LOGGER.debug(
-                    "Verification code requested for %s", email
-                )
+                _LOGGER.debug("Verification code requested for %s", email)
         except aiohttp.ClientError as err:
             raise GoveeApiError(
                 f"Connection error requesting verification code: {err}"

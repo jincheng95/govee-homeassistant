@@ -368,8 +368,7 @@ class GoveeDevice:
     def supports_humidity_sensor(self) -> bool:
         """Check if device exposes a sensorHumidity property."""
         return any(
-            cap.type == CAPABILITY_PROPERTY
-            and cap.instance == INSTANCE_SENSOR_HUMIDITY
+            cap.type == CAPABILITY_PROPERTY and cap.instance == INSTANCE_SENSOR_HUMIDITY
             for cap in self.capabilities
         )
 

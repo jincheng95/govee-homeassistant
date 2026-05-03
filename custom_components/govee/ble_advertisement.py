@@ -105,9 +105,7 @@ class BleAdvertisementHandler:
                 bluetooth.async_register_callback(
                     self._coord.hass,
                     _on_ble_advertisement,
-                    BluetoothCallbackMatcher(
-                        manufacturer_id=mfg_id, connectable=True
-                    ),
+                    BluetoothCallbackMatcher(manufacturer_id=mfg_id, connectable=True),
                     BluetoothScanningMode.ACTIVE,
                 )
             )
@@ -175,10 +173,7 @@ class BleAdvertisementHandler:
         # Don't enroll BLE without a connectable adapter (issue #59 follow-up).
         if matched_id not in coord._ble_devices:
             try:
-                if (
-                    bt_component.async_scanner_count(coord.hass, connectable=True)
-                    == 0
-                ):
+                if bt_component.async_scanner_count(coord.hass, connectable=True) == 0:
                     if ble_sku not in coord._ble_ignored_skus_logged:
                         coord._ble_ignored_skus_logged.add(ble_sku)
                         _LOGGER.info(
@@ -204,7 +199,8 @@ class BleAdvertisementHandler:
             )
         else:
             coord._ble_devices[matched_id].set_ble_device_and_advertisement_data(
-                service_info.device, service_info.advertisement,
+                service_info.device,
+                service_info.advertisement,
             )
 
         # Stamp last-seen for the BLE connectivity sensor and notify entities.
@@ -220,9 +216,7 @@ class BleAdvertisementHandler:
                 "BLE advertisement restored online status for %s (was offline per cloud)",
                 coord._devices[matched_id].name,
             )
-            coord._states[matched_id] = dataclasses.replace(
-                existing_state, online=True
-            )
+            coord._states[matched_id] = dataclasses.replace(existing_state, online=True)
 
         # Guard for tests that instantiate the coordinator via object.__new__().
         try:

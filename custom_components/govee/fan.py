@@ -89,10 +89,13 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
 
         # Detect speed count from device capabilities
         gear_speeds = [
-            opt for opt in device.get_fan_speed_options()
+            opt
+            for opt in device.get_fan_speed_options()
             if opt["work_mode"] == WORK_MODE_GEAR
         ]
-        self._fan_speeds = [opt["mode_value"] for opt in gear_speeds] if gear_speeds else [1, 2, 3]
+        self._fan_speeds = (
+            [opt["mode_value"] for opt in gear_speeds] if gear_speeds else [1, 2, 3]
+        )
         self._attr_speed_count = len(self._fan_speeds)
 
         # Build supported features based on device capabilities
@@ -194,9 +197,7 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
             await self.async_turn_off()
             return
 
-        mode_value = percentage_to_ordered_list_item(
-            self._fan_speeds, percentage
-        )
+        mode_value = percentage_to_ordered_list_item(self._fan_speeds, percentage)
 
         _LOGGER.debug(
             "Setting fan speed: percentage=%d, mode_value=%d",

@@ -364,7 +364,9 @@ class TestColorMode:
         mock_device_state.color = RGBColor(r=255, g=0, b=0)
         mock_device_state.color_temp_kelvin = None
 
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=True
+        )
         assert entity.color_mode == ColorMode.RGB
 
     def test_color_mode_color_temp_when_temp_in_state(
@@ -374,7 +376,9 @@ class TestColorMode:
         mock_device_state.color = None
         mock_device_state.color_temp_kelvin = 4000
 
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=True
+        )
         assert entity.color_mode == ColorMode.COLOR_TEMP
 
     def test_color_mode_color_temp_takes_priority(
@@ -384,16 +388,18 @@ class TestColorMode:
         mock_device_state.color = RGBColor(r=0, g=0, b=0)
         mock_device_state.color_temp_kelvin = 6667
 
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=True
+        )
         assert entity.color_mode == ColorMode.COLOR_TEMP
 
-    def test_color_mode_valid_when_no_state(
-        self, mock_coordinator, mock_light_device
-    ):
+    def test_color_mode_valid_when_no_state(self, mock_coordinator, mock_light_device):
         """Test color_mode returns a valid mode when device_state is None."""
         mock_coordinator.get_state.return_value = None
 
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=True
+        )
         assert entity.color_mode in entity.supported_color_modes
 
     def test_color_mode_valid_when_empty_state(
@@ -402,7 +408,9 @@ class TestColorMode:
         """Test color_mode returns valid mode when color and color_temp are both None."""
         mock_coordinator.get_state.return_value = mock_device_state_off
 
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=True
+        )
         assert entity.color_mode in entity.supported_color_modes
 
     def test_color_mode_onoff_for_onoff_only_device(
@@ -411,7 +419,9 @@ class TestColorMode:
         """Test color_mode returns ONOFF for device with only power control."""
         mock_coordinator.get_state.return_value = None
 
-        entity = GoveeLightEntity(mock_coordinator, mock_plug_device, enable_scenes=False)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_plug_device, enable_scenes=False
+        )
         assert entity.color_mode == ColorMode.ONOFF
         assert entity.supported_color_modes == {ColorMode.ONOFF}
 
@@ -431,7 +441,9 @@ class TestColorMode:
         self, mock_coordinator, mock_light_device, mock_device_state
     ):
         """Test color_mode is always in supported_color_modes across state transitions."""
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=True)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=True
+        )
 
         # With RGB color
         mock_device_state.color = RGBColor(r=255, g=0, b=0)
@@ -459,7 +471,9 @@ class TestBrightnessConversion:
 
     def test_device_to_ha_normal(self, mock_coordinator, mock_light_device):
         """Test normal brightness conversion from device (0-100) to HA (0-255)."""
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=False)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=False
+        )
         # Device range is (0, 100); device=50 → 50% → 127
         assert entity._device_to_ha_brightness(50) == 127
         assert entity._device_to_ha_brightness(100) == 255
@@ -473,20 +487,26 @@ class TestBrightnessConversion:
         Regression test for GitHub issue #24: H6104 returns brightness=254
         from API despite declaring range (0, 100), causing HA to show 255%.
         """
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=False)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=False
+        )
         # Device claims range (0, 100) but API returns 254 → unclamped would be 647
         assert entity._device_to_ha_brightness(254) == 255
 
     def test_device_to_ha_clamped_at_zero(self, mock_coordinator, mock_light_device):
         """Test brightness is clamped to 0 for negative device values."""
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=False)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=False
+        )
         assert entity._device_to_ha_brightness(-10) == 0
 
     def test_ha_to_device_clamped_to_device_range(
         self, mock_coordinator, mock_light_device
     ):
         """Test HA-to-device conversion is clamped to device range."""
-        entity = GoveeLightEntity(mock_coordinator, mock_light_device, enable_scenes=False)
+        entity = GoveeLightEntity(
+            mock_coordinator, mock_light_device, enable_scenes=False
+        )
         # Device range is (0, 100)
         assert entity._ha_to_device_brightness(255) == 100
         assert entity._ha_to_device_brightness(0) == 0

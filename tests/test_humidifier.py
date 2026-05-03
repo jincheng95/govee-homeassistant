@@ -36,7 +36,6 @@ from custom_components.govee.models.device import (
     INSTANCE_WORK_MODE,
 )
 
-
 # --------------------------------------------------------------------------- #
 # Fixtures — H7150 shape from real diagnostic
 # --------------------------------------------------------------------------- #
@@ -211,9 +210,7 @@ class TestEntityProperties:
     def test_target_humidity_in_auto(self, entity):
         assert entity.target_humidity == 55
 
-    def test_target_humidity_none_outside_auto(
-        self, entity, coordinator, h7150_state
-    ):
+    def test_target_humidity_none_outside_auto(self, entity, coordinator, h7150_state):
         h7150_state.work_mode = 1  # gearMode
         h7150_state.mode_value = 1
         coordinator.get_state.return_value = h7150_state

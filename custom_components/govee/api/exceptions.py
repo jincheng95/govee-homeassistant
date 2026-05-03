@@ -66,9 +66,7 @@ class Govee2FACodeInvalidError(GoveeApiError):
     verification code was provided, indicating the code is wrong or expired.
     """
 
-    def __init__(
-        self, message: str = "Invalid or expired verification code"
-    ) -> None:
+    def __init__(self, message: str = "Invalid or expired verification code") -> None:
         super().__init__(message, code=454)
 
 

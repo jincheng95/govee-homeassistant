@@ -195,7 +195,10 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._client_id = _derive_client_id(email)
                 try:
                     self._iot_credentials = await validate_govee_credentials(
-                        email, password, client_id=self._client_id, hass=self.hass,
+                        email,
+                        password,
+                        client_id=self._client_id,
+                        hass=self.hass,
                     )
                     self._email = email
                     self._password = password
@@ -215,9 +218,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                                 email, self._client_id
                             )
                     except GoveeApiError as err:
-                        _LOGGER.warning(
-                            "Failed to request verification code: %s", err
-                        )
+                        _LOGGER.warning("Failed to request verification code: %s", err)
                         errors["base"] = "cannot_connect"
                     else:
                         return await self.async_step_verification_code()
@@ -346,9 +347,14 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             cred_dict = {
                 f: getattr(creds, f, None)
                 for f in (
-                    "token", "refresh_token", "account_topic",
-                    "iot_cert", "iot_key", "iot_ca",
-                    "client_id", "endpoint",
+                    "token",
+                    "refresh_token",
+                    "account_topic",
+                    "iot_cert",
+                    "iot_key",
+                    "iot_ca",
+                    "client_id",
+                    "endpoint",
                 )
             }
 
@@ -507,13 +513,11 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                         # Derive deterministic client_id from email
                         self._client_id = _derive_client_id(email)
                         try:
-                            self._iot_credentials = (
-                                await validate_govee_credentials(
-                                    email,
-                                    password,
-                                    client_id=self._client_id,
-                                    hass=self.hass,
-                                )
+                            self._iot_credentials = await validate_govee_credentials(
+                                email,
+                                password,
+                                client_id=self._client_id,
+                                hass=self.hass,
                             )
                             new_data[CONF_EMAIL] = email
                             new_data[CONF_PASSWORD] = password
@@ -647,13 +651,14 @@ class GoveeOptionsFlow(OptionsFlow):
             # Check if we have RGBIC devices to configure
             coordinator = self.config_entry.runtime_data
             rgbic_devices = [
-                d
-                for d in coordinator.devices.values()
-                if d.segment_count > 0
+                d for d in coordinator.devices.values() if d.segment_count > 0
             ]
 
             if rgbic_devices:
-                _LOGGER.debug("Found %d RGBIC devices, proceeding to device selection", len(rgbic_devices))
+                _LOGGER.debug(
+                    "Found %d RGBIC devices, proceeding to device selection",
+                    len(rgbic_devices),
+                )
                 return await self.async_step_select_segment_devices()
             else:
                 _LOGGER.debug("No RGBIC devices found, saving options")
@@ -709,7 +714,9 @@ class GoveeOptionsFlow(OptionsFlow):
 
         if user_input is not None:
             # User selected devices to configure
-            self._selected_devices = user_input.get("devices", list(rgbic_devices.keys()))
+            self._selected_devices = user_input.get(
+                "devices", list(rgbic_devices.keys())
+            )
             _LOGGER.debug(
                 "Selected %d devices for per-device configuration: %s",
                 len(self._selected_devices),
@@ -727,7 +734,9 @@ class GoveeOptionsFlow(OptionsFlow):
 
         # Show device selector
         all_device_ids = list(rgbic_devices.keys())
-        _LOGGER.debug("Showing device selector with %d RGBIC devices", len(rgbic_devices))
+        _LOGGER.debug(
+            "Showing device selector with %d RGBIC devices", len(rgbic_devices)
+        )
 
         return self.async_show_form(
             step_id="select_segment_devices",
@@ -756,14 +765,19 @@ class GoveeOptionsFlow(OptionsFlow):
                 return await self.async_step_configure_device_mode()
 
             # Done — build final data and save
-            new_data = {**self._global_options, "segment_mode_by_device": self._device_modes}
+            new_data = {
+                **self._global_options,
+                "segment_mode_by_device": self._device_modes,
+            }
             _LOGGER.info("Options saved: %s", new_data)
             _LOGGER.debug("Device modes configured: %s", self._device_modes)
             return self.async_create_entry(title="", data=new_data)
 
         # Show form for the current device
         coordinator = self.config_entry.runtime_data
-        current_device_modes = self.config_entry.options.get("segment_mode_by_device", {})
+        current_device_modes = self.config_entry.options.get(
+            "segment_mode_by_device", {}
+        )
 
         device_id = self._selected_devices[self._device_index]
         device = coordinator.devices.get(device_id)
@@ -783,7 +797,11 @@ class GoveeOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Optional("segment_mode", default=default_mode): vol.In(
-                        [SEGMENT_MODE_DISABLED, SEGMENT_MODE_GROUPED, SEGMENT_MODE_INDIVIDUAL]
+                        [
+                            SEGMENT_MODE_DISABLED,
+                            SEGMENT_MODE_GROUPED,
+                            SEGMENT_MODE_INDIVIDUAL,
+                        ]
                     ),
                 }
             ),

@@ -19,7 +19,6 @@ from custom_components.govee.models import (
     WorkModeCommand,
 )
 
-
 # ==============================================================================
 # Fan Entity Property Tests
 # ==============================================================================
@@ -97,7 +96,9 @@ class TestGoveeFanEntity:
         mock_coordinator.get_state.return_value = mock_fan_device_state
         assert fan_entity.percentage == 100  # High = 100%
 
-    def test_percentage_auto_mode(self, fan_entity, mock_coordinator, mock_fan_device_state):
+    def test_percentage_auto_mode(
+        self, fan_entity, mock_coordinator, mock_fan_device_state
+    ):
         """Test percentage returns None in auto mode."""
         mock_fan_device_state.work_mode = WORK_MODE_AUTO
         mock_coordinator.get_state.return_value = mock_fan_device_state
@@ -108,7 +109,9 @@ class TestGoveeFanEntity:
         """Test preset mode returns Normal for gear mode."""
         assert fan_entity.preset_mode == PRESET_MODE_NORMAL
 
-    def test_preset_mode_auto(self, fan_entity, mock_coordinator, mock_fan_device_state):
+    def test_preset_mode_auto(
+        self, fan_entity, mock_coordinator, mock_fan_device_state
+    ):
         """Test preset mode returns Auto for auto mode."""
         mock_fan_device_state.work_mode = WORK_MODE_AUTO
         mock_coordinator.get_state.return_value = mock_fan_device_state
@@ -337,7 +340,9 @@ class TestGoveeFanEntity8Speed:
         assert fan_entity.percentage == 100
 
     @pytest.mark.asyncio
-    async def test_set_percentage_sends_correct_mode_value(self, fan_entity, mock_coordinator):
+    async def test_set_percentage_sends_correct_mode_value(
+        self, fan_entity, mock_coordinator
+    ):
         """Test that 50% maps to mode_value=4 for 8-speed fan."""
         await fan_entity.async_set_percentage(50)
 

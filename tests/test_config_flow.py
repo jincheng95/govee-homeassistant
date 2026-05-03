@@ -26,7 +26,6 @@ from custom_components.govee.const import (
     DOMAIN,
 )
 
-
 # ==============================================================================
 # Config Flow Logic Tests (without Home Assistant dependencies)
 # ==============================================================================
@@ -355,6 +354,7 @@ class TestConfigFlowAsync:
     @pytest.mark.asyncio
     async def test_async_validate_api_key_mock(self):
         """Test async API key validation mock."""
+
         async def mock_validate(api_key: str) -> bool:
             if api_key == "valid_key":
                 return True
@@ -369,6 +369,7 @@ class TestConfigFlowAsync:
     @pytest.mark.asyncio
     async def test_async_validate_credentials_mock(self):
         """Test async credentials validation mock."""
+
         async def mock_validate(email: str, password: str):
             if email == "valid@test.com" and password == "correct":
                 return MagicMock()  # Return mock IoT credentials
@@ -639,9 +640,7 @@ class TestPerDeviceSegmentMode:
 
         # Device with specific config should use that
         device_modes = new_options.get("segment_mode_by_device", {})
-        device_mode = device_modes.get(
-            "AA:BB:CC:DD:EE:FF:00:01", SEGMENT_MODE_GROUPED
-        )
+        device_mode = device_modes.get("AA:BB:CC:DD:EE:FF:00:01", SEGMENT_MODE_GROUPED)
         assert device_mode == SEGMENT_MODE_INDIVIDUAL
 
         # Unknown device should use default (individual)

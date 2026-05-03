@@ -78,9 +78,7 @@ async def async_setup_entry(
                     )
                 )
     else:
-        _LOGGER.debug(
-            "Transport connectivity entities disabled via options; skipping"
-        )
+        _LOGGER.debug("Transport connectivity entities disabled via options; skipping")
 
     if entities:
         async_add_entities(entities)
@@ -134,9 +132,7 @@ class GoveeTransportConnectivity(GoveeEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool | None:
         """Return True when the transport is currently usable for this device."""
-        health = self.coordinator.get_transport_health(
-            self._device_id, self._transport
-        )
+        health = self.coordinator.get_transport_health(self._device_id, self._transport)
         if health is None:
             return None
         return health.is_available
@@ -154,9 +150,7 @@ class GoveeTransportConnectivity(GoveeEntity, BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return timestamps and failure reason for this transport."""
-        health = self.coordinator.get_transport_health(
-            self._device_id, self._transport
-        )
+        health = self.coordinator.get_transport_health(self._device_id, self._transport)
         if health is None:
             return {}
         attrs: dict[str, Any] = {}

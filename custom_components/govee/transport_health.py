@@ -47,9 +47,7 @@ class TransportHealthTracker:
             kind: TransportHealth(transport=kind) for kind in TRANSPORT_KINDS
         }
 
-    def get(
-        self, device_id: str, transport: TransportKind
-    ) -> TransportHealth | None:
+    def get(self, device_id: str, transport: TransportKind) -> TransportHealth | None:
         """Return health for (device, transport), or None if untracked."""
         per_device = self._health.get(device_id)
         if per_device is None:
@@ -59,9 +57,7 @@ class TransportHealthTracker:
     def record_success(self, device_id: str, transport: TransportKind) -> None:
         """Stamp a successful transport use."""
         self.ensure(device_id)
-        self._health[device_id][transport].mark_success(
-            datetime.now(timezone.utc)
-        )
+        self._health[device_id][transport].mark_success(datetime.now(timezone.utc))
 
     def record_failure(
         self, device_id: str, transport: TransportKind, reason: str

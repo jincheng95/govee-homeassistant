@@ -75,9 +75,7 @@ class TestTemperatureSettingStructParsing:
                     {
                         "type": "devices.capabilities.temperature_setting",
                         "instance": "targetTemperature",
-                        "state": {
-                            "value": {"temperature": 18, "autoStop": 0}
-                        },
+                        "state": {"value": {"temperature": 18, "autoStop": 0}},
                     }
                 ]
             }

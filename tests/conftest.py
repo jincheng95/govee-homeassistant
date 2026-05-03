@@ -260,7 +260,11 @@ def api_device_response() -> dict[str, Any]:
                 "instance": INSTANCE_BRIGHTNESS,
                 "parameters": {"range": {"min": 0, "max": 100}},
             },
-            {"type": CAPABILITY_COLOR_SETTING, "instance": INSTANCE_COLOR_RGB, "parameters": {}},
+            {
+                "type": CAPABILITY_COLOR_SETTING,
+                "instance": INSTANCE_COLOR_RGB,
+                "parameters": {},
+            },
         ],
     }
 
@@ -341,11 +345,14 @@ def fan_capabilities() -> tuple[GoveeCapability, ...]:
                         "fieldName": "modeValue",
                         "dataType": "ENUM",
                         "options": [
-                            {"name": "gearMode", "options": [
-                                {"name": "Low", "value": 1},
-                                {"name": "Medium", "value": 2},
-                                {"name": "High", "value": 3},
-                            ]},
+                            {
+                                "name": "gearMode",
+                                "options": [
+                                    {"name": "Low", "value": 1},
+                                    {"name": "Medium", "value": 2},
+                                    {"name": "High", "value": 3},
+                                ],
+                            },
                             {"defaultValue": 0, "name": "Auto"},
                         ],
                     },
@@ -390,16 +397,19 @@ def fan_8speed_capabilities() -> tuple[GoveeCapability, ...]:
                         "fieldName": "modeValue",
                         "dataType": "ENUM",
                         "options": [
-                            {"name": "FanSpeed", "options": [
-                                {"value": 1},
-                                {"value": 2},
-                                {"value": 3},
-                                {"value": 4},
-                                {"value": 5},
-                                {"value": 6},
-                                {"value": 7},
-                                {"value": 8},
-                            ]},
+                            {
+                                "name": "FanSpeed",
+                                "options": [
+                                    {"value": 1},
+                                    {"value": 2},
+                                    {"value": 3},
+                                    {"value": 4},
+                                    {"value": 5},
+                                    {"value": 6},
+                                    {"value": 7},
+                                    {"value": 8},
+                                ],
+                            },
                             {"defaultValue": 0, "name": "Custom"},
                             {"defaultValue": 0, "name": "Auto"},
                             {"defaultValue": 0, "name": "Sleep"},
@@ -471,11 +481,14 @@ def air_purifier_capabilities() -> tuple[GoveeCapability, ...]:
                         "fieldName": "modeValue",
                         "dataType": "ENUM",
                         "options": [
-                            {"name": "gearMode", "options": [
-                                {"name": "Sleep", "value": 1},
-                                {"name": "Low", "value": 2},
-                                {"name": "High", "value": 3},
-                            ]},
+                            {
+                                "name": "gearMode",
+                                "options": [
+                                    {"name": "Sleep", "value": 1},
+                                    {"name": "Low", "value": 2},
+                                    {"name": "High", "value": 3},
+                                ],
+                            },
                             {"defaultValue": 0, "name": "Custom"},
                             {"defaultValue": 0, "name": "Auto"},
                         ],
@@ -530,7 +543,11 @@ def api_fan_device_response() -> dict[str, Any]:
         "type": "devices.types.fan",
         "capabilities": [
             {"type": CAPABILITY_ON_OFF, "instance": INSTANCE_POWER, "parameters": {}},
-            {"type": CAPABILITY_TOGGLE, "instance": INSTANCE_OSCILLATION, "parameters": {}},
+            {
+                "type": CAPABILITY_TOGGLE,
+                "instance": INSTANCE_OSCILLATION,
+                "parameters": {},
+            },
             {
                 "type": CAPABILITY_WORK_MODE,
                 "instance": INSTANCE_WORK_MODE,
@@ -549,11 +566,14 @@ def api_fan_device_response() -> dict[str, Any]:
                             "fieldName": "modeValue",
                             "dataType": "ENUM",
                             "options": [
-                                {"name": "gearMode", "options": [
-                                    {"name": "Low", "value": 1},
-                                    {"name": "Medium", "value": 2},
-                                    {"name": "High", "value": 3},
-                                ]},
+                                {
+                                    "name": "gearMode",
+                                    "options": [
+                                        {"name": "Low", "value": 1},
+                                        {"name": "Medium", "value": 2},
+                                        {"name": "High", "value": 3},
+                                    ],
+                                },
                                 {"defaultValue": 0, "name": "Auto"},
                             ],
                         },

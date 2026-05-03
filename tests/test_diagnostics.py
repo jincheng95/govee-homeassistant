@@ -16,7 +16,6 @@ from custom_components.govee.diagnostics import (
     async_get_config_entry_diagnostics,
 )
 
-
 # Govee device-id MAC pattern: 6-8 colon-separated hex octets
 _MAC_RE = re.compile(r"\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5,7}\b")
 
@@ -146,9 +145,9 @@ class TestDiagnosticsOutput:
         rendered = json.dumps(out, default=str)
 
         # The MAC must not appear anywhere — keys, values, or nested strings.
-        assert mac_id not in rendered, (
-            f"MAC-format device id leaked into diagnostics: {mac_id} found in {rendered}"
-        )
+        assert (
+            mac_id not in rendered
+        ), f"MAC-format device id leaked into diagnostics: {mac_id} found in {rendered}"
         # No 6-or-more-octet MAC pattern anywhere.
         match = _MAC_RE.search(rendered)
         assert match is None, f"MAC-format substring leaked: {match.group(0)!r}"

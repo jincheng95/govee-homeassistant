@@ -590,9 +590,10 @@ class TestLoginMissingData:
         with pytest.raises(GoveeApiError) as exc_info:
             await client.login("user@example.com", "s3cr3t")
 
-        assert "certificate" in str(exc_info.value).lower() or "cert" in str(
-            exc_info.value
-        ).lower()
+        assert (
+            "certificate" in str(exc_info.value).lower()
+            or "cert" in str(exc_info.value).lower()
+        )
 
     async def test_login_invalid_credentials_result_raises_api_error(self):
         """should raise GoveeApiError when assembled credentials fail is_valid check."""
@@ -610,7 +611,9 @@ class TestLoginMissingData:
         with pytest.raises(GoveeApiError) as exc_info:
             await client.login("user@example.com", "s3cr3t")
 
-        assert "IoT" in str(exc_info.value) or "credentials" in str(exc_info.value).lower()
+        assert (
+            "IoT" in str(exc_info.value) or "credentials" in str(exc_info.value).lower()
+        )
 
 
 # ==============================================================================
@@ -659,7 +662,12 @@ class TestLoginRequestShape:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(_url: str, *_args: Any, headers: dict[str, str] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str,
+            *_args: Any,
+            headers: dict[str, str] | None = None,
+            **_kwargs: Any,
+        ):
             captured["headers"] = headers
             return _async_cm(login_resp)
 
@@ -692,7 +700,9 @@ class TestLoginRequestShape:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
+        ):
             captured["body"] = json
             return _async_cm(login_resp)
 
@@ -859,9 +869,7 @@ class TestFetchDeviceTopicsHeaders:
         device_ext_str = json.dumps(
             {"deviceSettings": {"topic": "GA/device/CC:DD:EE:FF:00:11"}}
         )
-        devices = [
-            {"device": "CC:DD:EE:FF:00:11", "deviceExt": device_ext_str}
-        ]
+        devices = [{"device": "CC:DD:EE:FF:00:11", "deviceExt": device_ext_str}]
         device_resp = make_mock_response(200, create_device_list_response(devices))
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
@@ -1059,7 +1067,9 @@ class Test2FAFlow:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
+        ):
             captured["body"] = json
             return _async_cm(login_resp)
 
@@ -1086,7 +1096,9 @@ class Test2FAFlow:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
+        ):
             captured["body"] = json
             return _async_cm(login_resp)
 
@@ -1112,7 +1124,9 @@ class Test2FAFlow:
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
 
-        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
+        ):
             captured["url"] = _url
             captured["body"] = json
             return _async_cm(verify_resp)
@@ -1139,7 +1153,12 @@ class Test2FAFlow:
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
 
-        def _post(_url: str, *_args: Any, headers: dict[str, str] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str,
+            *_args: Any,
+            headers: dict[str, str] | None = None,
+            **_kwargs: Any,
+        ):
             captured["headers"] = headers
             return _async_cm(verify_resp)
 
@@ -1147,7 +1166,9 @@ class Test2FAFlow:
         client = GoveeAuthClient(session=session)
 
         # Act
-        await client.request_verification_code("user@example.com", client_id="my-client-id-42")
+        await client.request_verification_code(
+            "user@example.com", client_id="my-client-id-42"
+        )
 
         # Assert
         headers = captured["headers"]
@@ -1184,7 +1205,9 @@ class Test2FAFlow:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
+        ):
             captured["body"] = json
             return _async_cm(login_resp)
 
@@ -1288,7 +1311,9 @@ class TestDeterministicClientId:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
+        ):
             captured_bodies.append(json)
             return _async_cm(login_resp)
 
@@ -1328,7 +1353,12 @@ class TestDeterministicClientId:
         session.close = AsyncMock()
         session.post = lambda *a, **kw: _async_cm(login_resp)
 
-        def _get(_url: str, *_args: Any, headers: dict[str, str] | None = None, **_kwargs: Any):
+        def _get(
+            _url: str,
+            *_args: Any,
+            headers: dict[str, str] | None = None,
+            **_kwargs: Any,
+        ):
             captured_headers.append(headers or {})
             return _async_cm(iot_resp)
 
@@ -1351,7 +1381,12 @@ class TestDeterministicClientId:
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
 
-        def _get(_url: str, *_args: Any, headers: dict[str, str] | None = None, **_kwargs: Any):
+        def _get(
+            _url: str,
+            *_args: Any,
+            headers: dict[str, str] | None = None,
+            **_kwargs: Any,
+        ):
             captured_headers.append(headers or {})
             return _async_cm(iot_resp)
 
@@ -1369,14 +1404,17 @@ class TestDeterministicClientId:
         """fetch_device_topics() should reuse the login's client_id."""
         # Arrange
         captured_headers: list[dict[str, str]] = []
-        topics_resp = make_mock_response(
-            200, {"devices": []}
-        )
+        topics_resp = make_mock_response(200, {"devices": []})
 
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
 
-        def _post(_url: str, *_args: Any, headers: dict[str, str] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str,
+            *_args: Any,
+            headers: dict[str, str] | None = None,
+            **_kwargs: Any,
+        ):
             captured_headers.append(headers or {})
             return _async_cm(topics_resp)
 
@@ -1401,7 +1439,9 @@ class TestDeterministicClientId:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
+        def _post(
+            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
+        ):
             if json and "client" in json:
                 captured_client_ids.append(json["client"])
             return _async_cm(login_resp)
@@ -1426,6 +1466,7 @@ class TestDeterministicClientId:
         use their own prefixes. We use 'hacs-govee:' to avoid collisions.
         """
         import uuid as _uuid
+
         expected = _uuid.uuid5(_uuid.NAMESPACE_DNS, "hacs-govee:user@example.com").hex
         assert _derive_client_id("user@example.com") == expected
 

@@ -514,7 +514,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """
         _LOGGER.warning(
             "MQTT gave up after %d attempts (last error: %s) — surfacing repair",
-            attempts, last_error,
+            attempts,
+            last_error,
         )
         self._config_entry.async_create_background_task(
             self.hass,
@@ -857,16 +858,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         lock = self._segment_locks.setdefault(device_id, asyncio.Lock())
         async with lock:
             try:
-                success = await self._api_client.control_device(
-                    device_id, sku, command
-                )
+                success = await self._api_client.control_device(device_id, sku, command)
             except GoveeAuthError:
                 self._record_transport_failure(device_id, "cloud_api", "auth_failed")
                 raise
             except GoveeApiError as err:
-                _LOGGER.error(
-                    "Segment command failed for %s: %s", device_id, err
-                )
+                _LOGGER.error("Segment command failed for %s: %s", device_id, err)
                 self._record_transport_failure(device_id, "cloud_api", str(err))
                 return False
 
@@ -901,7 +898,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 await ble_device.set_brightness(command.brightness)
             elif isinstance(command, ColorCommand):
                 await ble_device.set_rgb(
-                    command.color.r, command.color.g, command.color.b,
+                    command.color.r,
+                    command.color.g,
+                    command.color.b,
                 )
             else:
                 # Not BLE-capable (scenes, color_temp, work modes, etc.)
@@ -915,7 +914,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._record_transport_failure(device_id, "ble", str(err))
             return False
         else:
-            _LOGGER.debug("BLE command succeeded for %s: %s", device_id, type(command).__name__)
+            _LOGGER.debug(
+                "BLE command succeeded for %s: %s", device_id, type(command).__name__
+            )
             self._record_transport_success(device_id, "ble")
             # A successful BLE write reaches the device directly — flip
             # `online` back True if a stale `online: false` from the cloud

@@ -88,9 +88,11 @@ SEGMENTED_MODELS: frozenset[str] = frozenset({"H6053", "H6072", "H6102", "H6199"
 # How to extend: confirm via field testing that BLE commands (power,
 # brightness, RGB) actually change device state, then add the SKU here
 # and note the test result in the PR.
-BLE_COMMAND_SUPPORTED_MODELS: frozenset[str] = frozenset({
-    "H6199",  # RGBIC — confirmed working per issue #59 (at-9 report, ~10s lag).
-})
+BLE_COMMAND_SUPPORTED_MODELS: frozenset[str] = frozenset(
+    {
+        "H6199",  # RGBIC — confirmed working per issue #59 (at-9 report, ~10s lag).
+    }
+)
 
 # Packet head byte used for all command frames.
 _PACKET_HEAD_COMMAND = 0x33
@@ -184,7 +186,20 @@ def _build_rgb_segmented_frame(r: int, g: int, b: int) -> bytes:
     """
     return _build_frame(
         LedPacketCmd.COLOR,
-        [LedColorMode.SEGMENTS, 0x01, r, g, b, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x7F],
+        [
+            LedColorMode.SEGMENTS,
+            0x01,
+            r,
+            g,
+            b,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0xFF,
+            0x7F,
+        ],
     )
 
 

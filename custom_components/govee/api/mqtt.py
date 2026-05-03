@@ -313,9 +313,7 @@ class GoveeAwsIotClient:
                             try:
                                 self._on_give_up(reconnect_attempts, str(err))
                             except Exception as cb_err:  # pragma: no cover
-                                _LOGGER.warning(
-                                    "give-up callback raised: %s", cb_err
-                                )
+                                _LOGGER.warning("give-up callback raised: %s", cb_err)
                         self._running = False
                         break
 

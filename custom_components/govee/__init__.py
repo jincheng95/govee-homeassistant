@@ -18,7 +18,12 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from homeassistant.helpers import issue_registry as ir
 
-from .api import Govee2FARequiredError, GoveeApiClient, GoveeAuthError, GoveeIotCredentials
+from .api import (
+    Govee2FARequiredError,
+    GoveeApiClient,
+    GoveeAuthError,
+    GoveeIotCredentials,
+)
 from .api.auth import GoveeAuthClient, _derive_client_id
 from .const import (
     CONF_API_KEY,
@@ -179,9 +184,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
                     "re-enter credentials with a verification code. "
                     "Continuing with polling-only mode."
                 )
-                _persist_iot_credentials(
-                    hass, entry, None, "2FA verification required"
-                )
+                _persist_iot_credentials(hass, entry, None, "2FA verification required")
                 ir.async_create_issue(
                     hass,
                     DOMAIN,
@@ -262,7 +265,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> b
     if entry.version > CONFIG_VERSION:
         _LOGGER.error(
             "Config entry version %d is newer than supported %d (downgrade)",
-            entry.version, CONFIG_VERSION,
+            entry.version,
+            CONFIG_VERSION,
         )
         return False
 

@@ -258,7 +258,9 @@ class TestGoveeBLEState:
 # ==============================================================================
 
 
-def _make_ble_device(address: str = "AA:BB:CC:DD:EE:FF", name: str = "Govee_H6072_1234"):
+def _make_ble_device(
+    address: str = "AA:BB:CC:DD:EE:FF", name: str = "Govee_H6072_1234"
+):
     """Build a minimal BLEDevice-like object for tests."""
     device = MagicMock()
     device.address = address

@@ -54,7 +54,9 @@ def _make_grouped_segment_entity(
     device.segment_count = segment_count
 
     # Bypass GoveeGroupedSegmentEntity.__init__ which requires a real coordinator
-    with patch.object(GoveeGroupedSegmentEntity, "__init__", lambda self, *a, **kw: None):
+    with patch.object(
+        GoveeGroupedSegmentEntity, "__init__", lambda self, *a, **kw: None
+    ):
         entity = GoveeGroupedSegmentEntity.__new__(GoveeGroupedSegmentEntity)
 
     # Set the attributes that __init__ would normally set
@@ -135,7 +137,9 @@ class TestGroupedSegmentEntity:
     @pytest.mark.asyncio
     async def test_turn_off_skipped_when_device_already_off(self):
         """async_turn_off skips command when device is already off."""
-        entity = _make_grouped_segment_entity(power_state=False, power_off_pending=False)
+        entity = _make_grouped_segment_entity(
+            power_state=False, power_off_pending=False
+        )
 
         await entity.async_turn_off()
 
@@ -243,7 +247,9 @@ class TestGroupedSegmentEntity:
         coordinator.is_power_off_pending = lambda did: did in pending_power_off
 
         # Build grouped segment entity
-        with patch.object(GoveeGroupedSegmentEntity, "__init__", lambda self, *a, **kw: None):
+        with patch.object(
+            GoveeGroupedSegmentEntity, "__init__", lambda self, *a, **kw: None
+        ):
             entity = GoveeGroupedSegmentEntity.__new__(GoveeGroupedSegmentEntity)
         entity.coordinator = coordinator
         entity._device_id = "AA:BB:CC:DD:EE:FF:00:11"

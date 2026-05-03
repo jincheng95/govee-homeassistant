@@ -15,7 +15,6 @@ from custom_components.govee.models.device import (
     INSTANCE_PURIFIER_MODE,
 )
 
-
 # ==============================================================================
 # Purifier Device Fixtures
 # ==============================================================================
@@ -111,11 +110,13 @@ class TestPurifierCapabilityParsing:
             sku="H6006",
             name="Test Purifier",
             device_type=DEVICE_TYPE_PURIFIER,
-            capabilities=(GoveeCapability(
-                type=CAPABILITY_ON_OFF,
-                instance=INSTANCE_POWER,
-                parameters={},
-            ),),
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_ON_OFF,
+                    instance=INSTANCE_POWER,
+                    parameters={},
+                ),
+            ),
         )
         options = device.get_purifier_mode_options()
         assert options == []
@@ -164,7 +165,9 @@ class TestPurifierModeSelectEntity:
         entity.async_write_ha_state = MagicMock()
         return entity
 
-    def test_purifier_mode_entity_init(self, purifier_mode_entity, mock_purifier_device):
+    def test_purifier_mode_entity_init(
+        self, purifier_mode_entity, mock_purifier_device
+    ):
         """Test purifier mode entity initialization."""
         assert purifier_mode_entity._device == mock_purifier_device
         assert purifier_mode_entity._device_id == mock_purifier_device.device_id
@@ -191,7 +194,9 @@ class TestPurifierModeSelectEntity:
         """Test current option returns Low."""
         assert purifier_mode_entity.current_option == "Low"
 
-    def test_current_option_default_on_none(self, purifier_mode_entity, mock_coordinator):
+    def test_current_option_default_on_none(
+        self, purifier_mode_entity, mock_coordinator
+    ):
         """Test current option returns first option when state is None."""
         from custom_components.govee.models import GoveeDeviceState
 
@@ -216,11 +221,14 @@ class TestPurifierModeSelectEntity:
 
         assert device_id == purifier_mode_entity._device_id
         from custom_components.govee.models import ModeCommand
+
         assert isinstance(command, ModeCommand)
         assert command.mode_instance == INSTANCE_PURIFIER_MODE
         assert command.value == 3
 
-    async def test_select_purifier_mode_custom(self, purifier_mode_entity, mock_coordinator):
+    async def test_select_purifier_mode_custom(
+        self, purifier_mode_entity, mock_coordinator
+    ):
         """Test selecting Custom purifier mode."""
         await purifier_mode_entity.async_select_option("Custom")
 
@@ -228,17 +236,22 @@ class TestPurifierModeSelectEntity:
         device_id, command = call_args[0]
 
         from custom_components.govee.models import ModeCommand
+
         assert isinstance(command, ModeCommand)
         assert command.value == 4
 
-    async def test_select_purifier_mode_invalid(self, purifier_mode_entity, mock_coordinator):
+    async def test_select_purifier_mode_invalid(
+        self, purifier_mode_entity, mock_coordinator
+    ):
         """Test selecting invalid purifier mode option."""
         await purifier_mode_entity.async_select_option("Invalid")
 
         # Command should not be sent
         mock_coordinator.async_control_device.assert_not_called()
 
-    async def test_select_purifier_mode_failure(self, purifier_mode_entity, mock_coordinator):
+    async def test_select_purifier_mode_failure(
+        self, purifier_mode_entity, mock_coordinator
+    ):
         """Test purifier mode selection failure."""
         mock_coordinator.async_control_device.return_value = False
 

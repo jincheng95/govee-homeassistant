@@ -872,7 +872,9 @@ class TestClearSceneLogic:
     def _make_device(self, supports_rgb: bool, supports_color_temp: bool):
         """Create a device with specified color capabilities."""
         caps = [
-            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+            GoveeCapability(
+                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
+            ),
             GoveeCapability(
                 type=CAPABILITY_RANGE,
                 instance=INSTANCE_BRIGHTNESS,
@@ -1333,10 +1335,12 @@ class TestBleAdvertisementHandling:
             device_type="devices.types.light",
             capabilities=sample_capabilities,
         )
-        coord = self._make_coordinator_with_devices({
-            "AA:BB:CC:DD:EE:FF:00:11": dev1,
-            "11:22:33:44:55:66:00:22": dev2,
-        })
+        coord = self._make_coordinator_with_devices(
+            {
+                "AA:BB:CC:DD:EE:FF:00:11": dev1,
+                "11:22:33:44:55:66:00:22": dev2,
+            }
+        )
         info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
 
         coord._handle_ble_advertisement(info)
@@ -1361,10 +1365,12 @@ class TestBleAdvertisementHandling:
             device_type="devices.types.light",
             capabilities=sample_capabilities,
         )
-        coord = self._make_coordinator_with_devices({
-            "AA:BB:CC:DD:EE:FF:00:11": dev1,
-            "11:22:33:44:55:66:00:22": dev2,
-        })
+        coord = self._make_coordinator_with_devices(
+            {
+                "AA:BB:CC:DD:EE:FF:00:11": dev1,
+                "11:22:33:44:55:66:00:22": dev2,
+            }
+        )
         # BLE MAC doesn't match either device's prefix
         info = self._make_service_info("Govee_H6072_754B", "99:88:77:66:55:44")
 
@@ -1562,6 +1568,7 @@ class TestTryBleCommand:
         """BLE write failure returns False so REST fallback is triggered."""
         coord, ble = self._make_coordinator_with_mock_ble()
         from unittest.mock import AsyncMock
+
         ble.turn_on = AsyncMock(side_effect=Exception("BLE link lost"))
         result = await coord._try_ble_command(
             "AA:BB:CC:DD:EE:FF:00:11", PowerCommand(power_on=True)
@@ -1594,6 +1601,7 @@ class TestClearSceneOnHdmiSyncBox:
             CAPABILITY_MODE,
             INSTANCE_HDMI_SOURCE,
         )
+
         if hdmi_options is None:
             hdmi_options = [
                 {"name": "HDMI 1", "value": 1},
@@ -1602,7 +1610,9 @@ class TestClearSceneOnHdmiSyncBox:
                 {"name": "HDMI 4", "value": 4},
             ]
         caps = (
-            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+            GoveeCapability(
+                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
+            ),
             GoveeCapability(
                 type=CAPABILITY_RANGE,
                 instance=INSTANCE_BRIGHTNESS,
@@ -1681,7 +1691,10 @@ class TestClearSceneOnHdmiSyncBox:
         from custom_components.govee.models.commands import ModeCommand
 
         device = self._make_sync_box(
-            hdmi_options=[{"name": "HDMI 1", "value": 1}, {"name": "HDMI 2", "value": 2}]
+            hdmi_options=[
+                {"name": "HDMI 1", "value": 1},
+                {"name": "HDMI 2", "value": 2},
+            ]
         )
         coord = self._make_coord(device)
 

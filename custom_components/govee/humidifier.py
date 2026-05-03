@@ -142,9 +142,7 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
         # Dryer / Auto use a fixed mode_value (0) unless specified.
         for ha_mode in (MODE_AUTO, MODE_DRYER):
             if ha_mode in self._mode_to_work_mode:
-                self._mode_to_mode_value.setdefault(
-                    ha_mode, _MODE_ALIASES[ha_mode][1]
-                )
+                self._mode_to_mode_value.setdefault(ha_mode, _MODE_ALIASES[ha_mode][1])
 
         # Final mode list, ordered for a consistent UI.
         ordered = [MODE_LOW, MODE_HIGH, MODE_AUTO, MODE_DRYER]
