@@ -318,17 +318,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bo
         coordinator = entry.runtime_data
         await coordinator.async_shutdown()
 
-        # Clean up IoT-cred caches in hass.data scoped to this entry. Services
-        # registered via has_service() guard are torn down only when the last
-        # entry unloads.
-        domain_data = hass.data.get(DOMAIN, {})
-        for key in (KEY_IOT_CREDENTIALS, KEY_IOT_LOGIN_FAILED):
-            sub = domain_data.get(key)
-            if isinstance(sub, dict):
-                sub.pop(entry.entry_id, None)
-
-        # If no other entries remain (the IoT cred sub-dicts are empty), tear
-        # down services and clear the domain bucket.
+        # IoT-cred storage moved to entry.data in v2 schema; no per-entry
+        # hass.data sub-entries to clean up. Tear down services and clear
+        # the domain bucket only when this is the last entry.
         remaining_entries = [
             other
             for other in hass.config_entries.async_entries(DOMAIN)
