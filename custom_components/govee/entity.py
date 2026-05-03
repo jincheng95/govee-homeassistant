@@ -95,7 +95,8 @@ class GoveeEntity(CoordinatorEntity["GoveeCoordinator"]):
         binary_sensor entities. Set
         ``CONF_EXPOSE_TRANSPORT_ENTITIES`` in entry options to True to opt in.
         """
-        if not self.coordinator.config_entry.options.get(
+        config_entry = self.coordinator.config_entry
+        if config_entry is None or not config_entry.options.get(
             CONF_EXPOSE_TRANSPORT_ENTITIES, False
         ):
             return {}

@@ -327,6 +327,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             return
 
         from dataclasses import asdict, is_dataclass
+        from typing import Any
 
         entry = self.hass.config_entries.async_get_entry(entry_id)
         if entry is None:
@@ -335,10 +336,10 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
 
         creds = self._iot_credentials
         if is_dataclass(creds) and not isinstance(creds, type):
-            cred_dict = asdict(creds)
+            cred_dict: dict[str, Any] = asdict(creds)
         else:
-            # Tolerate non-dataclass shapes (mocks, pre-serialized dicts).
-            cred_dict = dict(creds) if isinstance(creds, dict) else {
+            # Tolerate mock objects in tests by extracting fields explicitly.
+            cred_dict = {
                 f: getattr(creds, f, None)
                 for f in (
                     "token", "refresh_token", "account_topic",

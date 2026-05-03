@@ -250,13 +250,18 @@ class GoveeAuthClient:
 
     async def __aenter__(self) -> GoveeAuthClient:
         """Async context manager entry."""
+        self._require_session()
+        return self
+
+    def _require_session(self) -> aiohttp.ClientSession:
+        """Return the underlying session; raise if not configured."""
         if self._session is None:
             raise RuntimeError(
                 "GoveeAuthClient requires either a `session` or `hass` parameter "
                 "at construction. Pass `hass=hass` so the HA-managed "
                 "clientsession is used (Platinum rule `inject-websession`)."
             )
-        return self
+        return self._session
 
     async def __aexit__(self, *args: Any) -> None:
         """Async context manager exit."""
@@ -310,7 +315,7 @@ class GoveeAuthClient:
         _LOGGER.debug("Fetching IoT credentials from Govee API")
 
         try:
-            async with self._session.get(
+            async with self._require_session().get(
                 GOVEE_IOT_KEY_URL,
                 headers=headers,
             ) as response:
@@ -371,7 +376,7 @@ class GoveeAuthClient:
         headers["Authorization"] = f"Bearer {token}"
 
         try:
-            async with self._session.post(
+            async with self._require_session().post(
                 GOVEE_DEVICE_LIST_URL,
                 headers=headers,
                 json={},  # Empty body required for POST
@@ -459,7 +464,7 @@ class GoveeAuthClient:
         _LOGGER.debug("Requesting Govee verification code for %s", email)
 
         try:
-            async with self._session.post(
+            async with self._require_session().post(
                 GOVEE_VERIFICATION_URL,
                 json=payload,
                 headers=headers,
@@ -524,7 +529,7 @@ class GoveeAuthClient:
         _LOGGER.debug("Attempting Govee account login")
 
         try:
-            async with self._session.post(
+            async with self._require_session().post(
                 GOVEE_LOGIN_URL,
                 json=payload,
                 headers=headers,
