@@ -1200,21 +1200,23 @@ class TestBleAdvertisementHandling:
     def _make_coordinator_with_devices(self, devices: dict[str, GoveeDevice]):
         """Build a minimal coordinator-like object for testing _handle_ble_advertisement.
 
-        Patches GoveeBLEDevice and SEGMENTED_MODELS into the coordinator module
-        since HAS_BLUETOOTH=False in the test env (missing serial for
+        Patches GoveeBLEDevice and SEGMENTED_MODELS into the ble_advertisement
+        module since HAS_BLUETOOTH=False in the test env (missing serial for
         homeassistant.components.bluetooth).
         """
         import custom_components.govee.coordinator as coord_mod
+        import custom_components.govee.ble_advertisement as ble_mod
+        from custom_components.govee.ble_advertisement import BleAdvertisementHandler
         from custom_components.govee.api.ble import GoveeBLEDevice as RealBLEDevice
         from custom_components.govee.api.ble import SEGMENTED_MODELS as RealSegModels
 
         # Inject the names that the conditional import would have set
-        coord_mod.GoveeBLEDevice = RealBLEDevice
-        coord_mod.SEGMENTED_MODELS = RealSegModels
+        ble_mod.GoveeBLEDevice = RealBLEDevice
+        ble_mod.SEGMENTED_MODELS = RealSegModels
         # Broad allowlist so the enrollment-path tests exercise real logic
         # regardless of the production-default allowlist content. The
         # enforcement path is covered by its own dedicated test.
-        coord_mod.BLE_COMMAND_SUPPORTED_MODELS = frozenset(
+        ble_mod.BLE_COMMAND_SUPPORTED_MODELS = frozenset(
             {"H6053", "H6072", "H6102", "H6199", "H6076", "H6126"}
         )
 
@@ -1224,6 +1226,7 @@ class TestBleAdvertisementHandling:
         coord._transport = TransportHealthTracker()
         coord._states = {}
         coord._ble_ignored_skus_logged = set()
+        coord._ble_handler = BleAdvertisementHandler(coord)
         return coord
 
     def _make_service_info(self, name: str, address: str):
@@ -1242,13 +1245,15 @@ class TestBleAdvertisementHandling:
         the device for command dispatch (issue #59). Advertising BLE is not
         proof the device will accept BLE command frames."""
         import custom_components.govee.coordinator as coord_mod
+        import custom_components.govee.ble_advertisement as ble_mod
+        from custom_components.govee.ble_advertisement import BleAdvertisementHandler
         from custom_components.govee.api.ble import GoveeBLEDevice as RealBLEDevice
         from custom_components.govee.api.ble import SEGMENTED_MODELS as RealSegModels
 
-        coord_mod.GoveeBLEDevice = RealBLEDevice
-        coord_mod.SEGMENTED_MODELS = RealSegModels
+        ble_mod.GoveeBLEDevice = RealBLEDevice
+        ble_mod.SEGMENTED_MODELS = RealSegModels
         # Narrow allowlist — does NOT include the advertised SKU below.
-        coord_mod.BLE_COMMAND_SUPPORTED_MODELS = frozenset({"H9999"})
+        ble_mod.BLE_COMMAND_SUPPORTED_MODELS = frozenset({"H9999"})
 
         coord = object.__new__(coord_mod.GoveeCoordinator)
         coord._devices = {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
@@ -1256,6 +1261,7 @@ class TestBleAdvertisementHandling:
         coord._transport = TransportHealthTracker()
         coord._states = {}
         coord._ble_ignored_skus_logged = set()
+        coord._ble_handler = BleAdvertisementHandler(coord)
 
         info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
         coord._handle_ble_advertisement(info)
@@ -1385,12 +1391,12 @@ class TestBleAdvertisementHandling:
         receive advertisements via the passive scanner stack but cannot
         actually connect, costing ~40s per command before REST fallback.
         Enrolling with zero connectable adapters must be skipped."""
-        import custom_components.govee.coordinator as coord_mod
+        import custom_components.govee.ble_advertisement as ble_mod
 
         # Simulate the bt_component module presence with scanner_count=0
         bt = MagicMock()
         bt.async_scanner_count = MagicMock(return_value=0)
-        coord_mod.bt_component = bt
+        ble_mod.bt_component = bt
 
         coord = self._make_coordinator_with_devices(
             {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
@@ -1404,15 +1410,15 @@ class TestBleAdvertisementHandling:
         bt.async_scanner_count.assert_called_once()
 
         # Cleanup so we don't leak the patch into other tests
-        del coord_mod.bt_component
+        del ble_mod.bt_component
 
     def test_adapter_present_enrolls_normally(self, sample_device):
         """When a connectable adapter exists, BLE enrollment proceeds."""
-        import custom_components.govee.coordinator as coord_mod
+        import custom_components.govee.ble_advertisement as ble_mod
 
         bt = MagicMock()
         bt.async_scanner_count = MagicMock(return_value=1)
-        coord_mod.bt_component = bt
+        ble_mod.bt_component = bt
 
         coord = self._make_coordinator_with_devices(
             {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
@@ -1425,7 +1431,7 @@ class TestBleAdvertisementHandling:
         assert "AA:BB:CC:DD:EE:FF:00:11" in coord._ble_devices
         bt.async_scanner_count.assert_called_once()
 
-        del coord_mod.bt_component
+        del ble_mod.bt_component
 
     def test_ble_advertisement_restores_online_after_outage(self, sample_device):
         """Regression for issue #68 — BLE advertisement is proof of life.

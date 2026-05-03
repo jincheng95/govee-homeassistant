@@ -33,24 +33,17 @@ from .ble_passthrough import BlePassthroughManager
 
 # BLE direct support — conditionally imported to avoid hard Bluetooth dependency
 try:
-    from homeassistant.components import bluetooth
-    from homeassistant.components import bluetooth as bt_component
-    from homeassistant.components.bluetooth import (
-        BluetoothCallbackMatcher,
-        BluetoothScanningMode,
-    )
-    from .api.ble import (
-        BLE_COMMAND_SUPPORTED_MODELS,
-        GoveeBLEDevice,
-        SEGMENTED_MODELS,
-    )
+    from .api.ble import GoveeBLEDevice  # noqa: F401  (used in __init__)
 
     HAS_BLUETOOTH = True
 except ImportError:  # pragma: no cover — HA installs without Bluetooth
     HAS_BLUETOOTH = False
+    GoveeBLEDevice = None  # type: ignore[assignment,misc]
+
+from .ble_advertisement import BleAdvertisementHandler
+from .ble_advertisement import sku_from_ble_name as _sku_from_ble_name  # noqa: F401
 from .const import (
     DOMAIN,
-    GOVEE_BLE_MANUFACTURER_IDS,
     OPTIMISTIC_GRACE_CAP_SECONDS,
 )
 from .models import (
@@ -102,25 +95,6 @@ STATE_FETCH_TIMEOUT = 30
 # with a small gap so a "scene" that hits every segment doesn't drop
 # commands with empty JSON responses (issue #53).
 SEGMENT_COMMAND_PACING_SECONDS = 0.12
-
-# BLE advertising name prefixes used by Govee devices
-_BLE_NAME_PREFIXES = ("Govee_*", "ihoment_*", "GBK_*")
-
-
-def _sku_from_ble_name(name: str | None) -> str | None:
-    """Extract SKU from BLE advertising name like ``Govee_H6072_754B``.
-
-    Govee BLE lights advertise with names following the pattern
-    ``<Prefix>_<SKU>_<Suffix>`` where the SKU starts with ``H`` followed
-    by 3-4 alphanumeric characters. Returns ``None`` if no SKU can be
-    parsed (device will be skipped for BLE correlation).
-    """
-    if not name:
-        return None
-    for part in name.split("_"):
-        if part.startswith("H") and len(part) >= 4 and part[1:].isalnum():
-            return part
-    return None
 
 
 class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
@@ -212,6 +186,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # SKUs for which we've already logged "advertised but not on the
         # BLE command allowlist" — avoid spamming the log on every advert.
         self._ble_ignored_skus_logged: set[str] = set()
+
+        # BLE advertisement subscription + correlation handler (audit H1).
+        self._ble_handler = BleAdvertisementHandler(self)
 
         # Track in-flight power-off commands so segment entities can
         # avoid racing with a concurrent device power-off (issue #16).
@@ -339,167 +316,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     # ------------------------------------------------------------------ #
 
     def setup_ble_subscriptions(self) -> list[Any]:
-        """Subscribe to BLE advertisements for nearby Govee devices.
+        """Subscribe to BLE advertisements via the BleAdvertisementHandler.
 
-        Called from ``async_setup_entry`` after the coordinator is created.
-        Returns a list of unsubscribe callables to pass to
-        ``entry.async_on_unload``.
-
-        This is a no-op when ``HAS_BLUETOOTH`` is False (HA installs
-        without Bluetooth hardware or the ``bluetooth`` component).
+        Returns the list of unsubscribe callables to pass to
+        ``entry.async_on_unload``. No-op when HAS_BLUETOOTH is False.
         """
-        if not HAS_BLUETOOTH:
-            return []
-
-        unsubs: list[Any] = []
-
-        @callback
-        def _on_ble_advertisement(service_info: Any, change: Any) -> None:
-            self._handle_ble_advertisement(service_info)
-
-        for prefix in _BLE_NAME_PREFIXES:
-            unsub = bluetooth.async_register_callback(
-                self.hass,
-                _on_ble_advertisement,
-                BluetoothCallbackMatcher(local_name=prefix, connectable=True),
-                BluetoothScanningMode.ACTIVE,
-            )
-            unsubs.append(unsub)
-
-        # Some Govee SKUs (H6053 / H6076 / H6126, issue #58) don't deliver
-        # reliably via name-prefix matchers in all HA Bluetooth setups.
-        # Register a complementary manufacturer-ID callback so adverts
-        # with the Govee company ID are always captured.
-        for mfg_id in GOVEE_BLE_MANUFACTURER_IDS:
-            unsub = bluetooth.async_register_callback(
-                self.hass,
-                _on_ble_advertisement,
-                BluetoothCallbackMatcher(manufacturer_id=mfg_id, connectable=True),
-                BluetoothScanningMode.ACTIVE,
-            )
-            unsubs.append(unsub)
-
-        _LOGGER.debug(
-            "BLE advertisement subscription active for names=%s manufacturer_ids=%s",
-            _BLE_NAME_PREFIXES,
-            GOVEE_BLE_MANUFACTURER_IDS,
-        )
-        return unsubs
+        return self._ble_handler.setup_subscriptions()
 
     @callback
     def _handle_ble_advertisement(self, service_info: Any) -> None:
-        """Correlate a BLE advertisement with a known cloud device.
-
-        Matching strategy (see ``docs/_research/2026-04-09_multi-transport-single-entity.md``):
-
-        1. Extract SKU from the advertising name (``Govee_H6072_754B`` → ``H6072``).
-        2. Find cloud devices with that SKU (ignoring group devices).
-        3. If exactly one match → unambiguous correlation.
-        4. If multiple same-SKU → try MAC-prefix heuristic as tiebreaker.
-        5. If no match or ambiguous → skip (device remains cloud-only).
-        """
-        ble_sku = _sku_from_ble_name(service_info.name)
-        if not ble_sku:
-            return
-
-        candidates = [
-            (did, dev)
-            for did, dev in self._devices.items()
-            if dev.sku == ble_sku and not dev.is_group
-        ]
-
-        matched_id: str | None = None
-        if len(candidates) == 1:
-            matched_id = candidates[0][0]
-        elif len(candidates) > 1:
-            # Multiple same-SKU — MAC-prefix tiebreaker (unproven but plausible)
-            ble_mac = service_info.address.upper()
-            for did, _dev in candidates:
-                if did.upper().startswith(ble_mac):
-                    matched_id = did
-                    break
-
-        if matched_id is None:
-            return
-
-        # BLE advertisement visibility is not the same as BLE command
-        # capability (issue #59). Some SKUs advertise BLE but silently
-        # drop command frames — enrolling them in the dispatch path
-        # makes every control command disappear. Only enroll SKUs whose
-        # BLE command set is verified.
-        if ble_sku not in BLE_COMMAND_SUPPORTED_MODELS:
-            if ble_sku not in self._ble_ignored_skus_logged:
-                self._ble_ignored_skus_logged.add(ble_sku)
-                _LOGGER.info(
-                    "%s (SKU=%s) is advertising BLE but is not on the BLE "
-                    "command allowlist. Staying cloud-only. If BLE commands "
-                    "are known to work for this SKU, please open a GitHub "
-                    "issue referencing #59 so it can be added.",
-                    self._devices[matched_id].name,
-                    ble_sku,
-                )
-            return
-
-        # Don't enroll BLE without a connectable adapter — issue #59
-        # follow-up. On HA installs running in a VM without Bluetooth
-        # passthrough, advertisements still reach the integration via the
-        # passive bluetooth_le_scanner stack, but `BleakClient.connect()`
-        # then takes ~40s to time out per command (4 retries × ~10s) before
-        # REST fallback fires. Skip enrollment entirely when no connectable
-        # adapter is registered. Trade-off: adapters added after setup won't
-        # re-enable BLE until integration reload — acceptable edge case.
-        if matched_id not in self._ble_devices:
-            try:
-                if bt_component.async_scanner_count(self.hass, connectable=True) == 0:
-                    if ble_sku not in self._ble_ignored_skus_logged:
-                        self._ble_ignored_skus_logged.add(ble_sku)
-                        _LOGGER.info(
-                            "%s (SKU=%s) advertising BLE but no connectable "
-                            "adapter is available — staying cloud-only. Reload "
-                            "the integration after attaching a Bluetooth adapter.",
-                            self._devices[matched_id].name,
-                            ble_sku,
-                        )
-                    return
-            except Exception as err:  # pragma: no cover — defensive
-                _LOGGER.debug("BLE adapter probe failed: %s", err)
-
-            self._ble_devices[matched_id] = GoveeBLEDevice(
-                service_info.device,
-                segmented=ble_sku in SEGMENTED_MODELS,
-            )
-            _LOGGER.info(
-                "BLE transport available for %s (SKU=%s, BLE=%s)",
-                self._devices[matched_id].name,
-                ble_sku,
-                service_info.address,
-            )
-        else:
-            self._ble_devices[matched_id].set_ble_device_and_advertisement_data(
-                service_info.device, service_info.advertisement,
-            )
-
-        # Stamp last-seen for the BLE connectivity sensor and notify entities.
-        self._record_transport_success(matched_id, "ble")
-
-        # A BLE advertisement from the device is direct proof of life — flip
-        # `online` back True if a stale `online: false` from the Govee cloud
-        # is masking a recovered device (issue #68).
-        existing_state = self._states.get(matched_id)
-        if existing_state is not None and not existing_state.online:
-            _LOGGER.info(
-                "BLE advertisement restored online status for %s (was offline per cloud)",
-                self._devices[matched_id].name,
-            )
-            self._states[matched_id] = dataclasses.replace(existing_state, online=True)
-
-        # async_set_updated_data requires super().__init__ to have run — guard
-        # for tests that instantiate the coordinator via object.__new__().
-        try:
-            if self.data is not None:
-                self.async_set_updated_data(self._states)
-        except AttributeError:
-            pass
+        """Compatibility delegate — tests still call this directly."""
+        self._ble_handler.handle_advertisement(service_info)
 
     async def _async_setup(self) -> None:
         """Set up the coordinator - discover devices and start MQTT.
