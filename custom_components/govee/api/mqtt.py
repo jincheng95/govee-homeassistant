@@ -70,6 +70,9 @@ rqXRfboQnoZsG4q5WTP468SQvvG5
 
 # Type for state update callback
 StateUpdateCallback = Callable[[str, dict[str, Any]], None]
+GiveUpCallback = Callable[[int, str], None]
+"""Invoked when the reconnect loop exhausts MAX_RECONNECT_ATTEMPTS.
+Args: (attempts_made, last_error_message)."""
 
 
 class GoveeAwsIotClient:
@@ -94,15 +97,20 @@ class GoveeAwsIotClient:
         self,
         credentials: GoveeIotCredentials,
         on_state_update: StateUpdateCallback,
+        on_give_up: GiveUpCallback | None = None,
     ) -> None:
         """Initialize the AWS IoT MQTT client.
 
         Args:
             credentials: IoT credentials from Govee login API.
             on_state_update: Callback(device_id, state_dict) for state changes.
+            on_give_up: Optional callback fired when the reconnect loop
+                exhausts MAX_RECONNECT_ATTEMPTS. Use to surface a repair
+                issue so the user can intervene (e.g., reload integration).
         """
         self._credentials = credentials
         self._on_state_update = on_state_update
+        self._on_give_up = on_give_up
         self._running = False
         self._connected = False
         self._task: asyncio.Task[None] | None = None
@@ -301,6 +309,13 @@ class GoveeAwsIotClient:
                             "AWS IoT connection failed after %d attempts, giving up",
                             reconnect_attempts,
                         )
+                        if self._on_give_up is not None:
+                            try:
+                                self._on_give_up(reconnect_attempts, str(err))
+                            except Exception as cb_err:  # pragma: no cover
+                                _LOGGER.warning(
+                                    "give-up callback raised: %s", cb_err
+                                )
                         self._running = False
                         break
 

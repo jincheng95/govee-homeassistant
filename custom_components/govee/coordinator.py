@@ -633,6 +633,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._mqtt_client = GoveeAwsIotClient(
             credentials=self._iot_credentials,
             on_state_update=self._on_mqtt_state_update,
+            on_give_up=self._on_mqtt_give_up,
         )
 
         if self._mqtt_client.available:
@@ -718,6 +719,27 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             "MQTT state applied for %s: power=%s",
             device_id,
             state.power_state,
+        )
+
+    def _on_mqtt_give_up(self, attempts: int, last_error: str) -> None:
+        """Called by MQTT client when reconnect loop exhausts MAX_RECONNECT_ATTEMPTS.
+
+        Creates a repair issue so the user is prompted to reload the
+        integration. Without this, the MQTT loop exits silently and the
+        integration falls back to polling-only with no user-visible signal.
+        """
+        _LOGGER.warning(
+            "MQTT gave up after %d attempts (last error: %s) — surfacing repair",
+            attempts, last_error,
+        )
+        self._config_entry.async_create_background_task(
+            self.hass,
+            async_create_mqtt_issue(
+                self.hass,
+                self._config_entry,
+                f"connection lost after {attempts} reconnect attempts: {last_error}",
+            ),
+            name="govee_mqtt_give_up_issue",
         )
 
     async def _async_update_data(self) -> dict[str, GoveeDeviceState]:
