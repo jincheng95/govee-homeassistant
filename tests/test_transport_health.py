@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from custom_components.govee.coordinator import GoveeCoordinator
 from custom_components.govee.models import GoveeDeviceState, TransportHealth
+from custom_components.govee.transport_health import TransportHealthTracker
 
 
 def _bare_coordinator() -> GoveeCoordinator:
@@ -15,7 +16,7 @@ def _bare_coordinator() -> GoveeCoordinator:
     coord._devices = {}
     coord._states = {}
     coord._ble_devices = {}
-    coord._transport_health = {}
+    coord._transport = TransportHealthTracker()
     coord._mqtt_client = None
     return coord
 

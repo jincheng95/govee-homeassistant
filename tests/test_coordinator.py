@@ -31,6 +31,7 @@ from custom_components.govee.models.device import (
     INSTANCE_POWER,
     INSTANCE_BRIGHTNESS,
 )
+from custom_components.govee.transport_health import TransportHealthTracker
 
 # ==============================================================================
 # Fixtures
@@ -1220,7 +1221,7 @@ class TestBleAdvertisementHandling:
         coord = object.__new__(coord_mod.GoveeCoordinator)
         coord._devices = devices
         coord._ble_devices = {}
-        coord._transport_health = {}
+        coord._transport = TransportHealthTracker()
         coord._states = {}
         coord._ble_ignored_skus_logged = set()
         return coord
@@ -1252,7 +1253,7 @@ class TestBleAdvertisementHandling:
         coord = object.__new__(coord_mod.GoveeCoordinator)
         coord._devices = {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
         coord._ble_devices = {}
-        coord._transport_health = {}
+        coord._transport = TransportHealthTracker()
         coord._states = {}
         coord._ble_ignored_skus_logged = set()
 
@@ -1491,7 +1492,7 @@ class TestTryBleCommand:
 
         coord = object.__new__(GoveeCoordinator)
         coord._ble_devices = {}
-        coord._transport_health = {}
+        coord._transport = TransportHealthTracker()
         coord._devices = {}
         coord._states = {}
 

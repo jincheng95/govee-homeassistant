@@ -57,10 +57,10 @@ from .models import (
     GoveeDevice,
     GoveeDeviceState,
     RGBColor,
-    TRANSPORT_KINDS,
     TransportHealth,
     TransportKind,
 )
+from .transport_health import TransportHealthTracker
 from .models.commands import (
     BrightnessCommand,
     ColorCommand,
@@ -102,11 +102,6 @@ STATE_FETCH_TIMEOUT = 30
 # with a small gap so a "scene" that hits every segment doesn't drop
 # commands with empty JSON responses (issue #53).
 SEGMENT_COMMAND_PACING_SECONDS = 0.12
-
-# BLE advertisement staleness threshold. When the last advertisement
-# seen for a BLE device is older than this, mark the BLE transport
-# unavailable. Govee devices typically re-advertise every few seconds.
-BLE_STALE_SECONDS = 120
 
 # BLE advertising name prefixes used by Govee devices
 _BLE_NAME_PREFIXES = ("Govee_*", "ihoment_*", "GBK_*")
@@ -180,10 +175,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # State cache
         self._states: dict[str, GoveeDeviceState] = {}
 
-        # Per-device transport health: device_id -> kind -> TransportHealth.
-        # Drives the optional per-device connectivity binary_sensors and
-        # feeds the existing transport diagnostic attributes.
-        self._transport_health: dict[str, dict[TransportKind, TransportHealth]] = {}
+        # Per-device transport health: extracted to TransportHealthTracker
+        # (audit H1). Drives optional connectivity binary_sensors + diagnostic
+        # transport attributes.
+        self._transport = TransportHealthTracker()
 
         # Per-device asyncio.Lock for serializing segment commands. Govee
         # rate-limits parallel segment dispatch with empty-body 200s; the
@@ -278,11 +273,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
     def _ensure_transport_health(self, device_id: str) -> None:
         """Initialize transport-health entries for a device if missing."""
-        if device_id in self._transport_health:
-            return
-        self._transport_health[device_id] = {
-            kind: TransportHealth(transport=kind) for kind in TRANSPORT_KINDS
-        }
+        self._transport.ensure(device_id)
 
     def get_transport_health(
         self,
@@ -290,10 +281,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         transport: TransportKind,
     ) -> TransportHealth | None:
         """Return health for (device, transport), or None if untracked."""
-        per_device = self._transport_health.get(device_id)
-        if per_device is None:
-            return None
-        return per_device.get(transport)
+        return self._transport.get(device_id, transport)
 
     def _record_transport_success(
         self,
@@ -301,10 +289,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         transport: TransportKind,
     ) -> None:
         """Stamp a successful transport use."""
-        self._ensure_transport_health(device_id)
-        self._transport_health[device_id][transport].mark_success(
-            datetime.now(timezone.utc)
-        )
+        self._transport.record_success(device_id, transport)
 
     def _record_transport_failure(
         self,
@@ -313,48 +298,21 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         reason: str,
     ) -> None:
         """Stamp a failed transport use."""
-        self._ensure_transport_health(device_id)
-        self._transport_health[device_id][transport].mark_failure(
-            datetime.now(timezone.utc), reason
-        )
+        self._transport.record_failure(device_id, transport, reason)
 
     def _refresh_mqtt_health(self) -> None:
-        """Propagate MQTT client connection state to all device health entries.
-
-        MVP uses polling each coordinator cycle; a push callback from the
-        MQTT client is a follow-up enhancement.
-        """
-        connected = self.mqtt_connected
-        for device_id in self._devices:
-            self._ensure_transport_health(device_id)
-            mqtt = self._transport_health[device_id]["mqtt"]
-            if connected:
-                # Don't backdate last_success_ts here — only real pushes do that.
-                mqtt.is_available = True
-                mqtt.last_failure_reason = None
-            else:
-                mqtt.is_available = False
-                if self._mqtt_client is None:
-                    mqtt.last_failure_reason = "not_configured"
-                else:
-                    mqtt.last_failure_reason = "disconnected"
+        """Propagate MQTT client connection state to per-device health."""
+        self._transport.refresh_mqtt_for_devices(
+            self._devices,
+            connected=self.mqtt_connected,
+            client_configured=self._mqtt_client is not None,
+        )
 
     def _refresh_ble_staleness(self) -> None:
         """Mark BLE unavailable for devices whose last advertisement is stale."""
-        now = datetime.now(timezone.utc)
-        for device_id in self._devices:
-            self._ensure_transport_health(device_id)
-            ble = self._transport_health[device_id]["ble"]
-            # Not connected at all
-            if device_id not in self._ble_devices:
-                ble.is_available = False
-                continue
-            last = ble.last_success_ts
-            if last is None:
-                continue
-            if (now - last).total_seconds() > BLE_STALE_SECONDS:
-                ble.is_available = False
-                ble.last_failure_reason = "stale_advertisement"
+        self._transport.refresh_ble_staleness(
+            self._devices, set(self._ble_devices.keys())
+        )
 
     @property
     def states(self) -> dict[str, GoveeDeviceState]:
