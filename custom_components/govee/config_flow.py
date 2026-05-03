@@ -105,8 +105,12 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Get the options flow for this handler."""
-        return GoveeOptionsFlow(config_entry)
+        """Get the options flow for this handler.
+
+        The OptionsFlow base class exposes ``self.config_entry`` as a property —
+        do not pass it to ``__init__`` (deprecated in HA 2025.12).
+        """
+        return GoveeOptionsFlow()
 
     async def async_step_user(
         self,
@@ -617,11 +621,14 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class GoveeOptionsFlow(OptionsFlow):
-    """Handle options for Govee integration."""
+    """Handle options for Govee integration.
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
+    Per HA 2025.12 deprecation: do not store config_entry on __init__.
+    The base class exposes ``self.config_entry`` as a property.
+    """
+
+    def __init__(self) -> None:
         """Initialize options flow."""
-        self._config_entry = config_entry
         self._global_options: dict[str, Any] = {}
         self._selected_devices: list[str] = []
         self._device_modes: dict[str, str] = {}
@@ -638,7 +645,7 @@ class GoveeOptionsFlow(OptionsFlow):
             _LOGGER.debug("Global options saved: %s", user_input)
 
             # Check if we have RGBIC devices to configure
-            coordinator = self._config_entry.runtime_data
+            coordinator = self.config_entry.runtime_data
             rgbic_devices = [
                 d
                 for d in coordinator.devices.values()
@@ -652,7 +659,7 @@ class GoveeOptionsFlow(OptionsFlow):
                 _LOGGER.debug("No RGBIC devices found, saving options")
                 return self.async_create_entry(title="", data=user_input)
 
-        options = self._config_entry.options
+        options = self.config_entry.options
         _LOGGER.debug("Showing global options form with current values: %s", options)
 
         return self.async_show_form(
@@ -693,7 +700,7 @@ class GoveeOptionsFlow(OptionsFlow):
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """Select which RGBIC devices to configure individually."""
-        coordinator = self._config_entry.runtime_data
+        coordinator = self.config_entry.runtime_data
         rgbic_devices = {
             d.device_id: f"{d.name} ({d.device_id})"
             for d in coordinator.devices.values()
@@ -755,8 +762,8 @@ class GoveeOptionsFlow(OptionsFlow):
             return self.async_create_entry(title="", data=new_data)
 
         # Show form for the current device
-        coordinator = self._config_entry.runtime_data
-        current_device_modes = self._config_entry.options.get("segment_mode_by_device", {})
+        coordinator = self.config_entry.runtime_data
+        current_device_modes = self.config_entry.options.get("segment_mode_by_device", {})
 
         device_id = self._selected_devices[self._device_index]
         device = coordinator.devices.get(device_id)
