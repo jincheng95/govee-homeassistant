@@ -15,6 +15,8 @@ Key differences from official Govee MQTT (mqtt.openapi.govee.com):
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import ssl
@@ -347,6 +349,14 @@ class GoveeAwsIotClient:
             }
         }
 
+        multiSync format (leak sensor events from H5043 hub):
+        {
+            "sku": "H5043",
+            "device": "XX:XX:XX:XX:XX:XX:XX:XX",
+            "cmd": "multiSync",
+            "op": {"command": ["base64_encoded_20_byte_packet"]}
+        }
+
         Command responses and other messages are silently ignored.
         """
         try:
@@ -365,12 +375,19 @@ class GoveeAwsIotClient:
                 return
 
             device_id = data.get("device")
-            state = data.get("state", {})
 
-            # Only process messages with device ID and state
+            # Only process messages with device ID
             if not device_id:
                 _LOGGER.debug("AWS IoT message missing device ID, ignoring")
                 return
+
+            # Handle multiSync messages (leak sensor events)
+            cmd = data.get("cmd")
+            if cmd == "multiSync":
+                self._handle_multisync(device_id, data)
+                return
+
+            state = data.get("state", {})
 
             if not state:
                 _LOGGER.debug(
@@ -395,6 +412,89 @@ class GoveeAwsIotClient:
             _LOGGER.warning("Failed to parse AWS IoT message: %s", err)
         except Exception as err:
             _LOGGER.error("Error handling AWS IoT message: %s", err)
+
+    def _handle_multisync(self, hub_device_id: str, data: dict[str, Any]) -> None:
+        """Handle multiSync messages from hub devices (e.g., H5043 leak hub).
+
+        Decodes BLE-format packets in op.command[] to extract leak sensor events.
+        Packet format (20 bytes):
+        - byte 0: 0xEE (sensor report header)
+        - byte 1: 0x34 = leak/dry event, 0x32 = button press
+        - byte 2: sensor slot (sno) on hub
+        - byte 5: 0x01 = wet, 0x00 = dry
+        """
+        op = data.get("op", {})
+        commands = op.get("command", [])
+
+        for cmd_b64 in commands:
+            try:
+                raw = base64.b64decode(cmd_b64)
+            except (binascii.Error, ValueError):
+                _LOGGER.debug("Failed to decode multiSync command base64")
+                continue
+
+            if len(raw) < 6:
+                continue
+
+            if raw[0] != 0xEE:
+                continue
+
+            sensor_slot = raw[2]
+
+            if raw[1] == 0x34:
+                # Leak/dry event
+                is_wet = raw[5] == 0x01
+
+                _LOGGER.debug(
+                    "Leak event from hub %s: slot=%d wet=%s",
+                    hub_device_id,
+                    sensor_slot,
+                    is_wet,
+                )
+
+                event_data = {
+                    "_leak_event": True,
+                    "hub_device_id": hub_device_id,
+                    "sensor_slot": sensor_slot,
+                    "is_wet": is_wet,
+                }
+
+            elif raw[1] == 0x32 and len(raw) >= 10:
+                # Button press event
+                # Unlike leak packets, button press encodes the sensor MAC
+                # in bytes 2-9 in reverse byte order (not a slot number)
+                mac_bytes = raw[2:10][::-1]
+                sensor_mac = ":".join(f"{b:02X}" for b in mac_bytes)
+
+                _LOGGER.debug(
+                    "Button press from hub %s: sensor=%s",
+                    hub_device_id,
+                    sensor_mac,
+                )
+
+                event_data = {
+                    "_button_press": True,
+                    "hub_device_id": hub_device_id,
+                    "device_id": sensor_mac,
+                }
+
+            else:
+                _LOGGER.debug(
+                    "multiSync unknown packet from %s: header=%02x%02x",
+                    hub_device_id,
+                    raw[0],
+                    raw[1],
+                )
+                continue
+
+            try:
+                self._on_state_update(hub_device_id, event_data)
+            except Exception as err:
+                _LOGGER.error(
+                    "multiSync callback failed for hub %s: %s",
+                    hub_device_id,
+                    err,
+                )
 
     async def async_publish_ptreal(
         self,

@@ -4,11 +4,14 @@ Provides sensor entities for:
 - Rate limit remaining (diagnostic)
 - MQTT connection status (diagnostic)
 - Temperature / humidity properties on stand-alone sensors (H5109, H5179)
+- Leak sensor battery level (from BFF API polling)
+- Leak sensor last wet event timestamp (from BFF API polling)
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -21,8 +24,9 @@ from homeassistant.const import (
     PERCENTAGE,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -34,6 +38,7 @@ from .const import (
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .models import GoveeDevice
+from .models.device import GoveeLeakSensor, leak_sensor_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,6 +72,20 @@ async def async_setup_entry(
             entities.append(GoveeTemperatureSensor(coordinator, device))
         if device.supports_humidity_sensor:
             entities.append(GoveeHumiditySensor(coordinator, device))
+
+    # Add leak sensor entities. Register hub devices first so the leak
+    # sensors' `via_device` link resolves (must run after orphan-cleanup
+    # in __init__.py, hence here, not in the coordinator's _async_setup).
+    coordinator.register_leak_hubs()
+    seen_hubs: set[str] = set()
+    for sensor in coordinator.leak_sensors.values():
+        entities.append(GoveeLeakBatterySensor(coordinator, sensor))
+        entities.append(GoveeLeakLastWetSensor(coordinator, sensor))
+        entities.append(GoveeLeakAlertStatusSensor(coordinator, sensor))
+        entities.append(GoveeLeakDeviceAddressSensor(sensor))
+        if sensor.hub_device_id and sensor.hub_device_id not in seen_hubs:
+            seen_hubs.add(sensor.hub_device_id)
+            entities.append(GoveeLeakHubAddressSensor(sensor.hub_device_id))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee sensor entities", len(entities))
@@ -230,3 +249,155 @@ class GoveeHumiditySensor(GoveeEntity, SensorEntity):
     def native_value(self) -> float | None:
         state = self.device_state
         return state.sensor_humidity if state else None
+
+
+class GoveeLeakBatterySensor(SensorEntity):
+    """Sensor showing leak sensor battery level (from BFF API polling).
+
+    Uses dispatcher signal for updates to avoid churning unrelated entities.
+    """
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "leak_battery"
+
+    def __init__(self, coordinator: GoveeCoordinator, sensor: GoveeLeakSensor) -> None:
+        self._coordinator = coordinator
+        self._sensor = sensor
+        self._attr_unique_id = f"{sensor.device_id}_battery"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+
+    @property
+    def native_value(self) -> int | None:
+        state = self._coordinator.leak_states.get(self._sensor.device_id)
+        return state.battery if state else None
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update
+            )
+        )
+
+    @callback
+    def _handle_leak_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class GoveeLeakLastWetSensor(SensorEntity):
+    """Sensor showing when the last leak was detected."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_translation_key = "leak_last_wet"
+
+    def __init__(self, coordinator: GoveeCoordinator, sensor: GoveeLeakSensor) -> None:
+        self._coordinator = coordinator
+        self._sensor = sensor
+        self._attr_unique_id = f"{sensor.device_id}_last_wet"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+
+    @property
+    def native_value(self) -> datetime | None:
+        state = self._coordinator.leak_states.get(self._sensor.device_id)
+        if state and state.last_wet_time:
+            return datetime.fromtimestamp(state.last_wet_time / 1000, tz=timezone.utc)
+        return None
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update
+            )
+        )
+
+    @callback
+    def _handle_leak_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class GoveeLeakAlertStatusSensor(SensorEntity):
+    """Sensor showing leak alert acknowledgment status."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["Pending", "Acknowledged"]
+    _attr_icon = "mdi:bell-alert"
+    _attr_translation_key = "leak_alert_status"
+
+    def __init__(self, coordinator: GoveeCoordinator, sensor: GoveeLeakSensor) -> None:
+        self._coordinator = coordinator
+        self._sensor = sensor
+        self._attr_unique_id = f"{sensor.device_id}_alert_status"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+
+    @property
+    def native_value(self) -> str | None:
+        state = self._coordinator.leak_states.get(self._sensor.device_id)
+        if state is None:
+            return None
+        return "Acknowledged" if state.read else "Pending"
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update
+            )
+        )
+
+    @callback
+    def _handle_leak_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class GoveeLeakDeviceAddressSensor(SensorEntity):
+    """Diagnostic sensor exposing the leak sensor's IEEE EUI-64 address.
+
+    HA's `serial_number` device field expects a manufacturer serial; the
+    Govee cloud only knows the wireless address, which is not the same
+    thing. Surfacing it here as a diagnostic entity keeps it visible
+    without mislabeling it on the device card.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "ieee_address"
+    _attr_icon = "mdi:identifier"
+
+    def __init__(self, sensor: GoveeLeakSensor) -> None:
+        self._sensor = sensor
+        self._attr_unique_id = f"{sensor.device_id}_address"
+        self._attr_native_value = sensor.device_id
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+
+
+class GoveeLeakHubAddressSensor(SensorEntity):
+    """Diagnostic sensor exposing the hub's IEEE EUI-64 address."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "ieee_address"
+    _attr_icon = "mdi:identifier"
+    def __init__(self, hub_device_id: str) -> None:
+        self._hub_device_id = hub_device_id
+        self._attr_unique_id = f"{hub_device_id}_address"
+        self._attr_native_value = hub_device_id
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._hub_device_id)})

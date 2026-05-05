@@ -172,6 +172,18 @@
       },
       "sensor_humidity": {
         "name": "Humidity"
+      },
+      "leak_battery": {
+        "name": "Battery"
+      },
+      "leak_last_wet": {
+        "name": "Last Leak Detected"
+      },
+      "leak_alert_status": {
+        "name": "Alert Status"
+      },
+      "ieee_address": {
+        "name": "IEEE Address"
       }
     },
     "binary_sensor": {
@@ -186,6 +198,12 @@
       },
       "govee_water_full": {
         "name": "Water Tank Full"
+      },
+      "leak_online": {
+        "name": "LoRa"
+      },
+      "leak_hub_online": {
+        "name": "Internet"
       }
     },
     "humidifier": {
@@ -206,6 +224,18 @@
     "button": {
       "refresh_scenes": {
         "name": "Refresh Scenes"
+      }
+    },
+    "event": {
+      "leak_button": {
+        "name": "Button",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "press": "Press"
+            }
+          }
+        }
       }
     }
   },

@@ -11,6 +11,10 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
+# Leak sensor SKUs
+LEAK_SENSOR_SKUS = frozenset({"H5058", "H5054", "H5055"})
+LEAK_HUB_SKUS = frozenset({"H5043", "H5044"})
+
 # Capability type constants (from Govee API v2.0)
 CAPABILITY_ON_OFF = "devices.capabilities.on_off"
 CAPABILITY_RANGE = "devices.capabilities.range"
@@ -764,3 +768,54 @@ class GoveeDevice:
             capabilities=tuple(capabilities),
             is_group=is_group,
         )
+
+
+@dataclass(frozen=True)
+class GoveeLeakSensor:
+    """Represents a Govee leak sensor sub-device (e.g., H5058).
+
+    These sensors communicate via LoRa to a hub (e.g., H5043) which relays
+    events to the Govee cloud. They are discovered via the BFF device API
+    and receive real-time updates via MQTT multiSync messages.
+    """
+
+    device_id: str  # Sensor MAC (e.g., "01:32:7A:C4:06:03:0D:0C")
+    name: str  # User-assigned name (e.g., "Kitchen sink")
+    sku: str  # Model (e.g., "H5058")
+    hub_device_id: str  # Hub device ID (e.g., "09:C2:60:74:F4:64:AB:FA")
+    sno: int  # Sensor slot on hub (0-14), maps to MQTT packet byte 2
+    hw_version: str = ""  # Hardware version
+    sw_version: str = ""  # Software version
+
+
+@dataclass
+class GoveeLeakSensorState:
+    """Mutable state for a leak sensor, updated from BFF API and MQTT."""
+
+    is_wet: bool = False
+    battery: int | None = None  # 0-100%
+    online: bool = True  # Sensor connected to gateway
+    gateway_online: bool = True  # Gateway hub connected to cloud
+    last_wet_time: int | None = None  # Epoch ms of last leak event
+    read: bool = True  # Alert acknowledged in Govee app
+    last_mqtt_wet_at: float = 0.0  # time.time() when MQTT last set is_wet=True
+
+
+def leak_sensor_device_info(sensor: GoveeLeakSensor, domain: str) -> dict[str, Any]:
+    """Build HA DeviceInfo dict for a leak sensor.
+
+    Shared across binary_sensor, sensor, and event platforms.
+    Returns a plain dict compatible with DeviceInfo constructor.
+    """
+    info: dict[str, Any] = {
+        "identifiers": {(domain, sensor.device_id)},
+        "name": sensor.name,
+        "manufacturer": "Govee",
+        "model": sensor.sku,
+        "via_device": (domain, sensor.hub_device_id),
+    }
+    if sensor.hw_version:
+        info["hw_version"] = sensor.hw_version
+    if sensor.sw_version:
+        info["sw_version"] = sensor.sw_version
+    return info

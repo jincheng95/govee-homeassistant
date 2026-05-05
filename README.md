@@ -63,8 +63,10 @@ Enter your API key. Want instant updates? Add your Govee email/password for MQTT
 | **Heaters** | On/off, target temperature (16-35°C), fan speed control |
 | **Air Purifiers** | On/off, mode selection (Sleep/Low/High/Custom) |
 | **HDMI Sync Boxes** | On/off, HDMI input selection (1-4) |
+| **Leak Sensors (H5058/H5054/H5055)** | Moisture detection, battery, sensor/gateway connectivity, button press events |
 
 > **Note:** Cloud-enabled devices only. Bluetooth-only devices need a different integration.
+> Leak sensors require a Govee hub (H5043/H5044) and email/password login for MQTT.
 
 ---
 
