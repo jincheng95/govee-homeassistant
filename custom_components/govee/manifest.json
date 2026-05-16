@@ -22,7 +22,7 @@
     "aiohttp-retry>=2.8.3",
     "aiomqtt>=2.0.0",
     "bleak-retry-connector>=3.0.0",
-    "cryptography>=48.0.0"
+    "cryptography>=41.0.0"
   ],
-  "version": "2026.5.8"
+  "version": "2026.5.9"
 }
