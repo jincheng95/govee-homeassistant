@@ -170,3 +170,48 @@ class TestThermometerStateParsing:
             )
         )
         assert state.sensor_temperature is None
+
+
+class TestTemperatureSensorFahrenheitConversion:
+    """Regression for #72/#78: H5179/H5109/H5110/HS5108/HS5106 report °F via
+    cloud API. Verifies the GoveeTemperatureSensor.native_value path honors
+    the api_temperature_unit option."""
+
+    def _make_sensor_stub(self, raw_value, api_unit):
+        from types import SimpleNamespace
+
+        from custom_components.govee.sensor import GoveeTemperatureSensor
+
+        state = SimpleNamespace(sensor_temperature=raw_value)
+        coordinator = SimpleNamespace(
+            config_entry=SimpleNamespace(options={"api_temperature_unit": api_unit})
+        )
+        stub = SimpleNamespace(device_state=state, coordinator=coordinator)
+        return GoveeTemperatureSensor.native_value.fget(stub)
+
+    def test_celsius_passthrough(self):
+        assert self._make_sensor_stub(21.5, "celsius") == 21.5
+
+    def test_fahrenheit_converts(self):
+        # 70°F -> 21.111…°C
+        result = self._make_sensor_stub(70.0, "fahrenheit")
+        assert abs(result - 21.111111) < 1e-4
+
+    def test_fahrenheit_freezing(self):
+        # 32°F -> 0°C
+        assert abs(self._make_sensor_stub(32.0, "fahrenheit") - 0.0) < 1e-9
+
+    def test_none_passthrough(self):
+        assert self._make_sensor_stub(None, "celsius") is None
+        assert self._make_sensor_stub(None, "fahrenheit") is None
+
+    def test_default_when_option_missing(self):
+        from types import SimpleNamespace
+
+        from custom_components.govee.sensor import GoveeTemperatureSensor
+
+        state = SimpleNamespace(sensor_temperature=21.5)
+        coordinator = SimpleNamespace(config_entry=SimpleNamespace(options={}))
+        stub = SimpleNamespace(device_state=state, coordinator=coordinator)
+        # Default is celsius -> passthrough
+        assert GoveeTemperatureSensor.native_value.fget(stub) == 21.5

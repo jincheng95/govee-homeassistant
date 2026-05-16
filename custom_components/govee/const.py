@@ -18,6 +18,11 @@ CONF_ENABLE_SEGMENTS: Final = "enable_segments"
 CONF_SEGMENT_MODE: Final = "segment_mode"
 CONF_EXPOSE_TRANSPORT_ENTITIES: Final = "expose_transport_entities"
 
+# Some Govee thermometer/hygrometer SKUs (H5179, H5109, H5110, HS5108, HS5106)
+# report temperatures in Fahrenheit via the Cloud API regardless of account
+# unit preference, without unit metadata. This option normalizes the value.
+CONF_API_TEMPERATURE_UNIT: Final = "api_temperature_unit"  # "celsius" | "fahrenheit"
+
 # Defaults
 DEFAULT_POLL_INTERVAL: Final = 60  # seconds
 DEFAULT_ENABLE_GROUPS: Final = False
@@ -26,6 +31,7 @@ DEFAULT_ENABLE_DIY_SCENES: Final = True
 DEFAULT_ENABLE_SEGMENTS: Final = True
 DEFAULT_SEGMENT_MODE: Final = "individual"  # "disabled", "grouped", or "individual"
 DEFAULT_EXPOSE_TRANSPORT_ENTITIES: Final = False
+DEFAULT_API_TEMPERATURE_UNIT: Final = "celsius"
 
 # Optimistic state handling
 # Grace window (seconds) during which API polls do NOT overwrite optimistic
