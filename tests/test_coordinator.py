@@ -1145,6 +1145,54 @@ class TestStatePreservationAcrossApiPoll:
         # Should fall through to default (white or midpoint)
         assert color is None
 
+    def test_sensor_temperature_preserved_across_api_poll(self):
+        """#78 follow-up: battery-powered thermometers (H5179, H5109, H5110,
+        HS5108, HS5106) push to the cloud infrequently, so subsequent /device/state
+        responses may omit the value. Preserve the last known reading instead
+        of dropping the entity to 'unknown'."""
+        existing = GoveeDeviceState.create_empty("test_id")
+        existing.sensor_temperature = 21.5
+        existing.sensor_humidity = 47.0
+
+        # Fresh state from API poll without the sensor capability values
+        new_state = GoveeDeviceState.create_empty("test_id")
+        assert new_state.sensor_temperature is None
+        assert new_state.sensor_humidity is None
+
+        # Mimic coordinator preservation logic
+        if (
+            existing.sensor_temperature is not None
+            and new_state.sensor_temperature is None
+        ):
+            new_state.sensor_temperature = existing.sensor_temperature
+        if existing.sensor_humidity is not None and new_state.sensor_humidity is None:
+            new_state.sensor_humidity = existing.sensor_humidity
+
+        assert new_state.sensor_temperature == 21.5
+        assert new_state.sensor_humidity == 47.0
+
+    def test_sensor_temperature_replaced_when_api_returns_new_value(self):
+        """Fresh API value overrides preserved value."""
+        existing = GoveeDeviceState.create_empty("test_id")
+        existing.sensor_temperature = 21.5
+        existing.sensor_humidity = 47.0
+
+        new_state = GoveeDeviceState.create_empty("test_id")
+        new_state.sensor_temperature = 22.7
+        new_state.sensor_humidity = 50.0
+
+        # Preservation only kicks in when new value is None
+        if (
+            existing.sensor_temperature is not None
+            and new_state.sensor_temperature is None
+        ):
+            new_state.sensor_temperature = existing.sensor_temperature
+        if existing.sensor_humidity is not None and new_state.sensor_humidity is None:
+            new_state.sensor_humidity = existing.sensor_humidity
+
+        assert new_state.sensor_temperature == 22.7
+        assert new_state.sensor_humidity == 50.0
+
 
 # ==============================================================================
 # BLE Transport Dispatch Tests

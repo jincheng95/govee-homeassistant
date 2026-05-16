@@ -703,6 +703,23 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 if existing_state.heater_auto_stop is not None:
                     state.heater_auto_stop = existing_state.heater_auto_stop
 
+                # Stand-alone thermometer/hygrometer readings (H5179, H5109,
+                # H5110, HS5108, HS5106): battery-powered sensors push to the
+                # cloud infrequently, and the /device/state response may omit
+                # the value or return null between device-side updates. Without
+                # preservation the entity flips to "unknown" after the first
+                # poll. (#78 follow-up: temperature stops updating until restart.)
+                if (
+                    existing_state.sensor_temperature is not None
+                    and state.sensor_temperature is None
+                ):
+                    state.sensor_temperature = existing_state.sensor_temperature
+                if (
+                    existing_state.sensor_humidity is not None
+                    and state.sensor_humidity is None
+                ):
+                    state.sensor_humidity = existing_state.sensor_humidity
+
                 self._preserve_optimistic_field(
                     existing_state, state, device_id, "dreamview_enabled", "DreamView"
                 )
