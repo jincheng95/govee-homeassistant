@@ -129,9 +129,18 @@ class GoveeApiClient:
         return self._retry_client
 
     async def close(self) -> None:
-        """Close the client and release resources."""
+        """Close the client and release resources.
+
+        Only closes the underlying aiohttp session when this client owns it.
+        When `hass` was passed at construction the session belongs to Home
+        Assistant — closing it would tear down the shared client session
+        and trigger HA's frame-helper warning. RetryClient.close() forwards
+        unconditionally to the wrapped session, so we drop the reference
+        instead of calling its close() in that case.
+        """
         if self._retry_client is not None:
-            await self._retry_client.close()
+            if self._owns_session:
+                await self._retry_client.close()
             self._retry_client = None
 
         if self._owns_session and self._session is not None:

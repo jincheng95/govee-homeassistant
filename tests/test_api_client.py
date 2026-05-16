@@ -144,6 +144,48 @@ class TestGoveeApiClient:
         assert client.rate_limit_total == 100
         assert client.rate_limit_reset == 0
 
+    @pytest.mark.asyncio
+    async def test_close_does_not_close_external_session(self):
+        """Regression: when constructed with an external session (e.g. HA's
+        shared aiohttp_client.async_get_clientsession), close() must NOT
+        close the underlying session. RetryClient.close() unconditionally
+        forwards to the wrapped session, so we drop the reference instead.
+
+        Reported via HA frame-helper warning in #80 follow-up logs."""
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+        client = GoveeApiClient("test_key", session=session)
+        # Simulate the retry_client being initialized
+        retry_client = AsyncMock()
+        client._retry_client = retry_client
+
+        await client.close()
+
+        retry_client.close.assert_not_awaited()
+        session.close.assert_not_awaited()
+        assert client._retry_client is None
+        # Session reference preserved (HA owns it)
+        assert client._session is session
+
+    @pytest.mark.asyncio
+    async def test_close_closes_owned_session(self):
+        """When the client created its own session, close() must release it."""
+        client = GoveeApiClient.__new__(GoveeApiClient)
+        client._api_key = "test_key"
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+        client._session = session
+        client._owns_session = True
+        retry_client = AsyncMock()
+        client._retry_client = retry_client
+
+        await client.close()
+
+        retry_client.close.assert_awaited_once()
+        session.close.assert_awaited_once()
+        assert client._retry_client is None
+        assert client._session is None
+
 
 # ==============================================================================
 # Response Handling Tests
