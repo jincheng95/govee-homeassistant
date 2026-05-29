@@ -86,7 +86,8 @@
           "expose_transport_entities": "Expose per-device transport connectivity sensors"
         },
         "data_description": {
-          "api_temperature_unit": "Set this to Fahrenheit if your thermometer readings look about 1.8× too high (e.g. 74 instead of 23). Govee's API reports the value in whatever unit your Govee app uses for the device, with no unit metadata, so the integration can't auto-detect it."
+          "api_temperature_unit": "Set this to Fahrenheit if your thermometer readings look about 1.8× too high (e.g. 74 instead of 23). Govee's API reports the value in whatever unit your Govee app uses for the device, with no unit metadata, so the integration can't auto-detect it.",
+          "enable_groups": "Surfaces the device groups you created in the Govee app as single light entities. A command to a group is sent once and synced to all members by Govee's cloud, so it syncs better than grouping the lights with Home Assistant helpers. State is best-effort (groups can't be polled), and group lights only support power/brightness/color."
         }
       },
       "select_segment_devices": {

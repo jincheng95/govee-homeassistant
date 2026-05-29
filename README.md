@@ -121,6 +121,18 @@ No credentials? Polling works fine (every 60 seconds by default).
 
 ---
 
+## Device Groups
+
+Created groups of lights in the Govee app? Enable **"Enable group devices"** in the integration's ⚙️ Configure options to surface them as single light entities.
+
+Why use a group entity instead of a Home Assistant helper? A command to the group is sent **once** and Govee's cloud syncs it to every member — so the lights change together, instead of Home Assistant firing a separate command at each light (which can arrive at slightly different times over Wi-Fi).
+
+Caveats:
+- Group state is best-effort — groups can't be polled, so the entity may not reflect changes made outside Home Assistant.
+- Group lights support power, brightness, and color only (no scenes, segments, music, or DreamView).
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |
