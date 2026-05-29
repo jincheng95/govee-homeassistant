@@ -9,6 +9,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from homeassistant.helpers.device_registry import DeviceInfo
+
 _LOGGER = logging.getLogger(__name__)
 
 # Leak sensor SKUs
@@ -801,19 +803,18 @@ class GoveeLeakSensorState:
     last_mqtt_wet_at: float = 0.0  # time.time() when MQTT last set is_wet=True
 
 
-def leak_sensor_device_info(sensor: GoveeLeakSensor, domain: str) -> dict[str, Any]:
-    """Build HA DeviceInfo dict for a leak sensor.
+def leak_sensor_device_info(sensor: GoveeLeakSensor, domain: str) -> DeviceInfo:
+    """Build the HA DeviceInfo for a leak sensor.
 
     Shared across binary_sensor, sensor, and event platforms.
-    Returns a plain dict compatible with DeviceInfo constructor.
     """
-    info: dict[str, Any] = {
-        "identifiers": {(domain, sensor.device_id)},
-        "name": sensor.name,
-        "manufacturer": "Govee",
-        "model": sensor.sku,
-        "via_device": (domain, sensor.hub_device_id),
-    }
+    info = DeviceInfo(
+        identifiers={(domain, sensor.device_id)},
+        name=sensor.name,
+        manufacturer="Govee",
+        model=sensor.sku,
+        via_device=(domain, sensor.hub_device_id),
+    )
     if sensor.hw_version:
         info["hw_version"] = sensor.hw_version
     if sensor.sw_version:

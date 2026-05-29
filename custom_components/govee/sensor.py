@@ -271,7 +271,7 @@ class GoveeLeakBatterySensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+        return leak_sensor_device_info(self._sensor, DOMAIN)
 
     @property
     def native_value(self) -> int | None:
@@ -304,7 +304,7 @@ class GoveeLeakLastWetSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+        return leak_sensor_device_info(self._sensor, DOMAIN)
 
     @property
     def native_value(self) -> datetime | None:
@@ -341,7 +341,7 @@ class GoveeLeakAlertStatusSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+        return leak_sensor_device_info(self._sensor, DOMAIN)
 
     @property
     def native_value(self) -> str | None:
@@ -383,7 +383,7 @@ class GoveeLeakDeviceAddressSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+        return leak_sensor_device_info(self._sensor, DOMAIN)
 
 
 class GoveeLeakHubAddressSensor(SensorEntity):

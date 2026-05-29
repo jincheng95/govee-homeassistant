@@ -12,7 +12,7 @@ from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -68,7 +68,7 @@ class GoveeLeakButtonEvent(EventEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information for device registry."""
-        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+        return leak_sensor_device_info(self._sensor, DOMAIN)
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to leak-specific dispatcher signal."""

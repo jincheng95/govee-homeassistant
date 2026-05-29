@@ -25,7 +25,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -204,7 +204,7 @@ class GoveeLeakBinarySensor(BinarySensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+        return leak_sensor_device_info(self._sensor, DOMAIN)
 
     @property
     def is_on(self) -> bool | None:
@@ -245,7 +245,7 @@ class GoveeLeakOnlineSensor(BinarySensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(**leak_sensor_device_info(self._sensor, DOMAIN))
+        return leak_sensor_device_info(self._sensor, DOMAIN)
 
     @property
     def is_on(self) -> bool | None:
