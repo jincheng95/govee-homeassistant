@@ -9,6 +9,63 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+# Candidate keys a thermometer/hygrometer reading may hide behind. The Govee
+# state shape varies by SKU and transport: REST returns either a plain number
+# under ``value`` or a STRUCT; AWS IoT pushes use flat keys whose naming is not
+# documented, so accept the known spellings defensively.
+#
+# The ``*_STRUCT_KEYS`` sets include the generic ``value`` for unwrapping a
+# nested object. The ``*_MQTT_KEYS`` sets deliberately omit ``value`` so a
+# top-level scan of a light's push (onOff/brightness/color/...) can't false-
+# match an unrelated ``value`` field.
+_SENSOR_TEMPERATURE_STRUCT_KEYS = (
+    "sensorTemperature",
+    "currentTemperature",
+    "temperature",
+    "value",
+    "tem",
+)
+_SENSOR_HUMIDITY_STRUCT_KEYS = (
+    "sensorHumidity",
+    "currentHumidity",
+    "humidity",
+    "value",
+    "hum",
+)
+_SENSOR_TEMPERATURE_MQTT_KEYS = (
+    "sensorTemperature",
+    "currentTemperature",
+    "temperature",
+    "tem",
+)
+_SENSOR_HUMIDITY_MQTT_KEYS = (
+    "sensorHumidity",
+    "currentHumidity",
+    "humidity",
+    "hum",
+)
+
+
+def _coerce_sensor_value(value: Any, keys: tuple[str, ...]) -> float | None:
+    """Extract a float reading from a number or a nested STRUCT.
+
+    Accepts a plain ``int``/``float`` or a dict where the reading lives under
+    one of ``keys``. Returns ``None`` when nothing usable is present so callers
+    can preserve the last-known value instead of clobbering it.
+    """
+    if isinstance(value, bool):  # bool is an int subclass — reject explicitly
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for key in keys:
+            sub = value.get(key)
+            if isinstance(sub, bool):
+                continue
+            if isinstance(sub, (int, float)):
+                return float(sub)
+    return None
+
 
 @dataclass(frozen=True)
 class RGBColor:
@@ -214,27 +271,16 @@ class GoveeDeviceState:
                 # return a plain number under "value", others return a
                 # STRUCT. Accept both, plus the legacy "currentX" field
                 # naming used by older WiFi sensors.
-                if instance in ("sensorTemperature", "sensorHumidity"):
-                    parsed: float | None = None
-                    if isinstance(value, (int, float)):
-                        parsed = float(value)
-                    elif isinstance(value, dict):
-                        for key in (
-                            "currentTemperature",
-                            "currentHumidity",
-                            "value",
-                            "temperature",
-                            "humidity",
-                        ):
-                            sub = value.get(key)
-                            if isinstance(sub, (int, float)):
-                                parsed = float(sub)
-                                break
+                if instance == "sensorTemperature":
+                    parsed = _coerce_sensor_value(
+                        value, _SENSOR_TEMPERATURE_STRUCT_KEYS
+                    )
                     if parsed is not None:
-                        if instance == "sensorTemperature":
-                            self.sensor_temperature = parsed
-                        else:
-                            self.sensor_humidity = parsed
+                        self.sensor_temperature = parsed
+                elif instance == "sensorHumidity":
+                    parsed = _coerce_sensor_value(value, _SENSOR_HUMIDITY_STRUCT_KEYS)
+                    if parsed is not None:
+                        self.sensor_humidity = parsed
 
             elif cap_type == "devices.capabilities.event":
                 # Event capabilities (e.g. waterFullEvent) report a boolean-
@@ -297,6 +343,26 @@ class GoveeDeviceState:
         if "colorTemInKelvin" in data:
             temp = data["colorTemInKelvin"]
             self.color_temp_kelvin = int(temp) if temp else None
+
+        # Stand-alone thermometer/hygrometer readings (H5179, H5109, H5110,
+        # HS5108, HS5106). The mqtt.py docstring notes AWS IoT pushes carry
+        # temperature, but the flat-key spelling is undocumented — accept the
+        # known instance/short names. Without this the push was silently
+        # dropped and the entity only ever showed its first REST read (#83).
+        for key in _SENSOR_TEMPERATURE_MQTT_KEYS:
+            if key in data:
+                parsed = _coerce_sensor_value(
+                    data[key], _SENSOR_TEMPERATURE_STRUCT_KEYS
+                )
+                if parsed is not None:
+                    self.sensor_temperature = parsed
+                    break
+        for key in _SENSOR_HUMIDITY_MQTT_KEYS:
+            if key in data:
+                parsed = _coerce_sensor_value(data[key], _SENSOR_HUMIDITY_STRUCT_KEYS)
+                if parsed is not None:
+                    self.sensor_humidity = parsed
+                    break
 
         # A confirmed push ends the optimistic grace window — from this point
         # on API polls are authoritative again for power/brightness.

@@ -497,6 +497,53 @@ class TestGoveeDeviceState:
 
         assert state.online is True
 
+    def test_mqtt_sensor_temperature_and_humidity_applied(self):
+        """#83: AWS IoT pushes for thermometers (H5179, H5110, H5075 via H5151)
+        carry temperature/humidity, but update_from_mqtt previously dropped
+        them so the entity froze on its first REST read. The flat sensor keys
+        must now feed sensor_temperature/sensor_humidity."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.update_from_mqtt({"sensorTemperature": 22.4, "sensorHumidity": 48.0})
+        assert state.sensor_temperature == 22.4
+        assert state.sensor_humidity == 48.0
+
+    def test_mqtt_sensor_short_key_aliases(self):
+        """Accept the short ``tem``/``hum`` spellings seen on some SKUs."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.update_from_mqtt({"tem": 19, "hum": 55})
+        assert state.sensor_temperature == 19.0
+        assert state.sensor_humidity == 55.0
+
+    def test_mqtt_sensor_absent_does_not_clobber_existing(self):
+        """A light push (no sensor fields) must not wipe a known reading."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.sensor_temperature = 21.5
+        state.sensor_humidity = 47.0
+        state.update_from_mqtt({"onOff": 1, "brightness": 80, "value": 999})
+        assert state.sensor_temperature == 21.5
+        assert state.sensor_humidity == 47.0
+
+    def test_api_sensor_temperature_from_struct(self):
+        """REST may wrap the reading in a STRUCT under various keys."""
+        state = GoveeDeviceState.create_empty("test_id")
+        api_response = {
+            "capabilities": [
+                {
+                    "type": "devices.capabilities.property",
+                    "instance": "sensorTemperature",
+                    "state": {"value": {"currentTemperature": 23.4}},
+                },
+                {
+                    "type": "devices.capabilities.property",
+                    "instance": "sensorHumidity",
+                    "state": {"value": 50},
+                },
+            ],
+        }
+        state.update_from_api(api_response)
+        assert state.sensor_temperature == 23.4
+        assert state.sensor_humidity == 50.0
+
     def test_optimistic_power(self):
         """Test optimistic power update."""
         state = GoveeDeviceState.create_empty("test_id")
