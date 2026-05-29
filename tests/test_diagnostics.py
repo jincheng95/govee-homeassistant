@@ -14,8 +14,50 @@ from custom_components.govee.diagnostics import (
     _anonymize_device_keys,
     _looks_like_mac,
     async_get_config_entry_diagnostics,
+    async_get_device_diagnostics,
 )
 from custom_components.govee.models import GoveeDeviceState
+from custom_components.govee.models.device import (
+    GoveeLeakSensor,
+    GoveeLeakSensorState,
+)
+from custom_components.govee.models.transport import TransportHealth
+
+
+def _coordinator_stub(**overrides):
+    """A coordinator MagicMock with all diagnostics accessors defaulted sanely."""
+    coordinator = MagicMock()
+    coordinator.devices = {}
+    coordinator.get_state = lambda _did: None
+    coordinator.mqtt_connected = False
+    coordinator.is_ble_available = lambda _did: False
+    coordinator.mqtt_client = None
+    coordinator.api_client.last_raw_state = {}
+    coordinator.api_client.last_raw_devices = []
+    coordinator.leak_sensors = {}
+    coordinator.leak_states = {}
+    coordinator.get_transport_health = lambda _did, _kind: None
+    coordinator.has_iot_credentials = False
+    coordinator.device_topic_count = 0
+    coordinator.api_rate_limit_remaining = 100
+    coordinator.api_rate_limit_total = 100
+    coordinator.api_rate_limit_reset = 0
+    coordinator.scene_cache_count = 0
+    coordinator.diy_scene_cache_count = 0
+    for key, value in overrides.items():
+        setattr(coordinator, key, value)
+    return coordinator
+
+
+def _entry_stub(coordinator):
+    entry = MagicMock()
+    entry.entry_id = "e"
+    entry.version = 1
+    entry.data = {}
+    entry.options = {}
+    entry.runtime_data = coordinator
+    return entry
+
 
 # Govee device-id MAC pattern: 6-8 colon-separated hex octets
 _MAC_RE = re.compile(r"\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5,7}\b")
@@ -250,4 +292,144 @@ class TestDiagnosticsOutput:
         # parsed-state device_id MAC is gone too.
         rendered = json.dumps(out, default=str)
         assert mac_id not in rendered
+        assert _MAC_RE.search(rendered) is None
+
+
+class TestLeakAndTransportDump:
+    """Entry diagnostics include leak sensors + transport health, redacted."""
+
+    @pytest.mark.asyncio
+    async def test_leak_sensors_and_transport_health(self) -> None:
+        sensor_mac = "01:32:7A:C4:06:03:0D:0C"
+        hub_mac = "09:C2:60:74:F4:64:AB:FA"
+
+        sensor = GoveeLeakSensor(
+            device_id=sensor_mac,
+            name="Kitchen Sink",
+            sku="H5058",
+            hub_device_id=hub_mac,
+            sno=3,
+            hw_version="1.0",
+            sw_version="2.1",
+        )
+        state = GoveeLeakSensorState(is_wet=True, battery=88, gateway_online=True)
+
+        health = TransportHealth(transport="cloud_api", is_available=True)
+
+        coordinator = _coordinator_stub(
+            leak_sensors={sensor_mac: sensor},
+            leak_states={sensor_mac: state},
+            get_transport_health=lambda did, kind: (
+                health if kind == "cloud_api" else None
+            ),
+            devices={
+                sensor_mac: MagicMock(
+                    sku="H5058",
+                    name="Kitchen Sink",
+                    device_type="devices.types.sensor",
+                    is_group=False,
+                    capabilities=[],
+                )
+            },
+            get_state=lambda _did: None,
+        )
+
+        out = await async_get_config_entry_diagnostics(
+            MagicMock(), _entry_stub(coordinator)
+        )
+
+        # Leak sensor data is present (battery/is_wet survive — not PII).
+        leak = next(iter(out["leak_sensors"].values()))
+        assert leak["state"]["is_wet"] is True
+        assert leak["state"]["battery"] == 88
+        # Transport health surfaced for the device.
+        dev = next(iter(out["devices"].values()))
+        assert dev["transport_health"]["cloud_api"]["is_available"] is True
+        # Runtime signals present.
+        assert "has_iot_credentials" in out
+        assert "diy_scene_cache_count" in out
+
+        # Both the sensor MAC and the hub MAC must be redacted everywhere.
+        rendered = json.dumps(out, default=str)
+        assert sensor_mac not in rendered
+        assert hub_mac not in rendered
+        assert _MAC_RE.search(rendered) is None
+
+
+class TestDeviceDiagnostics:
+    """Per-device diagnostics (the ⋮ menu → Download diagnostics path)."""
+
+    @pytest.mark.asyncio
+    async def test_regular_device_dump_is_mac_free(self) -> None:
+        mac_id = "03:9C:DC:06:75:4B:10:7C"
+        device = MagicMock(
+            sku="H6601",
+            name="Lamp",
+            device_type="devices.types.light",
+            is_group=False,
+            capabilities=[],
+        )
+        state = GoveeDeviceState.create_empty(mac_id)
+        coordinator = _coordinator_stub(
+            devices={mac_id: device},
+            get_state=lambda _did: state,
+        )
+        coordinator.api_client.last_raw_state = {
+            mac_id: {"device": mac_id, "sku": "H6601"}
+        }
+
+        device_entry = MagicMock()
+        device_entry.id = "ha_dev_1"
+        device_entry.name = "Lamp"
+        device_entry.name_by_user = None
+        device_entry.identifiers = {("govee", mac_id)}
+        device_entry.model = "H6601"
+        device_entry.sw_version = None
+        device_entry.hw_version = None
+
+        out = await async_get_device_diagnostics(
+            MagicMock(), _entry_stub(coordinator), device_entry
+        )
+
+        # The targeted device is dumped...
+        assert len(out["devices"]) == 1
+        # ...and the MAC is gone from keys, identifiers, and raw payloads.
+        rendered = json.dumps(out, default=str)
+        assert mac_id not in rendered
+        assert _MAC_RE.search(rendered) is None
+
+    @pytest.mark.asyncio
+    async def test_leak_hub_device_includes_its_sensors(self) -> None:
+        hub_mac = "09:C2:60:74:F4:64:AB:FA"
+        sensor_mac = "01:32:7A:C4:06:03:0D:0C"
+        sensor = GoveeLeakSensor(
+            device_id=sensor_mac,
+            name="Sink",
+            sku="H5058",
+            hub_device_id=hub_mac,
+            sno=1,
+        )
+        coordinator = _coordinator_stub(
+            leak_sensors={sensor_mac: sensor},
+            leak_states={sensor_mac: GoveeLeakSensorState(is_wet=False, battery=50)},
+        )
+
+        device_entry = MagicMock()
+        device_entry.id = "ha_hub"
+        device_entry.name = "Leak Hub"
+        device_entry.name_by_user = None
+        device_entry.identifiers = {("govee", hub_mac)}
+        device_entry.model = "H5043"
+        device_entry.sw_version = None
+        device_entry.hw_version = None
+
+        out = await async_get_device_diagnostics(
+            MagicMock(), _entry_stub(coordinator), device_entry
+        )
+
+        # The hub's linked leak sensor is included.
+        assert len(out["leak_sensors"]) == 1
+        rendered = json.dumps(out, default=str)
+        assert hub_mac not in rendered
+        assert sensor_mac not in rendered
         assert _MAC_RE.search(rendered) is None

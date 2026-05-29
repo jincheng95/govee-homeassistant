@@ -329,6 +329,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """Get current leak states (device_id -> state)."""
         return self._leak_states
 
+    @property
+    def has_iot_credentials(self) -> bool:
+        """Whether AWS IoT credentials are configured (MQTT path enabled)."""
+        return self._iot_credentials is not None
+
+    @property
+    def device_topic_count(self) -> int:
+        """Number of devices with a resolved MQTT publish topic."""
+        return len(self._device_topics)
+
     def consume_button_press(self, device_id: str) -> bool:
         """Consume one pending button press for device_id. Returns True if consumed."""
         count = self._pending_button_presses.get(device_id, 0)
