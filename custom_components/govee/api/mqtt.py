@@ -119,6 +119,14 @@ class GoveeAwsIotClient:
         self._temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._max_backoff_count = 0
         self._client: Any | None = None  # aiomqtt.Client when connected
+        # Last raw state payload seen per device, retained for diagnostics so a
+        # dump shows exactly what AWS IoT pushed (redacted at dump time).
+        self._last_messages: dict[str, dict[str, Any]] = {}
+
+    @property
+    def last_messages(self) -> dict[str, dict[str, Any]]:
+        """Most recent raw MQTT state payload per device_id (diagnostics)."""
+        return self._last_messages
 
     @property
     def connected(self) -> bool:
@@ -401,6 +409,8 @@ class GoveeAwsIotClient:
                 state.get("onOff"),
                 state.get("brightness"),
             )
+
+            self._last_messages[device_id] = state
 
             # Invoke callback with device ID and state dict
             try:

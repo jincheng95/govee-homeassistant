@@ -93,6 +93,13 @@ class GoveeApiClient:
         self.rate_limit_total: int = 100
         self.rate_limit_reset: int = 0
 
+        # Last raw API responses, retained for diagnostics (redacted at dump
+        # time). Lets a diagnostics download include exactly what the device
+        # list and /device/state endpoints returned — essential for debugging
+        # state-shape issues the parsed model hides (e.g. thermometers, #83).
+        self._last_raw_devices: list[dict[str, Any]] | None = None
+        self._last_raw_state: dict[str, dict[str, Any]] = {}
+
     async def __aenter__(self) -> GoveeApiClient:
         """Async context manager entry."""
         await self._ensure_client()
@@ -267,6 +274,7 @@ class GoveeApiClient:
                             err,
                         )
 
+                self._last_raw_devices = data.get("data", [])
                 _LOGGER.debug("Fetched %d devices from Govee API", len(devices))
                 return devices
 
@@ -313,10 +321,21 @@ class GoveeApiClient:
                 payload_data = data.get("payload", {})
                 state.update_from_api(payload_data)
 
+                self._last_raw_state[device_id] = payload_data
                 return state
 
         except aiohttp.ClientError as err:
             raise GoveeConnectionError(f"Connection error: {err}") from err
+
+    @property
+    def last_raw_devices(self) -> list[dict[str, Any]] | None:
+        """Raw device-list payload from the most recent get_devices() call."""
+        return self._last_raw_devices
+
+    @property
+    def last_raw_state(self) -> dict[str, dict[str, Any]]:
+        """Raw /device/state payloads keyed by device_id (latest per device)."""
+        return self._last_raw_state
 
     async def control_device(
         self,

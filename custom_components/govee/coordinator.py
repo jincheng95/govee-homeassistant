@@ -244,6 +244,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         return self._mqtt_client
 
     @property
+    def api_client(self) -> GoveeApiClient:
+        """Return the REST API client (diagnostics reads its raw captures)."""
+        return self._api_client
+
+    @property
     def scene_cache_count(self) -> int:
         """Return number of devices with cached scenes."""
         return self._scene_cache.scene_cache_count
