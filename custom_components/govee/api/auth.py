@@ -492,9 +492,7 @@ class GoveeAuthClient:
 
                 if response.status == 401:
                     message = data.get("message", "Unauthorized")
-                    raise GoveeAuthError(
-                        f"BFF API auth failed (401): {message}"
-                    )
+                    raise GoveeAuthError(f"BFF API auth failed (401): {message}")
 
                 if response.status != 200:
                     message = data.get("message", f"HTTP {response.status}")

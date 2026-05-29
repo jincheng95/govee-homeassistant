@@ -393,6 +393,7 @@ class GoveeLeakHubAddressSensor(SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_translation_key = "ieee_address"
     _attr_icon = "mdi:identifier"
+
     def __init__(self, hub_device_id: str) -> None:
         self._hub_device_id = hub_device_id
         self._attr_unique_id = f"{hub_device_id}_address"

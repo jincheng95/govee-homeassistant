@@ -544,9 +544,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 state.read = sensor.get("read", True)
                 self._leak_states[leak_sensor.device_id] = state
 
-                self._sno_to_sensor_id[
-                    (leak_sensor.hub_device_id, leak_sensor.sno)
-                ] = leak_sensor.device_id
+                self._sno_to_sensor_id[(leak_sensor.hub_device_id, leak_sensor.sno)] = (
+                    leak_sensor.device_id
+                )
 
             if self._leak_sensors:
                 _LOGGER.info(
@@ -690,7 +690,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if not sensor_id:
             _LOGGER.debug(
                 "Leak event for unknown sensor: hub=%s slot=%d wet=%s",
-                hub_id, sno, is_wet,
+                hub_id,
+                sno,
+                is_wet,
             )
             return
 
@@ -716,9 +718,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             )
 
         async_dispatcher_send(self.hass, f"{DOMAIN}_leak_update")
-        self._bff_poll_task = self.hass.async_create_task(
-            self._poll_bff_leak_state()
-        )
+        self._bff_poll_task = self.hass.async_create_task(self._poll_bff_leak_state())
 
     @callback
     def _handle_button_press(self, state_data: dict[str, Any]) -> None:
@@ -736,9 +736,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._pending_button_presses.get(sensor_id, 0) + 1
         )
         async_dispatcher_send(self.hass, f"{DOMAIN}_leak_update")
-        self._bff_poll_task = self.hass.async_create_task(
-            self._poll_bff_leak_state()
-        )
+        self._bff_poll_task = self.hass.async_create_task(self._poll_bff_leak_state())
 
     @callback
     def _on_mqtt_state_update(self, device_id: str, state_data: dict[str, Any]) -> None:

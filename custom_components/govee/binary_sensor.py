@@ -27,7 +27,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     CONF_EXPOSE_TRANSPORT_ENTITIES,
@@ -101,9 +100,7 @@ async def async_setup_entry(
         entities.append(GoveeLeakOnlineSensor(coordinator, sensor))
         if sensor.hub_device_id and sensor.hub_device_id not in seen_hubs:
             seen_hubs.add(sensor.hub_device_id)
-            entities.append(
-                GoveeLeakHubOnlineSensor(coordinator, sensor.hub_device_id)
-            )
+            entities.append(GoveeLeakHubOnlineSensor(coordinator, sensor.hub_device_id))
 
     if entities:
         async_add_entities(entities)

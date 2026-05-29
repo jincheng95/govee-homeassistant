@@ -177,10 +177,13 @@
         "name": "Battery"
       },
       "leak_last_wet": {
-        "name": "Last leak detected"
+        "name": "Last Leak Detected"
       },
       "leak_alert_status": {
-        "name": "Alert status"
+        "name": "Alert Status"
+      },
+      "ieee_address": {
+        "name": "IEEE Address"
       }
     },
     "binary_sensor": {
@@ -197,10 +200,10 @@
         "name": "Water Tank Full"
       },
       "leak_online": {
-        "name": "Online"
+        "name": "LoRa"
       },
-      "leak_gateway_online": {
-        "name": "Gateway online"
+      "leak_hub_online": {
+        "name": "Internet"
       }
     },
     "humidifier": {
