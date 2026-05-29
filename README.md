@@ -128,6 +128,7 @@ No credentials? Polling works fine (every 60 seconds by default).
 | Devices not showing | Make sure they're WiFi devices, not Bluetooth-only |
 | Slow updates | Enable MQTT or reduce poll interval in options |
 | Rate limit errors | Increase poll interval (Govee allows 100 req/min) |
+| Thermometer reads ~1.8× too high (e.g. 74 instead of 23) | The device reports °F via the API. Set **Temperature unit from Govee API** to **Fahrenheit** in the integration's ⚙️ Configure options to convert to °C |
 
 ---
 

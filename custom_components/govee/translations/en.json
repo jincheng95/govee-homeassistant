@@ -84,6 +84,9 @@
           "enable_scenes": "Enable scene selector",
           "enable_diy_scenes": "Enable DIY scene selector",
           "expose_transport_entities": "Expose per-device transport connectivity sensors"
+        },
+        "data_description": {
+          "api_temperature_unit": "Set this to Fahrenheit if your thermometer readings look about 1.8× too high (e.g. 74 instead of 23). Govee's API reports the value in whatever unit your Govee app uses for the device, with no unit metadata, so the integration can't auto-detect it."
         }
       },
       "select_segment_devices": {
