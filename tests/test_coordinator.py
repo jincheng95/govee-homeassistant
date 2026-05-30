@@ -1776,3 +1776,78 @@ class TestClearSceneOnHdmiSyncBox:
         _, sent_command = coord.async_control_device.await_args.args
         assert not isinstance(sent_command, ColorCommand)
         assert isinstance(sent_command, ModeCommand)
+
+
+class TestSensorReadingChangeTracking:
+    """#83: the 'Last Reading' diagnostic timestamp tracks when a thermometer's
+    temp/humidity value last changed (cloud batches BLE-bridged sensors)."""
+
+    def _coord(self):
+        import custom_components.govee.coordinator as coord_mod
+
+        coord = object.__new__(coord_mod.GoveeCoordinator)
+        coord._sensor_reading_changed_at = {}
+        return coord
+
+    def test_unknown_device_returns_none(self):
+        coord = self._coord()
+        assert coord.sensor_reading_changed_at("nope") is None
+
+    def test_first_reading_stamps(self):
+        coord = self._coord()
+        existing = GoveeDeviceState.create_empty("x")  # no reading yet
+        new = GoveeDeviceState.create_empty("x")
+        new.sensor_temperature = 21.0
+        coord._note_sensor_reading_change("x", new, existing)
+        assert coord.sensor_reading_changed_at("x") is not None
+
+    def test_unchanged_reading_keeps_timestamp(self):
+        coord = self._coord()
+        first = GoveeDeviceState.create_empty("x")
+        first.sensor_temperature = 21.0
+        prev = GoveeDeviceState.create_empty("x")  # empty -> first is a change
+        coord._note_sensor_reading_change("x", first, prev)
+        t1 = coord.sensor_reading_changed_at("x")
+
+        # Same value next poll -> no restamp
+        same = GoveeDeviceState.create_empty("x")
+        same.sensor_temperature = 21.0
+        coord._note_sensor_reading_change("x", same, first)
+        assert coord.sensor_reading_changed_at("x") == t1
+
+    def test_changed_reading_restamps(self):
+        from datetime import datetime, timezone
+
+        coord = self._coord()
+        # Seed an old timestamp so the restamp is unambiguously newer.
+        coord._sensor_reading_changed_at["x"] = datetime(
+            2020, 1, 1, tzinfo=timezone.utc
+        )
+        prev = GoveeDeviceState.create_empty("x")
+        prev.sensor_temperature = 21.0
+        new = GoveeDeviceState.create_empty("x")
+        new.sensor_temperature = 22.0  # changed
+        coord._note_sensor_reading_change("x", new, prev)
+        assert coord.sensor_reading_changed_at("x").year > 2020
+
+    def test_no_reading_does_not_stamp(self):
+        coord = self._coord()
+        existing = GoveeDeviceState.create_empty("x")
+        new = GoveeDeviceState.create_empty("x")  # both temp+humidity None
+        coord._note_sensor_reading_change("x", new, existing)
+        assert coord.sensor_reading_changed_at("x") is None
+
+    def test_humidity_only_change_restamps(self):
+        coord = self._coord()
+        prev = GoveeDeviceState.create_empty("x")
+        prev.sensor_humidity = 40.0
+        coord._note_sensor_reading_change("x", prev, GoveeDeviceState.create_empty("x"))
+        t1 = coord.sensor_reading_changed_at("x")
+        new = GoveeDeviceState.create_empty("x")
+        new.sensor_humidity = 45.0
+        coord._sensor_reading_changed_at["x"] = __import__("datetime").datetime(
+            2020, 1, 1, tzinfo=__import__("datetime").timezone.utc
+        )
+        coord._note_sensor_reading_change("x", new, prev)
+        assert coord.sensor_reading_changed_at("x").year > 2020
+        assert t1 is not None

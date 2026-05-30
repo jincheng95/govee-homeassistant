@@ -10,7 +10,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -19,6 +19,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import (
     GoveeApiClient,
@@ -211,6 +212,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # Leak sensor subsystem
         self._leak_sensors: dict[str, GoveeLeakSensor] = {}
         self._leak_states: dict[str, GoveeLeakSensorState] = {}
+        # When a device's temp/humidity reading last *changed* — backs the
+        # "Last Reading" diagnostic timestamp sensor (#83). Cloud batches
+        # BLE-bridged sensors every 15-60 min; this exposes when a new value
+        # actually landed.
+        self._sensor_reading_changed_at: dict[str, datetime] = {}
         self._leak_hubs: dict[str, dict[str, Any]] = {}
         self._sno_to_sensor_id: dict[tuple[str, int], str] = {}
         # Per-device queued button presses (supports multiple presses per tick)
@@ -328,6 +334,36 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def leak_states(self) -> dict[str, GoveeLeakSensorState]:
         """Get current leak states (device_id -> state)."""
         return self._leak_states
+
+    def _note_sensor_reading_change(
+        self,
+        device_id: str,
+        new_state: GoveeDeviceState,
+        existing_state: GoveeDeviceState,
+    ) -> None:
+        """Stamp the reading-change time when temp/humidity actually changes.
+
+        The Cloud API does not expose the device-side reading time, so the
+        semantic is last *change*, not last confirmation. First reading stamps
+        too (device not yet in the map).
+        """
+        if new_state.sensor_temperature is None and new_state.sensor_humidity is None:
+            return
+        reading_changed = (
+            new_state.sensor_temperature != existing_state.sensor_temperature
+            or new_state.sensor_humidity != existing_state.sensor_humidity
+        )
+        if reading_changed or device_id not in self._sensor_reading_changed_at:
+            self._sensor_reading_changed_at[device_id] = dt_util.utcnow()
+
+    def sensor_reading_changed_at(self, device_id: str) -> datetime | None:
+        """When the device's temp/humidity reading last changed (#83).
+
+        Semantic is last *change*, not last poll — the Cloud API does not
+        expose the device-side reading time. Returns None until a reading
+        has been seen.
+        """
+        return self._sensor_reading_changed_at.get(device_id)
 
     @property
     def has_iot_credentials(self) -> bool:
@@ -1020,6 +1056,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     and state.sensor_humidity is None
                 ):
                     state.sensor_humidity = existing_state.sensor_humidity
+
+                # Stamp when the reading last changed (after preservation, so a
+                # preserved-unchanged value does not count as a change).
+                self._note_sensor_reading_change(device_id, state, existing_state)
 
                 self._preserve_optimistic_field(
                     existing_state, state, device_id, "dreamview_enabled", "DreamView"

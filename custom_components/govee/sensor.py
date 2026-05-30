@@ -72,6 +72,8 @@ async def async_setup_entry(
             entities.append(GoveeTemperatureSensor(coordinator, device))
         if device.supports_humidity_sensor:
             entities.append(GoveeHumiditySensor(coordinator, device))
+        if device.supports_temperature_sensor or device.supports_humidity_sensor:
+            entities.append(GoveeSensorReadingTimestampSensor(coordinator, device))
 
     # Add leak sensor entities. Register hub devices first so the leak
     # sensors' `via_device` link resolves (must run after orphan-cleanup
@@ -193,6 +195,7 @@ class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_suggested_display_precision = 1
 
     def __init__(
         self,
@@ -236,6 +239,7 @@ class GoveeHumiditySensor(GoveeEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.HUMIDITY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_suggested_display_precision = 1
 
     def __init__(
         self,
@@ -249,6 +253,34 @@ class GoveeHumiditySensor(GoveeEntity, SensorEntity):
     def native_value(self) -> float | None:
         state = self.device_state
         return state.sensor_humidity if state else None
+
+
+class GoveeSensorReadingTimestampSensor(GoveeEntity, SensorEntity):
+    """When this device's temperature/humidity reading last changed.
+
+    Govee batches BLE-bridged thermometers (H5075/H5110 via an H5151 gateway)
+    to the cloud every 15-60 min, so a reading can look "frozen" while polling
+    is healthy. This diagnostic timestamp makes the reading's age visible —
+    "updated 22 min ago" — instead of leaving users guessing (#83). Semantic
+    is last *change* (the Cloud API does not expose the device reading time).
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "sensor_reading_changed"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_reading_changed"
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.sensor_reading_changed_at(self._device.device_id)
 
 
 class GoveeLeakBatterySensor(SensorEntity):

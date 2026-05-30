@@ -135,6 +135,26 @@ Caveats:
 
 ---
 
+## Thermometers & Sensors
+
+Govee thermometer/hygrometer readings (H5075, H5100, H5110, H5179, H5109…) come from the Govee **cloud**, and the cloud only refreshes them on Govee's own schedule:
+
+- **WiFi-native sensors** (e.g. H5179): roughly every 10 minutes.
+- **Bluetooth sensors behind a gateway** (e.g. H5075/H5110 reporting through an **H5151** WiFi gateway): the gateway batch-uploads every **15–60 minutes**.
+
+So a value can look "frozen" even though polling is perfectly healthy — the integration is faithfully showing the latest value Govee has. This is a Govee cloud limitation, not an integration bug (the same applies to govee2mqtt and homebridge-govee). Each thermometer exposes a **"Last Reading"** diagnostic timestamp so you can see how old the value is.
+
+**Want real-time readings?** Govee thermometers broadcast their reading over Bluetooth every couple of seconds. To read them locally:
+
+1. Enable Home Assistant's built-in [**Govee Bluetooth (`govee_ble`)**](https://www.home-assistant.io/integrations/govee_ble/) integration for any sensor in Bluetooth range of your HA host.
+2. For sensors that are far away (the reason you use an H5151 gateway in the first place), put an **[ESPHome Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html)** near them.
+
+That gives ~2-second updates locally, independent of the Govee cloud.
+
+> **Reading shows ~1.8× too high?** (e.g. 74 instead of 23) — your device reports °F via the API. Set **Temperature unit from Govee API** to **Fahrenheit** in the integration's ⚙️ Configure options.
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |
