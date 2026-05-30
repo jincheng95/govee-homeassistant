@@ -142,7 +142,7 @@ Govee thermometer/hygrometer readings (H5075, H5100, H5110, H5179, H5109…) com
 - **WiFi-native sensors** (e.g. H5179): roughly every 10 minutes.
 - **Bluetooth sensors behind a gateway** (e.g. H5075/H5110 reporting through an **H5151** WiFi gateway): the gateway batch-uploads every **15–60 minutes**.
 
-So a value can look "frozen" even though polling is perfectly healthy — the integration is faithfully showing the latest value Govee has. This is a Govee cloud limitation, not an integration bug (the same applies to govee2mqtt and homebridge-govee). Each thermometer exposes a **"Last Reading"** diagnostic timestamp so you can see how old the value is.
+So a value can look "frozen" even though polling is perfectly healthy — the integration is faithfully showing the latest value Govee has. This is a Govee cloud limitation, not an integration bug (the same applies to govee2mqtt and homebridge-govee). Each thermometer exposes a **"Last Changed"** diagnostic timestamp showing when the value last moved, so you can see how old it is.
 
 **Want real-time readings?** Govee thermometers broadcast their reading over Bluetooth every couple of seconds. To read them locally:
 

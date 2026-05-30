@@ -174,7 +174,7 @@
         "name": "Humidity"
       },
       "sensor_reading_changed": {
-        "name": "Last Reading"
+        "name": "Last Changed"
       },
       "leak_battery": {
         "name": "Battery"
