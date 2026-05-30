@@ -22,6 +22,7 @@ import logging
 import ssl
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -122,11 +123,18 @@ class GoveeAwsIotClient:
         # Last raw state payload seen per device, retained for diagnostics so a
         # dump shows exactly what AWS IoT pushed (redacted at dump time).
         self._last_messages: dict[str, dict[str, Any]] = {}
+        # UTC timestamp of the most recent inbound MQTT state message.
+        self._last_message_ts: datetime | None = None
 
     @property
     def last_messages(self) -> dict[str, dict[str, Any]]:
         """Most recent raw MQTT state payload per device_id (diagnostics)."""
         return self._last_messages
+
+    @property
+    def last_message_ts(self) -> datetime | None:
+        """UTC timestamp of the most recent inbound MQTT state message."""
+        return self._last_message_ts
 
     @property
     def connected(self) -> bool:
@@ -411,6 +419,7 @@ class GoveeAwsIotClient:
             )
 
             self._last_messages[device_id] = state
+            self._last_message_ts = datetime.now(timezone.utc)
 
             # Invoke callback with device ID and state dict
             try:

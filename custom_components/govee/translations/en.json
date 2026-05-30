@@ -167,6 +167,9 @@
       "mqtt_status": {
         "name": "MQTT Status"
       },
+      "mqtt_last_received": {
+        "name": "Last MQTT Received"
+      },
       "sensor_temperature": {
         "name": "Temperature"
       },

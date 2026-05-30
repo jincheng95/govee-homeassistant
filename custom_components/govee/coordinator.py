@@ -269,6 +269,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """Return True if MQTT client is connected."""
         return self._mqtt_client is not None and self._mqtt_client.connected
 
+    @property
+    def mqtt_last_message_ts(self) -> datetime | None:
+        """UTC timestamp of the last inbound MQTT state message, or None."""
+        if self._mqtt_client is None:
+            return None
+        return self._mqtt_client.last_message_ts
+
     def is_ble_available(self, device_id: str) -> bool:
         """Return True if a BLE transport is active for this device."""
         return device_id in self._ble_devices

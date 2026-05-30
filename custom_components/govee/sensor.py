@@ -57,9 +57,10 @@ async def async_setup_entry(
         GoveeRateLimitSensor(coordinator, entry.entry_id),
     ]
 
-    # Add MQTT status sensor if MQTT is configured
+    # Add MQTT status sensors if MQTT is configured
     if coordinator.mqtt_client is not None:
         entities.append(GoveeMqttStatusSensor(coordinator, entry.entry_id))
+        entities.append(GoveeMqttLastReceivedSensor(coordinator, entry.entry_id))
 
     # Per-device temperature / humidity sensors for stand-alone sensors
     # like H5109 and H5179 (issue #62). Anything that exposes the
@@ -180,6 +181,44 @@ class GoveeMqttStatusSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity)
         if mqtt_client is None:
             return "unavailable"
         return "connected" if mqtt_client.connected else "disconnected"
+
+
+class GoveeMqttLastReceivedSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity):
+    """Timestamp of the last inbound MQTT state message (hub-level diagnostic).
+
+    Shows when a real-time push update last arrived from AWS IoT. Renders as
+    "X minutes ago" in HA. Reports unavailable until the first push arrives.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "mqtt_last_received"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:cloud-sync-outline"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        entry_id: str,
+    ) -> None:
+        """Initialize the MQTT last-received timestamp sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_mqtt_last_received"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info for the integration hub."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, "hub")},
+            name="Govee Integration",
+            manufacturer="Govee",
+            model="Cloud API",
+        )
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the UTC timestamp of the last MQTT push, or None."""
+        return self.coordinator.mqtt_last_message_ts
 
 
 class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
