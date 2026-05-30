@@ -423,6 +423,45 @@ class TestGoveeDeviceState:
         assert state.color.as_tuple == (255, 128, 64)
         assert state.source == "mqtt"
 
+    def test_api_empty_string_int_fields_do_not_crash_parse(self):
+        """#83 (mattdengler): the Govee cloud returns "" for a capability value
+        when the device is offline. An unguarded int("") raised ValueError and
+        failed the WHOLE device-state fetch, so the device stopped updating.
+        Empty-string brightness/hdmiSource must be tolerated, and later valid
+        capabilities in the same response must still parse."""
+        state = GoveeDeviceState.create_empty("test_id")
+        api_response = {
+            "capabilities": [
+                {
+                    "type": "devices.capabilities.range",
+                    "instance": "brightness",
+                    "state": {"value": ""},
+                },
+                {
+                    "type": "devices.capabilities.mode",
+                    "instance": "hdmiSource",
+                    "state": {"value": ""},
+                },
+                {
+                    "type": "devices.capabilities.on_off",
+                    "instance": "powerSwitch",
+                    "state": {"value": 1},
+                },
+            ],
+        }
+        # Must not raise.
+        state.update_from_api(api_response)
+        assert state.brightness == 100  # default, not a crash
+        assert state.hdmi_source is None
+        assert state.power_state is True  # later capability still parsed
+
+    def test_mqtt_empty_brightness_keeps_previous(self):
+        """Empty-string MQTT brightness must not crash; keep prior value."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.brightness = 60
+        state.update_from_mqtt({"onOff": 1, "brightness": ""})
+        assert state.brightness == 60
+
     def test_api_color_temp_zero_becomes_none(self):
         """Test that API colorTemperatureK=0 is treated as None (no color temp set).
 

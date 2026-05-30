@@ -46,6 +46,22 @@ _SENSOR_HUMIDITY_MQTT_KEYS = (
 )
 
 
+def _coerce_int(value: Any) -> int | None:
+    """int(value), or None when value is empty/None/non-numeric.
+
+    The Govee cloud returns ``""`` for a capability's value when the device is
+    offline or hasn't reported (e.g. ``brightness``/``hdmiSource`` on an offline
+    device, #83). An unguarded ``int("")`` raises ValueError and fails the whole
+    device-state parse, so a single bad field would stop the device updating.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _coerce_sensor_value(value: Any, keys: tuple[str, ...]) -> float | None:
     """Extract a float reading from a number or a nested STRUCT.
 
@@ -239,7 +255,10 @@ class GoveeDeviceState:
 
             elif cap_type == "devices.capabilities.range":
                 if instance == "brightness":
-                    self.brightness = int(value) if value is not None else 100
+                    parsed_brightness = _coerce_int(value)
+                    self.brightness = (
+                        parsed_brightness if parsed_brightness is not None else 100
+                    )
 
             elif cap_type == "devices.capabilities.color_setting":
                 if instance == "colorRgb":
@@ -263,7 +282,7 @@ class GoveeDeviceState:
 
             elif cap_type == "devices.capabilities.mode":
                 if instance == "hdmiSource":
-                    self.hdmi_source = int(value) if value is not None else None
+                    self.hdmi_source = _coerce_int(value)
 
             elif cap_type == "devices.capabilities.property":
                 # Read-only sensor properties on devices like H5109 and
@@ -331,7 +350,9 @@ class GoveeDeviceState:
             self.power_state = bool(data["onOff"])
 
         if "brightness" in data:
-            self.brightness = int(data["brightness"])
+            parsed_brightness = _coerce_int(data["brightness"])
+            if parsed_brightness is not None:
+                self.brightness = parsed_brightness
 
         if "color" in data:
             color_data = data["color"]
