@@ -397,6 +397,11 @@ class GoveeAwsIotClient:
                 _LOGGER.debug("AWS IoT message missing device ID, ignoring")
                 return
 
+            # Any accepted inbound device message proves the MQTT transport is
+            # live — stamp freshness before branching on message type so leak
+            # events (multiSync) count as activity, not just state updates.
+            self._last_message_ts = datetime.now(timezone.utc)
+
             # Handle multiSync messages (leak sensor events)
             cmd = data.get("cmd")
             if cmd == "multiSync":
@@ -419,7 +424,6 @@ class GoveeAwsIotClient:
             )
 
             self._last_messages[device_id] = state
-            self._last_message_ts = datetime.now(timezone.utc)
 
             # Invoke callback with device ID and state dict
             try:
