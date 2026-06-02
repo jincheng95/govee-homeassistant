@@ -1652,6 +1652,14 @@ These states are NOT returned by the API:
 - Individual segment colors (RGBIC)
 - Active scene name/ID
 
+Thermometer / sensor reading behavior (confirmed in issue #83 from v2026.5.13 diagnostics):
+- **AWS IoT MQTT carries no thermometer data.** Even when a thermometer's `transport` reports `mqtt: true`, its `last_mqtt_message` is `null` — temp/humidity readings arrive **only via REST polling**. Same wall hit by govee2mqtt (#308/#296) and homebridge-govee.
+- **Readings refresh on Govee's cloud cadence, not the poll interval.** A value can look "frozen" while polling is healthy because it's the latest value Govee *has*:
+  - WiFi-native thermometers (H5179): ~10 min.
+  - BLE sensors via an H5151 gateway (H5075, H5110): gateway batch-uploads every **15–60 min**.
+  - For real-time (~2 s) readings, use HA's first-party `govee_ble` integration or an ESPHome Bluetooth proxy — the cloud path cannot beat this.
+- **Offline devices return empty strings.** Govee's cloud returns `""` (not `null`/`0`) for capability values when a device is offline; numeric parsers must tolerate `""` (an unguarded `int("")` raised `ValueError` and aborted the whole device fetch — fixed v2026.5.15).
+
 ---
 
 ## 9. Device Capabilities
@@ -1674,14 +1682,14 @@ These states are NOT returned by the API:
 | `devices.capabilities.mode` | Simple mode selection (HDMI source, purifier mode) |
 | `devices.capabilities.property` | Read-only sensor/status data (thermometers, purifiers, CO2 monitors) |
 | `devices.capabilities.online` | Online status |
-| `devices.capabilities.event` | Real-time events (water full, ice full, lack water) |
+| `devices.capabilities.event` | Real-time events (water full, ice full, lack water, leak detection) |
 
 ### 8.2 Instance Names
 
 | Capability | Instances |
 |------------|-----------|
 | on_off | `powerSwitch` |
-| toggle | `gradientToggle`, `nightlightToggle`, `oscillationToggle`, `warmMistToggle`, `dreamViewToggle` |
+| toggle | `gradientToggle`, `nightlightToggle`, `oscillationToggle`, `warmMistToggle`, `dreamViewToggle`, `fanToggle` (ceiling fans), `reverseAirflowToggle` |
 | range | `brightness`, `humidity`, `volume`, `targetTemperature`, `temperature`, `fanSpeed` |
 | color_setting | `colorRgb`, `colorTemperatureK` |
 | segment_color_setting | `segmentedColorRgb`, `segmentedBrightness` |
@@ -1690,9 +1698,9 @@ These states are NOT returned by the API:
 | movie_setting | `movieMode` |
 | temperature_setting | `targetTemperature` |
 | work_mode | `workMode` |
-| mode | `hdmiSource`, `purifierMode`, `nightlightScene` |
+| mode | `hdmiSource`, `purifierMode`, `nightlightScene`, `fanSpeedMode` (ceiling fans) |
 | property | `sensorTemperature`, `sensorHumidity`, `carbonDioxideConcentration`, `filterLifetime`, `airQuality` |
-| event | `lackWaterEvent`, `iceFullEvent`, `waterFullEvent` |
+| event | `lackWaterEvent`, `iceFullEvent`, `waterFullEvent`, `bodyAppearedEvent` (leak sensors) |
 
 ### 8.3 Device Type Detection
 
@@ -1743,11 +1751,11 @@ def detect_capabilities(device_response):
 | `devices.types.humidifier` | Humidifiers (H7140) |
 | `devices.types.dehumidifier` | Dehumidifiers (H7151) |
 | `devices.types.heater` | Space heaters (H7130, H7131, H721C) |
-| `devices.types.fan` | Tower fans (H7101, H7107) |
+| `devices.types.fan` | Tower fans (H7101, H7107). NB: combo ceiling-fan-with-light units (H1310) report as `devices.types.light`, not `fan` |
 | `devices.types.ice_maker` | Ice makers (H7172) |
-| `devices.types.thermometer` | Temp/humidity sensors (H5179) |
+| `devices.types.thermometer` | Temp/humidity sensors (H5103, H5107, H5109, H5179) |
 | `devices.types.air_quality_monitor` | CO2/air quality monitors (H5140) |
-| `devices.types.sensor` | Motion, presence sensors |
+| `devices.types.sensor` | Motion, presence, water-leak sensors (H5059) |
 
 ### 8.5 Known Device Capability Profiles
 
@@ -2055,6 +2063,53 @@ Key observations:
 - Different work mode numbering than H7101 (Auto=2 vs Auto=3)
 - `oscillationToggle` for fan oscillation control
 
+#### H1310 — Ceiling Fan + Light (`devices.types.light`)
+
+Combo ceiling-fan-with-light. Reports as `devices.types.light` (because of the integrated light), so it does **not** match standalone-fan detection — the fan must be detected by capability. Unlike tower fans (which use `work_mode`/`workMode`), the H1310 exposes its fan via `toggle`/`mode` instances. From issue #74 (fixed in PR #90 via `h1310-govee-diagnostics-redacted.json`).
+
+```json
+{
+  "sku": "H1310",
+  "type": "devices.types.light",
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.range", "instance": "brightness"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.toggle", "instance": "fanToggle"},
+    {"type": "devices.capabilities.mode", "instance": "fanSpeedMode",
+     "parameters": {"options": [
+       {"name": "Speed 1", "value": 1}, {"name": "Speed 2", "value": 2},
+       {"name": "Speed 3", "value": 3}, {"name": "Speed 4", "value": 4},
+       {"name": "Speed 5", "value": 5}, {"name": "Speed 6", "value": 6}
+     ]}},
+    {"type": "devices.capabilities.toggle", "instance": "reverseAirflowToggle"}
+  ]
+}
+```
+
+- Detection: a device exposing `fanToggle` + `fanSpeedMode` gets a separate `fan` entity (alongside its light).
+- `fanSpeedMode` is a `mode` (6 discrete speeds), not a `work_mode` STRUCT like tower fans.
+- `reverseAirflowToggle` → fan direction (forward / reverse).
+- Govee's cloud poll does not report fan state → use optimistic state restored across restarts.
+
+#### H5089 — Smart Outlet Extender w/ Nightlight (`devices.types.socket`)
+
+A socket that also exposes an RGB nightlight. Important for device-type detection: a `devices.types.socket` can legitimately carry a color light, so plug-exclusion logic must keep the light entity when the socket has a color capability (regression in issue #59, fixed PR #89). From `govee-...Smart Outlet Extender....json`.
+
+```json
+{
+  "sku": "H5089",
+  "type": "devices.types.socket",
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorRgb"},
+    {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK"}
+  ]
+}
+```
+
+- Exclude a plug from the light platform **only when it has no color capability** — plain on/off plugs (H5080) stay switch-only; H5089 keeps its color light entity.
+
 #### H7120/H7122/H7123/H7124 — Air Purifiers (`devices.types.air_purifier`)
 
 Air purifiers with filter tracking and optional nightlight. From govee2mqtt #297.
@@ -2201,10 +2256,61 @@ Air quality monitor with CO2, temperature, and humidity sensors. From HA discuss
 }
 ```
 
+#### H5103 / H5107 / H5109 — WiFi/BLE Thermometers (`devices.types.thermometer`)
+
+Same capability shape as the H5179 thermometer family — detection is capability-based (`sensorTemperature` / `sensorHumidity`), not SKU-locked, so any H51xx thermometer that exposes these properties is discovered. From issues #91 (H5107), #85 (H5103), #62 (H5109).
+
+```json
+{
+  "capabilities": [
+    {"type": "devices.capabilities.property", "instance": "sensorTemperature", "parameters": {}},
+    {"type": "devices.capabilities.property", "instance": "sensorHumidity", "parameters": {}}
+  ]
+}
+```
+
+Unit caveat (confirmed across #78, #85, #91): Govee's API returns the temperature in **whatever unit the device is set to in the Govee app** (often °F) and includes **no unit field**. A device reporting `sensorTemperature: 84.2` is 84.2 °F (≈ 29 °C), not Celsius. The integration cannot auto-detect this; the "Temperature unit from Govee API" option (added v2026.5.7, default `celsius`) selects how raw readings are interpreted. SKUs observed reporting °F without unit metadata: **H5103, H5107, H5109, H5110, H5179, HS5106, HS5108**.
+
+#### H5059 — Water Leak Sensor (`devices.types.sensor`)
+
+Standalone leak sensor returned by the Developer (API-key) endpoint. Leak state is exposed as an `event` capability, **not** a `property` — there is no pollable boolean; the `eventState.options` enumerate the possible states. From issue #87.
+
+```json
+{
+  "sku": "H5059",
+  "type": "devices.types.sensor",
+  "capabilities": [
+    {
+      "type": "devices.capabilities.event",
+      "instance": "bodyAppearedEvent",
+      "alarmType": 1,
+      "eventState": {
+        "options": [
+          {"name": "LEAKED",    "value": 1, "probesState": {"top": 1, "bot": 1}},
+          {"name": "UN_LEAKED", "value": 2, "probesState": {"top": 0, "bot": 0}}
+        ]
+      }
+    }
+  ]
+}
+```
+
+- `bodyAppearedEvent` value `1` = LEAKED, `2` = UN_LEAKED → maps to a `binary_sensor` device_class `moisture`.
+- `probesState.top` / `probesState.bot` report per-probe state (`1` = water present, `0` = clear); expose as attributes.
+- Device IDs use the extended 16-octet form (e.g. `03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C`).
+
+#### H5054 — Water Detector (NOT in Developer API)
+
+The H5054 water detector is **not returned by the Developer API** (the API-key `/user/devices` endpoint this integration's discovery uses), so it never appears via the standard path. It is only exposed through the **app/account API** (same path the H5058 leak sensor uses). Confirmed in issue #62: a full integration diagnostics dump omitted the user's H5054s entirely, while their Homebridge account-based client enumerated all 10.
+
+- Account-API device IDs use a colon-less hex form: `DABFC0D6A5FE000DB6`.
+- Supporting it requires a dedicated account-API discovery branch, not an entity/capability change.
+
 Key observations for sensor devices:
-- **Sensor-only pattern**: only `property` capabilities, no controllable capabilities
+- **Sensor-only pattern**: only `property` capabilities (thermometers, CO2) or `event` capabilities (leak), no controllable capabilities
 - `property` instances are read-only — report values but cannot be commanded
-- Important for future sensor platform implementation
+- `event` instances carry no pollable state — react to the pushed event / `eventState.options` enum
+- Some sensor-only SKUs (H5054) are absent from the Developer API and need the account API
 
 ### 8.7 Appliance Capability Patterns
 
