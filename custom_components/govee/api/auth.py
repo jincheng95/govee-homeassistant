@@ -242,6 +242,11 @@ class GoveeAuthClient:
         # fetch_device_topics) reuse the same client_id. Govee rejects
         # inconsistent client_ids within a single auth session.
         self._client_id: str | None = None
+        # Raw device list from the most recent fetch_bff_leak_sensors() call,
+        # retained so a PII-free census can be built for diagnostics (#87) to
+        # reveal whether the BFF API returns a given leak SKU at all.
+        # Untyped (raw JSON); items are validated in bff_device_census().
+        self._last_bff_raw_devices: list[Any] = []
 
         if session is None and hass is not None:
             from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -503,6 +508,8 @@ class GoveeAuthClient:
 
                 sensors: list[dict[str, Any]] = []
                 devices = data.get("data", {}).get("devices", [])
+                # Retain for the diagnostics census (PII-free; see #87).
+                self._last_bff_raw_devices = devices if isinstance(devices, list) else []
                 for device in devices:
                     sku = device.get("sku", "")
                     if sku not in LEAK_SENSOR_SKUS:
@@ -611,6 +618,46 @@ class GoveeAuthClient:
             raise GoveeApiError(
                 f"Connection error fetching BFF device list: {err}"
             ) from err
+
+    def bff_device_census(self) -> list[dict[str, Any]]:
+        """PII-free summary of the last BFF device list, for diagnostics (#87).
+
+        Returns one entry per device the BFF API returned — SKU plus whether it
+        carries the fields leak-sensor discovery requires (`sno`, `gatewayInfo`)
+        — with no MACs or names. Lets a diagnostics download answer "does the
+        BFF return this leak SKU, and does our SKU allowlist / parser match it?"
+        without exposing identities or needing verbose logging.
+        """
+        census: list[dict[str, Any]] = []
+        for device in self._last_bff_raw_devices:
+            if not isinstance(device, dict):
+                continue
+            sku = device.get("sku", "")
+            device_ext = device.get("deviceExt", {})
+            if isinstance(device_ext, str):
+                try:
+                    device_ext = json.loads(device_ext)
+                except (json.JSONDecodeError, TypeError):
+                    device_ext = {}
+            settings = device_ext.get("deviceSettings", {}) if isinstance(device_ext, dict) else {}
+            if isinstance(settings, str):
+                try:
+                    settings = json.loads(settings)
+                except (json.JSONDecodeError, TypeError):
+                    settings = {}
+            settings = settings if isinstance(settings, dict) else {}
+            gateway = settings.get("gatewayInfo", {})
+            census.append(
+                {
+                    "sku": sku,
+                    "in_leak_sensor_skus": sku in LEAK_SENSOR_SKUS,
+                    "in_leak_hub_skus": sku in LEAK_HUB_SKUS,
+                    "has_sno": settings.get("sno") is not None,
+                    "has_gateway_info": bool(gateway),
+                    "gateway_sku": gateway.get("sku") if isinstance(gateway, dict) else None,
+                }
+            )
+        return census
 
     async def request_verification_code(
         self,

@@ -223,6 +223,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._pending_button_presses: dict[str, int] = {}
         self._bff_poll_unsub: CALLBACK_TYPE | None = None
         self._bff_poll_task: asyncio.Task[None] | None = None
+        # PII-free census of the last BFF device-list response (#87 diagnostics):
+        # which SKUs the BFF returned and whether they carry leak-discovery
+        # fields. Empty until the first _discover_leak_sensors() call.
+        self._bff_device_census: list[dict[str, Any]] = []
 
     @property
     def devices(self) -> dict[str, GoveeDevice]:
@@ -341,6 +345,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def leak_states(self) -> dict[str, GoveeLeakSensorState]:
         """Get current leak states (device_id -> state)."""
         return self._leak_states
+
+    @property
+    def bff_device_census(self) -> list[dict[str, Any]]:
+        """PII-free census of the last BFF device-list response (diagnostics)."""
+        return self._bff_device_census
 
     def _note_sensor_reading_change(
         self,
@@ -579,6 +588,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 sensor_data, hub_data = await auth_client.fetch_bff_leak_sensors(
                     self._iot_credentials.token
                 )
+                # Capture the PII-free census before the client closes (#87).
+                self._bff_device_census = auth_client.bff_device_census()
 
             self._leak_hubs = hub_data
             for sensor in sensor_data:

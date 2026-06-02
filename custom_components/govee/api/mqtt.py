@@ -22,6 +22,7 @@ import logging
 import ssl
 import tempfile
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -125,11 +126,21 @@ class GoveeAwsIotClient:
         self._last_messages: dict[str, dict[str, Any]] = {}
         # UTC timestamp of the most recent inbound MQTT state message.
         self._last_message_ts: datetime | None = None
+        # Ring buffer of recent decoded multiSync packets (leak/button/unknown),
+        # retained for diagnostics so a download alone is enough to crack
+        # undecoded hub packets (e.g. the H5059's 0xEE 0x35 wet alarm in #87)
+        # without asking end users to enable verbose logging.
+        self._recent_multisync: deque[dict[str, Any]] = deque(maxlen=64)
 
     @property
     def last_messages(self) -> dict[str, dict[str, Any]]:
         """Most recent raw MQTT state payload per device_id (diagnostics)."""
         return self._last_messages
+
+    @property
+    def recent_multisync(self) -> list[dict[str, Any]]:
+        """Recent multiSync packets (hex + decode) for leak-sensor diagnostics."""
+        return list(self._recent_multisync)
 
     @property
     def last_message_ts(self) -> datetime | None:
@@ -436,6 +447,31 @@ class GoveeAwsIotClient:
         except Exception as err:
             _LOGGER.error("Error handling AWS IoT message: %s", err)
 
+    def _record_multisync(self, hub_device_id: str, raw: bytes) -> None:
+        """Append a decoded multiSync packet to the diagnostics ring buffer.
+
+        Stores the packet hex so undecoded hub subtypes can be reverse-
+        engineered from a diagnostics download. Button-press packets (0xEE
+        0x32) embed the sensor MAC in bytes 2-9; those bytes are masked so the
+        retained hex stays PII-free. The hub id is stored under the
+        ``hub_device_id`` key so the diagnostics redactor scrubs it.
+        """
+        header = raw[:2].hex() if len(raw) >= 2 else raw.hex()
+        safe = bytearray(raw)
+        # Mask the MAC embedded in button-press payloads (bytes 2-9).
+        if len(raw) >= 10 and raw[0] == 0xEE and raw[1] == 0x32:
+            for i in range(2, 10):
+                safe[i] = 0
+        self._recent_multisync.append(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "hub_device_id": hub_device_id,
+                "header": header,
+                "length": len(raw),
+                "hex": safe.hex(),
+            }
+        )
+
     def _handle_multisync(self, hub_device_id: str, data: dict[str, Any]) -> None:
         """Handle multiSync messages from hub devices (e.g., H5043 leak hub).
 
@@ -455,6 +491,11 @@ class GoveeAwsIotClient:
             except (binascii.Error, ValueError):
                 _LOGGER.debug("Failed to decode multiSync command base64")
                 continue
+
+            # Record every decoded packet (incl. short/unknown) for diagnostics
+            # before any type filtering, so a downloaded dump can crack packet
+            # subtypes the current decoder doesn't handle yet.
+            self._record_multisync(hub_device_id, raw)
 
             if len(raw) < 6:
                 continue

@@ -166,14 +166,22 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
     """Integration-wide runtime signals shared by entry + device diagnostics."""
     mqtt_client = coordinator.mqtt_client
     mqtt_info: dict[str, Any] | None = None
+    recent_multisync: list[dict[str, Any]] = []
     if mqtt_client:
         mqtt_info = {
             "available": mqtt_client.available,
             "connected": mqtt_client.connected,
             "tracked_devices": len(mqtt_client.last_messages),
         }
+        # Recent hub multiSync packets (hex) — lets undecoded leak-sensor
+        # packet subtypes be reverse-engineered from a download alone (#87).
+        recent_multisync = mqtt_client.recent_multisync
     return {
         "mqtt": mqtt_info,
+        "recent_multisync": recent_multisync,
+        # PII-free census of the BFF device list — shows whether the BFF API
+        # returns a given leak SKU and if it carries discovery fields (#87).
+        "bff_device_census": coordinator.bff_device_census,
         "has_iot_credentials": coordinator.has_iot_credentials,
         "device_topic_count": coordinator.device_topic_count,
         "api": {

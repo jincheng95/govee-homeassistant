@@ -1473,3 +1473,86 @@ class TestDeterministicClientId:
         # Verify we do NOT produce the same as a naked uuid5 (no namespace)
         naked = _uuid.uuid5(_uuid.NAMESPACE_DNS, "user@example.com").hex
         assert _derive_client_id("user@example.com") != naked
+
+
+# ==============================================================================
+# Tests: GoveeAuthClient.bff_device_census — PII-free leak-discovery diagnostics
+# ==============================================================================
+
+
+def _bff_response(devices: list[dict[str, Any]]) -> dict[str, Any]:
+    """Wrap device dicts in the BFF device-list envelope."""
+    return {"data": {"devices": devices}}
+
+
+class TestBffDeviceCensus:
+    """The census summarizes the raw BFF device list without exposing PII (#87)."""
+
+    @pytest.mark.asyncio
+    async def test_census_flags_skus_and_discovery_fields(self):
+        """Census reports SKU-set membership + presence of sno/gateway, no MACs."""
+        # Arrange: an in-allowlist sensor, an H5059 NOT in the allowlist, and a hub.
+        devices = [
+            {
+                "sku": "H5058",
+                "device": "AA:BB:CC:DD:EE:FF:00:11",
+                "deviceName": "Basement",
+                "deviceExt": {
+                    "deviceSettings": {
+                        "sno": 2,
+                        "gatewayInfo": {"device": "11:22:33:44:55:66:77:88", "sku": "H5043"},
+                    }
+                },
+            },
+            {
+                "sku": "H5059",
+                "device": "03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C",
+                "deviceName": "dishwasher",
+                # deviceExt as a JSON string (Govee sometimes nests JSON as text).
+                "deviceExt": json.dumps(
+                    {
+                        "deviceSettings": {
+                            "sno": 4,
+                            "gatewayInfo": {"device": "07:23:5C:E7:53:5F:6F:0A", "sku": "H5044"},
+                        }
+                    }
+                ),
+            },
+            {"sku": "H5044", "device": "07:23:5C:E7:53:5F:6F:0A", "deviceName": "Hub"},
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        # Act
+        await client.fetch_bff_leak_sensors(token="tok")
+        census = client.bff_device_census()
+
+        # Assert: every BFF device is summarized
+        by_sku = {row["sku"]: row for row in census}
+        assert set(by_sku) == {"H5058", "H5059", "H5044"}
+
+        # H5058 is in the allowlist and has discovery fields
+        assert by_sku["H5058"]["in_leak_sensor_skus"] is True
+        assert by_sku["H5058"]["has_sno"] is True
+        assert by_sku["H5058"]["gateway_sku"] == "H5043"
+
+        # H5059 is the gap: BFF returns it with sno+gateway, but it's NOT in the
+        # allowlist — exactly what the diagnostics need to surface for #87.
+        assert by_sku["H5059"]["in_leak_sensor_skus"] is False
+        assert by_sku["H5059"]["has_sno"] is True
+        assert by_sku["H5059"]["has_gateway_info"] is True
+        assert by_sku["H5059"]["gateway_sku"] == "H5044"
+
+        # H5044 is recognized as a hub SKU
+        assert by_sku["H5044"]["in_leak_hub_skus"] is True
+
+        # Census carries no MACs / names (PII-free)
+        blob = json.dumps(census)
+        assert "03:4E:CE" not in blob
+        assert "dishwasher" not in blob
+
+    @pytest.mark.asyncio
+    async def test_census_empty_before_any_fetch(self):
+        """Census is empty until a BFF fetch populates it."""
+        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, {})))
+        assert client.bff_device_census() == []
