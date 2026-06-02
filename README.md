@@ -1,305 +1,257 @@
-<p align="center">
-  <img src="https://brands.home-assistant.io/_/govee/logo.png" alt="Govee Logo" width="150"/>
-</p>
+# Govee Cloud Integration for Home Assistant
 
-<h1 align="center">Govee Integration for Home Assistant</h1>
+Control your Govee lights, plugs, fans, humidifiers, heaters, thermometers, and leak sensors in Home Assistant through the official Govee Cloud API — with optional real‑time push updates over Govee's AWS IoT MQTT.
 
-<p align="center">
-  <em>Your Govee lights + Home Assistant = RGB bliss with real-time control</em>
-</p>
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+![hassfest](https://img.shields.io/badge/quality_scale-silver-silver)
 
-<p align="center">
-  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge" alt="HACS Custom"></a>
-  <a href="https://github.com/lasswellt/govee-homeassistant/releases"><img src="https://img.shields.io/github/v/release/lasswellt/govee-homeassistant?style=for-the-badge" alt="GitHub Release"></a>
-  <a href="https://github.com/lasswellt/govee-homeassistant/blob/master/LICENSE.txt"><img src="https://img.shields.io/github/license/lasswellt/govee-homeassistant?style=for-the-badge" alt="License"></a>
-</p>
-
-<p align="center">
-  <a href="https://my.home-assistant.io/redirect/hacs_repository/?owner=lasswellt&repository=govee-homeassistant&category=integration">
-    <img src="https://my.home-assistant.io/badges/hacs_repository.svg" alt="Open in HACS">
-  </a>
-</p>
+> **Integration type:** Hub (cloud) · **IoT class:** `cloud_push` (MQTT + polling) · **Config:** UI only, no YAML
 
 ---
 
-## What's This?
+## What this is
 
-Ever wanted your Govee lights to actually *talk* to Home Assistant? This integration gives you:
+A custom component that talks to Govee's cloud. Add your Govee API key and your devices show up in Home Assistant. Add your Govee account email/password as well and you also get **real‑time updates** (push) instead of polling alone, plus support for **hub‑based leak sensors**.
 
-- **Full light control** — brightness, RGB colors, color temp, the works
-- **Scene magic** — your Govee scenes become HA scenes
-- **RGBIC segment control** — paint each segment a different color OR control all segments together as one
-- **Real-time sync** — optional MQTT for instant updates (bye-bye polling lag)
+It is **capability‑based**: entities are created from the capabilities Govee reports for each device, not a hard‑coded SKU list — so new models in a known device class generally work without an update.
 
----
-
-## Get Started
-
-### 1. Grab Your API Key
-
-In the **Govee Home** app: **Profile** → **Settings** → **Apply for API Key**
-
-Check your email in ~5 minutes.
-
-### 2. Install via HACS
-
-Click the button above, search "Govee", hit **Download**, restart Home Assistant.
-
-### 3. Add the Integration
-
-**Settings** → **Devices & Services** → **Add Integration** → **Govee**
-
-Enter your API key. Want instant updates? Add your Govee email/password for MQTT.
+> **Cloud / WiFi devices only.** Bluetooth‑only devices (e.g. a standalone H5075 thermometer with no gateway) don't appear in Govee's cloud API. For those, use Home Assistant's first‑party [**Govee Bluetooth (`govee_ble`)**](https://www.home-assistant.io/integrations/govee_ble/) integration. The two can run side by side.
 
 ---
 
-## What Works
+## Supported devices
 
-| Device | Features |
-|--------|----------|
-| **LED Lights & Strips** | On/off, brightness, RGB, color temp |
-| **RGBIC Strips** | All the above + per-segment colors |
-| **Fans** | On/off, speed (Low/Medium/High), oscillation, preset modes |
-| **Heaters** | On/off, target temperature (16-35°C), fan speed control |
-| **Air Purifiers** | On/off, mode selection (Sleep/Low/High/Custom) |
-| **HDMI Sync Boxes** | On/off, HDMI input selection (1-4) |
-| **Leak Sensors (H5058/H5054/H5055)** | Moisture detection, battery, sensor/gateway connectivity, button press events |
+| Category | Examples | Entities you get |
+|---|---|---|
+| **Lights** (strips, bulbs, bars, TV backlights, sync boxes) | H619x, H61xx, H6099, H66A0, H6604 | Light (on/off, brightness, RGB, color temp), scene & DIY selectors, music‑mode switch, DreamView switch |
+| **RGBIC lights** | H619C, H6198, H60A6 | Everything above **plus** per‑segment color control (see [Segments](#rgbic-segment-control)) |
+| **Smart plugs / sockets** | H5080, H5083 | Switch; outlet extenders with an RGB nightlight (H5089) also get a color light |
+| **Ceiling fan + light combos** | H1310 | Light **and** a Fan entity (on/off, speed, reverse direction) |
+| **Tower / pedestal fans** | H7101, H7102, H7107 | Fan (speed, oscillation, preset modes) |
+| **Air purifiers** | H7120–H7127 | Fan / work modes, filter‑life sensor, optional nightlight |
+| **Humidifiers & dehumidifiers** | H7140, H7141, H7151 | Humidifier entity with modes |
+| **Space heaters** | H7130, H7131, H721C | Power switch, target‑temperature number, auto‑stop switch |
+| **Thermometers / hygrometers** | H5103, H5107, H5109, H5179 | Temperature & humidity sensors + a "Last Changed" timestamp |
+| **Air‑quality monitors** | H5140 | CO₂ / temperature / humidity sensors |
+| **Leak sensors** | H5058 (via H5043/H5044 hub) | Moisture binary sensor, battery, sensor/gateway connectivity, last‑wet timestamp, button‑press event |
 
-> **Note:** Cloud-enabled devices only. Bluetooth-only devices need a different integration.
-> Leak sensors require a Govee hub (H5043/H5044) and email/password login for MQTT.
-
----
-
-## RGBIC Segment Control
-
-For devices with RGB segments (like LED strips), you can choose how to control them globally or per-device:
-
-### Segment Control Modes
-
-| Mode | Use Case |
-|------|----------|
-| **Individual Segments** | Control each segment separately with different colors (default) |
-| **Grouped Segments** | Control all segments together as a single light — perfect for synchronized effects |
-| **Disabled** | Hide all segment entities if you don't need them |
-
-### Global vs Per-Device Configuration
-
-You can configure segment control in two ways:
-
-1. **Global Setting** — Apply one mode to all RGBIC devices
-   - In **Configure**, set "Global Segment Control Mode"
-   - All devices without per-device settings use this mode
-
-2. **Per-Device Settings** (NEW) — Different modes for different devices
-   - In **Configure**, select which devices to customize
-   - Set individual modes for each device (e.g., strips as individual, spotlights as grouped)
-   - Devices not configured per-device fall back to the global setting
-
-### How to Configure
-
-**To set up segment control:**
-
-1. Go to **Settings** → **Devices & Services** → **Govee** → **Configure**
-2. Set your **Global Segment Control Mode** (fallback for all devices)
-3. If you have RGBIC devices, you'll see additional steps:
-   - Select which devices to customize with per-device settings
-   - Set individual modes for each selected device
-4. Save — entities are automatically created/removed based on your selections
-
-**Example scenario:**
-- Global mode: Individual segments (default)
-- Customize per-device:
-  - LED Strip A (living room): Individual segments
-  - LED Strip B (kitchen): Grouped segments (for synced effects)
-  - Spotlight (bedroom): Disabled (don't need segment control)
+Don't see your device, or a capability is missing? [Open an issue](https://github.com/lasswellt/govee-homeassistant/issues) with a diagnostics download (see [Diagnostics](#diagnostics--debug-logging)).
 
 ---
 
-## Real-time Updates
+## Install
 
-Polling is *so* 2020. Add your Govee account credentials during setup for instant state sync via AWS IoT MQTT.
+### HACS (recommended)
 
-No credentials? Polling works fine (every 60 seconds by default).
+1. HACS → **⋮** → **Custom repositories**
+2. Repository: `https://github.com/lasswellt/govee-homeassistant`, Category: **Integration**
+3. Install **Govee Cloud Integration**, then **restart Home Assistant**
 
----
+### Manual
 
-## Device Groups
-
-Created groups of lights in the Govee app? Enable **"Enable group devices"** in the integration's ⚙️ Configure options to surface them as single light entities.
-
-Why use a group entity instead of a Home Assistant helper? A command to the group is sent **once** and Govee's cloud syncs it to every member — so the lights change together, instead of Home Assistant firing a separate command at each light (which can arrive at slightly different times over Wi-Fi).
-
-Caveats:
-- Group state is best-effort — groups can't be polled, so the entity may not reflect changes made outside Home Assistant.
-- Group lights support power, brightness, and color only (no scenes, segments, music, or DreamView).
+Copy `custom_components/govee/` into your Home Assistant `config/custom_components/` directory and restart.
 
 ---
 
-## Thermometers & Sensors
+## Set up
 
-Govee thermometer/hygrometer readings (H5075, H5100, H5110, H5179, H5109…) come from the Govee **cloud**, and the cloud only refreshes them on Govee's own schedule:
+### 1. Get a Govee API key
 
-- **WiFi-native sensors** (e.g. H5179): on the order of ~10 minutes.
-- **Bluetooth sensors behind a gateway** (e.g. H5075/H5110 reporting through an **H5151** WiFi gateway): the gateway batch-uploads infrequently — often many minutes (observed ~15–60 min; the exact interval is Govee's, not guaranteed).
+In the **Govee Home** app: **Profile → Settings (gear) → Apply for API Key**. You'll receive it by email, usually within minutes.
 
-So a value can look "frozen" even though polling is perfectly healthy — the integration is faithfully showing the latest value Govee has. This is a Govee cloud limitation, not an integration bug (the same applies to govee2mqtt and homebridge-govee). Each thermometer exposes a **"Last Changed"** diagnostic timestamp showing when the value last moved, so you can see how old it is.
+### 2. Add the integration
 
-**Want real-time readings?** Govee thermometers broadcast their reading over Bluetooth every couple of seconds. To read them locally:
+**Settings → Devices & Services → Add Integration → Govee Cloud Integration**, then paste your API key.
 
-1. Enable Home Assistant's built-in [**Govee Bluetooth (`govee_ble`)**](https://www.home-assistant.io/integrations/govee_ble/) integration for any sensor in Bluetooth range of your HA host.
-2. For sensors that are far away (the reason you use an H5151 gateway in the first place), put an **[ESPHome Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html)** near them.
+The API key alone gives you device control and **polling** for state.
 
-That gives ~2-second updates locally, independent of the Govee cloud.
+### 3. (Optional but recommended) Add account login for real‑time updates
 
-> **Reading shows ~1.8× too high?** (e.g. 74 instead of 23) — your device reports °F via the API. Set **Temperature unit from Govee API** to **Fahrenheit** in the integration's ⚙️ Configure options.
+In the same setup flow you can enter your **Govee account email and password**. This enables:
+
+- **Real‑time push updates** over AWS IoT MQTT (no waiting for the next poll)
+- **Leak‑sensor support** (H5058 via an H5043/H5044 hub)
+
+#### Two‑factor (email code)
+
+Since 2026 Govee requires email verification for account login. If your account has it on, the flow will pause, Govee emails you a **code**, and you enter it to finish. The code expires in ~15 minutes. Credentials are stored encrypted in your config entry.
+
+> Account login is optional. Without it, the integration runs in polling‑only mode and everything except real‑time push and leak sensors still works.
+
+---
+
+## Configuration options
+
+After setup, open **Settings → Devices & Services → Govee Cloud Integration → ⚙️ Configure**:
+
+| Option | Default | What it does |
+|---|---|---|
+| **Polling interval (seconds)** | `60` | How often to poll the cloud for state (30–600). MQTT updates arrive between polls. |
+| **Temperature unit from Govee API (thermometers)** | `Celsius` | Set to **Fahrenheit** if thermometer readings look ~1.8× too high (e.g. 74 instead of 23). Govee returns the value in the device's app unit with no unit metadata, so it can't be auto‑detected. |
+| **Enable group devices** | `off` | Surface the device groups you created in the Govee app as single light entities (power/brightness/color; state is best‑effort). |
+| **Enable scene selector** | `on` | Create a per‑device dropdown to activate Govee scenes. |
+| **Enable DIY scene selector** | `on` | Create a per‑device dropdown for your DIY scenes. |
+| **Expose per‑device transport connectivity sensors** | `off` | Add diagnostic binary sensors showing each device's Cloud/MQTT/BLE reachability. |
+
+RGBIC devices get a second step after submitting, where you choose a **segment mode** per device — see below.
+
+---
+
+## Real‑time updates
+
+With account login configured, the integration maintains an AWS IoT MQTT connection and applies state changes the moment they happen. Without it, state comes from polling on your configured interval. A **"Govee Integration"** device exposes diagnostics for this: API rate‑limit remaining, MQTT status, and a **"Last MQTT Received"** timestamp.
+
+Commands always use optimistic updates, so the UI reflects your action immediately and reconciles with the next confirmed state.
+
+---
+
+## RGBIC segment control
+
+For RGBIC strips/bars you can control individual lighting segments. Pick a mode per device in the options flow:
+
+- **Individual** (default) — one light entity per segment, for maximum control.
+- **Grouped** — a single entity that sets all segments together.
+- **Disabled** — no segment entities.
+
+Segment colors aren't reliably returned by the API, so segment entities keep optimistic state and restore it across restarts.
+
+There's also a service for automations:
+
+```yaml
+service: govee.set_segment_color
+data:
+  device_id: "AA:BB:CC:DD:EE:FF:00:11"
+  segments: [0, 1, 2]
+  rgb_color: [255, 0, 0]
+```
+
+---
+
+## Scenes, DIY, music & DreamView
+
+- **Scenes / DIY scenes** — activated through per‑device select dropdowns (toggle in options). The API doesn't reliably report the active scene, so the selection is preserved optimistically and cleared when you switch to another mode (color, color temp, music, etc.).
+- **Music mode** — exposed as a switch on capable lights.
+- **DreamView / video sync** — exposed as a switch on capable backlights.
+- Use the **`govee.refresh_scenes`** service to re‑pull the scene catalog (optionally for one `device_id`).
+
+---
+
+## Device groups
+
+Enable **group devices** in options to surface Govee‑app groups as single light entities. A command to a group is sent once and fanned out to all members by Govee's cloud, which syncs better than grouping the same lights with Home Assistant helpers (those fire separate commands that arrive at slightly different times). Group state is best‑effort (groups can't be polled), and group lights support power/brightness/color only.
+
+---
+
+## Thermometers & sensors
+
+Thermometer/hygrometer readings (H5103, H5107, H5109, H5179, …) come from Govee's **cloud**, which only refreshes them on its own schedule:
+
+- **WiFi‑native sensors** (e.g. H5179): on the order of ~10 minutes.
+- **Bluetooth sensors behind a gateway** (e.g. H5075/H5110 through an **H5151** WiFi gateway): the gateway batch‑uploads infrequently — often many minutes (observed ~15–60 min; the exact interval is Govee's, not guaranteed).
+
+So a reading can look "frozen" while polling is perfectly healthy — it's the latest value Govee has. This is a Govee cloud limitation, not an integration bug (govee2mqtt and homebridge‑govee hit the same wall, and AWS IoT MQTT carries no thermometer data at all). Each thermometer exposes a **"Last Changed"** diagnostic timestamp so you can see how old the value is.
+
+**Want real‑time (~2 s) readings?** Govee thermometers broadcast over Bluetooth:
+
+1. Enable Home Assistant's first‑party [**Govee Bluetooth (`govee_ble`)**](https://www.home-assistant.io/integrations/govee_ble/) for any sensor within Bluetooth range of your HA host.
+2. For distant sensors, add an [**ESPHome Bluetooth proxy**](https://esphome.io/components/bluetooth_proxy.html) nearby.
+
+---
+
+## Services
+
+| Service | Purpose |
+|---|---|
+| `govee.refresh_scenes` | Re‑fetch the scene catalog from Govee (optional `device_id`). |
+| `govee.set_segment_color` | Set RGB color on specific segments of an RGBIC device. |
 
 ---
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| Devices not showing | Make sure they're WiFi devices, not Bluetooth-only |
-| Slow updates | Enable MQTT or reduce poll interval in options |
-| Rate limit errors | Increase poll interval (Govee allows 100 req/min) |
-| Thermometer reads ~1.8× too high (e.g. 74 instead of 23) | The device reports °F via the API. Set **Temperature unit from Govee API** to **Fahrenheit** in the integration's ⚙️ Configure options to convert to °C |
+| Symptom | Fix |
+|---|---|
+| Devices not showing up | They must be WiFi/cloud devices. Bluetooth‑only devices need [`govee_ble`](https://www.home-assistant.io/integrations/govee_ble/). |
+| Thermometer reads ~1.8× too high (e.g. 74 vs 23) | Set **Temperature unit from Govee API → Fahrenheit** in ⚙️ Configure. |
+| Thermometer value looks "frozen" | Expected — Govee's cloud refreshes on its own cadence. See [Thermometers & sensors](#thermometers--sensors). |
+| No real‑time updates / no leak sensors | Add your Govee account email/password (enables MQTT). API key alone is polling‑only. |
+| Re‑prompted for a 2FA code / login fails | Reconfigure the integration and complete the email‑code step; codes expire in ~15 minutes. |
+| Rate‑limit warnings | The Govee API allows 100 requests/min and 10,000/day. Increase the polling interval if you have many devices. |
+
+If something's still wrong, grab a diagnostics download (below) and [open an issue](https://github.com/lasswellt/govee-homeassistant/issues).
 
 ---
 
-## Debug Logging
+## Diagnostics & debug logging
 
-When troubleshooting issues, enable debug logging to capture detailed information about what the integration is doing.
+> Steps below are for **Home Assistant 2026.x**. Diagnostics auto‑redact your API key, account credentials, tokens, and device MAC addresses, so they're safe to attach to a GitHub issue.
 
-### Enable Debug Logging
+### Download diagnostics (best for most reports)
 
-**Option 1: From the Integration (Recommended)**
-1. Go to **Settings** → **Devices & Services**
-2. Find the **Govee** integration card
-3. Click the **three dots menu** (⋮) on the integration card
-4. Select **Enable debug logging**
-5. Reproduce the issue (turn on a light, trigger the error, etc.)
-6. Return to the integration card, click the three dots menu again
-7. Select **Disable debug logging**
-8. Your browser will download a log file automatically
+**Whole integration:**
 
-**Option 2: Via configuration.yaml**
+1. **Settings → Devices & Services**
+2. Click **Govee Cloud Integration**
+3. On the integration's entry, open the **⋮** (three‑dot) menu → **Download diagnostics**
+4. Attach the downloaded JSON to your issue
 
-For issues during startup or if you need persistent debug logging, add to your `configuration.yaml` and restart:
+**A single device** (when only one device misbehaves):
+
+1. **Settings → Devices & Services → Govee Cloud Integration → _N_ devices**
+2. Open the device
+3. **⋮** (top‑right) → **Download diagnostics**
+
+The download includes each device's parsed state, the verbatim cloud response, the last MQTT push, per‑transport health, and — for leak‑sensor troubleshooting — recent hub packets and a privacy‑safe summary of the account device list.
+
+### Capture a debug log (no YAML needed)
+
+Home Assistant can record a scoped debug log with one click:
+
+1. **Settings → Devices & Services → Govee Cloud Integration**
+2. On the entry's **⋮** menu → **Enable debug logging**
+3. **Reproduce the problem** (toggle the device, wait for an update, etc.)
+4. Return to the **⋮** menu → **Disable debug logging** — Home Assistant **automatically downloads** the log file
+5. Attach it to your issue
+
+<details>
+<summary>YAML alternative (advanced)</summary>
+
+Add to `configuration.yaml`, restart, reproduce, then collect from **Settings → System → Logs → Download full log**:
 
 ```yaml
 logger:
-  default: info
+  default: warning
   logs:
     custom_components.govee: debug
+    custom_components.govee.api.auth: debug   # add for login / leak‑sensor issues
+    aiomqtt: debug                            # add for real‑time / MQTT issues
 ```
+</details>
 
-### Viewing Logs
+### What to include in an issue
 
-- Go to **Settings** → **System** → **Logs**
-- Click **Load Full Logs** to see everything
-- Use the search box to filter for "govee"
-
-See [Home Assistant Logger docs](https://www.home-assistant.io/integrations/logger/) for more details.
-
-### Gathering Logs for Issues
-
-When opening an issue, include relevant log entries. Here's what to capture:
-
-1. **Enable debug logging** (see above)
-2. **Reproduce the issue** (turn on/off a device, change a scene, etc.)
-3. **Copy the relevant log entries**
-
-**What to include:**
-- Logs from when Home Assistant starts (shows device discovery)
-- Logs from when the issue occurs
-- Any error messages or tracebacks
-
-**Example log snippet to include:**
-```
-2024-01-15 10:30:45 DEBUG (MainThread) [custom_components.govee.coordinator] Device: Living Room Light (AA:BB:CC:DD:EE:FF:00:11) type=devices.types.light
-2024-01-15 10:30:45 DEBUG (MainThread) [custom_components.govee.coordinator]   Capability: type=devices.capabilities.on_off instance=powerSwitch
-```
-
-**Before posting**, redact sensitive information:
-- Replace device IDs with `XX:XX:XX:XX:XX:XX:XX:XX`
-- Remove any email addresses or account IDs
-
----
-
-## Reporting Issues
-
-When reporting issues with unsupported devices or unexpected behavior, please include your device's API response. This helps us understand your device's capabilities and fix the problem.
-
-### Getting Your Device Data
-
-You'll need your **Govee API key** (the same one you used to set up this integration).
-
----
-
-#### macOS / Linux
-
-**Step 1: Open Terminal**
-- **macOS:** Press `Cmd + Space`, type "Terminal", press Enter
-- **Linux:** Press `Ctrl + Alt + T` or search for "Terminal" in your applications
-
-**Step 2: Get your device list**
-
-Copy this command, replace `YOUR_API_KEY` with your actual API key, then paste into Terminal and press Enter:
-
-```bash
-curl -s -H "Govee-API-Key: YOUR_API_KEY" "https://openapi.api.govee.com/router/api/v1/user/devices"
-```
-
-**Step 3: Get device state** (optional, for more details)
-
-From the output above, find your device's `sku` (e.g., "H7101") and `device` ID (e.g., "AA:BB:CC:DD:EE:FF:00:11"), then run:
-
-```bash
-curl -s -X POST -H "Govee-API-Key: YOUR_API_KEY" -H "Content-Type: application/json" -d '{"requestId":"test","payload":{"sku":"YOUR_SKU","device":"YOUR_DEVICE_ID"}}' "https://openapi.api.govee.com/router/api/v1/device/state"
-```
-
----
-
-#### Windows
-
-**Step 1: Open PowerShell**
-- Press `Win + X`, then click "Windows PowerShell" or "Terminal"
-- Or press `Win + R`, type `powershell`, press Enter
-
-**Step 2: Get your device list**
-
-Copy this command, replace `YOUR_API_KEY` with your actual API key, then paste into PowerShell and press Enter:
-
-```powershell
-Invoke-RestMethod -Uri "https://openapi.api.govee.com/router/api/v1/user/devices" -Headers @{"Govee-API-Key"="YOUR_API_KEY"} | ConvertTo-Json -Depth 10
-```
-
-**Step 3: Get device state** (optional, for more details)
-
-From the output above, find your device's `sku` and `device` ID, then run (replace the values):
-
-```powershell
-Invoke-RestMethod -Uri "https://openapi.api.govee.com/router/api/v1/device/state" -Method POST -Headers @{"Govee-API-Key"="YOUR_API_KEY"; "Content-Type"="application/json"} -Body '{"requestId":"test","payload":{"sku":"YOUR_SKU","device":"YOUR_DEVICE_ID"}}' | ConvertTo-Json -Depth 10
-```
-
----
-
-### Posting Your Results
-
-**Before posting**, redact sensitive information:
-- Replace your API key with `REDACTED`
-- Replace your email/account ID if visible
-
-Then paste the output in your [GitHub issue](https://github.com/lasswellt/govee-homeassistant/issues).
+- The device **SKU / model** (e.g. `H6199`) and what's wrong
+- A **diagnostics download** (and a **debug log** if it's a control/connectivity problem)
+- Your Home Assistant and integration versions
 
 ---
 
 ## Contributing
 
-PRs welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and PRs welcome. Development quick start:
+
+```bash
+# Tests, type-check, lint, format
+pytest          # or: tox
+mypy custom_components/govee
+flake8 .
+black .
+```
 
 ---
 
-## License
+## Disclaimer & license
 
-MIT — see [LICENSE.txt](LICENSE.txt)
+This is an unofficial integration and is not affiliated with or endorsed by Govee. "Govee" is a trademark of its respective owner. Use at your own risk.
+
+Licensed under the terms in [LICENSE](LICENSE.txt).
