@@ -1652,13 +1652,14 @@ These states are NOT returned by the API:
 - Individual segment colors (RGBIC)
 - Active scene name/ID
 
-Thermometer / sensor reading behavior (confirmed in issue #83 from v2026.5.13 diagnostics):
-- **AWS IoT MQTT carries no thermometer data.** Even when a thermometer's `transport` reports `mqtt: true`, its `last_mqtt_message` is `null` — temp/humidity readings arrive **only via REST polling**. Same wall hit by govee2mqtt (#308/#296) and homebridge-govee.
-- **Readings refresh on Govee's cloud cadence, not the poll interval.** A value can look "frozen" while polling is healthy because it's the latest value Govee *has*:
-  - WiFi-native thermometers (H5179): ~10 min.
-  - BLE sensors via an H5151 gateway (H5075, H5110): gateway batch-uploads every **15–60 min**.
+Thermometer / sensor reading behavior (confirmed in issue #83 from v2026.5.13 + v2026.5.16 diagnostics; independently corroborated by govee2mqtt's per-SKU quirk database):
+- **AWS IoT MQTT carries no thermometer data.** Even when a thermometer's `transport` reports `mqtt: true` and the AWS IoT session is connected, its `last_mqtt_message` is `null` and `mqtt.last_success` is `null` — temp/humidity readings arrive **only via REST polling**. The integration subscribes to a single account-wide MQTT topic (not per-device), so no per-thermometer subscription is missing; Govee simply never publishes these readings. govee2mqtt flags the same SKUs `iot_api_supported: false` / `ble_only: true` and polls the Platform (REST) API for them (govee2mqtt [#163](https://github.com/wez/govee2mqtt/issues/163), [#308](https://github.com/wez/govee2mqtt/issues/308)).
+- **Readings refresh on Govee's cloud cadence, not the poll interval.** A value can look "frozen" while polling is healthy because it's the latest value Govee *has*. The refresh is poll-driven and gated by how often the device pushes to Govee's cloud — **observed, not guaranteed**:
+  - WiFi-native thermometers (H5179): order of ~10 min.
+  - BLE sensors via an H5151 gateway (H5075, H5110): gateway batch-uploads infrequently — often many minutes (observed ~15–60 min; not a fixed constant).
   - For real-time (~2 s) readings, use HA's first-party `govee_ble` integration or an ESPHome Bluetooth proxy — the cloud path cannot beat this.
-- **Offline devices return empty strings.** Govee's cloud returns `""` (not `null`/`0`) for capability values when a device is offline; numeric parsers must tolerate `""` (an unguarded `int("")` raised `ValueError` and aborted the whole device fetch — fixed v2026.5.15).
+- **Offline devices return empty strings.** Govee's cloud returns `""` (not `null`/`0`) for capability values when a device is offline; numeric parsers must tolerate `""` (an unguarded `int("")` raised `ValueError` and aborted the whole device fetch — fixed v2026.5.15). Independently reproduced in govee2mqtt [#308](https://github.com/wez/govee2mqtt/issues/308) (`sensorTemperature` → `"value": ""`).
+- **Fahrenheit returned without a unit field.** Govee's API returns the reading in the device's app-configured unit (often °F) with no unit metadata; the consumer must convert. Same behavior seen in govee2mqtt [#206](https://github.com/wez/govee2mqtt/issues/206). See the thermometer profiles in §8.5 for the `api_temperature_unit` option.
 
 ---
 
