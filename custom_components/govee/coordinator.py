@@ -227,6 +227,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # which SKUs the BFF returned and whether they carry leak-discovery
         # fields. Empty until the first _discover_leak_sensors() call.
         self._bff_device_census: list[dict[str, Any]] = []
+        # PII-free structural skeleton of the raw BFF response — distinguishes
+        # "leak sensors absent" from "present under an unexpected shape" (#87).
+        self._bff_response_skeleton: Any = None
 
     @property
     def devices(self) -> dict[str, GoveeDevice]:
@@ -350,6 +353,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def bff_device_census(self) -> list[dict[str, Any]]:
         """PII-free census of the last BFF device-list response (diagnostics)."""
         return self._bff_device_census
+
+    @property
+    def bff_response_skeleton(self) -> Any:
+        """PII-free structural skeleton of the last raw BFF response."""
+        return self._bff_response_skeleton
 
     def _note_sensor_reading_change(
         self,
@@ -588,8 +596,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 sensor_data, hub_data = await auth_client.fetch_bff_leak_sensors(
                     self._iot_credentials.token
                 )
-                # Capture the PII-free census before the client closes (#87).
+                # Capture the PII-free census + skeleton before the client
+                # closes (#87).
                 self._bff_device_census = auth_client.bff_device_census()
+                self._bff_response_skeleton = auth_client.bff_response_skeleton()
 
             self._leak_hubs = hub_data
             for sensor in sensor_data:

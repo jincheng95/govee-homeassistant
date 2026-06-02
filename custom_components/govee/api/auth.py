@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -80,6 +81,47 @@ def _sanitize_response_for_logging(data: Any) -> Any:
         else:
             sanitized[key] = value
     return sanitized
+
+
+# 12+ hex chars (with or without separators) — catches MAC-derived ids used as
+# dict keys, which must not appear in the PII-free skeleton.
+_HEXKEY_RE = re.compile(r"^[0-9A-Fa-f]{2}([:_-]?[0-9A-Fa-f]{2}){5,}$")
+
+
+def _shape_skeleton(obj: Any, _depth: int = 0) -> Any:
+    """Summarize a JSON value as field-names + types + lengths (no scalar values).
+
+    Recurses into dicts, the first element of lists, and JSON-encoded string
+    fields. Drops MAC-shaped dict keys. Used for the BFF response skeleton (#87)
+    so diagnostics reveal response *shape* without leaking any values.
+    """
+    if _depth > 12:
+        return "..."
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for key, value in obj.items():
+            if isinstance(key, str) and _HEXKEY_RE.match(key):
+                continue
+            out[key] = _shape_skeleton(value, _depth + 1)
+        return out
+    if isinstance(obj, list):
+        shape: list[Any] = [f"list[{len(obj)}]"]
+        if obj:
+            shape.append(_shape_skeleton(obj[0], _depth + 1))
+        return shape
+    if isinstance(obj, str):
+        stripped = obj.strip()
+        if stripped[:1] in ("{", "[") and len(stripped) < 100_000:
+            try:
+                return {"_json_str": _shape_skeleton(json.loads(stripped), _depth + 1)}
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return "str"
+    if isinstance(obj, bool):
+        return "bool"
+    if obj is None:
+        return "null"
+    return type(obj).__name__
 
 
 # Govee Account API endpoints
@@ -247,6 +289,10 @@ class GoveeAuthClient:
         # reveal whether the BFF API returns a given leak SKU at all.
         # Untyped (raw JSON); items are validated in bff_device_census().
         self._last_bff_raw_devices: list[Any] = []
+        # Full raw BFF response, for the PII-free structural skeleton (#87) —
+        # so a diagnostics download reveals whether leak sensors are absent vs.
+        # merely under a different path/SKU than discovery expects.
+        self._last_bff_raw_response: Any = None
 
         if session is None and hass is not None:
             from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -508,8 +554,9 @@ class GoveeAuthClient:
 
                 sensors: list[dict[str, Any]] = []
                 devices = data.get("data", {}).get("devices", [])
-                # Retain for the diagnostics census (PII-free; see #87).
+                # Retain for the diagnostics census + skeleton (PII-free; #87).
                 self._last_bff_raw_devices = devices if isinstance(devices, list) else []
+                self._last_bff_raw_response = data
                 for device in devices:
                     sku = device.get("sku", "")
                     if sku not in LEAK_SENSOR_SKUS:
@@ -647,17 +694,36 @@ class GoveeAuthClient:
                     settings = {}
             settings = settings if isinstance(settings, dict) else {}
             gateway = settings.get("gatewayInfo", {})
+            sno = settings.get("sno")
             census.append(
                 {
                     "sku": sku,
                     "in_leak_sensor_skus": sku in LEAK_SENSOR_SKUS,
                     "in_leak_hub_skus": sku in LEAK_HUB_SKUS,
-                    "has_sno": settings.get("sno") is not None,
+                    "has_sno": sno is not None,
+                    # The slot number itself is a small int (0-7), not PII —
+                    # surfacing it lets us confirm slot<->sno alignment against
+                    # the recent_multisync events in one capture.
+                    "sno": sno,
                     "has_gateway_info": bool(gateway),
                     "gateway_sku": gateway.get("sku") if isinstance(gateway, dict) else None,
                 }
             )
         return census
+
+    def bff_response_skeleton(self) -> Any:
+        """PII-free structural skeleton of the last raw BFF response (#87).
+
+        Emits only field names + value *types* + container lengths — never
+        scalar values — recursing into JSON-encoded string fields (Govee nests
+        JSON as text). MAC-shaped dict keys are dropped. This reveals whether
+        leak sensors are returned under an unexpected path/shape (so discovery
+        finds 0) versus genuinely absent from the BFF response — the question
+        an empty census alone cannot answer.
+        """
+        if self._last_bff_raw_response is None:
+            return None
+        return _shape_skeleton(self._last_bff_raw_response)
 
     async def request_verification_code(
         self,

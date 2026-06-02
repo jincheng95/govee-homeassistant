@@ -182,6 +182,9 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
         # PII-free census of the BFF device list — shows whether the BFF API
         # returns a given leak SKU and if it carries discovery fields (#87).
         "bff_device_census": coordinator.bff_device_census,
+        # PII-free shape of the raw BFF response — distinguishes "absent" from
+        # "present under an unexpected path/shape" when the census is empty.
+        "bff_response_skeleton": coordinator.bff_response_skeleton,
         "has_iot_credentials": coordinator.has_iot_credentials,
         "device_topic_count": coordinator.device_topic_count,
         "api": {

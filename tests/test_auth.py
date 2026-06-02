@@ -1556,3 +1556,80 @@ class TestBffDeviceCensus:
         """Census is empty until a BFF fetch populates it."""
         client = GoveeAuthClient(session=make_session_get(make_mock_response(200, {})))
         assert client.bff_device_census() == []
+
+    @pytest.mark.asyncio
+    async def test_census_includes_sno_value(self):
+        """The slot number (sno) is surfaced for slot<->event alignment."""
+        devices = [
+            {
+                "sku": "H5058",
+                "device": "AA:BB:CC:DD:EE:FF:00:11",
+                "deviceExt": {
+                    "deviceSettings": {"sno": 3, "gatewayInfo": {"sku": "H5043"}}
+                },
+            }
+        ]
+        client = GoveeAuthClient(
+            session=make_session_get(make_mock_response(200, _bff_response(devices)))
+        )
+        await client.fetch_bff_leak_sensors(token="tok")
+        assert client.bff_device_census()[0]["sno"] == 3
+
+
+class TestBffResponseSkeleton:
+    """The skeleton reveals response shape without exposing values (#87)."""
+
+    @pytest.mark.asyncio
+    async def test_skeleton_shows_shape_not_values(self):
+        """Skeleton emits field names + types + lengths, never scalar values."""
+        devices = [
+            {
+                "sku": "H5059",
+                "device": "03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C",
+                "deviceName": "dishwasher",
+                # JSON-encoded string — skeleton must recurse into it.
+                "deviceExt": json.dumps({"deviceSettings": {"sno": 4}}),
+            }
+        ]
+        client = GoveeAuthClient(
+            session=make_session_get(make_mock_response(200, _bff_response(devices)))
+        )
+        await client.fetch_bff_leak_sensors(token="tok")
+        skeleton = client.bff_response_skeleton()
+
+        device_shape = skeleton["data"]["devices"][1]
+        assert skeleton["data"]["devices"][0] == "list[1]"
+        assert device_shape["sku"] == "str"
+        assert device_shape["device"] == "str"
+        # The JSON-string field is parsed and shown as nested structure.
+        assert (
+            device_shape["deviceExt"]["_json_str"]["deviceSettings"]["sno"] == "int"
+        )
+
+        # No values leak — the dishwasher name and MAC are absent.
+        blob = json.dumps(skeleton)
+        assert "dishwasher" not in blob
+        assert "03:4E:CE" not in blob
+
+    @pytest.mark.asyncio
+    async def test_skeleton_reveals_devices_under_unexpected_path(self):
+        """If sensors sit under a non-standard key, the skeleton still exposes it.
+
+        The key #87 failure mode: census walks data.data.devices and comes back
+        empty, but the skeleton shows the real shape so we learn the sensors
+        were elsewhere rather than truly absent.
+        """
+        resp = {"data": {"devices": [], "subDevices": [{"sku": "H5059"}]}}
+        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, resp)))
+        await client.fetch_bff_leak_sensors(token="tok")
+
+        assert client.bff_device_census() == []
+        skeleton = client.bff_response_skeleton()
+        assert "subDevices" in skeleton["data"]
+        assert skeleton["data"]["subDevices"][0] == "list[1]"
+
+    @pytest.mark.asyncio
+    async def test_skeleton_none_before_fetch(self):
+        """Skeleton is None until a BFF fetch populates it."""
+        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, {})))
+        assert client.bff_response_skeleton() is None
