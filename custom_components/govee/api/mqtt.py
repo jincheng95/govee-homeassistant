@@ -480,7 +480,13 @@ class GoveeAwsIotClient:
         - byte 0: 0xEE (sensor report header)
         - byte 1: 0x34 = leak/dry event, 0x32 = button press
         - byte 2: sensor slot (sno) on hub
-        - byte 5: 0x01 = wet, 0x00 = dry
+        - byte 5: battery % (e.g. 0x64=100) — NOT wet; legacy decoders misread it
+        - bytes 14, 16: probe state (0x01 = wet, 0x00 = dry); byte 15 = 0x03 sep
+
+        H5059 (issue #87) reports wet in bytes 14/16. Earlier SKUs were decoded
+        off byte 5; the wet check ORs both so no model loses detection (a leak
+        sensor must never under-report). See
+        docs/_research/2026-06-04_h5059-h5044-leak-sensor-support.md.
         """
         op = data.get("op", {})
         commands = op.get("command", [])
@@ -506,8 +512,12 @@ class GoveeAwsIotClient:
             sensor_slot = raw[2]
 
             if raw[1] == 0x34:
-                # Leak/dry event
-                is_wet = raw[5] == 0x01
+                # Leak/dry event. Probe-state bytes 14/16 carry the H5059 wet
+                # flag (issue #87); byte 5 is battery. OR both so older SKUs
+                # decoded off byte 5 keep working and H5059 is added.
+                is_wet = raw[5] == 0x01 or (
+                    len(raw) >= 17 and (raw[14] == 0x01 or raw[16] == 0x01)
+                )
 
                 _LOGGER.debug(
                     "Leak event from hub %s: slot=%d wet=%s",

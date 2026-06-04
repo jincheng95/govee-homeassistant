@@ -109,3 +109,59 @@ class TestMultiSyncCapture:
         # that any recorded entry is well-formed hex.
         for rec in client.recent_multisync:
             assert set(rec["hex"]) <= set("0123456789abcdef")
+
+
+class TestLeakWetDecode:
+    """0x34 leak decode emits the correct wet flag (issue #87).
+
+    Real H5059-via-H5044 packets captured in the #87 diagnostics:
+    byte 2 = slot (sno), byte 5 = battery (0x64), bytes 14/16 = probe state.
+    """
+
+    # slot 0 LEAK / CLEAR and slot 2 LEAK / CLEAR (verbatim from diagnostics)
+    H5059_SLOT0_LEAK = bytes.fromhex("ee34000200641e14ad6a1f4a58000103018000ff")
+    H5059_SLOT0_CLEAR = bytes.fromhex("ee34000200641e14966a1f4a58000003008000c4")
+    H5059_SLOT2_LEAK = bytes.fromhex("ee34020200641e14a26a1f4a5b000103018000f1")
+
+    def _decode_one(self, packet: bytes) -> dict:
+        """Run one packet through the handler; return the emitted event_data."""
+        cb = MagicMock()
+        client = _make_client()
+        client._on_state_update = cb
+        client._handle_multisync(HUB_ID, _multisync([packet]))
+        assert cb.call_count == 1
+        return cb.call_args[0][1]
+
+    def test_h5059_wet_decoded_from_probe_bytes(self):
+        """A real LEAK packet (bytes 14/16 = 0x01) decodes is_wet=True."""
+        event = self._decode_one(self.H5059_SLOT0_LEAK)
+        assert event["_leak_event"] is True
+        assert event["sensor_slot"] == 0
+        assert event["is_wet"] is True
+
+    def test_h5059_clear_decoded_dry(self):
+        """A real CLEAR packet (bytes 14/16 = 0x00) decodes is_wet=False."""
+        event = self._decode_one(self.H5059_SLOT0_CLEAR)
+        assert event["is_wet"] is False
+
+    def test_h5059_slot_preserved(self):
+        """sensor_slot is byte 2 and maps to the BFF sno (slot 2 here)."""
+        event = self._decode_one(self.H5059_SLOT2_LEAK)
+        assert event["sensor_slot"] == 2
+        assert event["is_wet"] is True
+
+    def test_battery_byte_not_misread_as_wet(self):
+        """Regression: byte 5 = 0x64 (battery) must not flip is_wet True.
+
+        The pre-#87 decoder read is_wet from byte 5; on H5059 that byte is the
+        battery percent, so a dry sensor would never report — the exact #87 bug.
+        """
+        event = self._decode_one(self.H5059_SLOT0_CLEAR)
+        assert self.H5059_SLOT0_CLEAR[5] == 0x64  # battery, not 0x01
+        assert event["is_wet"] is False
+
+    def test_legacy_byte5_wet_still_decoded(self):
+        """Backward compat: SKUs reporting wet at byte 5 keep working."""
+        legacy = bytes([0xEE, 0x34, 0x00, 0x00, 0x00, 0x01])  # byte5=0x01, len 6
+        event = self._decode_one(legacy)
+        assert event["is_wet"] is True

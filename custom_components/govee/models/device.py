@@ -14,7 +14,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 _LOGGER = logging.getLogger(__name__)
 
 # Leak sensor SKUs
-LEAK_SENSOR_SKUS = frozenset({"H5058", "H5054", "H5055"})
+LEAK_SENSOR_SKUS = frozenset({"H5058", "H5054", "H5055", "H5059"})
 LEAK_HUB_SKUS = frozenset({"H5043", "H5044"})
 
 # Capability type constants (from Govee API v2.0)

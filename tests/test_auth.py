@@ -1485,6 +1485,42 @@ def _bff_response(devices: list[dict[str, Any]]) -> dict[str, Any]:
     return {"data": {"devices": devices}}
 
 
+class TestBffLeakDiscovery:
+    """H5059 leak sensors are discovered via the BFF list (#87 fix)."""
+
+    @pytest.mark.asyncio
+    async def test_h5059_discovered_and_mapped_to_hub(self):
+        """An H5059 with sno+gatewayInfo is returned and linked to its H5044."""
+        hub = "07:23:5C:E7:53:5F:6F:0A"
+        devices = [
+            {
+                "sku": "H5059",
+                "device": "03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C",
+                "deviceName": "dishwasher",
+                # Govee nests deviceExt as a JSON string.
+                "deviceExt": json.dumps(
+                    {
+                        "deviceSettings": {
+                            "sno": 2,
+                            "battery": 100,
+                            "gatewayInfo": {"device": hub, "sku": "H5044"},
+                        }
+                    }
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        sensors, _hubs = await client.fetch_bff_leak_sensors(token="tok")
+
+        assert len(sensors) == 1
+        sensor = sensors[0]
+        assert sensor["sku"] == "H5059"
+        assert sensor["sno"] == 2  # aligns with multiSync packet byte 2
+        assert sensor["hub_device_id"] == hub
+
+
 class TestBffDeviceCensus:
     """The census summarizes the raw BFF device list without exposing PII (#87)."""
 
@@ -1500,7 +1536,10 @@ class TestBffDeviceCensus:
                 "deviceExt": {
                     "deviceSettings": {
                         "sno": 2,
-                        "gatewayInfo": {"device": "11:22:33:44:55:66:77:88", "sku": "H5043"},
+                        "gatewayInfo": {
+                            "device": "11:22:33:44:55:66:77:88",
+                            "sku": "H5043",
+                        },
                     }
                 },
             },
@@ -1513,7 +1552,10 @@ class TestBffDeviceCensus:
                     {
                         "deviceSettings": {
                             "sno": 4,
-                            "gatewayInfo": {"device": "07:23:5C:E7:53:5F:6F:0A", "sku": "H5044"},
+                            "gatewayInfo": {
+                                "device": "07:23:5C:E7:53:5F:6F:0A",
+                                "sku": "H5044",
+                            },
                         }
                     }
                 ),
@@ -1536,9 +1578,9 @@ class TestBffDeviceCensus:
         assert by_sku["H5058"]["has_sno"] is True
         assert by_sku["H5058"]["gateway_sku"] == "H5043"
 
-        # H5059 is the gap: BFF returns it with sno+gateway, but it's NOT in the
-        # allowlist — exactly what the diagnostics need to surface for #87.
-        assert by_sku["H5059"]["in_leak_sensor_skus"] is False
+        # H5059 is now in the allowlist (#87 fix): BFF returns it with
+        # sno+gateway and it is discovered as a leak sensor.
+        assert by_sku["H5059"]["in_leak_sensor_skus"] is True
         assert by_sku["H5059"]["has_sno"] is True
         assert by_sku["H5059"]["has_gateway_info"] is True
         assert by_sku["H5059"]["gateway_sku"] == "H5044"
@@ -1602,9 +1644,7 @@ class TestBffResponseSkeleton:
         assert device_shape["sku"] == "str"
         assert device_shape["device"] == "str"
         # The JSON-string field is parsed and shown as nested structure.
-        assert (
-            device_shape["deviceExt"]["_json_str"]["deviceSettings"]["sno"] == "int"
-        )
+        assert device_shape["deviceExt"]["_json_str"]["deviceSettings"]["sno"] == "int"
 
         # No values leak — the dishwasher name and MAC are absent.
         blob = json.dumps(skeleton)
@@ -1620,7 +1660,9 @@ class TestBffResponseSkeleton:
         were elsewhere rather than truly absent.
         """
         resp = {"data": {"devices": [], "subDevices": [{"sku": "H5059"}]}}
-        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, resp)))
+        client = GoveeAuthClient(
+            session=make_session_get(make_mock_response(200, resp))
+        )
         await client.fetch_bff_leak_sensors(token="tok")
 
         assert client.bff_device_census() == []
