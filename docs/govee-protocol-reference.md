@@ -2300,6 +2300,29 @@ Standalone leak sensor returned by the Developer (API-key) endpoint. Leak state 
 - `probesState.top` / `probesState.bot` report per-probe state (`1` = water present, `0` = clear); expose as attributes.
 - Device IDs use the extended 16-octet form (e.g. `03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C`).
 
+##### Runtime leak delivery — hub `multiSync` packet (issue #87)
+
+The Developer-API `event` capability above is only the **definition**. Live leak state does **not** arrive via the state poll — it is pushed over AWS IoT MQTT as a `multiSync` message from the **hub** (H5043/H5044), carrying BLE-format sensor packets (base64) in `op.command[]`. Each packet is 20 bytes:
+
+| Byte | Meaning |
+|------|---------|
+| `0` | `0xEE` — sensor-report header |
+| `1` | event type: `0x34` = leak/dry, `0x32` = button press |
+| `2` | sensor slot (`sno`) on the hub — keys the `(hub, slot) → sensor` map |
+| `5` | battery % (e.g. `0x64` = 100). **NOT the wet flag** — legacy decoders misread this byte |
+| `14`, `16` | probe state (`0x01` = wet, `0x00` = dry); byte `15` = `0x03` separator |
+
+Wet decode (leak sensors must never under-report):
+
+```python
+is_wet = raw[5] == 0x01 or (len(raw) >= 17 and (raw[14] == 0x01 or raw[16] == 0x01))
+```
+
+- **H5059** reports wet in bytes `14`/`16`; earlier SKUs (H5058) were decoded off byte `5`. The OR keeps both working.
+- Button-press packets (`0x32`) encode the sensor MAC in bytes `2..9` **reverse byte order**, not a slot number.
+- The `(hub, sno) → sensor_id` map is built from the account/BFF device list; a sensor whose SKU is absent from `LEAK_SENSOR_SKUS` is dropped before the map is built, so its events log as "unknown sensor". Supported SKUs: `H5058`, `H5054`, `H5055`, `H5059`; hubs: `H5043`, `H5044`.
+- Full derivation: `docs/_research/2026-06-04_h5059-h5044-leak-sensor-support.md`.
+
 #### H5054 — Water Detector (NOT in Developer API)
 
 The H5054 water detector is **not returned by the Developer API** (the API-key `/user/devices` endpoint this integration's discovery uses), so it never appears via the standard path. It is only exposed through the **app/account API** (same path the H5058 leak sensor uses). Confirmed in issue #62: a full integration diagnostics dump omitted the user's H5054s entirely, while their Homebridge account-based client enumerated all 10.

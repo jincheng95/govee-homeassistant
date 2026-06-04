@@ -33,7 +33,7 @@ It is **capability‑based**: entities are created from the capabilities Govee r
 | **Space heaters** | H7130, H7131, H721C | Power switch, target‑temperature number, auto‑stop switch |
 | **Thermometers / hygrometers** | H5103, H5107, H5109, H5179 | Temperature & humidity sensors + a "Last Changed" timestamp |
 | **Air‑quality monitors** | H5140 | CO₂ / temperature / humidity sensors |
-| **Leak sensors** | H5058 (via H5043/H5044 hub) | Moisture binary sensor, battery, sensor/gateway connectivity, last‑wet timestamp, button‑press event |
+| **Leak sensors** | H5058, H5059 (also H5054/H5055) via an H5043/H5044 hub | Moisture binary sensor, battery, sensor/gateway connectivity, last‑wet timestamp, button‑press event |
 
 Don't see your device, or a capability is missing? [Open an issue](https://github.com/lasswellt/govee-homeassistant/issues) with a diagnostics download (see [Diagnostics](#diagnostics--debug-logging)).
 
@@ -70,7 +70,7 @@ The API key alone gives you device control and **polling** for state.
 In the same setup flow you can enter your **Govee account email and password**. This enables:
 
 - **Real‑time push updates** over AWS IoT MQTT (no waiting for the next poll)
-- **Leak‑sensor support** (H5058 via an H5043/H5044 hub)
+- **Leak‑sensor support** (H5058 / H5059, and other LoRa leak sensors, via an H5043/H5044 hub)
 
 #### Two‑factor (email code)
 
