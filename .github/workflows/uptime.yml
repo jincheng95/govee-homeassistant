@@ -1,0 +1,50 @@
+name: Govee API Uptime
+
+# Pings the Govee hosts this integration uses and publishes a status badge +
+# uptime-bars graph to the orphan `badges` branch (keeps master history clean).
+
+on:
+  schedule:
+    - cron: "17 * * * *" # hourly at :17
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: status-badges # serialize with install-stats so branch pushes don't race
+  cancel-in-progress: false
+
+jobs:
+  uptime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore existing badges-branch artifacts
+        run: |
+          mkdir -p out
+          git fetch origin badges || true
+          if git rev-parse --verify origin/badges >/dev/null 2>&1; then
+            git --work-tree=out checkout origin/badges -- . || true
+            git reset -q   # unstage; out/ keeps the files
+          fi
+
+      - name: Generate uptime artifacts
+        run: python scripts/status_badges.py uptime --data-dir out --repo-dir .
+
+      - name: Publish to badges branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd out
+          git init -q -b badges
+          git add -A
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "chore(badges): uptime update [skip ci]" || { echo "no changes"; exit 0; }
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" badges

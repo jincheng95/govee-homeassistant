@@ -1,11 +1,36 @@
-# Govee Cloud Integration for Home Assistant
+<div align="center">
 
-Control your Govee lights, plugs, fans, humidifiers, heaters, thermometers, and leak sensors in Home Assistant through the official Govee Cloud API — with optional real‑time push updates over Govee's AWS IoT MQTT.
+# 🌈 Govee Cloud Integration for Home Assistant
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-![hassfest](https://img.shields.io/badge/quality_scale-silver-silver)
+**Control Govee lights, plugs, fans, humidifiers, heaters, thermometers & leak sensors — with optional real‑time push over Govee's AWS IoT MQTT.**
 
-> **Integration type:** Hub (cloud) · **IoT class:** `cloud_push` (MQTT + polling) · **Config:** UI only, no YAML
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5?style=flat-square)](https://github.com/hacs/integration)
+[![Release](https://img.shields.io/github/v/release/lasswellt/govee-homeassistant?style=flat-square&color=41BDF5)](https://github.com/lasswellt/govee-homeassistant/releases)
+![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.11+-41BDF5?style=flat-square&logo=home-assistant&logoColor=white)
+![Quality scale](https://img.shields.io/badge/quality%20scale-silver-silver?style=flat-square)
+[![License](https://img.shields.io/github/license/lasswellt/govee-homeassistant?style=flat-square&color=41BDF5)](LICENSE.txt)
+
+[![Active installs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/installs.json)](https://analytics.home-assistant.io/)
+[![Govee API status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/api-status.json)](#-live-status)
+[![Stars](https://img.shields.io/github/stars/lasswellt/govee-homeassistant?style=flat-square&color=41BDF5)](https://github.com/lasswellt/govee-homeassistant/stargazers)
+
+</div>
+
+> **Hub (cloud)** · IoT class `cloud_push` (MQTT + polling) · UI‑only config, no YAML
+
+---
+
+## 📊 Live status
+
+<div align="center">
+
+<img alt="Active installs trend" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/installs-trend.svg" width="49%" />
+&nbsp;
+<img alt="Govee API uptime" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/api-uptime.svg" width="49%" />
+
+</div>
+
+<sub>**Active installs** counts only versions **released by this repository** — other `govee` forks and legacy installs sharing the same domain are excluded — and reflects Home Assistant instances opted into Usage‑level analytics, so true usage is higher. **Govee API status** pings `openapi.api.govee.com` and `app2.govee.com` hourly: round of red bars on the right = an outage today, not a problem with your setup. Both graphs update automatically via GitHub Actions ([uptime](.github/workflows/uptime.yml) · [install‑stats](.github/workflows/install-stats.yml)).</sub>
 
 ---
 

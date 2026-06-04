@@ -1,0 +1,56 @@
+name: Install Stats
+
+# Sums analytics.home-assistant.io counts for ONLY the versions this repo
+# released (excludes other `govee` forks + legacy LaggAt installs) and publishes
+# an install-count badge + trend graph to the orphan `badges` branch.
+
+on:
+  schedule:
+    - cron: "25 6 * * *" # daily 06:25 UTC (HA analytics refreshes ~daily)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: status-badges
+  cancel-in-progress: false
+
+jobs:
+  install-stats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + all tags → fork-version matching
+
+      - name: Fetch all release tags
+        run: git fetch --tags --force origin
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore existing badges-branch artifacts
+        run: |
+          mkdir -p out
+          git fetch origin badges || true
+          if git rev-parse --verify origin/badges >/dev/null 2>&1; then
+            git --work-tree=out checkout origin/badges -- . || true
+            git reset -q
+          fi
+
+      - name: Generate install-stats artifacts
+        run: python scripts/status_badges.py installs --data-dir out --repo-dir .
+
+      - name: Publish to badges branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd out
+          git init -q -b badges
+          git add -A
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "chore(badges): install stats update [skip ci]" || { echo "no changes"; exit 0; }
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" badges
