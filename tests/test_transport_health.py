@@ -79,6 +79,29 @@ class TestTransportHealth:
         assert health.last_failure_reason is None
 
 
+class TestDeviceDataLastUpdated:
+    def test_none_until_any_transport_succeeds(self):
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock()
+        coord._ensure_transport_health("dev1")
+        assert coord.device_data_last_updated("dev1") is None
+
+    def test_unknown_device_returns_none(self):
+        coord = _bare_coordinator()
+        assert coord.device_data_last_updated("nope") is None
+
+    def test_returns_latest_across_transports(self):
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock()
+        coord._ensure_transport_health("dev1")
+        old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        new = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        coord.get_transport_health("dev1", "cloud_api").mark_success(old)
+        coord.get_transport_health("dev1", "mqtt").mark_success(new)
+        coord.get_transport_health("dev1", "ble").mark_success(old)
+        assert coord.device_data_last_updated("dev1") == new
+
+
 class TestOptimisticGracePeriod:
     def test_apply_optimistic_stamps_timestamp(self):
         state = GoveeDeviceState.create_empty("dev1")

@@ -179,6 +179,9 @@
       "sensor_reading_changed": {
         "name": "Last Changed"
       },
+      "all_data_last_updated": {
+        "name": "All Data Last Updated"
+      },
       "leak_battery": {
         "name": "Battery"
       },

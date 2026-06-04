@@ -58,6 +58,7 @@ from .models import (
     TransportHealth,
     TransportKind,
 )
+from .models.transport import TRANSPORT_KINDS
 from .transport_health import TransportHealthTracker
 from .models.commands import (
     BrightnessCommand,
@@ -394,6 +395,22 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         has been seen.
         """
         return self._sensor_reading_changed_at.get(device_id)
+
+    def device_data_last_updated(self, device_id: str) -> datetime | None:
+        """Most recent time any transport delivered data for this device.
+
+        Max of ``last_success_ts`` across cloud_api / mqtt / ble — surfaces
+        the device's overall data freshness ("All Data Last Updated") as a
+        diagnostic TIMESTAMP. Returns None until a transport has succeeded.
+        """
+        latest: datetime | None = None
+        for kind in TRANSPORT_KINDS:
+            health = self._transport.get(device_id, kind)
+            if health is None or health.last_success_ts is None:
+                continue
+            if latest is None or health.last_success_ts > latest:
+                latest = health.last_success_ts
+        return latest
 
     @property
     def has_iot_credentials(self) -> bool:

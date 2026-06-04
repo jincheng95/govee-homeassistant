@@ -69,6 +69,8 @@ async def async_setup_entry(
     for device in coordinator.devices.values():
         if device.is_group:
             continue
+        # Per-device data-freshness diagnostic for every physical device.
+        entities.append(GoveeAllDataLastUpdatedSensor(coordinator, device))
         if device.supports_temperature_sensor:
             entities.append(GoveeTemperatureSensor(coordinator, device))
         if device.supports_humidity_sensor:
@@ -320,6 +322,33 @@ class GoveeSensorReadingTimestampSensor(GoveeEntity, SensorEntity):
     @property
     def native_value(self) -> datetime | None:
         return self.coordinator.sensor_reading_changed_at(self._device.device_id)
+
+
+class GoveeAllDataLastUpdatedSensor(GoveeEntity, SensorEntity):
+    """When this device last received data over any transport.
+
+    Max of the per-transport last-success timestamps (Cloud API / MQTT /
+    BLE). Renders as a relative "X ago" so users can see overall data
+    freshness per device at a glance ("All Data Last Updated").
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "all_data_last_updated"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:database-clock"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_all_data_last_updated"
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.device_data_last_updated(self._device.device_id)
 
 
 class GoveeLeakBatterySensor(SensorEntity):
