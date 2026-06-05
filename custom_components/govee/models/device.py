@@ -70,6 +70,12 @@ INSTANCE_PURIFIER_MODE = "purifierMode"
 INSTANCE_THERMOSTAT_TOGGLE = "thermostatToggle"
 INSTANCE_HUMIDITY = "humidity"
 INSTANCE_WATER_FULL_EVENT = "waterFullEvent"
+# Standalone water-leak detectors (H5054) surface their trip via the generic
+# bodyAppearedEvent event instance — the only event capability Govee's
+# developer API exposes for these SKUs (issue #62). Unlike the H5058 leak
+# sensor (hub/BFF path), the H5054 appears directly in the developer device
+# list and is processed as a regular device.
+INSTANCE_BODY_APPEARED_EVENT = "bodyAppearedEvent"
 
 # Read-only sensor property instances (devices.capabilities.property).
 # These appear on stand-alone sensors like H5179 (WiFi Thermometer) and
@@ -363,6 +369,21 @@ class GoveeDevice:
         """Check if device exposes a water-tank-full event capability."""
         return any(
             cap.type == CAPABILITY_EVENT and cap.instance == INSTANCE_WATER_FULL_EVENT
+            for cap in self.capabilities
+        )
+
+    @property
+    def supports_water_leak_event(self) -> bool:
+        """Check if device exposes a standalone water-leak event capability.
+
+        H5054 water detectors (issue #62) report their trip through the
+        generic ``bodyAppearedEvent`` event instance rather than a
+        water-specific one. Detection is capability-based, not SKU-locked, so
+        any sensor exposing this instance gets a moisture binary sensor.
+        """
+        return any(
+            cap.type == CAPABILITY_EVENT
+            and cap.instance == INSTANCE_BODY_APPEARED_EVENT
             for cap in self.capabilities
         )
 

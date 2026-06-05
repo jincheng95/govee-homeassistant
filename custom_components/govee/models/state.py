@@ -5,9 +5,12 @@ Mutable state that changes with device updates from API or MQTT.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
 
 # Candidate keys a thermometer/hygrometer reading may hide behind. The Govee
 # state shape varies by SKU and transport: REST returns either a plain number
@@ -43,6 +46,18 @@ _SENSOR_HUMIDITY_MQTT_KEYS = (
     "currentHumidity",
     "humidity",
     "hum",
+)
+# Candidate flat keys for the H5054 water-leak trip in an AWS IoT push
+# (issue #62). The exact spelling is unobserved — the developer-API device
+# list advertises the ``bodyAppearedEvent`` capability but the trip has never
+# been captured. Accept the plausible spellings; an unrecognized leak push is
+# logged at debug so the real key can be added once a live trip is captured.
+_WATER_LEAK_MQTT_KEYS = (
+    "bodyAppearedEvent",
+    "bodyAppeared",
+    "waterLeak",
+    "leak",
+    "leakEvent",
 )
 
 
@@ -196,6 +211,12 @@ class GoveeDeviceState:
     # ``work_mode``. Only the event flag needs its own field.
     water_full: bool | None = None  # Dehumidifier water-tank-full event
 
+    # Standalone water-leak detector trip (H5054, issue #62). True when water
+    # is detected. Arrives via the bodyAppearedEvent event capability — the
+    # developer-API device-state poll only returns `online`, so the trip
+    # normally lands via MQTT push.
+    water_leak: bool | None = None
+
     # Read-only sensor properties (devices.capabilities.property) for
     # stand-alone sensors like H5109/H5179. None until first poll lands.
     sensor_temperature: float | None = (
@@ -310,6 +331,12 @@ class GoveeDeviceState:
                         self.water_full = bool(value.get("state") or value.get("value"))
                     elif value is not None:
                         self.water_full = bool(value)
+                elif instance == "bodyAppearedEvent":
+                    # H5054 water-leak detector trip (issue #62).
+                    if isinstance(value, dict):
+                        self.water_leak = bool(value.get("state") or value.get("value"))
+                    elif value is not None:
+                        self.water_leak = bool(value)
 
             elif cap_type == "devices.capabilities.temperature_setting":
                 # Heaters report target temperature + autoStop in a STRUCT.
@@ -384,6 +411,25 @@ class GoveeDeviceState:
                 if parsed is not None:
                     self.sensor_humidity = parsed
                     break
+
+        # H5054 water-leak trip (issue #62). The flat-key spelling is
+        # unobserved; scan the candidates. A leak-shaped push that matches no
+        # known key is logged so the real spelling can be added later.
+        for key in _WATER_LEAK_MQTT_KEYS:
+            if key in data:
+                value = data[key]
+                if isinstance(value, dict):
+                    self.water_leak = bool(value.get("state") or value.get("value"))
+                elif value is not None:
+                    self.water_leak = bool(value)
+                break
+        else:
+            if any("leak" in k.lower() or "body" in k.lower() for k in data):
+                _LOGGER.debug(
+                    "Unrecognized H5054 leak-shaped MQTT push (no known key "
+                    "matched); please report payload keys: %s",
+                    sorted(data),
+                )
 
         # A confirmed push ends the optimistic grace window — from this point
         # on API polls are authoritative again for power/brightness.

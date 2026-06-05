@@ -68,6 +68,10 @@ async def async_setup_entry(
             continue
         if device.supports_water_full_event:
             entities.append(GoveeWaterFullBinarySensor(coordinator, device))
+        # Standalone water-leak detectors (H5054) that surface in the developer
+        # device list with a bodyAppearedEvent capability — issue #62.
+        if device.supports_water_leak_event:
+            entities.append(GoveeWaterLeakBinarySensor(coordinator, device))
         # Overall per-device connectivity (one entity, always exposed) — carries
         # the full per-transport last-received / last-sent breakdown as
         # attributes. The granular per-transport entities below stay opt-in.
@@ -133,6 +137,35 @@ class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity):
         """Return True when the water tank is full."""
         state = self.device_state
         return state.water_full if state else None
+
+
+class GoveeWaterLeakBinarySensor(GoveeEntity, BinarySensorEntity):
+    """Binary sensor reporting a water-leak trip for standalone detectors (H5054).
+
+    The trip arrives via the ``bodyAppearedEvent`` event capability — Govee's
+    developer API reuses this generic instance for the H5054 water signal
+    (issue #62). The device-state poll only returns ``online``, so the trip
+    normally lands via MQTT push.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.MOISTURE
+    _attr_translation_key = "govee_water_leak"
+    _attr_icon = "mdi:water-alert"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: Any,
+    ) -> None:
+        """Initialize the water-leak binary sensor."""
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_water_leak"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when water is detected."""
+        state = self.device_state
+        return state.water_leak if state else None
 
 
 class GoveeDeviceConnectivity(GoveeEntity, BinarySensorEntity):

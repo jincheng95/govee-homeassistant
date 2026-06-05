@@ -216,6 +216,9 @@
       "govee_water_full": {
         "name": "Water Tank Full"
       },
+      "govee_water_leak": {
+        "name": "Water Leak"
+      },
       "leak_online": {
         "name": "LoRa"
       },
