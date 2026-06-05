@@ -220,7 +220,8 @@ def _vkey(v: str) -> tuple:
 
 
 def render_versions_svg(fork_counts: dict[str, int], fork_total: int) -> str:
-    items = sorted(fork_counts.items(), key=lambda kv: -kv[1])
+    # newest release first, oldest rolled up
+    items = sorted(fork_counts.items(), key=lambda kv: _vkey(kv[0]), reverse=True)
     top = items[:8]
     rest = items[8:]
     rows = list(top)
@@ -228,8 +229,7 @@ def render_versions_svg(fork_counts: dict[str, int], fork_total: int) -> str:
     if rest_sum:
         rows.append((f"+{len(rest)} older", rest_sum))
 
-    latest = max((v for v, _ in items), key=_vkey, default="")
-    on_latest = fork_counts.get(latest, 0)
+    latest = items[0][0] if items else ""
 
     w = 480
     row_h = 23
@@ -258,7 +258,7 @@ def render_versions_svg(fork_counts: dict[str, int], fork_total: int) -> str:
         pct = c / fork_total * 100 if fork_total else 0
         s.append(txt(w - pad, cy, f"{human(c)} · {pct:.0f}%", 10.5, MUTED, anchor="end"))
 
-    foot = f"{latest} leads · {len(fork_counts)} releases in use · {_now():%b %-d}" if fork_total else "collecting…"
+    foot = f"newest {latest} · {len(fork_counts)} releases in use · {_now():%b %-d}" if fork_total else "collecting…"
     s.append(txt(pad, h - 11, foot, 10.5, MUTED))
     s.append("</svg>")
     return "\n".join(s)
