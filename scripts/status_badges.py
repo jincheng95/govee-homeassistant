@@ -331,7 +331,7 @@ def _day_status(entries: list) -> str:
 
 
 def render_uptime_svg(history: list) -> str:
-    w, h = 480, 150
+    w, h = 480, 192
     s = card_open(w, h)
     pad = 20
 
@@ -366,8 +366,8 @@ def render_uptime_svg(history: list) -> str:
     s.append(txt(w - pad, 40, f"{pct:.1f}%", 26, TEXT, weight=700, anchor="end"))
     s.append(txt(w - pad, 58, f"uptime / {len(days)}d", 10.5, MUTED, anchor="end"))
 
-    # daily bars
-    bx0, by0, bw, bh = pad, 84, w - 2 * pad, 34
+    # daily status bars
+    bx0, by0, bw, bh = pad, 80, w - 2 * pad, 24
     n = max(len(days), 1)
     gap = 3
     bar_w = max((bw - gap * (n - 1)) / n, 2)
@@ -378,6 +378,40 @@ def render_uptime_svg(history: list) -> str:
         s.append(f'<rect x="{x:.1f}" y="{by0}" width="{bar_w:.1f}" height="{bh}" rx="2" fill="{cmap[st]}"/>')
     if not days:
         s.append(txt(w / 2, by0 + bh / 2 + 4, "collecting history…", 12, MUTED, anchor="middle"))
+
+    # response-time sparkline (per-check mean of the two hosts we already record)
+    ms_series = []
+    for e in history[-72:]:
+        vals = [v for v in (e.get("open_ms"), e.get("app_ms")) if v is not None]
+        if vals:
+            ms_series.append(sum(vals) / len(vals))
+    avg_ms = int(sum(ms_series) / len(ms_series)) if ms_series else None
+    lat_col = GREEN if (avg_ms or 0) < 350 else AMBER if (avg_ms or 0) < 900 else RED
+
+    s.append(txt(pad, 130, "RESPONSE TIME", 10, MUTED, weight=600, spacing="1.2"))
+    if avg_ms is not None:
+        s.append(txt(w - pad, 130, f"avg {avg_ms} ms · last {len(ms_series)} checks", 10.5, MUTED, anchor="end"))
+    gx0, gy0, gw, gh = pad, 138, w - 2 * pad, 32
+    if len(ms_series) >= 2:
+        lo, hi = min(ms_series), max(ms_series)
+        rng = (hi - lo) or 1
+        pts = []
+        for i, m in enumerate(ms_series):
+            px = gx0 + gw * i / (len(ms_series) - 1)
+            py = gy0 + gh - (gh - 4) * (m - lo) / rng
+            pts.append((px, py))
+        line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        area = f"M{gx0},{gy0 + gh} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) + f" L{pts[-1][0]:.1f},{gy0 + gh} Z"
+        s.append(
+            f'<defs><linearGradient id="lg" x1="0" x2="0" y1="0" y2="1">'
+            f'<stop offset="0" stop-color="{lat_col}" stop-opacity="0.35"/>'
+            f'<stop offset="1" stop-color="{lat_col}" stop-opacity="0"/></linearGradient></defs>'
+        )
+        s.append(f'<path d="{area}" fill="url(#lg)"/>')
+        s.append(f'<polyline points="{line}" fill="none" stroke="{lat_col}" stroke-width="1.8" stroke-linejoin="round"/>')
+        s.append(f'<circle cx="{pts[-1][0]:.1f}" cy="{pts[-1][1]:.1f}" r="3" fill="{lat_col}"/>')
+    else:
+        s.append(txt(w / 2, gy0 + gh / 2 + 4, "collecting latency…", 11, MUTED, anchor="middle"))
 
     s.append(txt(pad, h - 12, "openapi + app2 · hourly", 10.5, MUTED))
     s.append(txt(w - pad, h - 12, stamp(), 10.5, MUTED, anchor="end"))
