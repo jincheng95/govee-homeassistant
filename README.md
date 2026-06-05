@@ -12,7 +12,7 @@
 
 [![Active installs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/installs.json)](https://analytics.home-assistant.io/)
 [![Govee API status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/api-status.json)](#-live-status)
-[![Stars](https://img.shields.io/github/stars/lasswellt/govee-homeassistant?style=flat-square&color=41BDF5)](https://github.com/lasswellt/govee-homeassistant/stargazers)
+[![Stars](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/stars.json)](https://github.com/lasswellt/govee-homeassistant/stargazers)
 
 </div>
 
