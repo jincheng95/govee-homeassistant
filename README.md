@@ -263,6 +263,20 @@ logger:
 
 ---
 
+## ⭐ Star history
+
+<div align="center">
+<a href="https://star-history.com/#lasswellt/govee-homeassistant&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=lasswellt/govee-homeassistant&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=lasswellt/govee-homeassistant&type=Date" />
+    <img alt="Star history chart for lasswellt/govee-homeassistant" src="https://api.star-history.com/svg?repos=lasswellt/govee-homeassistant&type=Date" width="70%" />
+  </picture>
+</a>
+</div>
+
+---
+
 ## Contributing
 
 Issues and PRs welcome. Development quick start:
