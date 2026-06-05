@@ -57,14 +57,26 @@ def enable_event_loop_debug() -> Generator[None, None, None]:
     fixtures by name) and guaranteeing a current loop keeps both this fixture
     and the sibling ``verify_cleanup`` working without depending on a running
     async test. Debug mode is preserved.
+
+    A loop we create ourselves is closed in teardown — leaving it for the
+    garbage collector raises ``PytestUnraisableExceptionWarning`` (unclosed
+    loop + its self-pipe socket), which the suite escalates to an error. A
+    loop owned by pytest-asyncio (async tests) is left untouched.
     """
+    created = False
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        created = True
     loop.set_debug(True)
-    yield
+    try:
+        yield
+    finally:
+        if created:
+            asyncio.set_event_loop(None)
+            loop.close()
 
 
 # Capability constants for test devices
