@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 import os
@@ -176,7 +175,6 @@ def render_installs_svg(history: list, fork_total: int, official_total: int) -> 
     # 7-day delta
     delta_str, delta_col = "", MUTED
     if len(history) >= 2:
-        prev = next((p["count"] for p in reversed(history[:-1])), None)
         # find a point ~7 entries back if available
         ref = history[-8]["count"] if len(history) >= 8 else history[0]["count"]
         d = fork_total - ref
