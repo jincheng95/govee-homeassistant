@@ -48,6 +48,27 @@ It is **capability‑based**: entities are created from the capabilities Govee r
 
 ---
 
+## How this compares
+
+Govee in Home Assistant has several integrations, and it's easy to pick one that can't control your devices. Quick orientation:
+
+| Integration | How it talks to Govee | Scenes / RGBIC segments | Non‑light devices | Notes |
+|---|---|---|---|---|
+| **This integration** | Cloud API v2 **+ AWS IoT MQTT push** | ✅ Yes | Plugs, fans, humidifiers, heaters, sensors, leak hubs | Full feature set; push updates; handles Govee's 2026 email‑2FA login |
+| [`govee_light_local`](https://www.home-assistant.io/integrations/govee_light_local/) (HA built‑in) | LAN UDP | ❌ No | Lights only | Fast & local, but on/off + brightness + color only, and only models with LAN control enabled |
+| [`govee_ble`](https://www.home-assistant.io/integrations/govee_ble/) (HA built‑in) | Bluetooth | ❌ No | Sensors only | Read‑only sensors — **no light control** |
+| [govee2mqtt](https://github.com/wez/govee2mqtt) | LAN + cloud + MQTT | ✅ Yes | Wide | Most capable, but requires a separate MQTT broker/add‑on to run |
+| [goveelife](https://github.com/disforw/goveelife) | Cloud OpenAPI v2 | ✅ Yes | Best for appliances | Polling‑only; strong on heaters/fans/humidifiers |
+
+**Why pick this one:**
+
+- **Full control of cloud‑only WiFi devices.** Many bulbs/strips (e.g. H6099) have **no LAN API** and **no light control over BLE** — the cloud path is the only way to get scenes, RGBIC segments, music mode and DreamView. The HA built‑in LAN/BLE integrations can't do this; people often conclude "Govee + HA is broken" when really they're using the wrong integration for the device.
+- **MQTT push, not just polling.** Real‑time state arrives over AWS IoT, which also eases the Govee cloud rate limits (100 req/min, 10,000/day) that poll‑only integrations can hit on larger setups.
+- **Resilient account login.** Govee added mandatory email **2FA** in 2026, which silently broke older account‑login integrations at startup. This one handles 2FA in an interactive setup/reconfigure flow and caches IoT credentials across reloads.
+- **No extra infrastructure.** Full features without standing up a separate MQTT broker the way a bridge‑style setup (govee2mqtt) requires.
+
+---
+
 ## Supported Govee devices
 
 | Category | Examples | Entities you get |
