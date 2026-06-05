@@ -8,7 +8,9 @@ button-press MACs masked to keep the retained hex PII-free.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 from unittest.mock import MagicMock
 
 from custom_components.govee.api.auth import GoveeIotCredentials
@@ -165,3 +167,38 @@ class TestLeakWetDecode:
         legacy = bytes([0xEE, 0x34, 0x00, 0x00, 0x00, 0x01])  # byte5=0x01, len 6
         event = self._decode_one(legacy)
         assert event["is_wet"] is True
+
+
+class TestPerDeviceReceiveTimestamp:
+    """_handle_message stamps a per-device inbound MQTT receive timestamp."""
+
+    DEV = "03:9C:DC:06:75:4B:10:7C"
+
+    def _state_msg(self, device_id: str) -> MagicMock:
+        msg = MagicMock()
+        msg.payload = json.dumps(
+            {"device": device_id, "sku": "H6072", "state": {"onOff": 1}}
+        ).encode()
+        return msg
+
+    def test_none_before_any_message(self):
+        client = _make_client()
+        assert client.last_message_ts_for(self.DEV) is None
+
+    def test_stamps_per_device_and_hub(self):
+        client = _make_client()
+        asyncio.run(client._handle_message(self._state_msg(self.DEV)))
+        ts = client.last_message_ts_for(self.DEV)
+        assert ts is not None
+        # Per-device stamp matches the hub-level scalar for a single message.
+        assert ts == client.last_message_ts
+
+    def test_distinct_devices_tracked_separately(self):
+        client = _make_client()
+        other = "11:22:33:44:55:66:77:88"
+        asyncio.run(client._handle_message(self._state_msg(self.DEV)))
+        asyncio.run(client._handle_message(self._state_msg(other)))
+        assert client.last_message_ts_for(self.DEV) is not None
+        assert client.last_message_ts_for(other) is not None
+        # Second message advanced the hub scalar past the first device's stamp.
+        assert client.last_message_ts_for(other) >= client.last_message_ts_for(self.DEV)

@@ -182,7 +182,10 @@
         "name": "Last Changed"
       },
       "all_data_last_updated": {
-        "name": "All Data Last Updated"
+        "name": "Last Update Received"
+      },
+      "last_command_sent": {
+        "name": "Last Command Sent"
       },
       "leak_battery": {
         "name": "Battery"
@@ -198,6 +201,9 @@
       }
     },
     "binary_sensor": {
+      "device_connectivity": {
+        "name": "Connectivity"
+      },
       "cloud_api_connectivity": {
         "name": "Cloud API"
       },

@@ -23,13 +23,30 @@ class TransportHealth:
     transport: TransportKind
     is_available: bool = False
     last_success_ts: datetime | None = None
+    last_send_ts: datetime | None = None
     last_failure_ts: datetime | None = None
     last_failure_reason: str | None = None
 
     def mark_success(self, now: datetime) -> None:
-        """Record a successful use of this transport."""
+        """Record a successful inbound use (data received) of this transport.
+
+        ``last_success_ts`` is the receive direction — a poll read or an
+        inbound MQTT push. Outbound commands stamp ``last_send_ts`` via
+        ``mark_send`` so the two directions stay distinguishable.
+        """
         self.is_available = True
         self.last_success_ts = now
+        self.last_failure_reason = None
+
+    def mark_send(self, now: datetime) -> None:
+        """Record a successful outbound use (command sent) of this transport.
+
+        A successful send proves the transport is live, so availability is
+        set, but the timestamp lands in ``last_send_ts`` — it does not
+        overwrite the receive timestamp ``last_success_ts``.
+        """
+        self.is_available = True
+        self.last_send_ts = now
         self.last_failure_reason = None
 
     def mark_failure(self, now: datetime, reason: str) -> None:

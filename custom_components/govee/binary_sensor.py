@@ -36,6 +36,7 @@ from .const import (
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .models import TransportKind
+from .models.transport import TRANSPORT_KINDS
 from .models.device import GoveeLeakSensor, leak_sensor_device_info
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,6 +68,10 @@ async def async_setup_entry(
             continue
         if device.supports_water_full_event:
             entities.append(GoveeWaterFullBinarySensor(coordinator, device))
+        # Overall per-device connectivity (one entity, always exposed) — carries
+        # the full per-transport last-received / last-sent breakdown as
+        # attributes. The granular per-transport entities below stay opt-in.
+        entities.append(GoveeDeviceConnectivity(coordinator, device))
 
     # Transport connectivity entities are opt-in to avoid creating 3×N
     # diagnostic entities by default.
@@ -130,6 +135,80 @@ class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity):
         return state.water_full if state else None
 
 
+class GoveeDeviceConnectivity(GoveeEntity, BinarySensorEntity):
+    """Overall per-device connectivity (one entity per device, always exposed).
+
+    ``is_on`` reflects whether any transport can currently reach the device.
+    The full directional breakdown — per-transport last received / last sent /
+    last failure — rides along as attributes so users get "last MQTT push /
+    receive, last API push / receive" at a glance without enabling the
+    granular per-transport entities.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "device_connectivity"
+    _attr_icon = "mdi:lan-connect"
+
+    def __init__(self, coordinator: GoveeCoordinator, device: Any) -> None:
+        """Initialize the overall connectivity binary sensor."""
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_connectivity"
+
+    @property
+    def available(self) -> bool:
+        """Available whenever the coordinator is — reports its own on/off.
+
+        Like the per-transport sensors, it must not inherit the device's
+        online flag, or an offline device would hide the very diagnostic
+        needed to understand why it is offline.
+        """
+        return self.coordinator.last_update_success
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when any transport is currently usable for this device."""
+        if self._device.is_group:
+            return True
+        any_tracked = False
+        for kind in TRANSPORT_KINDS:
+            health = self.coordinator.get_transport_health(self._device_id, kind)
+            if health is None:
+                continue
+            any_tracked = True
+            if health.is_available:
+                return True
+        if not any_tracked:
+            return None
+        return False
+
+    def _last_received(self, kind: TransportKind, health: Any) -> Any:
+        """Receive timestamp for a transport (per-device MQTT preferred)."""
+        if kind == "mqtt":
+            per_device = self.coordinator.mqtt_last_receive_for(self._device_id)
+            if per_device is not None:
+                return per_device
+        return health.last_success_ts
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Per-transport directional freshness breakdown."""
+        attrs: dict[str, Any] = {}
+        for kind in TRANSPORT_KINDS:
+            health = self.coordinator.get_transport_health(self._device_id, kind)
+            if health is None:
+                continue
+            received = self._last_received(kind, health)
+            if received is not None:
+                attrs[f"{kind}_last_received"] = received.isoformat()
+            if health.last_send_ts is not None:
+                attrs[f"{kind}_last_sent"] = health.last_send_ts.isoformat()
+            if health.last_failure_reason is not None:
+                attrs[f"{kind}_last_failure_reason"] = health.last_failure_reason
+            attrs[f"{kind}_available"] = health.is_available
+        return attrs
+
+
 class GoveeTransportConnectivity(GoveeEntity, BinarySensorEntity):
     """Per-device connectivity status for a single transport."""
 
@@ -176,8 +255,21 @@ class GoveeTransportConnectivity(GoveeEntity, BinarySensorEntity):
         if health is None:
             return {}
         attrs: dict[str, Any] = {}
-        if health.last_success_ts is not None:
-            attrs["last_success"] = health.last_success_ts.isoformat()
+        # Receive direction: last_success_ts is the inbound stamp (poll read or
+        # inbound MQTT message). For mqtt, prefer the per-device receive
+        # timestamp when present (the hub scalar covers all devices).
+        last_received = health.last_success_ts
+        if self._transport == "mqtt":
+            per_device = self.coordinator.mqtt_last_receive_for(self._device_id)
+            if per_device is not None:
+                last_received = per_device
+        if last_received is not None:
+            attrs["last_received"] = last_received.isoformat()
+            # Back-compat alias (deprecated, one release) — last_success was the
+            # pre-directional combined stamp; now equals the receive timestamp.
+            attrs["last_success"] = last_received.isoformat()
+        if health.last_send_ts is not None:
+            attrs["last_sent"] = health.last_send_ts.isoformat()
         if health.last_failure_ts is not None:
             attrs["last_failure"] = health.last_failure_ts.isoformat()
         if health.last_failure_reason is not None:

@@ -98,6 +98,9 @@ def _transport_health(coordinator: GoveeCoordinator, device_id: str) -> dict[str
             continue
         out[kind] = {
             "is_available": health.is_available,
+            "last_received": _iso(health.last_success_ts),
+            "last_sent": _iso(health.last_send_ts),
+            # Deprecated alias of last_received (pre-directional key); drop next release.
             "last_success": _iso(health.last_success_ts),
             "last_failure": _iso(health.last_failure_ts),
             "last_failure_reason": health.last_failure_reason,

@@ -69,8 +69,10 @@ async def async_setup_entry(
     for device in coordinator.devices.values():
         if device.is_group:
             continue
-        # Per-device data-freshness diagnostic for every physical device.
+        # Per-device connectivity diagnostics for every physical device:
+        # last data received and last command sent (directional freshness).
         entities.append(GoveeAllDataLastUpdatedSensor(coordinator, device))
+        entities.append(GoveeLastCommandSentSensor(coordinator, device))
         if device.supports_temperature_sensor:
             entities.append(GoveeTemperatureSensor(coordinator, device))
         if device.supports_humidity_sensor:
@@ -349,6 +351,33 @@ class GoveeAllDataLastUpdatedSensor(GoveeEntity, SensorEntity):
     @property
     def native_value(self) -> datetime | None:
         return self.coordinator.device_data_last_updated(self._device.device_id)
+
+
+class GoveeLastCommandSentSensor(GoveeEntity, SensorEntity):
+    """When this device was last sent a command over any transport.
+
+    Max of the per-transport last-send timestamps (Cloud API / MQTT / BLE).
+    The outbound counterpart to "Last Update Received" — renders as a
+    relative "X ago" so users can see command activity per device.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "last_command_sent"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:send-clock"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_last_command_sent"
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.device_last_command_sent(self._device.device_id)
 
 
 class GoveeLeakBatterySensor(SensorEntity):

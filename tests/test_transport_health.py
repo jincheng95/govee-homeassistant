@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from custom_components.govee.coordinator import GoveeCoordinator
-from custom_components.govee.models import GoveeDeviceState, TransportHealth
+from custom_components.govee.models import (
+    GoveeDeviceState,
+    PowerCommand,
+    TransportHealth,
+)
 from custom_components.govee.transport_health import TransportHealthTracker
 
 
@@ -79,6 +85,78 @@ class TestTransportHealth:
         assert health.last_failure_reason is None
 
 
+class TestDirectionalSplit:
+    """Send (last_send_ts) and receive (last_success_ts) stay distinct."""
+
+    def test_mark_send_stamps_send_not_receive(self):
+        health = TransportHealth(transport="mqtt")
+        now = datetime.now(timezone.utc)
+        health.mark_send(now)
+        assert health.is_available is True
+        assert health.last_send_ts == now
+        assert health.last_success_ts is None  # receive untouched
+
+    def test_send_and_receive_do_not_overwrite(self):
+        health = TransportHealth(transport="cloud_api")
+        recv = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        send = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        health.mark_success(recv)
+        health.mark_send(send)
+        assert health.last_success_ts == recv
+        assert health.last_send_ts == send
+
+    def test_tracker_record_send(self):
+        tracker = TransportHealthTracker()
+        tracker.record_send("dev1", "cloud_api")
+        health = tracker.get("dev1", "cloud_api")
+        assert health is not None
+        assert health.last_send_ts is not None
+        assert health.last_success_ts is None
+
+    def test_coordinator_records_send(self):
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock()
+        coord._record_transport_send("dev1", "mqtt")
+        health = coord.get_transport_health("dev1", "mqtt")
+        assert health is not None
+        assert health.is_available is True
+        assert health.last_send_ts is not None
+        assert health.last_success_ts is None
+
+    @pytest.mark.asyncio
+    async def test_cloud_api_control_stamps_both_directions(self):
+        """A successful REST control sends and receives — stamp both."""
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock(is_group=False, sku="H6072")
+        coord._pending_power_off = set()
+        coord._enable_mqtt_control = False
+        coord._api_client = MagicMock()
+        coord._api_client.control_device = AsyncMock(return_value=True)
+        coord._apply_optimistic_update = MagicMock()
+        coord.async_set_updated_data = MagicMock()
+
+        ok = await coord.async_control_device("dev1", PowerCommand(power_on=True))
+
+        assert ok is True
+        health = coord.get_transport_health("dev1", "cloud_api")
+        assert health is not None
+        assert health.last_send_ts is not None  # command sent
+        assert health.last_success_ts is not None  # response received
+
+    def test_mqtt_last_receive_for_no_client(self):
+        coord = _bare_coordinator()
+        assert coord.mqtt_last_receive_for("dev1") is None
+
+    def test_mqtt_last_receive_for_delegates(self):
+        coord = _bare_coordinator()
+        ts = datetime(2026, 6, 5, tzinfo=timezone.utc)
+        client = MagicMock()
+        client.last_message_ts_for.return_value = ts
+        coord._mqtt_client = client
+        assert coord.mqtt_last_receive_for("dev1") == ts
+        client.last_message_ts_for.assert_called_once_with("dev1")
+
+
 class TestDeviceDataLastUpdated:
     def test_none_until_any_transport_succeeds(self):
         coord = _bare_coordinator()
@@ -100,6 +178,39 @@ class TestDeviceDataLastUpdated:
         coord.get_transport_health("dev1", "mqtt").mark_success(new)
         coord.get_transport_health("dev1", "ble").mark_success(old)
         assert coord.device_data_last_updated("dev1") == new
+
+
+class TestDeviceLastCommandSent:
+    def test_none_until_any_send(self):
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock()
+        coord._ensure_transport_health("dev1")
+        assert coord.device_last_command_sent("dev1") is None
+
+    def test_unknown_device_returns_none(self):
+        coord = _bare_coordinator()
+        assert coord.device_last_command_sent("nope") is None
+
+    def test_returns_latest_send_across_transports(self):
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock()
+        coord._ensure_transport_health("dev1")
+        old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        new = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        coord.get_transport_health("dev1", "cloud_api").mark_send(new)
+        coord.get_transport_health("dev1", "mqtt").mark_send(old)
+        assert coord.device_last_command_sent("dev1") == new
+
+    def test_send_and_receive_independent(self):
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock()
+        coord._ensure_transport_health("dev1")
+        recv = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        sent = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        coord.get_transport_health("dev1", "cloud_api").mark_success(recv)
+        coord.get_transport_health("dev1", "cloud_api").mark_send(sent)
+        assert coord.device_data_last_updated("dev1") == recv
+        assert coord.device_last_command_sent("dev1") == sent
 
 
 class TestOptimisticGracePeriod:

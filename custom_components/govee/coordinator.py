@@ -297,6 +297,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             return None
         return self._mqtt_client.last_message_ts
 
+    def mqtt_last_receive_for(self, device_id: str) -> datetime | None:
+        """UTC timestamp of the last inbound MQTT message for a device, or None."""
+        if self._mqtt_client is None:
+            return None
+        return self._mqtt_client.last_message_ts_for(device_id)
+
     def is_ble_available(self, device_id: str) -> bool:
         """Return True if a BLE transport is active for this device."""
         return device_id in self._ble_devices
@@ -322,8 +328,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device_id: str,
         transport: TransportKind,
     ) -> None:
-        """Stamp a successful transport use."""
+        """Stamp a successful inbound transport use (data received)."""
         self._transport.record_success(device_id, transport)
+
+    def _record_transport_send(
+        self,
+        device_id: str,
+        transport: TransportKind,
+    ) -> None:
+        """Stamp a successful outbound transport use (command sent)."""
+        self._transport.record_send(device_id, transport)
 
     def _record_transport_failure(
         self,
@@ -417,6 +431,22 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 continue
             if latest is None or health.last_success_ts > latest:
                 latest = health.last_success_ts
+        return latest
+
+    def device_last_command_sent(self, device_id: str) -> datetime | None:
+        """Most recent time a command was sent to this device, any transport.
+
+        Max of ``last_send_ts`` across cloud_api / mqtt / ble — the outbound
+        counterpart to ``device_data_last_updated``. Returns None until a
+        command has been sent.
+        """
+        latest: datetime | None = None
+        for kind in TRANSPORT_KINDS:
+            health = self._transport.get(device_id, kind)
+            if health is None or health.last_send_ts is None:
+                continue
+            if latest is None or health.last_send_ts > latest:
+                latest = health.last_send_ts
         return latest
 
     @property
@@ -1225,7 +1255,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 and not device.is_group
             ):
                 if await self._try_mqtt_command(device_id, device.sku, command):
-                    self._record_transport_success(device_id, "mqtt")
+                    self._record_transport_send(device_id, "mqtt")
                     self._apply_optimistic_update(device_id, command)
                     self.async_set_updated_data(self._states)
                     return True
@@ -1252,6 +1282,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             )
 
             if success:
+                # A REST control call sends AND gets a response back, so stamp
+                # both directions; MQTT publishes are fire-and-forget (send only).
+                self._record_transport_send(device_id, "cloud_api")
                 self._record_transport_success(device_id, "cloud_api")
                 # Apply optimistic update
                 self._apply_optimistic_update(device_id, command)
@@ -1300,6 +1333,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 return False
 
             if success:
+                # REST send + response — stamp both directions (see control path).
+                self._record_transport_send(device_id, "cloud_api")
                 self._record_transport_success(device_id, "cloud_api")
             else:
                 self._record_transport_failure(

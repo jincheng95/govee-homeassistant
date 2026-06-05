@@ -126,6 +126,8 @@ class GoveeAwsIotClient:
         self._last_messages: dict[str, dict[str, Any]] = {}
         # UTC timestamp of the most recent inbound MQTT state message.
         self._last_message_ts: datetime | None = None
+        # UTC timestamp of the most recent inbound MQTT message per device_id.
+        self._last_message_per_device: dict[str, datetime] = {}
         # Ring buffer of recent decoded multiSync packets (leak/button/unknown),
         # retained for diagnostics so a download alone is enough to crack
         # undecoded hub packets (e.g. the H5059's 0xEE 0x35 wet alarm in #87)
@@ -146,6 +148,10 @@ class GoveeAwsIotClient:
     def last_message_ts(self) -> datetime | None:
         """UTC timestamp of the most recent inbound MQTT state message."""
         return self._last_message_ts
+
+    def last_message_ts_for(self, device_id: str) -> datetime | None:
+        """UTC timestamp of the most recent inbound MQTT message for a device."""
+        return self._last_message_per_device.get(device_id)
 
     @property
     def connected(self) -> bool:
@@ -412,6 +418,7 @@ class GoveeAwsIotClient:
             # live — stamp freshness before branching on message type so leak
             # events (multiSync) count as activity, not just state updates.
             self._last_message_ts = datetime.now(timezone.utc)
+            self._last_message_per_device[device_id] = self._last_message_ts
 
             # Handle multiSync messages (leak sensor events)
             cmd = data.get("cmd")

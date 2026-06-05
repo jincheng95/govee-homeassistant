@@ -314,7 +314,16 @@ class TestLeakAndTransportDump:
         )
         state = GoveeLeakSensorState(is_wet=True, battery=88, gateway_online=True)
 
-        health = TransportHealth(transport="cloud_api", is_available=True)
+        from datetime import datetime, timezone
+
+        recv = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
+        sent = datetime(2026, 6, 5, 12, 1, tzinfo=timezone.utc)
+        health = TransportHealth(
+            transport="cloud_api",
+            is_available=True,
+            last_success_ts=recv,
+            last_send_ts=sent,
+        )
 
         coordinator = _coordinator_stub(
             leak_sensors={sensor_mac: sensor},
@@ -344,7 +353,12 @@ class TestLeakAndTransportDump:
         assert leak["state"]["battery"] == 88
         # Transport health surfaced for the device.
         dev = next(iter(out["devices"].values()))
-        assert dev["transport_health"]["cloud_api"]["is_available"] is True
+        cloud = dev["transport_health"]["cloud_api"]
+        assert cloud["is_available"] is True
+        # Directional timestamps surfaced + back-compat alias.
+        assert cloud["last_received"] == recv.isoformat()
+        assert cloud["last_sent"] == sent.isoformat()
+        assert cloud["last_success"] == recv.isoformat()
         # Runtime signals present.
         assert "has_iot_credentials" in out
         assert "diy_scene_cache_count" in out

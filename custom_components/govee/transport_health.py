@@ -55,9 +55,14 @@ class TransportHealthTracker:
         return per_device.get(transport)
 
     def record_success(self, device_id: str, transport: TransportKind) -> None:
-        """Stamp a successful transport use."""
+        """Stamp a successful inbound transport use (data received)."""
         self.ensure(device_id)
         self._health[device_id][transport].mark_success(datetime.now(timezone.utc))
+
+    def record_send(self, device_id: str, transport: TransportKind) -> None:
+        """Stamp a successful outbound transport use (command sent)."""
+        self.ensure(device_id)
+        self._health[device_id][transport].mark_send(datetime.now(timezone.utc))
 
     def record_failure(
         self, device_id: str, transport: TransportKind, reason: str
