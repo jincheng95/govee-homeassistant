@@ -56,6 +56,11 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def stamp() -> str:
+    """UTC last-updated timestamp shown in graph footers."""
+    return f"updated {_now():%Y-%m-%d %H:%M} UTC"
+
+
 def human(n: int) -> str:
     if n >= 10000:
         return f"{n / 1000:.0f}k"
@@ -205,9 +210,8 @@ def render_installs_svg(history: list, fork_total: int, official_total: int) -> 
     else:
         s.append(txt(gx0 + gw / 2, gy0 + gh / 2, "collecting history…", 12, MUTED, anchor="middle"))
 
-    foot = f"Home Assistant analytics · {_now():%b %-d}"
-    s.append(txt(pad, h - 14, foot, 10.5, MUTED))
-    s.append(txt(w - pad, h - 14, f"of {human(official_total)} domain total", 10.5, MUTED, anchor="end"))
+    s.append(txt(pad, h - 14, f"HA analytics · of {human(official_total)} domain total", 10.5, MUTED))
+    s.append(txt(w - pad, h - 14, stamp(), 10.5, MUTED, anchor="end"))
     s.append("</svg>")
     return "\n".join(s)
 
@@ -258,8 +262,9 @@ def render_versions_svg(fork_counts: dict[str, int], fork_total: int) -> str:
         pct = c / fork_total * 100 if fork_total else 0
         s.append(txt(w - pad, cy, f"{human(c)} · {pct:.0f}%", 10.5, MUTED, anchor="end"))
 
-    foot = f"newest {latest} · {len(fork_counts)} releases in use · {_now():%b %-d}" if fork_total else "collecting…"
+    foot = f"newest {latest} · {len(fork_counts)} releases in use" if fork_total else "collecting…"
     s.append(txt(pad, h - 11, foot, 10.5, MUTED))
+    s.append(txt(w - pad, h - 11, stamp(), 10.5, MUTED, anchor="end"))
     s.append("</svg>")
     return "\n".join(s)
 
@@ -374,8 +379,8 @@ def render_uptime_svg(history: list) -> str:
     if not days:
         s.append(txt(w / 2, by0 + bh / 2 + 4, "collecting history…", 12, MUTED, anchor="middle"))
 
-    foot = f"openapi + app2 · hourly · {_now():%b %-d}"
-    s.append(txt(pad, h - 12, foot, 10.5, MUTED))
+    s.append(txt(pad, h - 12, "openapi + app2 · hourly", 10.5, MUTED))
+    s.append(txt(w - pad, h - 12, stamp(), 10.5, MUTED, anchor="end"))
     s.append("</svg>")
     return "\n".join(s)
 
