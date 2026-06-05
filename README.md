@@ -48,7 +48,7 @@ It is **capability‑based**: entities are created from the capabilities Govee r
 
 ---
 
-## Supported devices
+## Supported Govee devices
 
 | Category | Examples | Entities you get |
 |---|---|---|
@@ -68,7 +68,7 @@ Don't see your device, or a capability is missing? [Open an issue](https://githu
 
 ---
 
-## Install
+## How to install Govee in Home Assistant
 
 ### HACS (recommended)
 
