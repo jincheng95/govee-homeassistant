@@ -5,10 +5,10 @@
 **Control Govee lights, plugs, fans, humidifiers, heaters, thermometers & leak sensors — with optional real‑time push over Govee's AWS IoT MQTT.**
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5?style=flat-square)](https://github.com/hacs/integration)
-[![Release](https://img.shields.io/github/v/release/lasswellt/govee-homeassistant?style=flat-square&color=41BDF5)](https://github.com/lasswellt/govee-homeassistant/releases)
+[![Release](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/release.json)](https://github.com/lasswellt/govee-homeassistant/releases)
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.11+-41BDF5?style=flat-square&logo=home-assistant&logoColor=white)
 ![Quality scale](https://img.shields.io/badge/quality%20scale-silver-silver?style=flat-square)
-[![License](https://img.shields.io/github/license/lasswellt/govee-homeassistant?style=flat-square&color=41BDF5)](LICENSE.txt)
+[![License](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/license.json)](LICENSE.txt)
 
 [![Active installs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/installs.json)](https://analytics.home-assistant.io/)
 [![Govee API status](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/api-status.json)](#-live-status)

@@ -298,8 +298,21 @@ def run_installs(data_dir: Path, repo_dir: Path) -> None:
     write_json(data_dir / "installs.json", shields_endpoint("active installs", human(fork_total), "41BDF5"))
     (data_dir / "installs-trend.svg").write_text(render_installs_svg(history, fork_total, official_total))
     (data_dir / "versions.svg").write_text(render_versions_svg(fork_counts, fork_total))
+
+    # release + license endpoint badges (self-hosted — avoid shields github-token-pool errors)
+    manifest = repo_dir / "custom_components" / DOMAIN / "manifest.json"
+    ver = json.loads(manifest.read_text()).get("version", "") if manifest.exists() else ""
+    if ver:
+        write_json(data_dir / "release.json", shields_endpoint("release", f"v{ver}", "41BDF5"))
+    lic_file = repo_dir / "LICENSE.txt"
+    lic = "MIT"
+    if lic_file.exists():
+        first = lic_file.read_text().splitlines()[0].strip()
+        lic = first.replace(" License", "").strip() or "MIT"
+    write_json(data_dir / "license.json", shields_endpoint("license", lic, "41BDF5"))
+
     print(f"[installs] fork={fork_total} (of {official_total} domain total) "
-          f"versions_matched={len(fork_counts)}")
+          f"versions_matched={len(fork_counts)} release=v{ver} license={lic}")
 
 
 # --------------------------------------------------------------------------- #
