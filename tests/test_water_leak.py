@@ -23,6 +23,21 @@ from custom_components.govee.models.device import (
     INSTANCE_BODY_APPEARED_EVENT,
 )
 
+
+@pytest.fixture(autouse=True)
+def enable_event_loop_debug():
+    """Override the HA plugin's same-named autouse fixture for this module.
+
+    The upstream fixture calls ``asyncio.get_event_loop().set_debug(True)``,
+    which raises ``RuntimeError: no current event loop`` for a purely
+    synchronous test module under pytest-asyncio >=1.0 (no loop is set when no
+    async test runs, and this file is the last-collected module, so the loop
+    from earlier async tests is already torn down). These are pure unit tests
+    with no async paths, so a no-op override is safe and keeps CI green.
+    """
+    yield
+
+
 # --------------------------------------------------------------------------- #
 # Fixtures — H5054 shape from issue #62 diagnostics
 # --------------------------------------------------------------------------- #
