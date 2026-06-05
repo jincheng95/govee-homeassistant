@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🌈 Govee Cloud Integration for Home Assistant
+# Govee Cloud Integration for Home Assistant
 
 **Control Govee lights, plugs, fans, humidifiers, heaters, thermometers & leak sensors — with optional real‑time push over Govee's AWS IoT MQTT.**
 
