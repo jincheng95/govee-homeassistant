@@ -28,6 +28,8 @@
 &nbsp;
 <img alt="Govee API uptime" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/api-uptime.svg" width="49%" />
 
+<img alt="Installs by version" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/versions.svg" width="60%" />
+
 </div>
 
 <sub>**Active installs** counts only versions **released by this repository** — other `govee` forks and legacy installs sharing the same domain are excluded — and reflects Home Assistant instances opted into Usage‑level analytics, so true usage is higher. **Govee API status** pings `openapi.api.govee.com` and `app2.govee.com` hourly: round of red bars on the right = an outage today, not a problem with your setup. Both graphs update automatically via GitHub Actions ([uptime](.github/workflows/uptime.yml) · [install‑stats](.github/workflows/install-stats.yml)).</sub>

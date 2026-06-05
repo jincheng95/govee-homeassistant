@@ -212,15 +212,70 @@ def render_installs_svg(history: list, fork_total: int, official_total: int) -> 
     return "\n".join(s)
 
 
+def _vkey(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return ()
+
+
+def render_versions_svg(fork_counts: dict[str, int], fork_total: int) -> str:
+    items = sorted(fork_counts.items(), key=lambda kv: -kv[1])
+    top = items[:8]
+    rest = items[8:]
+    rows = list(top)
+    rest_sum = sum(c for _, c in rest)
+    if rest_sum:
+        rows.append((f"+{len(rest)} older", rest_sum))
+
+    latest = max((v for v, _ in items), key=_vkey, default="")
+    on_latest = fork_counts.get(latest, 0)
+
+    w = 480
+    row_h = 23
+    top_pad = 66
+    h = top_pad + len(rows) * row_h + 24
+    s = card_open(w, h)
+    pad = 20
+    s.append(txt(pad, 32, "VERSION BREAKDOWN", 11, MUTED, weight=600, spacing="1.5"))
+    s.append(txt(pad, 50, "active installs by release", 11.5, MUTED))
+    s.append(txt(w - pad, 42, human(fork_total), 24, ACCENT, weight=700, anchor="end"))
+
+    label_w = 78
+    bar_x = pad + label_w
+    bar_max = w - pad - bar_x - 84  # reserve right column for count + %
+    maxc = max((c for _, c in rows), default=1)
+    for i, (ver, c) in enumerate(rows):
+        y = top_pad + i * row_h
+        cy = y + row_h / 2 + 4
+        is_latest = ver == latest
+        col = GREEN if is_latest else ACCENT
+        s.append(txt(bar_x - 8, cy, ver, 11.5, TEXT if is_latest else MUTED,
+                     weight=700 if is_latest else 400, anchor="end"))
+        bw = max(bar_max * c / maxc, 2)
+        s.append(f'<rect x="{bar_x}" y="{y + 4}" width="{bw:.1f}" height="{row_h - 11}" rx="3" '
+                 f'fill="{col}" fill-opacity="{0.95 if is_latest else 0.65}"/>')
+        pct = c / fork_total * 100 if fork_total else 0
+        s.append(txt(w - pad, cy, f"{human(c)} · {pct:.0f}%", 10.5, MUTED, anchor="end"))
+
+    foot = f"{latest} leads · {len(fork_counts)} releases in use · {_now():%b %-d}" if fork_total else "collecting…"
+    s.append(txt(pad, h - 11, foot, 10.5, MUTED))
+    s.append("</svg>")
+    return "\n".join(s)
+
+
 def run_installs(data_dir: Path, repo_dir: Path) -> None:
     fv = fork_versions(repo_dir)
     blob = fetch_json(ANALYTICS_URL)
     entry = blob.get(DOMAIN, {})
     versions = entry.get("versions", {})
     official_total = int(entry.get("total", 0))
-    fork_total = sum(
-        int(c) for ver, c in versions.items() if (nv := normalize_version(ver)) and nv in fv
-    )
+    fork_counts: dict[str, int] = {}
+    for ver, c in versions.items():
+        nv = normalize_version(ver)
+        if nv and nv in fv:
+            fork_counts[nv] = fork_counts.get(nv, 0) + int(c)
+    fork_total = sum(fork_counts.values())
 
     today = f"{_now():%Y-%m-%d}"
     hist_path = data_dir / "installs-history.json"
@@ -234,8 +289,9 @@ def run_installs(data_dir: Path, repo_dir: Path) -> None:
 
     write_json(data_dir / "installs.json", shields_endpoint("active installs", human(fork_total), "41BDF5"))
     (data_dir / "installs-trend.svg").write_text(render_installs_svg(history, fork_total, official_total))
-    print(f"[installs] fork={fork_total} (of {official_total} domain total) versions_matched="
-          f"{sum(1 for v in versions if (n := normalize_version(v)) and n in fv)}")
+    (data_dir / "versions.svg").write_text(render_versions_svg(fork_counts, fork_total))
+    print(f"[installs] fork={fork_total} (of {official_total} domain total) "
+          f"versions_matched={len(fork_counts)}")
 
 
 # --------------------------------------------------------------------------- #
