@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock
@@ -37,6 +38,34 @@ from custom_components.govee.models.device import (
     INSTANCE_SCENE,
     INSTANCE_WORK_MODE,
 )
+
+
+@pytest.fixture(autouse=True)
+def enable_event_loop_debug() -> Generator[None, None, None]:
+    """Override pytest-homeassistant-custom-component's autouse fixture.
+
+    The upstream fixture is declared ``enable_event_loop_debug(event_loop)``
+    and depends on pytest-asyncio's ``event_loop`` fixture. pytest-asyncio
+    >=1.0 removed that fixture, so the current plugin release instead calls
+    ``asyncio.get_event_loop()`` directly — which raises ``RuntimeError: no
+    current event loop`` for synchronous unit tests that run after the loop
+    from an earlier async test has been torn down. The set of affected files
+    shifts with collection order, so any new test module can tip previously
+    green sync files over the edge.
+
+    Shadowing the plugin fixture suite-wide (conftest overrides plugin
+    fixtures by name) and guaranteeing a current loop keeps both this fixture
+    and the sibling ``verify_cleanup`` working without depending on a running
+    async test. Debug mode is preserved.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    loop.set_debug(True)
+    yield
+
 
 # Capability constants for test devices
 DEVICE_TYPE_LIGHT = "devices.types.light"
