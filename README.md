@@ -24,11 +24,11 @@
 
 <div align="center">
 
-<img alt="Active installs trend" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/installs-trend.svg" width="49%" />
+<img alt="Active installs trend" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/installs-trend.svg?v=2" width="49%" />
 &nbsp;
-<img alt="Govee API uptime" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/api-uptime.svg" width="49%" />
+<img alt="Govee API uptime" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/api-uptime.svg?v=2" width="49%" />
 
-<img alt="Installs by version" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/versions.svg" width="60%" />
+<img alt="Installs by version" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/versions.svg?v=2" width="60%" />
 
 </div>
 
