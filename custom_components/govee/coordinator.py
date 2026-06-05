@@ -47,7 +47,10 @@ except ImportError:  # pragma: no cover — HA installs without Bluetooth
 
 from .ble_advertisement import BleAdvertisementHandler
 from .ble_advertisement import sku_from_ble_name as _sku_from_ble_name  # noqa: F401
+from .api.mqtt_control import command_to_mqtt
 from .const import (
+    CONF_ENABLE_MQTT_CONTROL,
+    DEFAULT_ENABLE_MQTT_CONTROL,
     DOMAIN,
     OPTIMISTIC_GRACE_CAP_SECONDS,
 )
@@ -158,6 +161,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._api_client = api_client
         self._iot_credentials = iot_credentials
         self._enable_groups = enable_groups
+        # Opt-in: route power/brightness/color over MQTT instead of REST.
+        self._enable_mqtt_control = config_entry.options.get(
+            CONF_ENABLE_MQTT_CONTROL, DEFAULT_ENABLE_MQTT_CONTROL
+        )
 
         # Device registry
         self._devices: dict[str, GoveeDevice] = {}
@@ -1208,6 +1215,22 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     return True
                 # BLE failed — fall through to REST
 
+            # MQTT-native control tier: when enabled and connected, push
+            # power/brightness/color over the AWS IoT channel (~50ms) instead
+            # of the REST cloud API (~500ms). Group devices and non-capable
+            # commands (color temp, scenes, segments) fall through to REST.
+            if (
+                self._enable_mqtt_control
+                and self.mqtt_connected
+                and not device.is_group
+            ):
+                if await self._try_mqtt_command(device_id, device.sku, command):
+                    self._record_transport_success(device_id, "mqtt")
+                    self._apply_optimistic_update(device_id, command)
+                    self.async_set_updated_data(self._states)
+                    return True
+                # MQTT not applicable / publish failed — fall through to REST
+
             # Serialize segment commands per device. Govee silently drops
             # parallel segment requests (issue #53); sequential dispatch
             # with a small gap respects the 100/min rate limit. Optimistic
@@ -1286,6 +1309,35 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # Pace the next acquire so bursts don't trip silent rate limiting.
             await asyncio.sleep(SEGMENT_COMMAND_PACING_SECONDS)
             return success
+
+    async def _try_mqtt_command(
+        self, device_id: str, sku: str, command: DeviceCommand
+    ) -> bool:
+        """Attempt to send a command via native MQTT. Returns True on success.
+
+        Only power, brightness, and RGB color map to native MQTT commands;
+        all others return False so the caller falls back to REST. A failure
+        is recorded only when a publish was actually attempted and failed
+        (not when the command simply has no MQTT representation).
+        """
+        mapped = command_to_mqtt(command, sku)
+        if mapped is None:
+            return False  # Not MQTT-capable — silent fall-through to REST.
+
+        if self._mqtt_client is None:
+            return False
+
+        topic = await self._ensure_device_topic(device_id)
+        if not topic:
+            return False
+
+        cmd, data, cmd_version = mapped
+        success = await self._mqtt_client.async_publish_command(
+            topic, cmd, data, cmd_version=cmd_version
+        )
+        if not success:
+            self._record_transport_failure(device_id, "mqtt", "publish_failed")
+        return success
 
     async def _try_ble_command(self, device_id: str, command: DeviceCommand) -> bool:
         """Attempt to send a command via BLE. Returns True on success.

@@ -38,6 +38,7 @@ from .const import (
     CONF_EMAIL,
     CONF_ENABLE_DIY_SCENES,
     CONF_ENABLE_GROUPS,
+    CONF_ENABLE_MQTT_CONTROL,
     CONF_ENABLE_SCENES,
     CONF_ENABLE_SEGMENTS,
     CONF_EXPOSE_TRANSPORT_ENTITIES,
@@ -48,6 +49,7 @@ from .const import (
     DEFAULT_API_TEMPERATURE_UNIT,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
+    DEFAULT_ENABLE_MQTT_CONTROL,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_ENABLE_SEGMENTS,
     DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
@@ -696,6 +698,13 @@ class GoveeOptionsFlow(OptionsFlow):
                         default=options.get(
                             CONF_EXPOSE_TRANSPORT_ENTITIES,
                             DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
+                        ),
+                    ): bool,
+                    vol.Optional(
+                        CONF_ENABLE_MQTT_CONTROL,
+                        default=options.get(
+                            CONF_ENABLE_MQTT_CONTROL,
+                            DEFAULT_ENABLE_MQTT_CONTROL,
                         ),
                     ): bool,
                     vol.Optional(

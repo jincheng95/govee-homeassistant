@@ -570,6 +570,64 @@ class GoveeAwsIotClient:
                     err,
                 )
 
+    async def async_publish_command(
+        self,
+        device_topic: str | None,
+        cmd: str,
+        data: dict[str, Any],
+        *,
+        cmd_version: int = 0,
+    ) -> bool:
+        """Publish a generic command to a device's MQTT topic.
+
+        Builds the standard Govee MQTT command envelope and publishes it.
+        Used for both native control commands (turn/brightness/colorwc) and
+        BLE passthrough (ptReal).
+
+        Args:
+            device_topic: Device-specific MQTT topic. Required for AWS IoT -
+                          obtained from undocumented API.
+            cmd: Command name (e.g. "turn", "brightness", "colorwc", "ptReal").
+            data: Command-specific data payload.
+            cmd_version: Command version (0 standard, 1 legacy color).
+
+        Returns:
+            True if publish succeeded, False otherwise.
+        """
+        if not self._connected or self._client is None:
+            _LOGGER.warning("Cannot publish %s: MQTT not connected", cmd)
+            return False
+
+        if not device_topic:
+            _LOGGER.warning(
+                "Cannot publish %s: No device topic available. "
+                "Device topics must be fetched from Govee undocumented API.",
+                cmd,
+            )
+            return False
+
+        payload = {
+            "msg": {
+                "cmd": cmd,
+                "data": data,
+                "cmdVersion": cmd_version,
+                "transaction": f"v_{int(time.time() * 1000)}",
+                "type": 1,
+            }
+        }
+
+        try:
+            await self._client.publish(device_topic, json.dumps(payload))
+            _LOGGER.debug(
+                "Published %s to %s...",
+                cmd,
+                device_topic[:30],
+            )
+            return True
+        except Exception as err:
+            _LOGGER.error("Failed to publish %s: %s", cmd, err)
+            return False
+
     async def async_publish_ptreal(
         self,
         device_id: str,
@@ -594,49 +652,16 @@ class GoveeAwsIotClient:
         Returns:
             True if publish succeeded, False otherwise.
         """
-        if not self._connected or self._client is None:
-            _LOGGER.warning("Cannot publish ptReal: MQTT not connected")
-            return False
-
-        if not device_topic:
-            _LOGGER.warning(
-                "Cannot publish ptReal for %s: No device topic available. "
-                "Device topics must be fetched from Govee undocumented API.",
-                device_id,
-            )
-            return False
-
         # Normalize to list for consistent handling
         if isinstance(ble_packet_base64, str):
             packets = [ble_packet_base64]
         else:
             packets = ble_packet_base64
 
-        # Build ptReal payload with device targeting
-        payload = {
-            "msg": {
-                "cmd": "ptReal",
-                "data": {
-                    "command": packets,
-                    "device": device_id,
-                    "sku": sku,
-                },
-                "cmdVersion": 0,
-                "transaction": f"v_{int(time.time() * 1000)}",
-                "type": 1,
-            }
+        # ptReal data carries device targeting inside the data block.
+        data: dict[str, Any] = {
+            "command": packets,
+            "device": device_id,
+            "sku": sku,
         }
-
-        try:
-            await self._client.publish(device_topic, json.dumps(payload))
-            _LOGGER.debug(
-                "Published ptReal to %s for device %s (sku=%s, packets=%d)",
-                device_topic[:30] + "...",
-                device_id,
-                sku,
-                len(packets),
-            )
-            return True
-        except Exception as err:
-            _LOGGER.error("Failed to publish ptReal: %s", err)
-            return False
+        return await self.async_publish_command(device_topic, "ptReal", data)
