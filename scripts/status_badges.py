@@ -164,11 +164,11 @@ def txt(x, y, s, size, color, *, weight=400, anchor="start", spacing=None) -> st
 # installs mode
 # --------------------------------------------------------------------------- #
 def render_installs_svg(history: list, fork_total: int, official_total: int) -> str:
-    w, h = 480, 150
+    w, h = 480, 192
     s = card_open(w, h)
     pad = 20
     s.append(txt(pad, 34, "ACTIVE INSTALLS", 11, MUTED, weight=600, spacing="1.5"))
-    s.append(txt(pad, 78, human(fork_total), 40, ACCENT, weight=700))
+    s.append(txt(pad, 88, human(fork_total), 46, ACCENT, weight=700))
 
     # 7-day delta
     delta_str, delta_col = "", MUTED
@@ -184,11 +184,11 @@ def render_installs_svg(history: list, fork_total: int, official_total: int) -> 
         else:
             delta_str = "— 0 / 7d"
     if delta_str:
-        s.append(txt(pad + 4, 100, delta_str, 12, delta_col, weight=600))
+        s.append(txt(pad + 4, 116, delta_str, 12, delta_col, weight=600))
 
     # sparkline (area) along the right ~60% of the card
     counts = [p["count"] for p in history][-40:]
-    gx0, gy0, gw, gh = 190, 28, 270, 92
+    gx0, gy0, gw, gh = 190, 32, 270, 130
     if len(counts) >= 2:
         lo, hi = min(counts), max(counts)
         rng = (hi - lo) or 1
@@ -235,7 +235,7 @@ def render_versions_svg(fork_counts: dict[str, int], fork_total: int) -> str:
 
     latest = items[0][0] if items else ""
 
-    w = 480
+    w = 760  # full-row width (≈ both top cards side by side)
     row_h = 23
     top_pad = 66
     h = top_pad + len(rows) * row_h + 24
