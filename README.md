@@ -30,6 +30,8 @@
 
 <img alt="Installs by version" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/versions.svg?v=3" width="99%" />
 
+<img alt="GitHub star growth" src="https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/stars-trend.svg?v=1" width="99%" />
+
 </div>
 
 <sub>**Active installs** counts only versions **released by this repository** — other `govee` forks and legacy installs sharing the same domain are excluded — and reflects Home Assistant instances opted into Usage‑level analytics, so true usage is higher. **Govee API status** pings `openapi.api.govee.com` and `app2.govee.com` hourly: round of red bars on the right = an outage today, not a problem with your setup. Both graphs update automatically via GitHub Actions ([uptime](.github/workflows/uptime.yml) · [install‑stats](.github/workflows/install-stats.yml)).</sub>
@@ -260,20 +262,6 @@ logger:
 - The device **SKU / model** (e.g. `H6199`) and what's wrong
 - A **diagnostics download** (and a **debug log** if it's a control/connectivity problem)
 - Your Home Assistant and integration versions
-
----
-
-## ⭐ Star history
-
-<div align="center">
-<a href="https://star-history.com/#lasswellt/govee-homeassistant&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=lasswellt/govee-homeassistant&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=lasswellt/govee-homeassistant&type=Date" />
-    <img alt="Star history chart for lasswellt/govee-homeassistant" src="https://api.star-history.com/svg?repos=lasswellt/govee-homeassistant&type=Date" width="70%" />
-  </picture>
-</a>
-</div>
 
 ---
 

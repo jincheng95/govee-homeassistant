@@ -43,6 +43,11 @@ jobs:
       - name: Generate install-stats artifacts
         run: python scripts/status_badges.py installs --data-dir out --repo-dir .
 
+      - name: Generate star-growth artifact
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/status_badges.py stars --data-dir out
+
       - name: Publish to badges branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

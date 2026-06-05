@@ -25,7 +25,9 @@ fi
 REMOTE_URL="$(git remote get-url "$REMOTE")"
 
 python3 scripts/status_badges.py installs --data-dir "$STAGE" --repo-dir "$ROOT"
-python3 scripts/status_badges.py uptime  --data-dir "$STAGE" --repo-dir "$ROOT"
+python3 scripts/status_badges.py uptime   --data-dir "$STAGE" --repo-dir "$ROOT"
+GITHUB_TOKEN="${GITHUB_TOKEN:-$(gh auth token 2>/dev/null || true)}" \
+  python3 scripts/status_badges.py stars --data-dir "$STAGE"
 
 pushd "$STAGE" >/dev/null
 git init -q -b badges

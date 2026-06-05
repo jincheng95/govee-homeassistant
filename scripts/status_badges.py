@@ -22,8 +22,9 @@ import json
 import re
 import subprocess
 import sys
+import os
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ANALYTICS_URL = "https://analytics.home-assistant.io/custom_integrations.json"
@@ -45,7 +46,9 @@ ACCENT = "#41BDF5"  # HA / Govee blue
 GREEN = "#3fb950"
 AMBER = "#d29922"
 RED = "#f85149"
+STAR = "#e3b341"  # GitHub star gold
 
+REPO_SLUG = "lasswellt/govee-homeassistant"
 UA = "govee-homeassistant-status/1.0 (+https://github.com/lasswellt/govee-homeassistant)"
 
 
@@ -300,6 +303,83 @@ def run_installs(data_dir: Path, repo_dir: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# stars mode
+# --------------------------------------------------------------------------- #
+def fetch_stargazers(slug: str) -> list[datetime]:
+    """All star timestamps, oldest first. Uses GITHUB_TOKEN if present."""
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    out: list[datetime] = []
+    page = 1
+    while page <= 50:  # 5000-star ceiling
+        url = f"https://api.github.com/repos/{slug}/stargazers?per_page=100&page={page}"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": UA, "Accept": "application/vnd.github.star+json"})
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if not data:
+            break
+        out += [datetime.strptime(d["starred_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                for d in data if d.get("starred_at")]
+        if len(data) < 100:
+            break
+        page += 1
+    return sorted(out)
+
+
+def render_stars_svg(times: list[datetime], delta30: int) -> str:
+    w, h = 760, 180
+    s = card_open(w, h)
+    pad = 20
+    total = len(times)
+    s.append(txt(pad, 34, "GITHUB STARS", 11, MUTED, weight=600, spacing="1.5"))
+    s.append(txt(pad, 92, human(total), 46, STAR, weight=700))
+    if delta30 > 0:
+        s.append(txt(pad + 4, 120, f"★ +{delta30} / 30d", 12, GREEN, weight=600))
+
+    gx0, gy0, gw, gh = 220, 30, w - pad - 220, 118
+    if total >= 2:
+        first = times[0]
+        now = _now()
+        span = (now - first).total_seconds() or 1
+        pts = []
+        for i, t in enumerate(times):
+            px = gx0 + gw * (t - first).total_seconds() / span
+            py = gy0 + gh - (gh - 8) * (i + 1) / total
+            pts.append((px, py))
+        pts.append((gx0 + gw, gy0 + gh - (gh - 8)))  # extend to "now" at full count
+        line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        area = f"M{gx0},{gy0 + gh} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) + f" L{pts[-1][0]:.1f},{gy0 + gh} Z"
+        s.append(
+            f'<defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1">'
+            f'<stop offset="0" stop-color="{STAR}" stop-opacity="0.4"/>'
+            f'<stop offset="1" stop-color="{STAR}" stop-opacity="0"/></linearGradient></defs>'
+        )
+        s.append(f'<path d="{area}" fill="url(#sg)"/>')
+        s.append(f'<polyline points="{line}" fill="none" stroke="{STAR}" stroke-width="2" stroke-linejoin="round"/>')
+        s.append(f'<circle cx="{pts[-1][0]:.1f}" cy="{pts[-1][1]:.1f}" r="3.5" fill="{STAR}"/>')
+        foot_l = f"since {first:%b %Y} · {total} stargazers"
+    else:
+        s.append(txt(gx0 + gw / 2, gy0 + gh / 2, "collecting…", 12, MUTED, anchor="middle"))
+        foot_l = "collecting…"
+
+    s.append(txt(pad, h - 13, foot_l, 10.5, MUTED))
+    s.append(txt(w - pad, h - 13, stamp(), 10.5, MUTED, anchor="end"))
+    s.append("</svg>")
+    return "\n".join(s)
+
+
+def run_stars(data_dir: Path) -> None:
+    times = fetch_stargazers(REPO_SLUG)
+    cutoff = _now() - timedelta(days=30)
+    delta30 = sum(1 for t in times if t >= cutoff)
+    write_json(data_dir / "stars.json", shields_endpoint("stars", human(len(times)), "e3b341"))
+    (data_dir / "stars-trend.svg").write_text(render_stars_svg(times, delta30))
+    print(f"[stars] total={len(times)} +{delta30}/30d")
+
+
+# --------------------------------------------------------------------------- #
 # uptime mode
 # --------------------------------------------------------------------------- #
 def probe(url: str, timeout: int = 12) -> tuple[bool, int | None]:
@@ -448,13 +528,15 @@ def run_uptime(data_dir: Path) -> None:
 # --------------------------------------------------------------------------- #
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["installs", "uptime"])
+    ap.add_argument("mode", choices=["installs", "uptime", "stars"])
     ap.add_argument("--data-dir", default="docs/badges", type=Path)
     ap.add_argument("--repo-dir", default=".", type=Path)
     args = ap.parse_args()
     args.data_dir.mkdir(parents=True, exist_ok=True)
     if args.mode == "installs":
         run_installs(args.data_dir, args.repo_dir)
+    elif args.mode == "stars":
+        run_stars(args.data_dir)
     else:
         run_uptime(args.data_dir)
     return 0
