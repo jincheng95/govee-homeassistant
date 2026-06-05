@@ -40,13 +40,16 @@ OP could not reliably connect Govee lights to HA and found two official integrat
 |---|---|---|---|---|---|
 | **H6099** | RGBWW bulb (single-zone) | No | discovery only | unconfirmed | **Supported** — README, full caps |
 | **H6004** | RGBWW bulb 800lm | unconfirmed | discovery only | No | **Discovered if API returns** (capability-driven) |
-| **H5083** | Smart plug | No | No | No | **Partial** — switch.py, power-value bug |
+| **H5083** | Smart plug | No | No | No | **Supported** — switch.py (REST on_off 1/0; see §3 correction) |
 | **H7172** | Ice maker (appliance) | No | No | No | **Unsupported** — `ice_maker` type unwired |
 
 (H5083 was initially assumed to be a sensor — both web + codebase agents independently corrected this to **smart plug**.)
 
-### This repo's H5083 bug (concrete)
-`docs/govee-protocol-reference.md:926` documents plug power values **17/16**, but `PowerCommand.get_value()` (`models/commands.py:91-93`) sends **1/0**. On/off to H5083-class plugs may malfunction. Verify against a live plug before claiming support.
+### H5083 "power-value bug" — FALSE POSITIVE (corrected 2026-06-04)
+Initial analysis flagged a bug: `docs/govee-protocol-reference.md:926` documents plug power values **17/16**, but `PowerCommand.get_value()` (`models/commands.py:93-94`) sends **1/0**. On hardware-aware verification this is **not a bug**:
+- `PowerCommand` is dispatched only via `client.py:362` `control_device()` → the **REST Developer API v2.0** path (`to_api_payload()` → `{"type":"devices.capabilities.on_off","instance":"powerSwitch","value":1|0}`). REST `powerSwitch` is `1`/`0` for **all** devices including plugs (matches CLAUDE.md control-payload example).
+- The `17`/`16` quirk sits in protocol-reference §3.6–3.8, which is explicitly the **legacy app / AWS-IoT MQTT BLE-style command protocol** (`cmd`/`cmdVersion`/`transaction`/`type` envelope). This integration's MQTT path (`api/mqtt.py`) is **receive-only**; it never publishes power commands.
+- `get_value()` is shared by light/switch/fan/humidifier — changing it to `17`/`16` would break REST on/off for every device. **No change made.** H5083 plug control via REST `1`/`0` is correct.
 
 ### This repo's H7172 gap (concrete)
 `devices.types.ice_maker` is not in any `DEVICE_TYPE_*` constant and wires to no platform; already noted as a gap in `docs/_research/2026-04-08_pr-37-validation.md:77`. Supporting it needs a new device-type constant + platform (likely a `switch` or a custom appliance entity) — low value (single niche SKU) unless requested.
@@ -75,7 +78,7 @@ No dependency conflicts — this is the subject project itself. The integration'
 **For this project (actionable):**
 | Action | Priority | Rationale |
 |---|---|---|
-| Fix `PowerCommand.get_value()` 17/16 vs 1/0 for plugs (H5083 class) | **High** | Confirmed bug; affects advertised plug support |
+| ~~Fix `PowerCommand` 17/16 for plugs~~ — **WITHDRAWN, false positive** | — | REST `on_off` uses 1/0 for all devices; 17/16 is the MQTT/app protocol (unused for control). No change. See §3. |
 | Verify H6004 end-to-end against live API/device | Medium | Capability-driven path is untested for this exact SKU |
 | README competitive positioning (vs govee2mqtt/goveelife/local) | Medium | 2FA handling + MQTT push + full caps are real differentiators |
 | Decide on `ice_maker` (H7172) platform wiring | Low | Single niche SKU; wire only on request |
@@ -92,11 +95,7 @@ No dependency conflicts — this is the subject project itself. The integration'
 
 ## 6. Implementation Sketch
 
-**H5083 power-value fix** (highest-value action):
-1. Confirm against `docs/govee-protocol-reference.md:926` (values 17/16 for plug power).
-2. In `custom_components/govee/models/commands.py` `PowerCommand.get_value()` (~L91-93), branch plug/appliance device types to emit 16/17 instead of 0/1 — gate on the device-type the H5083 routes through (`DEVICE_TYPE_PLUG`/`is_plug`).
-3. Add a unit test in `tests/test_models.py` asserting plug PowerCommand serializes to 17 (on) / 16 (off), regular light stays 1/0.
-4. Verify on a live plug (or capture from Govee app traffic) — do not claim fixed on code inspection alone.
+**H5083 power-value fix — WITHDRAWN.** Investigation (2026-06-04) showed the premise was wrong: control goes over REST v2.0 (`powerSwitch` = 1/0 universally), not the MQTT/app protocol the 17/16 quirk belongs to. No edit to `commands.py`. See §3 for the full trace.
 
 **Optional H7172 ice-maker wiring:**
 1. Add `DEVICE_TYPE_ICE_MAKER` to `const.py` mapping `devices.types.ice_maker`.
@@ -107,7 +106,7 @@ No dependency conflicts — this is the subject project itself. The integration'
 
 ## 7. Risks
 
-- **H5083 fix is unverified until tested on hardware.** The 17/16 values come from a protocol-reference doc, not a live capture in this session. Treat as a strong hypothesis; a wrong value silently no-ops the plug. Mitigation: verify against live device or app-captured traffic before shipping, and keep the test asserting the exact serialized payload.
+- **H5083 "bug" was a false positive (resolved).** The 17/16 values belong to the MQTT/app command protocol (protocol-reference §3.6–3.8), not the REST `on_off` path this integration uses for control. REST `powerSwitch` is 1/0 for all devices. The original recommendation to change `PowerCommand` is withdrawn; acting on it would have broken on/off for every device.
 - **Capability-driven discovery assumes the Govee API returns these SKUs with standard capability types.** H6004 has not been exercised end-to-end; if Govee returns a non-standard capability shape, discovery could add a device with no working entities. Mitigation: log unrecognized capability types (CLAUDE.md debug-logging pattern) and test against a real account.
 - **Rate limits remain a structural ceiling.** Even with MQTT push, large installs can exhaust 10,000 req/day if polling cadence is aggressive. Mitigation: keep poll interval user-configurable (already present) and prefer MQTT-driven updates over polling where possible.
 - **Comments on the source Reddit thread were not captured** (loaded async, not in server HTML; Reddit + archive proxies blocked). Community-sentiment findings are sourced from adjacent HA-forum/GitHub threads, not the 15 comments on this specific post — directionally reliable but not a verbatim read of that thread's replies.
