@@ -1712,6 +1712,30 @@ class TestFetchWaterDetectorStates:
         assert states[dev_id]["last_time"] == 1717000000
 
     @pytest.mark.asyncio
+    async def test_string_numeric_fields_coerced_to_int(self):
+        """Govee occasionally returns lastTime/battery as strings — must coerce."""
+        dev_id = "AABBCCDDEEFF0011"
+        devices = [
+            {
+                "sku": "H5054",
+                "device": dev_id,
+                "deviceExt": json.dumps(
+                    {
+                        "deviceSettings": {"battery": "75"},
+                        "lastDeviceData": {"lastTime": "1717000000"},
+                    }
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        states = await client.fetch_water_detector_states("tok", {dev_id})
+
+        assert states[dev_id]["battery"] == 75
+        assert states[dev_id]["last_time"] == 1717000000
+
+    @pytest.mark.asyncio
     async def test_ignores_unrequested_devices(self):
         devices = [
             {

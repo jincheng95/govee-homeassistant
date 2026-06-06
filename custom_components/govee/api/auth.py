@@ -56,6 +56,21 @@ _SENSITIVE_FIELDS = frozenset(
 )
 
 
+def _safe_int(value: Any) -> int | None:
+    """int(value) or None — Govee numeric fields occasionally arrive as strings.
+
+    Guards the water-detector ``lastTime``/``battery`` parse so a stray string
+    can't raise during the coordinator's ``last_time > prev_time`` comparison
+    and silently kill polling (issue #62).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _sanitize_response_for_logging(data: Any) -> Any:
     """Mask sensitive fields in API response for safe logging.
 
@@ -698,8 +713,19 @@ class GoveeAuthClient:
             self._session = aiohttp.ClientSession()
             self._owns_session = True
 
-        headers = self._build_govee_headers(self._client_id)
-        headers["Authorization"] = f"Bearer {token}"
+        # Same minimal header set as fetch_bff_leak_sensors (proven to return
+        # 200). Deliberately NO clientId: this client is created fresh per poll
+        # and never logged in, so its random client_id would NOT match the one
+        # the Bearer token is bound to and Govee would reject it (see
+        # fetch_device_topics). The BFF endpoint accepts the token without it.
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "appVersion": GOVEE_APP_VERSION,
+            "clientType": GOVEE_CLIENT_TYPE,
+            "iotVersion": GOVEE_IOT_VERSION,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
 
         # The BFF list uses colon-stripped device IDs; map both ways so callers
         # can pass the developer-API (colon) form and get it back.
@@ -744,10 +770,10 @@ class GoveeAuthClient:
                         except (json.JSONDecodeError, TypeError):
                             ld = {}
                     result[wanted[key]] = {
-                        "online": ld.get("online", True),
-                        "gateway_online": ld.get("gwonline", True),
-                        "battery": settings.get("battery"),
-                        "last_time": ld.get("lastTime"),
+                        "online": bool(ld.get("online", True)),
+                        "gateway_online": bool(ld.get("gwonline", True)),
+                        "battery": _safe_int(settings.get("battery")),
+                        "last_time": _safe_int(ld.get("lastTime")),
                     }
                 return result
 
@@ -781,8 +807,15 @@ class GoveeAuthClient:
             self._session = aiohttp.ClientSession()
             self._owns_session = True
 
-        headers = self._build_govee_headers(self._client_id)
-        headers["Authorization"] = f"Bearer {token}"
+        # Minimal proven header set, no clientId — see fetch_water_detector_states.
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "appVersion": GOVEE_APP_VERSION,
+            "clientType": GOVEE_CLIENT_TYPE,
+            "iotVersion": GOVEE_IOT_VERSION,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
         body = {"device": device_id.replace(":", ""), "limit": 50, "sku": sku}
 
         try:
