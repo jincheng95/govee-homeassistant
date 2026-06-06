@@ -23,7 +23,7 @@ LEAK_HUB_SKUS = frozenset({"H5043", "H5044"})
 # BFF device list (/bff-app/v1/device/list) instead, the same source the H5054
 # leak sensors use. The coordinator synthesizes a thermometer GoveeDevice for
 # each so the existing temperature/humidity sensor entities attach.
-THERMO_HYGRO_BFF_SKUS = frozenset({"H5301"})
+THERMO_HYGRO_BFF_SKUS = frozenset({"H5301", "H5310"})
 
 # Capability type constants (from Govee API v2.0)
 CAPABILITY_ON_OFF = "devices.capabilities.on_off"

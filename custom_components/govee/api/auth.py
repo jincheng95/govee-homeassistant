@@ -158,27 +158,38 @@ GOVEE_USER_AGENT = (
     "(com.ihoment.GoVeeSensor; build:2; iOS 18.4.0) Alamofire/5.10.2"
 )
 
-# Candidate keys a BFF ``lastDeviceData`` reading may hide behind. The exact
-# H5301 shape is unverified (issue #86) — accept the known Govee spellings
-# defensively, same approach as models.state. Govee commonly reports tem/hum as
-# centi-units (e.g. 2350 == 23.50); ``_bff_reading`` de-scales when the raw
-# integer is implausibly large for a room reading.
-_BFF_TEMP_KEYS = ("tem", "temperature", "sensorTemperature", "currentTemperature")
-_BFF_HUMIDITY_KEYS = ("hum", "humidity", "sensorHumidity", "currentHumidity")
+# Candidate keys a BFF ``lastDeviceData`` reading may hide behind, each tagged
+# centi (True) or plain (False). Govee's gateway-bridged thermo-hygrometers
+# (H5310 P2 via H5044, confirmed from #86 diagnostics) report ``tem``/``hum`` as
+# centi-units (2350 == 23.50, including negatives: -500 == -5.0). The plain
+# fallbacks cover any SKU that reports a already-scaled float. Same defensive
+# spirit as models.state.
+_BFF_TEMP_KEYS = (
+    ("tem", True),
+    ("temperature", False),
+    ("sensorTemperature", False),
+    ("currentTemperature", False),
+)
+_BFF_HUMIDITY_KEYS = (
+    ("hum", True),
+    ("humidity", False),
+    ("sensorHumidity", False),
+    ("currentHumidity", False),
+)
 
 
 def _bff_reading(
-    last_device_data: dict[str, Any], keys: tuple[str, ...], scale: float
+    last_device_data: dict[str, Any], keys: tuple[tuple[str, bool], ...]
 ) -> float | None:
     """Extract a temperature/humidity reading from BFF ``lastDeviceData``.
 
-    Tries each candidate key in order; returns the first numeric value found.
-    De-scales suspected centi-units: an integer whose magnitude exceeds 100 is
-    divided by ``scale`` (so 2350 -> 23.5, 5500 -> 55.0). Returns None when no
-    candidate key holds a usable number. UNVERIFIED for H5301 — refine the key
-    list / scaling once a real payload from issue #86 confirms the shape.
+    Tries each ``(key, is_centi)`` candidate in order; returns the first numeric
+    value found. Centi-tagged keys are always divided by 100 when integer (so
+    2350 -> 23.5, -500 -> -5.0, 50 -> 0.5 — no magnitude guess, which would mis-
+    handle near-0 readings). Plain keys pass through unscaled. Returns None when
+    no candidate key holds a usable number.
     """
-    for key in keys:
+    for key, is_centi in keys:
         if key not in last_device_data:
             continue
         raw = last_device_data[key]
@@ -188,8 +199,8 @@ def _bff_reading(
             value = float(raw)
         except (TypeError, ValueError):
             continue
-        if isinstance(raw, int) and abs(value) > 100:
-            value /= scale
+        if is_centi and isinstance(raw, int):
+            value /= 100.0
         return value
     return None
 
@@ -660,8 +671,8 @@ class GoveeAuthClient:
                             "hw_version": settings.get("versionHard", ""),
                             "battery": settings.get("battery"),
                             "online": ld.get("online", True),
-                            "temperature": _bff_reading(ld, _BFF_TEMP_KEYS, 100.0),
-                            "humidity": _bff_reading(ld, _BFF_HUMIDITY_KEYS, 100.0),
+                            "temperature": _bff_reading(ld, _BFF_TEMP_KEYS),
+                            "humidity": _bff_reading(ld, _BFF_HUMIDITY_KEYS),
                         }
                     )
 

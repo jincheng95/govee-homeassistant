@@ -1796,28 +1796,34 @@ class TestFetchLeakWarning:
 class TestBffReadingHelper:
     """_bff_reading extracts + de-scales temp/humidity from lastDeviceData."""
 
-    def test_picks_first_candidate_key(self):
-        assert _bff_reading({"tem": 23.4}, ("tem", "temperature"), 100.0) == 23.4
-
     def test_descales_centi_unit_integers(self):
-        # Govee commonly reports centi-units: 2350 -> 23.5, 5500 -> 55.0.
-        assert _bff_reading({"tem": 2350}, ("tem",), 100.0) == 23.5
-        assert _bff_reading({"hum": 5500}, ("hum",), 100.0) == 55.0
+        # Govee reports centi-units: 2350 -> 23.5, 5500 -> 55.0.
+        assert _bff_reading({"tem": 2350}, (("tem", True),)) == 23.5
+        assert _bff_reading({"hum": 5500}, (("hum", True),)) == 55.0
 
-    def test_plain_float_not_descaled(self):
-        assert _bff_reading({"tem": 23.5}, ("tem",), 100.0) == 23.5
+    def test_descales_negative_and_near_zero(self):
+        # The bug the magnitude heuristic had: -500 -> -5.0, 50 -> 0.5.
+        assert _bff_reading({"tem": -500}, (("tem", True),)) == -5.0
+        assert _bff_reading({"tem": 50}, (("tem", True),)) == 0.5
+        assert _bff_reading({"tem": 0}, (("tem", True),)) == 0.0
 
-    def test_small_integer_not_descaled(self):
-        assert _bff_reading({"hum": 55}, ("hum",), 100.0) == 55.0
+    def test_plain_key_not_descaled(self):
+        assert _bff_reading({"temperature": 23.5}, (("temperature", False),)) == 23.5
+
+    def test_centi_float_not_divided(self):
+        # Only integers are treated as centi; a float is already scaled.
+        assert _bff_reading({"tem": 23.5}, (("tem", True),)) == 23.5
 
     def test_missing_and_empty_return_none(self):
-        assert _bff_reading({}, ("tem",), 100.0) is None
-        assert _bff_reading({"tem": ""}, ("tem",), 100.0) is None
-        assert _bff_reading({"tem": None}, ("tem",), 100.0) is None
+        assert _bff_reading({}, (("tem", True),)) is None
+        assert _bff_reading({"tem": ""}, (("tem", True),)) is None
+        assert _bff_reading({"tem": None}, (("tem", True),)) is None
 
     def test_non_numeric_skipped_for_next_key(self):
         assert (
-            _bff_reading({"tem": "x", "temperature": 21}, ("tem", "temperature"), 100.0)
+            _bff_reading(
+                {"tem": "x", "temperature": 21}, (("tem", True), ("temperature", False))
+            )
             == 21.0
         )
 
@@ -1857,6 +1863,52 @@ class TestBffThermoHygrometerDiscovery:
         assert s["battery"] == 88
         assert s["sw_version"] == "1.02.01"
         assert s["temperature"] == 22.35
+        assert s["humidity"] == 47.1
+        assert s["online"] is True
+
+    @pytest.mark.asyncio
+    async def test_h5310_gateway_bridged_shape(self):
+        """Real #86 shape: H5310 P2 via H5044 hub — deviceExt + nested settings
+        as JSON strings, sno + gatewayInfo, centi tem/hum (incl. negative)."""
+        devices = [
+            {
+                "sku": "H5310",
+                "device": "AA:BB:CC:DD:EE:FF:00:11",
+                "deviceName": "Freezer",
+                "deviceExt": json.dumps(
+                    {
+                        "deviceSettings": json.dumps(
+                            {
+                                "battery": 76,
+                                "sno": 0,
+                                "versionSoft": "2.00.05",
+                                "versionHard": "1.00.00",
+                                "gatewayInfo": {"sku": "H5044"},
+                            }
+                        ),
+                        "lastDeviceData": json.dumps(
+                            {
+                                "online": True,
+                                "tem": -500,
+                                "hum": 4710,
+                                "lastTime": 1717000000,
+                            }
+                        ),
+                    }
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        sensors = await client.fetch_bff_thermo_hygrometers(token="tok")
+
+        assert len(sensors) == 1
+        s = sensors[0]
+        assert s["sku"] == "H5310"
+        assert s["battery"] == 76
+        assert s["sw_version"] == "2.00.05"
+        assert s["temperature"] == -5.0  # -500 centi, near/below zero
         assert s["humidity"] == 47.1
         assert s["online"] is True
 
