@@ -1980,6 +1980,44 @@ class TestWaterDetectorPoll:
         assert warn_calls["n"] == 0
         assert coord._states[did].water_leak is None
 
+    @pytest.mark.asyncio
+    async def test_clears_wet_when_alert_read_in_app(self, monkeypatch):
+        """A currently-wet detector re-checks warnMessage even with no fresh
+        report; an empty/read history clears it (user acked in the Govee app)."""
+        import custom_components.govee.coordinator as coord_mod
+
+        coord, did = self._coord_with_detector()
+        coord._states[did].water_leak = True  # currently wet
+        coord._water_leak_last_time[did] = 1717000000  # no fresh report
+
+        warn_calls = {"n": 0}
+
+        async def _warn(*a, **k):
+            warn_calls["n"] += 1
+            return False  # alert now read → not wet
+
+        inner = MagicMock()
+        inner.fetch_water_detector_states = _make_async(
+            {did: {"online": True, "gateway_online": True, "last_time": 1717000000}}
+        )
+        inner.fetch_leak_warning = _warn
+        monkeypatch.setattr(coord_mod, "GoveeAuthClient", lambda **kw: _AsyncCM(inner))
+
+        await coord._poll_water_detectors()
+
+        # warnMessage IS called because the sensor was wet, and it clears.
+        assert warn_calls["n"] == 1
+        assert coord._states[did].water_leak is False
+        coord.async_update_listeners.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_poll_noop_without_iot_credentials(self):
+        """No account token → poll is a no-op (entity simply stays unknown)."""
+        coord, did = self._coord_with_detector()
+        coord._iot_credentials = None
+        await coord._poll_water_detectors()
+        assert coord._states[did].water_leak is None
+
 
 class _AsyncCM:
     """Minimal async context manager yielding a configured inner mock."""
