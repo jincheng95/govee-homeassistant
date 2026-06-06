@@ -5,12 +5,9 @@ Mutable state that changes with device updates from API or MQTT.
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
-
-_LOGGER = logging.getLogger(__name__)
 
 # Candidate keys a thermometer/hygrometer reading may hide behind. The Govee
 # state shape varies by SKU and transport: REST returns either a plain number
@@ -46,18 +43,6 @@ _SENSOR_HUMIDITY_MQTT_KEYS = (
     "currentHumidity",
     "humidity",
     "hum",
-)
-# Candidate flat keys for the H5054 water-leak trip in an AWS IoT push
-# (issue #62). The exact spelling is unobserved — the developer-API device
-# list advertises the ``bodyAppearedEvent`` capability but the trip has never
-# been captured. Accept the plausible spellings; an unrecognized leak push is
-# logged at debug so the real key can be added once a live trip is captured.
-_WATER_LEAK_MQTT_KEYS = (
-    "bodyAppearedEvent",
-    "bodyAppeared",
-    "waterLeak",
-    "leak",
-    "leakEvent",
 )
 
 
@@ -411,25 +396,6 @@ class GoveeDeviceState:
                 if parsed is not None:
                     self.sensor_humidity = parsed
                     break
-
-        # H5054 water-leak trip (issue #62). The flat-key spelling is
-        # unobserved; scan the candidates. A leak-shaped push that matches no
-        # known key is logged so the real spelling can be added later.
-        for key in _WATER_LEAK_MQTT_KEYS:
-            if key in data:
-                value = data[key]
-                if isinstance(value, dict):
-                    self.water_leak = bool(value.get("state") or value.get("value"))
-                elif value is not None:
-                    self.water_leak = bool(value)
-                break
-        else:
-            if any("leak" in k.lower() or "body" in k.lower() for k in data):
-                _LOGGER.debug(
-                    "Unrecognized H5054 leak-shaped MQTT push (no known key "
-                    "matched); please report payload keys: %s",
-                    sorted(data),
-                )
 
         # A confirmed push ends the optimistic grace window — from this point
         # on API polls are authoritative again for power/brightness.

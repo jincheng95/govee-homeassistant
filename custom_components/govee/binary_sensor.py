@@ -142,10 +142,11 @@ class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity):
 class GoveeWaterLeakBinarySensor(GoveeEntity, BinarySensorEntity):
     """Binary sensor reporting a water-leak trip for standalone detectors (H5054).
 
-    The trip arrives via the ``bodyAppearedEvent`` event capability — Govee's
-    developer API reuses this generic instance for the H5054 water signal
-    (issue #62). The device-state poll only returns ``online``, so the trip
-    normally lands via MQTT push.
+    Detected via the ``bodyAppearedEvent`` capability on the developer-API
+    device, but the trip itself never reaches the developer API or AWS IoT —
+    H5054 is a 433 MHz RF-only sensor bridged to the cloud by an H5040 gateway
+    (issue #62). The coordinator polls the account ``warnMessage`` history for
+    the leak state and writes it to ``state.water_leak``.
     """
 
     _attr_device_class = BinarySensorDeviceClass.MOISTURE

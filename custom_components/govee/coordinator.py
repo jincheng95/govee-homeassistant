@@ -109,6 +109,12 @@ SEGMENT_COMMAND_PACING_SECONDS = 0.12
 # BFF polling interval for leak sensor state (seconds)
 BFF_POLL_INTERVAL = 300  # 5 minutes
 
+# Standalone water-detector (H5054) leak-poll interval (seconds). These RF-only
+# sensors deliver their trip only via the account warnMessage history (issue
+# #62); a leak surfaces with up to this much latency. Kept conservative because
+# the account API's rate limit is unverified (homebridge issue #543).
+WATER_DETECTOR_POLL_INTERVAL = 120  # 2 minutes
+
 
 class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     """Coordinator for Govee device state management.
@@ -237,6 +243,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._pending_button_presses: dict[str, int] = {}
         self._bff_poll_unsub: CALLBACK_TYPE | None = None
         self._bff_poll_task: asyncio.Task[None] | None = None
+        # Standalone water-detector (H5054) leak polling (issue #62).
+        self._wd_poll_unsub: CALLBACK_TYPE | None = None
+        # Last seen lastTime per detector — warnMessage is only called when the
+        # device has freshly reported (or is currently wet), keeping the account
+        # API request count low.
+        self._water_leak_last_time: dict[str, int] = {}
         # PII-free census of the last BFF device-list response (#87 diagnostics):
         # which SKUs the BFF returned and whether they carry leak-discovery
         # fields. Empty until the first _discover_leak_sensors() call.
@@ -518,6 +530,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # Discover leak sensors via BFF API (requires email/password)
         await self._discover_leak_sensors()
+
+        # Standalone water detectors (H5054) deliver their trip only via the
+        # account warnMessage history — start the dedicated leak poll (issue #62).
+        if self._water_detectors and self._iot_credentials:
+            await self._poll_water_detectors()
+            self._schedule_water_detector_poll()
 
     async def _discover_devices(self) -> None:
         """Discover all devices from Govee API."""
@@ -818,6 +836,106 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # light / switch entities that also subscribe to the coordinator).
         async_dispatcher_send(self.hass, f"{DOMAIN}_leak_update")
 
+    @property
+    def _water_detectors(self) -> list[GoveeDevice]:
+        """Developer-API devices that expose a standalone water-leak event.
+
+        These (H5054) appear in the regular device list but have no MQTT topic
+        and no pollable event state — their trip is fetched separately via the
+        account warnMessage history (issue #62).
+        """
+        return [
+            d
+            for d in self._devices.values()
+            if not d.is_group and d.supports_water_leak_event
+        ]
+
+    def _schedule_water_detector_poll(self) -> None:
+        """Schedule the next standalone water-detector leak poll."""
+        if self._wd_poll_unsub:
+            self._wd_poll_unsub()
+        self._wd_poll_unsub = async_call_later(
+            self.hass,
+            WATER_DETECTOR_POLL_INTERVAL,
+            self._water_detector_poll_callback,
+        )
+
+    async def _water_detector_poll_callback(self, _now: Any = None) -> None:
+        """Periodic callback: poll water detectors, then re-arm the timer."""
+        await self._poll_water_detectors()
+        self._schedule_water_detector_poll()
+
+    async def _poll_water_detectors(self) -> None:
+        """Poll standalone water detectors (H5054) for online + leak state.
+
+        One BFF ``device/list`` GET per tick yields online/gateway/battery/
+        lastTime. ``warnMessage`` (one POST per detector) is only called when a
+        detector has freshly reported (``last_time`` advanced) or is currently
+        wet (to detect the user clearing the alert) — keeping the account-API
+        request count near one call per tick in steady state (issue #62).
+        """
+        detectors = self._water_detectors
+        if not detectors or not self._iot_credentials:
+            return
+
+        token = self._iot_credentials.token
+        device_ids = {d.device_id for d in detectors}
+        sku_by_id = {d.device_id: d.sku for d in detectors}
+
+        try:
+            async with GoveeAuthClient(hass=self.hass) as auth_client:
+                states = await auth_client.fetch_water_detector_states(
+                    token, device_ids
+                )
+                changed = False
+                for device_id, info in states.items():
+                    state = self._states.get(device_id)
+                    if state is None:
+                        continue
+
+                    online = bool(info.get("online", True)) and bool(
+                        info.get("gateway_online", True)
+                    )
+                    last_time = info.get("last_time") or 0
+                    prev_time = self._water_leak_last_time.get(device_id, 0)
+
+                    # Only hit warnMessage when there's something new to learn:
+                    # a fresh report, or a currently-wet sensor that may have
+                    # been cleared in the app.
+                    if last_time > prev_time or state.water_leak:
+                        try:
+                            is_wet = await auth_client.fetch_leak_warning(
+                                token, device_id, sku_by_id[device_id]
+                            )
+                        except Exception as err:  # noqa: BLE001
+                            _LOGGER.debug(
+                                "warnMessage poll failed for %s: %s", device_id, err
+                            )
+                            is_wet = bool(state.water_leak)
+                        if state.water_leak != is_wet:
+                            state.water_leak = is_wet
+                            changed = True
+                    if last_time:
+                        self._water_leak_last_time[device_id] = last_time
+
+                    if state.online != online:
+                        state.online = online
+                        changed = True
+                    state.source = "api"
+                    _LOGGER.debug(
+                        "Water-detector %s: online=%s water_leak=%s last_time=%s",
+                        device_id,
+                        online,
+                        state.water_leak,
+                        last_time,
+                    )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Water-detector poll failed: %s", err)
+            return
+
+        if changed:
+            self.async_update_listeners()
+
     @callback
     def _handle_leak_event(self, state_data: dict[str, Any]) -> None:
         """Handle a decoded leak event from MQTT multiSync message."""
@@ -1035,22 +1153,19 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 return refreshed
             return GoveeDeviceState.create_empty(device_id)
 
+        # Standalone water detectors (H5054) carry no useful developer-API state
+        # — the poll only ever returns online=false and never the leak event.
+        # Their online/leak state is owned by the BFF warnMessage poll
+        # (_poll_water_detectors); a developer poll here would clobber it every
+        # cycle. Preserve the BFF-managed state and skip the call (issue #62).
+        if device.supports_water_leak_event:
+            return self._states.get(device_id) or GoveeDeviceState.create_empty(
+                device_id
+            )
+
         try:
             state = await self._api_client.get_device_state(device_id, device.sku)
             self._record_transport_success(device_id, "cloud_api")
-
-            # Diagnostic (issue #62): standalone water detectors (H5054) report
-            # online=false and the poll has so far only ever returned `online`.
-            # Log what each poll yields so a debug capture confirms whether the
-            # leak trip ever surfaces here vs. only on the (absent) MQTT topic.
-            if device.supports_water_leak_event:
-                _LOGGER.debug(
-                    "Water-leak poll for %s (%s): online=%s water_leak=%s",
-                    device.name,
-                    device_id,
-                    state.online,
-                    state.water_leak,
-                )
 
             # Preserve optimistic state fields that API doesn't reliably return.
             # Clear them when device is turned off (no longer active).
@@ -1986,6 +2101,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if self._bff_poll_task and not self._bff_poll_task.done():
             self._bff_poll_task.cancel()
             self._bff_poll_task = None
+        # Cancel standalone water-detector polling (issue #62)
+        if self._wd_poll_unsub:
+            self._wd_poll_unsub()
+            self._wd_poll_unsub = None
 
         # Disconnect all BLE devices
         for ble_device in self._ble_devices.values():

@@ -125,38 +125,16 @@ class TestStateParsing:
 
 
 # --------------------------------------------------------------------------- #
-# State parsing — MQTT push (flat-key best-effort)
+# State parsing — MQTT push: H5054 has no MQTT topic (issue #62), so an
+# unrelated push must never touch the leak flag.
 # --------------------------------------------------------------------------- #
 
 
 class TestMqttParsing:
-    @pytest.mark.parametrize(
-        "key",
-        ["bodyAppearedEvent", "bodyAppeared", "waterLeak", "leak", "leakEvent"],
-    )
-    def test_water_leak_from_mqtt_scalar(self, key):
-        state = GoveeDeviceState(device_id="x")
-        state.update_from_mqtt({key: 1})
-        assert state.water_leak is True
-
-    def test_water_leak_from_mqtt_struct(self):
-        state = GoveeDeviceState(device_id="x")
-        state.update_from_mqtt({"bodyAppearedEvent": {"state": True}})
-        assert state.water_leak is True
-
     def test_unrelated_push_leaves_leak_untouched(self):
         state = GoveeDeviceState(device_id="x")
         state.update_from_mqtt({"onOff": 1, "brightness": 50})
         assert state.water_leak is None
-
-    def test_unknown_leak_key_logs_debug(self, caplog):
-        state = GoveeDeviceState(device_id="x")
-        import logging
-
-        with caplog.at_level(logging.DEBUG):
-            state.update_from_mqtt({"someLeakField": 1})
-        assert state.water_leak is None
-        assert "Unrecognized H5054 leak-shaped MQTT push" in caplog.text
 
 
 # --------------------------------------------------------------------------- #

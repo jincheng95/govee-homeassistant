@@ -1880,3 +1880,122 @@ class TestCoordinatorAlwaysUpdate:
         listeners even when _async_update_data returns the same dict instance."""
         coord = self._build()
         assert coord.always_update is True
+
+
+class TestWaterDetectorPoll:
+    """Standalone H5054 leak polling via the account warnMessage path (#62)."""
+
+    def _coord_with_detector(self):
+        import custom_components.govee.coordinator as coord_mod
+        from custom_components.govee.models.device import (
+            CAPABILITY_EVENT,
+            INSTANCE_BODY_APPEARED_EVENT,
+        )
+
+        hass = MagicMock()
+        config_entry = MagicMock()
+        config_entry.entry_id = "test_entry"
+        coord = coord_mod.GoveeCoordinator(
+            hass=hass,
+            config_entry=config_entry,
+            api_client=MagicMock(),
+            iot_credentials=MagicMock(token="tok"),
+            poll_interval=60,
+        )
+        device = GoveeDevice(
+            device_id="DABFC0D6A5FE0008E8",
+            sku="H5054",
+            name="Washing Machine",
+            device_type="devices.types.sensor",
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_EVENT,
+                    instance=INSTANCE_BODY_APPEARED_EVENT,
+                    parameters={},
+                ),
+            ),
+            is_group=False,
+        )
+        coord._devices[device.device_id] = device
+        coord._states[device.device_id] = GoveeDeviceState.create_empty(
+            device.device_id
+        )
+        coord.async_update_listeners = MagicMock()
+        return coord, device.device_id
+
+    def test_water_detectors_property_finds_h5054(self):
+        coord, did = self._coord_with_detector()
+        assert [d.device_id for d in coord._water_detectors] == [did]
+
+    @pytest.mark.asyncio
+    async def test_poll_sets_leak_and_online(self, monkeypatch):
+        import custom_components.govee.coordinator as coord_mod
+
+        coord, did = self._coord_with_detector()
+
+        inner = MagicMock()
+        inner.fetch_water_detector_states = _make_async(
+            {
+                did: {
+                    "online": True,
+                    "gateway_online": True,
+                    "battery": 80,
+                    "last_time": 1717000000,
+                }
+            }
+        )
+        inner.fetch_leak_warning = _make_async(True)
+        monkeypatch.setattr(coord_mod, "GoveeAuthClient", lambda **kw: _AsyncCM(inner))
+
+        await coord._poll_water_detectors()
+
+        state = coord._states[did]
+        assert state.water_leak is True
+        assert state.online is True
+        coord.async_update_listeners.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_warnmessage_skipped_when_no_new_report(self, monkeypatch):
+        """Steady state (last_time not advanced, not wet) → no warnMessage call."""
+        import custom_components.govee.coordinator as coord_mod
+
+        coord, did = self._coord_with_detector()
+        coord._water_leak_last_time[did] = 1717000000  # already seen
+
+        warn_calls = {"n": 0}
+
+        async def _warn(*a, **k):
+            warn_calls["n"] += 1
+            return False
+
+        inner = MagicMock()
+        inner.fetch_water_detector_states = _make_async(
+            {did: {"online": True, "gateway_online": True, "last_time": 1717000000}}
+        )
+        inner.fetch_leak_warning = _warn
+        monkeypatch.setattr(coord_mod, "GoveeAuthClient", lambda **kw: _AsyncCM(inner))
+
+        await coord._poll_water_detectors()
+
+        assert warn_calls["n"] == 0
+        assert coord._states[did].water_leak is None
+
+
+class _AsyncCM:
+    """Minimal async context manager yielding a configured inner mock."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    async def __aenter__(self):
+        return self._inner
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _make_async(return_value):
+    async def _inner(*args, **kwargs):
+        return return_value
+
+    return _inner

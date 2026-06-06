@@ -1675,3 +1675,89 @@ class TestBffResponseSkeleton:
         """Skeleton is None until a BFF fetch populates it."""
         client = GoveeAuthClient(session=make_session_get(make_mock_response(200, {})))
         assert client.bff_response_skeleton() is None
+
+
+class TestFetchWaterDetectorStates:
+    """Standalone H5054 state via the BFF device list (issue #62)."""
+
+    @pytest.mark.asyncio
+    async def test_parses_online_battery_last_time(self):
+        dev_id = "DA:BF:C0:D6:A5:FE:00:08:E8"
+        devices = [
+            {
+                "sku": "H5054",
+                "device": "DABFC0D6A5FE0008E8",
+                "deviceName": "Washing Machine",
+                "deviceExt": json.dumps(
+                    {
+                        "deviceSettings": {"battery": 90},
+                        "lastDeviceData": {
+                            "online": True,
+                            "gwonline": True,
+                            "lastTime": 1717000000,
+                        },
+                    }
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        states = await client.fetch_water_detector_states("tok", {dev_id})
+
+        assert dev_id in states
+        assert states[dev_id]["online"] is True
+        assert states[dev_id]["gateway_online"] is True
+        assert states[dev_id]["battery"] == 90
+        assert states[dev_id]["last_time"] == 1717000000
+
+    @pytest.mark.asyncio
+    async def test_ignores_unrequested_devices(self):
+        devices = [
+            {
+                "sku": "H5054",
+                "device": "AABBCCDDEEFF0011",
+                "deviceExt": json.dumps({"lastDeviceData": {"online": True}}),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        states = await client.fetch_water_detector_states("tok", {"00:00:00:00:00:00"})
+
+        assert states == {}
+
+
+class TestFetchLeakWarning:
+    """H5054 leak trip via the warnMessage history (issue #62)."""
+
+    @pytest.mark.asyncio
+    async def test_unread_leakage_alert_is_wet(self):
+        data = {"data": [{"read": False, "message": "Leakage Alert"}]}
+        session = make_session_post([make_mock_response(200, data)])
+        client = GoveeAuthClient(session=session)
+
+        assert await client.fetch_leak_warning("tok", "DABFC0D6A5FE0008E8", "H5054")
+
+    @pytest.mark.asyncio
+    async def test_read_alert_is_not_wet(self):
+        data = {"data": [{"read": True, "message": "Leakage Alert"}]}
+        session = make_session_post([make_mock_response(200, data)])
+        client = GoveeAuthClient(session=session)
+
+        assert not await client.fetch_leak_warning("tok", "dev", "H5054")
+
+    @pytest.mark.asyncio
+    async def test_non_leak_message_is_not_wet(self):
+        data = {"data": [{"read": False, "message": "Low Battery"}]}
+        session = make_session_post([make_mock_response(200, data)])
+        client = GoveeAuthClient(session=session)
+
+        assert not await client.fetch_leak_warning("tok", "dev", "H5054")
+
+    @pytest.mark.asyncio
+    async def test_empty_history_is_not_wet(self):
+        session = make_session_post([make_mock_response(200, {"data": []})])
+        client = GoveeAuthClient(session=session)
+
+        assert not await client.fetch_leak_warning("tok", "dev", "H5054")

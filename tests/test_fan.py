@@ -379,7 +379,9 @@ def _h1310_device():
         name="Room1 Ceiling Fan",
         device_type="devices.types.light",
         capabilities=(
-            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+            GoveeCapability(
+                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
+            ),
             GoveeCapability(
                 type=CAPABILITY_TOGGLE,
                 instance=INSTANCE_FAN_TOGGLE,
@@ -390,7 +392,9 @@ def _h1310_device():
                 instance=INSTANCE_FAN_SPEED_MODE,
                 parameters={
                     "dataType": "ENUM",
-                    "options": [{"name": f"Speed {i}", "value": i} for i in range(1, 7)],
+                    "options": [
+                        {"name": f"Speed {i}", "value": i} for i in range(1, 7)
+                    ],
                 },
             ),
             GoveeCapability(
@@ -480,7 +484,9 @@ class TestGoveeCeilingFanEntity:
         assert fan_entity.is_on is False
 
     @pytest.mark.asyncio
-    async def test_set_percentage_sends_mode_command(self, fan_entity, mock_coordinator):
+    async def test_set_percentage_sends_mode_command(
+        self, fan_entity, mock_coordinator
+    ):
         from custom_components.govee.models import ModeCommand
         from custom_components.govee.models.device import INSTANCE_FAN_SPEED_MODE
 

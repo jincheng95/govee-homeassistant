@@ -130,6 +130,11 @@ GOVEE_VERIFICATION_URL = "https://app2.govee.com/account/rest/account/v1/verific
 GOVEE_IOT_KEY_URL = "https://app2.govee.com/app/v1/account/iot/key"
 GOVEE_DEVICE_LIST_URL = "https://app2.govee.com/device/rest/devices/v1/list"
 GOVEE_BFF_DEVICE_LIST_URL = "https://app2.govee.com/bff-app/v1/device/list"
+# Standalone water-detector leak alerts (H5054 via H5040 gateway, issue #62).
+# These RF-only sensors never reach the developer API / AWS IoT; their trip is
+# only retrievable from the account "warning message" history, matching the
+# homebridge-govee `http` path.
+GOVEE_LEAK_WARN_URL = "https://app2.govee.com/leak/rest/device/v1/warnMessage"
 GOVEE_CLIENT_TYPE = "1"
 GOVEE_APP_VERSION = "7.4.10"
 GOVEE_IOT_VERSION = "0"
@@ -555,7 +560,9 @@ class GoveeAuthClient:
                 sensors: list[dict[str, Any]] = []
                 devices = data.get("data", {}).get("devices", [])
                 # Retain for the diagnostics census + skeleton (PII-free; #87).
-                self._last_bff_raw_devices = devices if isinstance(devices, list) else []
+                self._last_bff_raw_devices = (
+                    devices if isinstance(devices, list) else []
+                )
                 self._last_bff_raw_response = data
                 for device in devices:
                     sku = device.get("sku", "")
@@ -666,6 +673,160 @@ class GoveeAuthClient:
                 f"Connection error fetching BFF device list: {err}"
             ) from err
 
+    async def fetch_water_detector_states(
+        self,
+        token: str,
+        device_ids: set[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch online/battery/last-report state for standalone water detectors.
+
+        Standalone H5054 detectors (issue #62) are RF-only leaves bridged to the
+        cloud by an H5040 WiFi gateway. They appear in the BFF device list with
+        ``lastDeviceData`` carrying ``online``/``gwonline``/``lastTime`` and
+        ``deviceSettings`` carrying ``battery`` — but their leak *trip* lives in
+        the separate warnMessage history (see ``fetch_leak_warning``).
+
+        Args:
+            token: Account token (from app2 login).
+            device_ids: Device IDs to return state for (developer-API format).
+
+        Returns:
+            ``{device_id: {"online", "gateway_online", "battery", "last_time"}}``
+            for each requested device found in the BFF list.
+        """
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+            self._owns_session = True
+
+        headers = self._build_govee_headers(self._client_id)
+        headers["Authorization"] = f"Bearer {token}"
+
+        # The BFF list uses colon-stripped device IDs; map both ways so callers
+        # can pass the developer-API (colon) form and get it back.
+        wanted = {d.replace(":", "").upper(): d for d in device_ids}
+        result: dict[str, dict[str, Any]] = {}
+
+        try:
+            async with self._session.get(
+                GOVEE_BFF_DEVICE_LIST_URL,
+                headers=headers,
+            ) as response:
+                data = await response.json()
+                if response.status == 401:
+                    raise GoveeAuthError("BFF API auth failed (401)")
+                if response.status != 200:
+                    message = data.get("message", f"HTTP {response.status}")
+                    raise GoveeApiError(
+                        f"BFF device list failed: {message}", code=response.status
+                    )
+
+                for device in data.get("data", {}).get("devices", []):
+                    raw_id = device.get("device", "")
+                    key = raw_id.replace(":", "").upper()
+                    if key not in wanted:
+                        continue
+                    device_ext = device.get("deviceExt", {})
+                    if isinstance(device_ext, str):
+                        try:
+                            device_ext = json.loads(device_ext)
+                        except (json.JSONDecodeError, TypeError):
+                            device_ext = {}
+                    settings = device_ext.get("deviceSettings", {})
+                    if isinstance(settings, str):
+                        try:
+                            settings = json.loads(settings)
+                        except (json.JSONDecodeError, TypeError):
+                            settings = {}
+                    ld = device_ext.get("lastDeviceData", {})
+                    if isinstance(ld, str):
+                        try:
+                            ld = json.loads(ld)
+                        except (json.JSONDecodeError, TypeError):
+                            ld = {}
+                    result[wanted[key]] = {
+                        "online": ld.get("online", True),
+                        "gateway_online": ld.get("gwonline", True),
+                        "battery": settings.get("battery"),
+                        "last_time": ld.get("lastTime"),
+                    }
+                return result
+
+        except aiohttp.ClientError as err:
+            raise GoveeApiError(
+                f"Connection error fetching water-detector states: {err}"
+            ) from err
+
+    async def fetch_leak_warning(
+        self,
+        token: str,
+        device_id: str,
+        sku: str,
+    ) -> bool:
+        """Return True if a standalone water detector has an unread leak alert.
+
+        Mirrors homebridge-govee's H5054 path: POST the device's warnMessage
+        history and treat an unread ``LeakageAlert`` entry as wet. The trip
+        latches until the user reads the alert in the Govee app (the only
+        signal Govee exposes for these gateway-bridged RF sensors, issue #62).
+
+        Args:
+            token: Account token (from app2 login).
+            device_id: Device ID (developer-API or colon form; stripped here).
+            sku: Device SKU (e.g. ``H5054``).
+
+        Returns:
+            True if an unread leak alert exists, False otherwise.
+        """
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+            self._owns_session = True
+
+        headers = self._build_govee_headers(self._client_id)
+        headers["Authorization"] = f"Bearer {token}"
+        body = {"device": device_id.replace(":", ""), "limit": 50, "sku": sku}
+
+        try:
+            async with self._session.post(
+                GOVEE_LEAK_WARN_URL,
+                headers=headers,
+                json=body,
+            ) as response:
+                data = await response.json()
+                if response.status == 401:
+                    raise GoveeAuthError("warnMessage auth failed (401)")
+                if response.status != 200:
+                    message = data.get("message", f"HTTP {response.status}")
+                    raise GoveeApiError(
+                        f"warnMessage failed: {message}", code=response.status
+                    )
+
+                messages = data.get("data", [])
+                if not isinstance(messages, list):
+                    return False
+                # Log the raw shape once so the reverse-engineered field names
+                # can be confirmed against real accounts (issue #62).
+                _LOGGER.debug(
+                    "warnMessage for %s (%s): %d entries raw=%s",
+                    device_id,
+                    sku,
+                    len(messages),
+                    messages[:3],
+                )
+                return any(
+                    isinstance(m, dict)
+                    and not m.get("read", True)
+                    and str(m.get("message", ""))
+                    .lower()
+                    .replace(" ", "")
+                    .startswith("leakagealert")
+                    for m in messages
+                )
+
+        except aiohttp.ClientError as err:
+            raise GoveeApiError(
+                f"Connection error fetching leak warning: {err}"
+            ) from err
+
     def bff_device_census(self) -> list[dict[str, Any]]:
         """PII-free summary of the last BFF device list, for diagnostics (#87).
 
@@ -686,7 +847,11 @@ class GoveeAuthClient:
                     device_ext = json.loads(device_ext)
                 except (json.JSONDecodeError, TypeError):
                     device_ext = {}
-            settings = device_ext.get("deviceSettings", {}) if isinstance(device_ext, dict) else {}
+            settings = (
+                device_ext.get("deviceSettings", {})
+                if isinstance(device_ext, dict)
+                else {}
+            )
             if isinstance(settings, str):
                 try:
                     settings = json.loads(settings)
@@ -706,7 +871,9 @@ class GoveeAuthClient:
                     # the recent_multisync events in one capture.
                     "sno": sno,
                     "has_gateway_info": bool(gateway),
-                    "gateway_sku": gateway.get("sku") if isinstance(gateway, dict) else None,
+                    "gateway_sku": (
+                        gateway.get("sku") if isinstance(gateway, dict) else None
+                    ),
                 }
             )
         return census
