@@ -215,3 +215,20 @@ class TestTemperatureSensorFahrenheitConversion:
         stub = SimpleNamespace(device_state=state, coordinator=coordinator)
         # Default is celsius -> passthrough
         assert GoveeTemperatureSensor.native_value.fget(stub) == 21.5
+
+
+class TestSyntheticThermometer:
+    """GoveeDevice.synthetic_thermometer backs BFF-only H5301 discovery (#86)."""
+
+    def test_synthesizes_thermometer_with_sensor_capabilities(self):
+        device = GoveeDevice.synthetic_thermometer(
+            device_id="AA:BB:CC:DD:EE:FF:00:11", sku="H5301", name="Office"
+        )
+        assert device.device_id == "AA:BB:CC:DD:EE:FF:00:11"
+        assert device.sku == "H5301"
+        assert device.name == "Office"
+        assert device.device_type == DEVICE_TYPE_THERMOMETER
+        assert device.is_thermometer
+        assert device.supports_temperature_sensor
+        assert device.supports_humidity_sensor
+        assert not device.is_group

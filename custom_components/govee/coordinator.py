@@ -232,6 +232,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # Leak sensor subsystem
         self._leak_sensors: dict[str, GoveeLeakSensor] = {}
         self._leak_states: dict[str, GoveeLeakSensorState] = {}
+        # BFF-discovered thermo-hygrometers (H5301, issue #86): synthesized into
+        # self._devices but absent from the Developer API, so their state is
+        # owned by the BFF poll, not /device/state. Tracked here so
+        # _fetch_device_state skips the (futile) developer poll for them.
+        self._bff_thermometer_ids: set[str] = set()
         # When a device's temp/humidity reading last *changed* — backs the
         # "Last Reading" diagnostic timestamp sensor (#83). Cloud batches
         # BLE-bridged sensors every 15-60 min; this exposes when a new value
@@ -531,6 +536,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # Discover leak sensors via BFF API (requires email/password)
         await self._discover_leak_sensors()
 
+        # Discover BFF-only thermo-hygrometers (H5301) that the Developer API
+        # omits (issue #86). Also requires email/password.
+        await self._discover_bff_thermometers()
+
         # Standalone water detectors (H5054) deliver their trip only via the
         # account warnMessage history — start the dedicated leak poll (issue #62).
         if self._water_detectors and self._iot_credentials:
@@ -718,6 +727,105 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.warning("Failed to discover leak sensors: %s", err)
             # Non-fatal: integration continues without leak sensors
 
+    async def _discover_bff_thermometers(self) -> None:
+        """Discover thermo-hygrometers (H5301) via the BFF device list (issue #86).
+
+        These battery WiFi sensors are absent from the Developer API
+        ``/user/devices`` list, so capability-based discovery never sees them and
+        they "don't show up". The account-login BFF list returns them; we
+        synthesize a thermometer ``GoveeDevice`` for each and inject it into
+        ``self._devices`` (before platform setup) so the existing temperature /
+        humidity sensor entities attach. Reuses the app2 IoT token, like
+        ``_discover_leak_sensors``. Non-fatal on error.
+        """
+        if not self._iot_credentials:
+            return
+
+        try:
+            async with GoveeAuthClient(hass=self.hass) as auth_client:
+                sensors = await auth_client.fetch_bff_thermo_hygrometers(
+                    self._iot_credentials.token
+                )
+                # Refresh the PII-free census so a diagnostics download shows the
+                # thermo-hygro SKU flags even when no leak sensors are present.
+                self._bff_device_census = auth_client.bff_device_census()
+                self._bff_response_skeleton = auth_client.bff_response_skeleton()
+
+            for sensor in sensors:
+                device_id = sensor["device_id"]
+                if not device_id:
+                    continue
+                device = GoveeDevice.synthetic_thermometer(
+                    device_id=device_id,
+                    sku=sensor["sku"],
+                    name=sensor["name"],
+                )
+                self._devices[device_id] = device
+                self._bff_thermometer_ids.add(device_id)
+
+                state = GoveeDeviceState.create_empty(device_id)
+                state.online = sensor.get("online", True)
+                state.sensor_temperature = sensor.get("temperature")
+                state.sensor_humidity = sensor.get("humidity")
+                self._states[device_id] = state
+                self._ensure_transport_health(device_id)
+                if (
+                    state.sensor_temperature is not None
+                    or state.sensor_humidity is not None
+                ):
+                    self._sensor_reading_changed_at[device_id] = dt_util.utcnow()
+
+            if self._bff_thermometer_ids:
+                _LOGGER.info(
+                    "Discovered %d BFF thermo-hygrometers (issue #86)",
+                    len(self._bff_thermometer_ids),
+                )
+                # Reuse the 5-min BFF poll loop to refresh readings.
+                self._schedule_bff_poll()
+
+        except Exception as err:
+            _LOGGER.warning("Failed to discover BFF thermo-hygrometers: %s", err)
+            # Non-fatal: integration continues without these sensors.
+
+    async def _refresh_bff_thermometers(self) -> None:
+        """Refresh temp/humidity readings for BFF thermo-hygrometers (issue #86)."""
+        if not self._bff_thermometer_ids or not self._iot_credentials:
+            return
+
+        try:
+            async with GoveeAuthClient(hass=self.hass) as auth_client:
+                sensors = await auth_client.fetch_bff_thermo_hygrometers(
+                    self._iot_credentials.token
+                )
+        except Exception as err:
+            _LOGGER.debug("BFF thermo-hygrometer refresh failed: %s", err)
+            return
+
+        for sensor in sensors:
+            device_id = sensor["device_id"]
+            existing = self._states.get(device_id)
+            if existing is None:
+                continue
+            new_state = GoveeDeviceState.create_empty(device_id)
+            new_state.online = sensor.get("online", True)
+            # Preserve last good reading when the BFF omits it this cycle —
+            # battery WiFi sensors upload infrequently.
+            new_state.sensor_temperature = (
+                sensor.get("temperature")
+                if sensor.get("temperature") is not None
+                else existing.sensor_temperature
+            )
+            new_state.sensor_humidity = (
+                sensor.get("humidity")
+                if sensor.get("humidity") is not None
+                else existing.sensor_humidity
+            )
+            self._note_sensor_reading_change(device_id, new_state, existing)
+            self._states[device_id] = new_state
+            self._record_transport_success(device_id, "cloud_api")
+
+        self.async_set_updated_data(self._states)
+
     def register_leak_hubs(self) -> None:
         """Register each leak sensor's hub as a device.
 
@@ -770,6 +878,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     async def _bff_poll_callback(self, _now: Any = None) -> None:
         """Callback for periodic BFF polling."""
         await self._poll_bff_leak_state()
+        # Refresh thermo-hygrometer readings on the same cadence (issue #86).
+        await self._refresh_bff_thermometers()
         # Re-schedule next poll
         self._schedule_bff_poll()
 
@@ -1159,6 +1269,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # (_poll_water_detectors); a developer poll here would clobber it every
         # cycle. Preserve the BFF-managed state and skip the call (issue #62).
         if device.supports_water_leak_event:
+            return self._states.get(device_id) or GoveeDeviceState.create_empty(
+                device_id
+            )
+
+        # BFF-discovered thermo-hygrometers (H5301) are absent from the Developer
+        # API, so /device/state would 400/return empty and clobber the
+        # BFF-managed reading. State is owned by _refresh_bff_thermometers (#86).
+        if device_id in self._bff_thermometer_ids:
             return self._states.get(device_id) or GoveeDeviceState.create_empty(
                 device_id
             )

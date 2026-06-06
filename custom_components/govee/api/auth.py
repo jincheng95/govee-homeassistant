@@ -36,7 +36,7 @@ from .exceptions import (
     GoveeLoginRejectedError,
 )
 
-from ..models.device import LEAK_HUB_SKUS, LEAK_SENSOR_SKUS
+from ..models.device import LEAK_HUB_SKUS, LEAK_SENSOR_SKUS, THERMO_HYGRO_BFF_SKUS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,6 +157,41 @@ GOVEE_USER_AGENT = (
     f"GoveeHome/{GOVEE_APP_VERSION} "
     "(com.ihoment.GoVeeSensor; build:2; iOS 18.4.0) Alamofire/5.10.2"
 )
+
+# Candidate keys a BFF ``lastDeviceData`` reading may hide behind. The exact
+# H5301 shape is unverified (issue #86) — accept the known Govee spellings
+# defensively, same approach as models.state. Govee commonly reports tem/hum as
+# centi-units (e.g. 2350 == 23.50); ``_bff_reading`` de-scales when the raw
+# integer is implausibly large for a room reading.
+_BFF_TEMP_KEYS = ("tem", "temperature", "sensorTemperature", "currentTemperature")
+_BFF_HUMIDITY_KEYS = ("hum", "humidity", "sensorHumidity", "currentHumidity")
+
+
+def _bff_reading(
+    last_device_data: dict[str, Any], keys: tuple[str, ...], scale: float
+) -> float | None:
+    """Extract a temperature/humidity reading from BFF ``lastDeviceData``.
+
+    Tries each candidate key in order; returns the first numeric value found.
+    De-scales suspected centi-units: an integer whose magnitude exceeds 100 is
+    divided by ``scale`` (so 2350 -> 23.5, 5500 -> 55.0). Returns None when no
+    candidate key holds a usable number. UNVERIFIED for H5301 — refine the key
+    list / scaling once a real payload from issue #86 confirms the shape.
+    """
+    for key in keys:
+        if key not in last_device_data:
+            continue
+        raw = last_device_data[key]
+        if raw is None or raw == "":
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(raw, int) and abs(value) > 100:
+            value /= scale
+        return value
+    return None
 
 
 def _derive_client_id(email: str) -> str:
@@ -514,6 +549,130 @@ class GoveeAuthClient:
         except aiohttp.ClientError as err:
             raise GoveeApiError(
                 f"Connection error fetching device topics: {err}"
+            ) from err
+
+    async def fetch_bff_thermo_hygrometers(
+        self,
+        token: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch thermo-hygrometer devices (e.g. H5301) from the BFF device list.
+
+        These battery WiFi sensors are absent from the Developer API
+        ``/user/devices`` list (issue #86), but appear here. Identity comes from
+        the top-level fields + ``deviceExt.deviceSettings``; the last temperature
+        / humidity reading from ``deviceExt.lastDeviceData``.
+
+        Args:
+            token: Authentication token (from app2 login).
+
+        Returns:
+            List of dicts, each with keys: device_id, name, sku, sw_version,
+            hw_version, battery, online, temperature (°C or None), humidity
+            (%RH or None).
+        """
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+            self._owns_session = True
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "appVersion": GOVEE_APP_VERSION,
+            "clientType": GOVEE_CLIENT_TYPE,
+            "iotVersion": GOVEE_IOT_VERSION,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        try:
+            async with self._session.get(
+                GOVEE_BFF_DEVICE_LIST_URL,
+                headers=headers,
+            ) as response:
+                data = await response.json()
+
+                if response.status == 401:
+                    message = data.get("message", "Unauthorized")
+                    raise GoveeAuthError(f"BFF API auth failed (401): {message}")
+
+                if response.status != 200:
+                    message = data.get("message", f"HTTP {response.status}")
+                    raise GoveeApiError(
+                        f"BFF device list failed: {message}",
+                        code=response.status,
+                    )
+
+                devices = data.get("data", {}).get("devices", [])
+                # Retain for the diagnostics census (#87 / #86 triage).
+                self._last_bff_raw_devices = (
+                    devices if isinstance(devices, list) else []
+                )
+                self._last_bff_raw_response = data
+
+                sensors: list[dict[str, Any]] = []
+                for device in devices:
+                    sku = device.get("sku", "")
+                    if sku not in THERMO_HYGRO_BFF_SKUS:
+                        continue
+
+                    device_id = device.get("device", "")
+                    name = device.get("deviceName", sku)
+
+                    device_ext = device.get("deviceExt", {})
+                    if isinstance(device_ext, str):
+                        try:
+                            device_ext = json.loads(device_ext)
+                        except (json.JSONDecodeError, TypeError):
+                            device_ext = {}
+
+                    settings = device_ext.get("deviceSettings", {})
+                    if isinstance(settings, str):
+                        try:
+                            settings = json.loads(settings)
+                        except (json.JSONDecodeError, TypeError):
+                            settings = {}
+                    settings = settings if isinstance(settings, dict) else {}
+
+                    ld = device_ext.get("lastDeviceData", {})
+                    if isinstance(ld, str):
+                        try:
+                            ld = json.loads(ld)
+                        except (json.JSONDecodeError, TypeError):
+                            ld = {}
+                    ld = ld if isinstance(ld, dict) else {}
+
+                    # The exact reading keys/scaling for H5301 are unverified —
+                    # log the raw lastDeviceData so a diagnostics download / debug
+                    # log from issue #86 reveals the true shape, then refine
+                    # _BFF_TEMP_KEYS / _BFF_HUMIDITY_KEYS if needed.
+                    _LOGGER.debug(
+                        "BFF thermo-hygrometer %s (%s) lastDeviceData keys=%s",
+                        name,
+                        sku,
+                        sorted(ld.keys()),
+                    )
+
+                    sensors.append(
+                        {
+                            "device_id": device_id,
+                            "name": name,
+                            "sku": sku,
+                            "sw_version": settings.get("versionSoft", ""),
+                            "hw_version": settings.get("versionHard", ""),
+                            "battery": settings.get("battery"),
+                            "online": ld.get("online", True),
+                            "temperature": _bff_reading(ld, _BFF_TEMP_KEYS, 100.0),
+                            "humidity": _bff_reading(ld, _BFF_HUMIDITY_KEYS, 100.0),
+                        }
+                    )
+
+                _LOGGER.info(
+                    "Discovered %d thermo-hygrometers from BFF API", len(sensors)
+                )
+                return sensors
+
+        except aiohttp.ClientError as err:
+            raise GoveeApiError(
+                f"Connection error fetching BFF device list: {err}"
             ) from err
 
     async def fetch_bff_leak_sensors(
@@ -898,6 +1057,7 @@ class GoveeAuthClient:
                     "sku": sku,
                     "in_leak_sensor_skus": sku in LEAK_SENSOR_SKUS,
                     "in_leak_hub_skus": sku in LEAK_HUB_SKUS,
+                    "in_thermo_hygro_skus": sku in THERMO_HYGRO_BFF_SKUS,
                     "has_sno": sno is not None,
                     # The slot number itself is a small int (0-7), not PII —
                     # surfacing it lets us confirm slot<->sno alignment against

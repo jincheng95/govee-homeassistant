@@ -32,6 +32,7 @@ from custom_components.govee.api.auth import (
     GOVEE_USER_AGENT,
     GoveeAuthClient,
     GoveeIotCredentials,
+    _bff_reading,
     _derive_client_id,
 )
 from custom_components.govee.api.exceptions import (
@@ -1785,3 +1786,123 @@ class TestFetchLeakWarning:
         client = GoveeAuthClient(session=session)
 
         assert not await client.fetch_leak_warning("tok", "dev", "H5054")
+
+
+# ==============================================================================
+# Tests: thermo-hygrometer discovery via BFF list (issue #86 — H5301)
+# ==============================================================================
+
+
+class TestBffReadingHelper:
+    """_bff_reading extracts + de-scales temp/humidity from lastDeviceData."""
+
+    def test_picks_first_candidate_key(self):
+        assert _bff_reading({"tem": 23.4}, ("tem", "temperature"), 100.0) == 23.4
+
+    def test_descales_centi_unit_integers(self):
+        # Govee commonly reports centi-units: 2350 -> 23.5, 5500 -> 55.0.
+        assert _bff_reading({"tem": 2350}, ("tem",), 100.0) == 23.5
+        assert _bff_reading({"hum": 5500}, ("hum",), 100.0) == 55.0
+
+    def test_plain_float_not_descaled(self):
+        assert _bff_reading({"tem": 23.5}, ("tem",), 100.0) == 23.5
+
+    def test_small_integer_not_descaled(self):
+        assert _bff_reading({"hum": 55}, ("hum",), 100.0) == 55.0
+
+    def test_missing_and_empty_return_none(self):
+        assert _bff_reading({}, ("tem",), 100.0) is None
+        assert _bff_reading({"tem": ""}, ("tem",), 100.0) is None
+        assert _bff_reading({"tem": None}, ("tem",), 100.0) is None
+
+    def test_non_numeric_skipped_for_next_key(self):
+        assert (
+            _bff_reading({"tem": "x", "temperature": 21}, ("tem", "temperature"), 100.0)
+            == 21.0
+        )
+
+
+class TestBffThermoHygrometerDiscovery:
+    """H5301 thermo-hygrometers are discovered via the BFF list (issue #86)."""
+
+    @pytest.mark.asyncio
+    async def test_h5301_discovered_with_readings(self):
+        devices = [
+            {
+                "sku": "H5301",
+                "device": "AA:BB:CC:DD:EE:FF:00:11",
+                "deviceName": "Office",
+                "deviceExt": json.dumps(
+                    {
+                        "deviceSettings": {
+                            "battery": 88,
+                            "versionSoft": "1.02.01",
+                            "versionHard": "1.00.00",
+                        },
+                        "lastDeviceData": {"tem": 2235, "hum": 4710, "online": True},
+                    }
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        sensors = await client.fetch_bff_thermo_hygrometers(token="tok")
+
+        assert len(sensors) == 1
+        s = sensors[0]
+        assert s["sku"] == "H5301"
+        assert s["device_id"] == "AA:BB:CC:DD:EE:FF:00:11"
+        assert s["name"] == "Office"
+        assert s["battery"] == 88
+        assert s["sw_version"] == "1.02.01"
+        assert s["temperature"] == 22.35
+        assert s["humidity"] == 47.1
+        assert s["online"] is True
+
+    @pytest.mark.asyncio
+    async def test_non_thermo_skus_ignored(self):
+        devices = [
+            {"sku": "H6001", "device": "X", "deviceName": "Lamp"},
+            {"sku": "H5058", "device": "Y", "deviceName": "Leak"},
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        assert await client.fetch_bff_thermo_hygrometers(token="tok") == []
+
+    @pytest.mark.asyncio
+    async def test_missing_readings_yield_none_not_error(self):
+        devices = [
+            {
+                "sku": "H5301",
+                "device": "AA:BB:CC:DD:EE:FF:00:11",
+                "deviceName": "Office",
+                "deviceExt": json.dumps({"deviceSettings": {"battery": 50}}),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        s = (await client.fetch_bff_thermo_hygrometers(token="tok"))[0]
+        assert s["temperature"] is None
+        assert s["humidity"] is None
+        assert s["online"] is True
+
+    @pytest.mark.asyncio
+    async def test_census_flags_thermo_hygro_sku(self):
+        devices = [
+            {
+                "sku": "H5301",
+                "device": "AA:BB:CC:DD:EE:FF:00:11",
+                "deviceName": "Office",
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        await client.fetch_bff_thermo_hygrometers(token="tok")
+        census = client.bff_device_census()
+
+        assert census[0]["sku"] == "H5301"
+        assert census[0]["in_thermo_hygro_skus"] is True
