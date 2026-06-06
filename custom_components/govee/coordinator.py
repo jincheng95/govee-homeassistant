@@ -1039,6 +1039,19 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             state = await self._api_client.get_device_state(device_id, device.sku)
             self._record_transport_success(device_id, "cloud_api")
 
+            # Diagnostic (issue #62): standalone water detectors (H5054) report
+            # online=false and the poll has so far only ever returned `online`.
+            # Log what each poll yields so a debug capture confirms whether the
+            # leak trip ever surfaces here vs. only on the (absent) MQTT topic.
+            if device.supports_water_leak_event:
+                _LOGGER.debug(
+                    "Water-leak poll for %s (%s): online=%s water_leak=%s",
+                    device.name,
+                    device_id,
+                    state.online,
+                    state.water_leak,
+                )
+
             # Preserve optimistic state fields that API doesn't reliably return.
             # Clear them when device is turned off (no longer active).
             existing_state = self._states.get(device_id)

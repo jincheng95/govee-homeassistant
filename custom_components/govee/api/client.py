@@ -321,6 +321,21 @@ class GoveeApiClient:
                 payload_data = data.get("payload", {})
                 state.update_from_api(payload_data)
 
+                # Diagnostic (issue #62): log the raw poll response for standalone
+                # event sensors (e.g. H5054 water detectors) so a debug capture
+                # shows whether the developer device-state endpoint ever returns
+                # the bodyAppearedEvent trip — earlier dumps showed only `online`.
+                if any(
+                    cap.get("type") == "devices.capabilities.event"
+                    for cap in payload_data.get("capabilities", [])
+                ):
+                    _LOGGER.debug(
+                        "Event-sensor poll for %s (%s) raw=%s",
+                        device_id,
+                        sku,
+                        payload_data,
+                    )
+
                 self._last_raw_state[device_id] = payload_data
                 return state
 

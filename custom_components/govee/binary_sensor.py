@@ -162,6 +162,19 @@ class GoveeWaterLeakBinarySensor(GoveeEntity, BinarySensorEntity):
         self._attr_unique_id = f"{device.device_id}_water_leak"
 
     @property
+    def available(self) -> bool:
+        """Available whenever the coordinator is — not gated on device online.
+
+        H5054 water detectors are sleepy battery devices that report
+        ``online: false`` at poll time (they wake only to push an event). The
+        base ``GoveeEntity.available`` gates on ``state.online``, which would
+        render the leak sensor permanently unavailable — the device shows up
+        with an error and a real leak could never surface. Report availability
+        from the coordinator instead, like the connectivity sensors do.
+        """
+        return self.coordinator.last_update_success
+
+    @property
     def is_on(self) -> bool | None:
         """Return True when water is detected."""
         state = self.device_state

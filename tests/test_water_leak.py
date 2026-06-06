@@ -165,12 +165,13 @@ class TestMqttParsing:
 
 
 class TestBinarySensor:
-    def _entity(self, h5054_device, leak_value):
-        state = GoveeDeviceState(device_id=h5054_device.device_id)
+    def _entity(self, h5054_device, leak_value, last_update_success=True):
+        state = GoveeDeviceState(device_id=h5054_device.device_id, online=False)
         state.water_leak = leak_value
         coordinator = MagicMock()
         coordinator.devices = {h5054_device.device_id: h5054_device}
         coordinator.get_state = MagicMock(return_value=state)
+        coordinator.last_update_success = last_update_success
         entity = GoveeWaterLeakBinarySensor(coordinator, h5054_device)
         return entity
 
@@ -186,3 +187,11 @@ class TestBinarySensor:
 
     def test_is_on_unknown(self, h5054_device):
         assert self._entity(h5054_device, None).is_on is None
+
+    def test_available_despite_offline_device(self, h5054_device):
+        """Entity stays available even though the detector reports online=False."""
+        assert self._entity(h5054_device, False).available is True
+
+    def test_unavailable_when_coordinator_failed(self, h5054_device):
+        entity = self._entity(h5054_device, None, last_update_success=False)
+        assert entity.available is False
