@@ -177,6 +177,12 @@ _BFF_HUMIDITY_KEYS = (
     ("currentHumidity", False),
 )
 
+# u16 "no reading / no sensor" sentinels Govee reports for a missing centi value
+# (e.g. the H5310 pool thermometer has no hygrometer and reports hum == 0xFFFF,
+# which would otherwise de-scale to 655.35 — issue #97). 0x7FFF covers a signed
+# variant for the temperature key.
+_BFF_NO_VALUE_SENTINELS = frozenset({65535, 32767, -1})
+
 
 def _bff_reading(
     last_device_data: dict[str, Any], keys: tuple[tuple[str, bool], ...]
@@ -200,6 +206,10 @@ def _bff_reading(
         except (TypeError, ValueError):
             continue
         if is_centi and isinstance(raw, int):
+            # 0xFFFF (and signed variants) mean "no reading / no sensor", not a
+            # real centi value — treat as absent so we don't surface 655.35 (#97).
+            if raw in _BFF_NO_VALUE_SENTINELS:
+                continue
             value /= 100.0
         return value
     return None

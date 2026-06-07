@@ -25,6 +25,12 @@ LEAK_HUB_SKUS = frozenset({"H5043", "H5044"})
 # each so the existing temperature/humidity sensor entities attach.
 THERMO_HYGRO_BFF_SKUS = frozenset({"H5301", "H5310"})
 
+# Subset of THERMO_HYGRO_BFF_SKUS that have NO hygrometer (e.g. the H5310 pool
+# thermometer). Govee reports their ``hum`` as the u16 sentinel 0xFFFF, so a
+# synthesized humidity entity would be permanently bogus/unknown (#97). We omit
+# the humidity capability for these so no humidity entity is created.
+TEMP_ONLY_BFF_SKUS = frozenset({"H5310"})
+
 # Capability type constants (from Govee API v2.0)
 CAPABILITY_ON_OFF = "devices.capabilities.on_off"
 CAPABILITY_RANGE = "devices.capabilities.range"
@@ -859,25 +865,33 @@ class GoveeDevice:
         thermometer would expose — so ``supports_temperature_sensor`` /
         ``supports_humidity_sensor`` / ``is_thermometer`` all return True and the
         existing sensor platform attaches without special-casing (issue #86).
+
+        SKUs in ``TEMP_ONLY_BFF_SKUS`` (e.g. the H5310 pool thermometer) have no
+        hygrometer, so the ``sensorHumidity`` capability is omitted and no
+        humidity entity is created for them (issue #97).
         """
+        capabilities: list[dict[str, Any]] = [
+            {
+                "type": CAPABILITY_PROPERTY,
+                "instance": INSTANCE_SENSOR_TEMPERATURE,
+                "parameters": {},
+            }
+        ]
+        if sku not in TEMP_ONLY_BFF_SKUS:
+            capabilities.append(
+                {
+                    "type": CAPABILITY_PROPERTY,
+                    "instance": INSTANCE_SENSOR_HUMIDITY,
+                    "parameters": {},
+                }
+            )
         return cls.from_api_response(
             {
                 "device": device_id,
                 "sku": sku,
                 "deviceName": name,
                 "type": DEVICE_TYPE_THERMOMETER,
-                "capabilities": [
-                    {
-                        "type": CAPABILITY_PROPERTY,
-                        "instance": INSTANCE_SENSOR_TEMPERATURE,
-                        "parameters": {},
-                    },
-                    {
-                        "type": CAPABILITY_PROPERTY,
-                        "instance": INSTANCE_SENSOR_HUMIDITY,
-                        "parameters": {},
-                    },
-                ],
+                "capabilities": capabilities,
             }
         )
 

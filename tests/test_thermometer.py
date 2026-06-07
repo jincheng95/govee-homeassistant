@@ -258,3 +258,78 @@ class TestSyntheticThermometer:
         assert device.supports_temperature_sensor
         assert device.supports_humidity_sensor
         assert not device.is_group
+
+    def test_temp_only_sku_omits_humidity_capability(self):
+        # H5310 pool thermometer has no hygrometer -> no humidity entity (#97).
+        device = GoveeDevice.synthetic_thermometer(
+            device_id="03:55:01:25:00:00:00:0D", sku="H5310", name="Pool"
+        )
+        assert device.supports_temperature_sensor
+        assert not device.supports_humidity_sensor
+
+
+class TestBffReadingSentinel:
+    """_bff_reading filters the 0xFFFF no-value sentinel (issue #97)."""
+
+    def test_humidity_sentinel_returns_none(self):
+        from custom_components.govee.api.auth import _BFF_HUMIDITY_KEYS, _bff_reading
+
+        # H5310 with no hygrometer reports hum == 0xFFFF (65535 centi).
+        assert _bff_reading({"hum": 65535}, _BFF_HUMIDITY_KEYS) is None
+
+    def test_temperature_sentinel_returns_none(self):
+        from custom_components.govee.api.auth import _BFF_TEMP_KEYS, _bff_reading
+
+        assert _bff_reading({"tem": 65535}, _BFF_TEMP_KEYS) is None
+        assert _bff_reading({"tem": 32767}, _BFF_TEMP_KEYS) is None
+
+    def test_real_centi_values_still_descale(self):
+        from custom_components.govee.api.auth import (
+            _BFF_HUMIDITY_KEYS,
+            _BFF_TEMP_KEYS,
+            _bff_reading,
+        )
+
+        assert _bff_reading({"tem": 2640}, _BFF_TEMP_KEYS) == 26.4
+        assert _bff_reading({"tem": -500}, _BFF_TEMP_KEYS) == -5.0
+        assert _bff_reading({"hum": 5550}, _BFF_HUMIDITY_KEYS) == 55.5
+
+
+class TestBffThermometerAvailability:
+    """BFF thermo-hygrometer availability ignores flapping online (issue #97)."""
+
+    def _available(self, *, is_bff, online, has_reading, update_success=True):
+        from types import SimpleNamespace
+
+        from custom_components.govee.sensor import GoveeTemperatureSensor
+
+        state = (
+            SimpleNamespace(online=online, sensor_temperature=26.4)
+            if has_reading
+            else None
+        )
+        coordinator = SimpleNamespace(
+            last_update_success=update_success,
+            is_bff_thermometer=lambda _id: is_bff,
+        )
+        stub = SimpleNamespace(
+            _device_id="dev",
+            coordinator=coordinator,
+            device_state=state,
+        )
+        return GoveeTemperatureSensor.available.fget(stub)
+
+    def test_available_when_online_false_but_reading_present(self):
+        # H5310: online flaps false yet a fresh 26.4 reading exists -> available.
+        assert self._available(is_bff=True, online=False, has_reading=True) is True
+
+    def test_unavailable_when_no_reading(self):
+        assert self._available(is_bff=True, online=False, has_reading=False) is False
+
+    def test_unavailable_when_coordinator_failed(self):
+        assert (
+            self._available(
+                is_bff=True, online=True, has_reading=True, update_success=False
+            )
+            is False
+        )

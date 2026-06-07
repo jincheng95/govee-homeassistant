@@ -226,7 +226,27 @@ class GoveeMqttLastReceivedSensor(CoordinatorEntity["GoveeCoordinator"], SensorE
         return self.coordinator.mqtt_last_message_ts
 
 
-class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
+class _BffThermometerAvailabilityMixin(GoveeEntity):
+    """Availability that ignores ``state.online`` for BFF thermo-hygrometers.
+
+    Battery/gateway-bridged sensors (e.g. H5310 via H5044) report ``online``
+    as an unreliable liveness flag that flaps false between infrequent uploads,
+    so the base ``GoveeEntity.available`` (which gates on ``online``) hides a
+    valid, fresh reading. For these devices, gate only on coordinator success
+    and a present reading; ``online`` remains exposed via the connectivity
+    diagnostic entities (issue #97).
+    """
+
+    @property
+    def available(self) -> bool:
+        if self.coordinator.is_bff_thermometer(self._device_id):
+            return self.coordinator.last_update_success and (
+                self.device_state is not None
+            )
+        return super().available
+
+
+class GoveeTemperatureSensor(_BffThermometerAvailabilityMixin, SensorEntity):
     """Read-only temperature reading from devices like H5109 and H5179.
 
     Backed by the ``devices.capabilities.property`` / ``sensorTemperature``
@@ -281,7 +301,7 @@ class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
         return value
 
 
-class GoveeHumiditySensor(GoveeEntity, SensorEntity):
+class GoveeHumiditySensor(_BffThermometerAvailabilityMixin, SensorEntity):
     """Read-only humidity reading from devices like H5109 and H5179."""
 
     _attr_has_entity_name = True

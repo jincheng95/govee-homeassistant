@@ -495,6 +495,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """Get current state for a device."""
         return self._states.get(device_id)
 
+    def is_bff_thermometer(self, device_id: str) -> bool:
+        """Return True if this device is a BFF-discovered thermo-hygrometer.
+
+        These battery/gateway-bridged sensors report ``online`` as an
+        unreliable liveness flag that flaps false between infrequent uploads,
+        so entity availability must not gate on it (issue #97).
+        """
+        return device_id in self._bff_thermometer_ids
+
     def is_power_off_pending(self, device_id: str) -> bool:
         """Return True if a power-off command is in flight for this device.
 
