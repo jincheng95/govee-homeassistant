@@ -6,7 +6,7 @@ Frozen dataclass for immutability - device properties don't change at runtime.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -24,6 +24,12 @@ LEAK_HUB_SKUS = frozenset({"H5043", "H5044"})
 # leak sensors use. The coordinator synthesizes a thermometer GoveeDevice for
 # each so the existing temperature/humidity sensor entities attach.
 THERMO_HYGRO_BFF_SKUS = frozenset({"H5301", "H5310"})
+
+# Subset of THERMO_HYGRO_BFF_SKUS that have NO hygrometer (e.g. the H5310 pool
+# thermometer). Govee reports their ``hum`` as the u16 sentinel 0xFFFF, so a
+# synthesized humidity entity would be permanently bogus/unknown (#97). We omit
+# the humidity capability for these so no humidity entity is created.
+TEMP_ONLY_BFF_SKUS = frozenset({"H5310"})
 
 # Capability type constants (from Govee API v2.0)
 CAPABILITY_ON_OFF = "devices.capabilities.on_off"
@@ -269,6 +275,9 @@ class GoveeDevice:
     device_type: str
     capabilities: tuple[GoveeCapability, ...] = field(default_factory=tuple)
     is_group: bool = False
+    # Gateway/hub this device is bridged through (e.g. H5310 via H5044). Empty
+    # for directly-connected devices. Used for DeviceInfo via_device (#86).
+    hub_device_id: str = ""
 
     @property
     def supports_power(self) -> bool:
@@ -849,7 +858,9 @@ class GoveeDevice:
         )
 
     @classmethod
-    def synthetic_thermometer(cls, device_id: str, sku: str, name: str) -> GoveeDevice:
+    def synthetic_thermometer(
+        cls, device_id: str, sku: str, name: str, hub_device_id: str = ""
+    ) -> GoveeDevice:
         """Build a thermometer GoveeDevice for a BFF-discovered thermo-hygrometer.
 
         Devices in ``THERMO_HYGRO_BFF_SKUS`` (e.g. H5301) are absent from the
@@ -859,27 +870,38 @@ class GoveeDevice:
         thermometer would expose — so ``supports_temperature_sensor`` /
         ``supports_humidity_sensor`` / ``is_thermometer`` all return True and the
         existing sensor platform attaches without special-casing (issue #86).
+
+        SKUs in ``TEMP_ONLY_BFF_SKUS`` (e.g. the H5310 pool thermometer) have no
+        hygrometer, so the ``sensorHumidity`` capability is omitted and no
+        humidity entity is created for them (issue #97).
         """
-        return cls.from_api_response(
+        capabilities: list[dict[str, Any]] = [
+            {
+                "type": CAPABILITY_PROPERTY,
+                "instance": INSTANCE_SENSOR_TEMPERATURE,
+                "parameters": {},
+            }
+        ]
+        if sku not in TEMP_ONLY_BFF_SKUS:
+            capabilities.append(
+                {
+                    "type": CAPABILITY_PROPERTY,
+                    "instance": INSTANCE_SENSOR_HUMIDITY,
+                    "parameters": {},
+                }
+            )
+        device = cls.from_api_response(
             {
                 "device": device_id,
                 "sku": sku,
                 "deviceName": name,
                 "type": DEVICE_TYPE_THERMOMETER,
-                "capabilities": [
-                    {
-                        "type": CAPABILITY_PROPERTY,
-                        "instance": INSTANCE_SENSOR_TEMPERATURE,
-                        "parameters": {},
-                    },
-                    {
-                        "type": CAPABILITY_PROPERTY,
-                        "instance": INSTANCE_SENSOR_HUMIDITY,
-                        "parameters": {},
-                    },
-                ],
+                "capabilities": capabilities,
             }
         )
+        if hub_device_id:
+            device = replace(device, hub_device_id=hub_device_id)
+        return device
 
 
 @dataclass(frozen=True)

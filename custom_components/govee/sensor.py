@@ -80,10 +80,19 @@ async def async_setup_entry(
             entities.append(GoveeHumiditySensor(coordinator, device))
         if device.supports_temperature_sensor or device.supports_humidity_sensor:
             entities.append(GoveeSensorReadingTimestampSensor(coordinator, device))
+        # BFF thermo-hygrometers carry a battery level in their settings payload
+        # (the Developer API never exposes these devices). Only create the
+        # entity when a battery reading is actually present, so SKUs without a
+        # battery field don't get a permanently-unknown sensor (issue #86).
+        if coordinator.is_bff_thermometer(device.device_id):
+            state = coordinator.get_state(device.device_id)
+            if state is not None and state.battery is not None:
+                entities.append(GoveeThermoBatterySensor(coordinator, device))
 
-    # Add leak sensor entities. Register hub devices first so the leak
-    # sensors' `via_device` link resolves (must run after orphan-cleanup
-    # in __init__.py, hence here, not in the coordinator's _async_setup).
+    # Register gateway hubs (leak + thermo) before async_add_entities so the
+    # entities' `via_device` links resolve (must run after orphan-cleanup in
+    # __init__.py, hence here, not in the coordinator's _async_setup).
+    coordinator.register_thermo_hubs()
     coordinator.register_leak_hubs()
     seen_hubs: set[str] = set()
     for sensor in coordinator.leak_sensors.values():
@@ -226,7 +235,27 @@ class GoveeMqttLastReceivedSensor(CoordinatorEntity["GoveeCoordinator"], SensorE
         return self.coordinator.mqtt_last_message_ts
 
 
-class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
+class _BffThermometerAvailabilityMixin(GoveeEntity):
+    """Availability that ignores ``state.online`` for BFF thermo-hygrometers.
+
+    Battery/gateway-bridged sensors (e.g. H5310 via H5044) report ``online``
+    as an unreliable liveness flag that flaps false between infrequent uploads,
+    so the base ``GoveeEntity.available`` (which gates on ``online``) hides a
+    valid, fresh reading. For these devices, gate only on coordinator success
+    and a present reading; ``online`` remains exposed via the connectivity
+    diagnostic entities (issue #97).
+    """
+
+    @property
+    def available(self) -> bool:
+        if self.coordinator.is_bff_thermometer(self._device_id):
+            return self.coordinator.last_update_success and (
+                self.device_state is not None
+            )
+        return super().available
+
+
+class GoveeTemperatureSensor(_BffThermometerAvailabilityMixin, SensorEntity):
     """Read-only temperature reading from devices like H5109 and H5179.
 
     Backed by the ``devices.capabilities.property`` / ``sensorTemperature``
@@ -281,7 +310,7 @@ class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
         return value
 
 
-class GoveeHumiditySensor(GoveeEntity, SensorEntity):
+class GoveeHumiditySensor(_BffThermometerAvailabilityMixin, SensorEntity):
     """Read-only humidity reading from devices like H5109 and H5179."""
 
     _attr_has_entity_name = True
@@ -303,6 +332,35 @@ class GoveeHumiditySensor(GoveeEntity, SensorEntity):
     def native_value(self) -> float | None:
         state = self.device_state
         return state.sensor_humidity if state else None
+
+
+class GoveeThermoBatterySensor(_BffThermometerAvailabilityMixin, SensorEntity):
+    """Battery level for a BFF-discovered thermo-hygrometer (issue #86).
+
+    Govee returns ``battery`` in the BFF ``deviceSettings`` payload but the
+    Developer API never exposes these devices, so this is the only battery
+    source. Availability follows the BFF mixin (ignore flapping ``online``).
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "sensor_battery"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_battery"
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.device_state
+        return state.battery if state else None
 
 
 class GoveeSensorReadingTimestampSensor(GoveeEntity, SensorEntity):

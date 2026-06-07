@@ -258,3 +258,154 @@ class TestSyntheticThermometer:
         assert device.supports_temperature_sensor
         assert device.supports_humidity_sensor
         assert not device.is_group
+
+    def test_temp_only_sku_omits_humidity_capability(self):
+        # H5310 pool thermometer has no hygrometer -> no humidity entity (#97).
+        device = GoveeDevice.synthetic_thermometer(
+            device_id="03:55:01:25:00:00:00:0D", sku="H5310", name="Pool"
+        )
+        assert device.supports_temperature_sensor
+        assert not device.supports_humidity_sensor
+
+    def test_hub_device_id_default_empty(self):
+        device = GoveeDevice.synthetic_thermometer(
+            device_id="AA:BB:CC:DD:EE:FF:00:11", sku="H5301", name="Office"
+        )
+        assert device.hub_device_id == ""
+
+    def test_hub_device_id_propagates(self):
+        # H5310 via H5044 -> hub_device_id carried for via_device linkage (#86).
+        device = GoveeDevice.synthetic_thermometer(
+            device_id="03:55:01:25:00:00:00:0D",
+            sku="H5310",
+            name="Pool",
+            hub_device_id="11:22:33:44:55:66:77:88",
+        )
+        assert device.hub_device_id == "11:22:33:44:55:66:77:88"
+
+
+class TestBffReadingSentinel:
+    """_bff_reading filters the 0xFFFF no-value sentinel (issue #97)."""
+
+    def test_humidity_sentinel_returns_none(self):
+        from custom_components.govee.api.auth import _BFF_HUMIDITY_KEYS, _bff_reading
+
+        # H5310 with no hygrometer reports hum == 0xFFFF (65535 centi).
+        assert _bff_reading({"hum": 65535}, _BFF_HUMIDITY_KEYS) is None
+
+    def test_temperature_sentinel_returns_none(self):
+        from custom_components.govee.api.auth import _BFF_TEMP_KEYS, _bff_reading
+
+        assert _bff_reading({"tem": 65535}, _BFF_TEMP_KEYS) is None
+        assert _bff_reading({"tem": 32767}, _BFF_TEMP_KEYS) is None
+
+    def test_real_centi_values_still_descale(self):
+        from custom_components.govee.api.auth import (
+            _BFF_HUMIDITY_KEYS,
+            _BFF_TEMP_KEYS,
+            _bff_reading,
+        )
+
+        assert _bff_reading({"tem": 2640}, _BFF_TEMP_KEYS) == 26.4
+        assert _bff_reading({"tem": -500}, _BFF_TEMP_KEYS) == -5.0
+        assert _bff_reading({"hum": 5550}, _BFF_HUMIDITY_KEYS) == 55.5
+
+
+class TestBffThermometerAvailability:
+    """BFF thermo-hygrometer availability ignores flapping online (issue #97)."""
+
+    def _available(self, *, is_bff, online, has_reading, update_success=True):
+        from types import SimpleNamespace
+
+        from custom_components.govee.sensor import GoveeTemperatureSensor
+
+        state = (
+            SimpleNamespace(online=online, sensor_temperature=26.4)
+            if has_reading
+            else None
+        )
+        coordinator = SimpleNamespace(
+            last_update_success=update_success,
+            is_bff_thermometer=lambda _id: is_bff,
+        )
+        stub = SimpleNamespace(
+            _device_id="dev",
+            coordinator=coordinator,
+            device_state=state,
+        )
+        return GoveeTemperatureSensor.available.fget(stub)
+
+    def test_available_when_online_false_but_reading_present(self):
+        # H5310: online flaps false yet a fresh 26.4 reading exists -> available.
+        assert self._available(is_bff=True, online=False, has_reading=True) is True
+
+    def test_unavailable_when_no_reading(self):
+        assert self._available(is_bff=True, online=False, has_reading=False) is False
+
+    def test_unavailable_when_coordinator_failed(self):
+        assert (
+            self._available(
+                is_bff=True, online=True, has_reading=True, update_success=False
+            )
+            is False
+        )
+
+
+class TestThermoBatterySensor:
+    """GoveeThermoBatterySensor surfaces BFF battery level (issue #86)."""
+
+    def _native(self, battery):
+        from types import SimpleNamespace
+
+        from custom_components.govee.sensor import GoveeThermoBatterySensor
+
+        state = (
+            SimpleNamespace(battery=battery) if battery is not None else None
+        )
+        stub = SimpleNamespace(device_state=state)
+        return GoveeThermoBatterySensor.native_value.fget(stub)
+
+    def test_reports_battery_level(self):
+        assert self._native(88) == 88
+
+    def test_none_when_no_state(self):
+        assert self._native(None) is None
+
+    def test_inherits_bff_availability_mixin(self):
+        from custom_components.govee.sensor import (
+            GoveeThermoBatterySensor,
+            _BffThermometerAvailabilityMixin,
+        )
+
+        assert issubclass(
+            GoveeThermoBatterySensor, _BffThermometerAvailabilityMixin
+        )
+
+
+class TestThermoDeviceInfoViaDevice:
+    """GoveeEntity.device_info links gateway-bridged thermo to its hub (#86)."""
+
+    def _device_info(self, hub_device_id):
+        from types import SimpleNamespace
+
+        from custom_components.govee.entity import GoveeEntity
+
+        device = GoveeDevice.synthetic_thermometer(
+            device_id="03:55:01:25:00:00:00:0D",
+            sku="H5310",
+            name="Pool",
+            hub_device_id=hub_device_id,
+        )
+        stub = SimpleNamespace(
+            _device=device,
+            _infer_area_from_name=GoveeEntity._infer_area_from_name,
+        )
+        return GoveeEntity.device_info.fget(stub)
+
+    def test_via_device_set_when_bridged(self):
+        info = self._device_info("11:22:33:44:55:66:77:88")
+        assert info["via_device"] == ("govee", "11:22:33:44:55:66:77:88")
+
+    def test_no_via_device_when_not_bridged(self):
+        info = self._device_info("")
+        assert "via_device" not in info

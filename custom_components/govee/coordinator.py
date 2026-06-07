@@ -237,6 +237,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # owned by the BFF poll, not /device/state. Tracked here so
         # _fetch_device_state skips the (futile) developer poll for them.
         self._bff_thermometer_ids: set[str] = set()
+        # Gateway hubs (e.g. H5044) bridging BFF thermo-hygrometers, keyed by
+        # hub_device_id -> {"sku"}. Registered as HA devices so via_device on
+        # the thermo entities resolves (#86).
+        self._bff_thermo_hubs: dict[str, dict[str, str]] = {}
         # When a device's temp/humidity reading last *changed* — backs the
         # "Last Reading" diagnostic timestamp sensor (#83). Cloud batches
         # BLE-bridged sensors every 15-60 min; this exposes when a new value
@@ -494,6 +498,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def get_state(self, device_id: str) -> GoveeDeviceState | None:
         """Get current state for a device."""
         return self._states.get(device_id)
+
+    def is_bff_thermometer(self, device_id: str) -> bool:
+        """Return True if this device is a BFF-discovered thermo-hygrometer.
+
+        These battery/gateway-bridged sensors report ``online`` as an
+        unreliable liveness flag that flaps false between infrequent uploads,
+        so entity availability must not gate on it (issue #97).
+        """
+        return device_id in self._bff_thermometer_ids
 
     def is_power_off_pending(self, device_id: str) -> bool:
         """Return True if a power-off command is in flight for this device.
@@ -755,18 +768,25 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 device_id = sensor["device_id"]
                 if not device_id:
                     continue
+                hub_device_id = sensor.get("hub_device_id", "")
                 device = GoveeDevice.synthetic_thermometer(
                     device_id=device_id,
                     sku=sensor["sku"],
                     name=sensor["name"],
+                    hub_device_id=hub_device_id,
                 )
                 self._devices[device_id] = device
                 self._bff_thermometer_ids.add(device_id)
+                if hub_device_id:
+                    self._bff_thermo_hubs[hub_device_id] = {
+                        "sku": sensor.get("hub_sku", ""),
+                    }
 
                 state = GoveeDeviceState.create_empty(device_id)
                 state.online = sensor.get("online", True)
                 state.sensor_temperature = sensor.get("temperature")
                 state.sensor_humidity = sensor.get("humidity")
+                state.battery = sensor.get("battery")
                 self._states[device_id] = state
                 self._ensure_transport_health(device_id)
                 if (
@@ -801,6 +821,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.debug("BFF thermo-hygrometer refresh failed: %s", err)
             return
 
+        changed = False
         for sensor in sensors:
             device_id = sensor["device_id"]
             existing = self._states.get(device_id)
@@ -820,11 +841,26 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 if sensor.get("humidity") is not None
                 else existing.sensor_humidity
             )
+            new_state.battery = (
+                sensor.get("battery")
+                if sensor.get("battery") is not None
+                else existing.battery
+            )
             self._note_sensor_reading_change(device_id, new_state, existing)
             self._states[device_id] = new_state
             self._record_transport_success(device_id, "cloud_api")
+            # Only a value change warrants pushing an HA update — skip the churn
+            # when a 5-min poll returns the same reading (#86). `online` is
+            # ignored here: the availability mixin doesn't gate on it.
+            if (
+                new_state.sensor_temperature != existing.sensor_temperature
+                or new_state.sensor_humidity != existing.sensor_humidity
+                or new_state.battery != existing.battery
+            ):
+                changed = True
 
-        self.async_set_updated_data(self._states)
+        if changed:
+            self.async_set_updated_data(self._states)
 
     def register_leak_hubs(self) -> None:
         """Register each leak sensor's hub as a device.
@@ -865,6 +901,28 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 manufacturer="Govee",
                 model=model,
                 name=name,
+            )
+
+    def register_thermo_hubs(self) -> None:
+        """Register gateway hubs bridging BFF thermo-hygrometers (#86).
+
+        Thermo entities set ``via_device=(DOMAIN, hub_device_id)`` (e.g. H5310
+        via H5044); HA requires the referenced hub device to exist first.
+        Called from the sensor platform ``async_setup_entry`` after orphan
+        cleanup. Idempotent via ``async_get_or_create``.
+        """
+        if not self._bff_thermo_hubs:
+            return
+        device_reg = dr.async_get(self.hass)
+        for hub_id, meta in self._bff_thermo_hubs.items():
+            if not hub_id:
+                continue
+            device_reg.async_get_or_create(
+                config_entry_id=self._config_entry.entry_id,
+                identifiers={(DOMAIN, hub_id)},
+                manufacturer="Govee",
+                model=meta.get("sku") or None,
+                name=meta.get("sku") or "Govee Gateway",
             )
 
     def _schedule_bff_poll(self) -> None:

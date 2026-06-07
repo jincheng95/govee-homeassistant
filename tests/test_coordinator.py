@@ -2077,6 +2077,8 @@ class TestBffThermometerDiscovery:
                     "online": True,
                     "temperature": 22.35,
                     "humidity": 47.1,
+                    "hub_device_id": "11:22:33:44:55:66:77:88",
+                    "hub_sku": "H5044",
                 }
             ]
         )
@@ -2095,6 +2097,11 @@ class TestBffThermometerDiscovery:
         state = coord._states[did]
         assert state.sensor_temperature == 22.35
         assert state.sensor_humidity == 47.1
+        assert state.battery == 88
+        assert coord._devices[did].hub_device_id == "11:22:33:44:55:66:77:88"
+        assert coord._bff_thermo_hubs == {
+            "11:22:33:44:55:66:77:88": {"sku": "H5044"}
+        }
         coord._schedule_bff_poll.assert_called_once()
 
     @pytest.mark.asyncio
@@ -2145,11 +2152,20 @@ class TestBffThermometerDiscovery:
         prev = GoveeDeviceState.create_empty(did)
         prev.sensor_temperature = 22.0
         prev.sensor_humidity = 44.0
+        prev.battery = 77
         coord._states[did] = prev
 
         inner = MagicMock()
         inner.fetch_bff_thermo_hygrometers = _make_async(
-            [{"device_id": did, "temperature": None, "humidity": None, "online": True}]
+            [
+                {
+                    "device_id": did,
+                    "temperature": None,
+                    "humidity": None,
+                    "battery": None,
+                    "online": True,
+                }
+            ]
         )
         monkeypatch.setattr(coord_mod, "GoveeAuthClient", lambda **kw: _AsyncCM(inner))
 
@@ -2157,6 +2173,9 @@ class TestBffThermometerDiscovery:
 
         assert coord._states[did].sensor_temperature == 22.0
         assert coord._states[did].sensor_humidity == 44.0
+        assert coord._states[did].battery == 77
+        # Nothing changed this cycle -> no HA update pushed (churn guard, #86)
+        coord.async_set_updated_data.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_discover_noop_without_iot_credentials(self):
@@ -2164,3 +2183,32 @@ class TestBffThermometerDiscovery:
         coord._iot_credentials = None
         await coord._discover_bff_thermometers()
         assert coord._bff_thermometer_ids == set()
+
+    def test_register_thermo_hubs_creates_hub_device(self, monkeypatch):
+        coord, coord_mod = self._coord()
+        coord._bff_thermo_hubs = {"11:22:33:44:55:66:77:88": {"sku": "H5044"}}
+        device_reg = MagicMock()
+        monkeypatch.setattr(
+            coord_mod.dr, "async_get", lambda _hass: device_reg
+        )
+
+        coord.register_thermo_hubs()
+
+        device_reg.async_get_or_create.assert_called_once()
+        kwargs = device_reg.async_get_or_create.call_args.kwargs
+        assert kwargs["identifiers"] == {
+            (coord_mod.DOMAIN, "11:22:33:44:55:66:77:88")
+        }
+        assert kwargs["model"] == "H5044"
+
+    def test_register_thermo_hubs_noop_when_empty(self, monkeypatch):
+        coord, coord_mod = self._coord()
+        coord._bff_thermo_hubs = {}
+        device_reg = MagicMock()
+        monkeypatch.setattr(
+            coord_mod.dr, "async_get", lambda _hass: device_reg
+        )
+
+        coord.register_thermo_hubs()
+
+        device_reg.async_get_or_create.assert_not_called()

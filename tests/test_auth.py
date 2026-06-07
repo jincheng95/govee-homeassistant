@@ -1883,7 +1883,13 @@ class TestBffThermoHygrometerDiscovery:
                                 "sno": 0,
                                 "versionSoft": "2.00.05",
                                 "versionHard": "1.00.00",
-                                "gatewayInfo": {"sku": "H5044"},
+                                "fahOpen": True,
+                                "temCali": -30,
+                                "humCali": 0,
+                                "gatewayInfo": {
+                                    "device": "11:22:33:44:55:66:77:88",
+                                    "sku": "H5044",
+                                },
                             }
                         ),
                         "lastDeviceData": json.dumps(
@@ -1911,6 +1917,15 @@ class TestBffThermoHygrometerDiscovery:
         assert s["temperature"] == -5.0  # -500 centi, near/below zero
         assert s["humidity"] == 47.1
         assert s["online"] is True
+        # Gateway hub for via_device linkage (#86)
+        assert s["hub_device_id"] == "11:22:33:44:55:66:77:88"
+        assert s["hub_sku"] == "H5044"
+        # Instrumentation only — captured, NOT applied to readings (#86)
+        assert s["fah_open"] is True
+        assert s["tem_cali"] == -30
+        assert s["hum_cali"] == 0
+        # Reading is canonical centi-°C; fahOpen/temCali did NOT alter it
+        assert s["temperature"] == -5.0
 
     @pytest.mark.asyncio
     async def test_non_thermo_skus_ignored(self):

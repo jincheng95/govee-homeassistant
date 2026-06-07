@@ -177,6 +177,12 @@ _BFF_HUMIDITY_KEYS = (
     ("currentHumidity", False),
 )
 
+# u16 "no reading / no sensor" sentinels Govee reports for a missing centi value
+# (e.g. the H5310 pool thermometer has no hygrometer and reports hum == 0xFFFF,
+# which would otherwise de-scale to 655.35 — issue #97). 0x7FFF covers a signed
+# variant for the temperature key.
+_BFF_NO_VALUE_SENTINELS = frozenset({65535, 32767, -1})
+
 
 def _bff_reading(
     last_device_data: dict[str, Any], keys: tuple[tuple[str, bool], ...]
@@ -200,6 +206,10 @@ def _bff_reading(
         except (TypeError, ValueError):
             continue
         if is_centi and isinstance(raw, int):
+            # 0xFFFF (and signed variants) mean "no reading / no sensor", not a
+            # real centi value — treat as absent so we don't surface 655.35 (#97).
+            if raw in _BFF_NO_VALUE_SENTINELS:
+                continue
             value /= 100.0
         return value
     return None
@@ -651,15 +661,34 @@ class GoveeAuthClient:
                             ld = {}
                     ld = ld if isinstance(ld, dict) else {}
 
+                    gateway_info = settings.get("gatewayInfo", {})
+                    gateway_info = (
+                        gateway_info if isinstance(gateway_info, dict) else {}
+                    )
+
+                    # fahOpen / temCali / humCali change the *displayed* reading
+                    # in the Govee app, but we have no ground-truth confirming
+                    # whether BFF `tem`/`hum` are pre- or post-transform. Capture
+                    # them (debug + returned dict) WITHOUT altering the value so a
+                    # real diagnostic can settle the encoding before we act (#86).
+                    fah_open = settings.get("fahOpen")
+                    tem_cali = settings.get("temCali")
+                    hum_cali = settings.get("humCali")
+
                     # The exact reading keys/scaling for H5301 are unverified —
                     # log the raw lastDeviceData so a diagnostics download / debug
                     # log from issue #86 reveals the true shape, then refine
                     # _BFF_TEMP_KEYS / _BFF_HUMIDITY_KEYS if needed.
                     _LOGGER.debug(
-                        "BFF thermo-hygrometer %s (%s) lastDeviceData keys=%s",
+                        "BFF thermo-hygrometer %s (%s) lastDeviceData keys=%s "
+                        "fahOpen=%s temCali=%s humCali=%s gateway=%s",
                         name,
                         sku,
                         sorted(ld.keys()),
+                        fah_open,
+                        tem_cali,
+                        hum_cali,
+                        gateway_info.get("sku"),
                     )
 
                     sensors.append(
@@ -673,6 +702,12 @@ class GoveeAuthClient:
                             "online": ld.get("online", True),
                             "temperature": _bff_reading(ld, _BFF_TEMP_KEYS),
                             "humidity": _bff_reading(ld, _BFF_HUMIDITY_KEYS),
+                            "hub_device_id": gateway_info.get("device", ""),
+                            "hub_sku": gateway_info.get("sku", ""),
+                            # Instrumentation only — not applied to readings (#86).
+                            "fah_open": fah_open,
+                            "tem_cali": tem_cali,
+                            "hum_cali": hum_cali,
                         }
                     )
 
