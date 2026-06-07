@@ -54,7 +54,7 @@ class GoveeEntity(CoordinatorEntity["GoveeCoordinator"]):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information for device registry."""
-        return DeviceInfo(
+        info = DeviceInfo(
             identifiers={(DOMAIN, self._device.device_id)},
             name=self._device.name,
             manufacturer="Govee",
@@ -62,6 +62,11 @@ class GoveeEntity(CoordinatorEntity["GoveeCoordinator"]):
             # Suggested area from device name (e.g., "Living Room Lamp" -> "Living Room")
             suggested_area=self._infer_area_from_name(self._device.name),
         )
+        # Gateway-bridged devices (e.g. H5310 via H5044) link to their hub so HA
+        # shows the relationship. The hub is registered first (#86).
+        if self._device.hub_device_id:
+            info["via_device"] = (DOMAIN, self._device.hub_device_id)
+        return info
 
     @property
     def available(self) -> bool:

@@ -7,27 +7,27 @@ scope:
     - id: bff-thermo-battery-sensor
       label: "Surface battery% for BFF thermo-hygrometers (fetched at auth.py:682, discarded — no GoveeDeviceState.battery field, no entity)"
       priority: high
-      status: pending
+      status: done  # GoveeThermoBatterySensor + GoveeDeviceState.battery
     - id: h5301-payload-confirmation
       label: "Confirm H5301 BFF lastDeviceData key/scale shape (currently speculative — auth.py:664 'unverified'; needs real H5301 diagnostics)"
       priority: high
-      status: pending
+      status: pending  # blocked: needs a real H5301 diagnostic from a user
     - id: bff-thermo-hub-via-device
       label: "Register H5044 gateway hub + via_device linkage for H5310 (gatewayInfo not extracted; no register_thermo_hubs analog vs leak-sensor path)"
       priority: medium
-      status: pending
+      status: done  # register_thermo_hubs + GoveeDevice.hub_device_id + via_device
     - id: bff-thermo-fahopen-unit
       label: "Investigate fahOpen flag — determine whether BFF thermo reports °C centi-int or °F; wire to CONF_API_TEMPERATURE_UNIT auto"
       priority: medium
-      status: pending
+      status: instrumented  # fahOpen captured to debug log + sensor dict; value NOT transformed (no ground-truth — would risk #96 regression)
     - id: bff-thermo-calibration
       label: "Apply temCali/humCali calibration offsets from deviceSettings to readings"
       priority: low
-      status: pending
+      status: instrumented  # temCali/humCali captured; offsets NOT applied pending evidence they aren't already baked into BFF tem/hum
     - id: bff-thermo-update-churn
       label: "Skip async_set_updated_data when readings unchanged (currently fires every 5-min poll)"
       priority: low
-      status: pending
+      status: done  # refresh now guards on temp/humidity/battery change
 citations:
   - url: https://github.com/lasswellt/govee-homeassistant/issues/86
     status: LIVE

@@ -89,9 +89,10 @@ async def async_setup_entry(
             if state is not None and state.battery is not None:
                 entities.append(GoveeThermoBatterySensor(coordinator, device))
 
-    # Add leak sensor entities. Register hub devices first so the leak
-    # sensors' `via_device` link resolves (must run after orphan-cleanup
-    # in __init__.py, hence here, not in the coordinator's _async_setup).
+    # Register gateway hubs (leak + thermo) before async_add_entities so the
+    # entities' `via_device` links resolve (must run after orphan-cleanup in
+    # __init__.py, hence here, not in the coordinator's _async_setup).
+    coordinator.register_thermo_hubs()
     coordinator.register_leak_hubs()
     seen_hubs: set[str] = set()
     for sensor in coordinator.leak_sensors.values():

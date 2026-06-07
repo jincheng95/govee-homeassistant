@@ -6,7 +6,7 @@ Frozen dataclass for immutability - device properties don't change at runtime.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -275,6 +275,9 @@ class GoveeDevice:
     device_type: str
     capabilities: tuple[GoveeCapability, ...] = field(default_factory=tuple)
     is_group: bool = False
+    # Gateway/hub this device is bridged through (e.g. H5310 via H5044). Empty
+    # for directly-connected devices. Used for DeviceInfo via_device (#86).
+    hub_device_id: str = ""
 
     @property
     def supports_power(self) -> bool:
@@ -855,7 +858,9 @@ class GoveeDevice:
         )
 
     @classmethod
-    def synthetic_thermometer(cls, device_id: str, sku: str, name: str) -> GoveeDevice:
+    def synthetic_thermometer(
+        cls, device_id: str, sku: str, name: str, hub_device_id: str = ""
+    ) -> GoveeDevice:
         """Build a thermometer GoveeDevice for a BFF-discovered thermo-hygrometer.
 
         Devices in ``THERMO_HYGRO_BFF_SKUS`` (e.g. H5301) are absent from the
@@ -885,7 +890,7 @@ class GoveeDevice:
                     "parameters": {},
                 }
             )
-        return cls.from_api_response(
+        device = cls.from_api_response(
             {
                 "device": device_id,
                 "sku": sku,
@@ -894,6 +899,9 @@ class GoveeDevice:
                 "capabilities": capabilities,
             }
         )
+        if hub_device_id:
+            device = replace(device, hub_device_id=hub_device_id)
+        return device
 
 
 @dataclass(frozen=True)
