@@ -394,8 +394,14 @@ class GoveeAwsIotClient:
         """
         try:
             raw_payload = message.payload
+            # Older strips (e.g. H6117/H6163) push payloads with non-UTF-8 bytes
+            # — accented characters in scene/DIY/device names (0xb0 '°', 0xfc
+            # 'ü' in latin-1). Strict decode raised UnicodeDecodeError, dropping
+            # the ENTIRE state message and breaking on/off feedback (#98).
+            # errors="replace" keeps the JSON parseable; a replaced char only
+            # ever lands inside a string value (a name), never structural JSON.
             payload_str = (
-                raw_payload.decode()
+                raw_payload.decode("utf-8", errors="replace")
                 if isinstance(raw_payload, bytes)
                 else str(raw_payload)
             )
