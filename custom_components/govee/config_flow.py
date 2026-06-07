@@ -712,7 +712,7 @@ class GoveeOptionsFlow(OptionsFlow):
                         default=options.get(
                             CONF_API_TEMPERATURE_UNIT, DEFAULT_API_TEMPERATURE_UNIT
                         ),
-                    ): vol.In(["celsius", "fahrenheit"]),
+                    ): vol.In(["auto", "celsius", "fahrenheit"]),
                 }
             ),
         )

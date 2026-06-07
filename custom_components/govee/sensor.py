@@ -34,6 +34,7 @@ from .const import (
     CONF_API_TEMPERATURE_UNIT,
     DEFAULT_API_TEMPERATURE_UNIT,
     DOMAIN,
+    FAHRENHEIT_REPORTING_SKUS,
 )
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
@@ -256,9 +257,11 @@ class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
 
         value = float(state.sensor_temperature)
 
-        # Some thermometer/hygrometer SKUs (H5179, H5109, H5110, HS5108,
-        # HS5106) return °F via the Cloud API without unit metadata. When
-        # the user opts in, normalize to °C so HA renders the correct value.
+        # Some thermometer/hygrometer SKUs (FAHRENHEIT_REPORTING_SKUS) return °F
+        # via the Cloud API without unit metadata, while the native unit is
+        # tagged °C — surfacing e.g. 101°F as 213.5°F (issues #72, #78, #96).
+        # "auto" (default) converts those SKUs out-of-the-box; "fahrenheit"
+        # forces conversion for any SKU; "celsius" trusts the API value as-is.
         config_entry = self.coordinator.config_entry
         api_unit = (
             config_entry.options.get(
@@ -268,7 +271,11 @@ class GoveeTemperatureSensor(GoveeEntity, SensorEntity):
             if config_entry is not None
             else DEFAULT_API_TEMPERATURE_UNIT
         )
-        if api_unit == "fahrenheit":
+        if api_unit == "auto":
+            convert = self._device.sku.upper() in FAHRENHEIT_REPORTING_SKUS
+        else:
+            convert = api_unit == "fahrenheit"
+        if convert:
             return (value - 32.0) * (5.0 / 9.0)
 
         return value

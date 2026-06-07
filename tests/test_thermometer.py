@@ -177,7 +177,7 @@ class TestTemperatureSensorFahrenheitConversion:
     cloud API. Verifies the GoveeTemperatureSensor.native_value path honors
     the api_temperature_unit option."""
 
-    def _make_sensor_stub(self, raw_value, api_unit):
+    def _make_sensor_stub(self, raw_value, api_unit, sku="H6072"):
         from types import SimpleNamespace
 
         from custom_components.govee.sensor import GoveeTemperatureSensor
@@ -186,11 +186,19 @@ class TestTemperatureSensorFahrenheitConversion:
         coordinator = SimpleNamespace(
             config_entry=SimpleNamespace(options={"api_temperature_unit": api_unit})
         )
-        stub = SimpleNamespace(device_state=state, coordinator=coordinator)
+        stub = SimpleNamespace(
+            device_state=state,
+            coordinator=coordinator,
+            _device=SimpleNamespace(sku=sku),
+        )
         return GoveeTemperatureSensor.native_value.fget(stub)
 
     def test_celsius_passthrough(self):
         assert self._make_sensor_stub(21.5, "celsius") == 21.5
+
+    def test_celsius_forces_no_conversion_for_known_sku(self):
+        # Explicit celsius overrides auto-detection for a °F-reporting SKU.
+        assert self._make_sensor_stub(100.83, "celsius", sku="H5109") == 100.83
 
     def test_fahrenheit_converts(self):
         # 70°F -> 21.111…°C
@@ -205,16 +213,34 @@ class TestTemperatureSensorFahrenheitConversion:
         assert self._make_sensor_stub(None, "celsius") is None
         assert self._make_sensor_stub(None, "fahrenheit") is None
 
+    def test_auto_converts_known_fahrenheit_sku(self):
+        # Issue #96: H5109 reports 100.83°F -> ~38.2°C under auto mode.
+        result = self._make_sensor_stub(100.83, "auto", sku="H5109")
+        assert abs(result - 38.238889) < 1e-4
+
+    def test_auto_case_insensitive_sku_match(self):
+        result = self._make_sensor_stub(100.83, "auto", sku="h5109")
+        assert abs(result - 38.238889) < 1e-4
+
+    def test_auto_passthrough_for_unknown_sku(self):
+        # A SKU not in FAHRENHEIT_REPORTING_SKUS is trusted as °C under auto.
+        assert self._make_sensor_stub(21.5, "auto", sku="H6072") == 21.5
+
     def test_default_when_option_missing(self):
         from types import SimpleNamespace
 
         from custom_components.govee.sensor import GoveeTemperatureSensor
 
-        state = SimpleNamespace(sensor_temperature=21.5)
+        state = SimpleNamespace(sensor_temperature=100.83)
         coordinator = SimpleNamespace(config_entry=SimpleNamespace(options={}))
-        stub = SimpleNamespace(device_state=state, coordinator=coordinator)
-        # Default is celsius -> passthrough
-        assert GoveeTemperatureSensor.native_value.fget(stub) == 21.5
+        stub = SimpleNamespace(
+            device_state=state,
+            coordinator=coordinator,
+            _device=SimpleNamespace(sku="H5109"),
+        )
+        # Default is auto -> known °F SKU converts.
+        result = GoveeTemperatureSensor.native_value.fget(stub)
+        assert abs(result - 38.238889) < 1e-4
 
 
 class TestSyntheticThermometer:
