@@ -178,6 +178,9 @@
       "sensor_humidity": {
         "name": "Humidity"
       },
+      "sensor_battery": {
+        "name": "Battery"
+      },
       "sensor_reading_changed": {
         "name": "Last Changed"
       },

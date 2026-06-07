@@ -2095,6 +2095,7 @@ class TestBffThermometerDiscovery:
         state = coord._states[did]
         assert state.sensor_temperature == 22.35
         assert state.sensor_humidity == 47.1
+        assert state.battery == 88
         coord._schedule_bff_poll.assert_called_once()
 
     @pytest.mark.asyncio
@@ -2145,11 +2146,20 @@ class TestBffThermometerDiscovery:
         prev = GoveeDeviceState.create_empty(did)
         prev.sensor_temperature = 22.0
         prev.sensor_humidity = 44.0
+        prev.battery = 77
         coord._states[did] = prev
 
         inner = MagicMock()
         inner.fetch_bff_thermo_hygrometers = _make_async(
-            [{"device_id": did, "temperature": None, "humidity": None, "online": True}]
+            [
+                {
+                    "device_id": did,
+                    "temperature": None,
+                    "humidity": None,
+                    "battery": None,
+                    "online": True,
+                }
+            ]
         )
         monkeypatch.setattr(coord_mod, "GoveeAuthClient", lambda **kw: _AsyncCM(inner))
 
@@ -2157,6 +2167,7 @@ class TestBffThermometerDiscovery:
 
         assert coord._states[did].sensor_temperature == 22.0
         assert coord._states[did].sensor_humidity == 44.0
+        assert coord._states[did].battery == 77
 
     @pytest.mark.asyncio
     async def test_discover_noop_without_iot_credentials(self):

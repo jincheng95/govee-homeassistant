@@ -776,6 +776,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 state.online = sensor.get("online", True)
                 state.sensor_temperature = sensor.get("temperature")
                 state.sensor_humidity = sensor.get("humidity")
+                state.battery = sensor.get("battery")
                 self._states[device_id] = state
                 self._ensure_transport_health(device_id)
                 if (
@@ -828,6 +829,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 sensor.get("humidity")
                 if sensor.get("humidity") is not None
                 else existing.sensor_humidity
+            )
+            new_state.battery = (
+                sensor.get("battery")
+                if sensor.get("battery") is not None
+                else existing.battery
             )
             self._note_sensor_reading_change(device_id, new_state, existing)
             self._states[device_id] = new_state

@@ -333,3 +333,34 @@ class TestBffThermometerAvailability:
             )
             is False
         )
+
+
+class TestThermoBatterySensor:
+    """GoveeThermoBatterySensor surfaces BFF battery level (issue #86)."""
+
+    def _native(self, battery):
+        from types import SimpleNamespace
+
+        from custom_components.govee.sensor import GoveeThermoBatterySensor
+
+        state = (
+            SimpleNamespace(battery=battery) if battery is not None else None
+        )
+        stub = SimpleNamespace(device_state=state)
+        return GoveeThermoBatterySensor.native_value.fget(stub)
+
+    def test_reports_battery_level(self):
+        assert self._native(88) == 88
+
+    def test_none_when_no_state(self):
+        assert self._native(None) is None
+
+    def test_inherits_bff_availability_mixin(self):
+        from custom_components.govee.sensor import (
+            GoveeThermoBatterySensor,
+            _BffThermometerAvailabilityMixin,
+        )
+
+        assert issubclass(
+            GoveeThermoBatterySensor, _BffThermometerAvailabilityMixin
+        )

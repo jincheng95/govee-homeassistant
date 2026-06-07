@@ -208,6 +208,7 @@ class GoveeDeviceState:
         None  # Raw from API (°C or °F; entity may normalize)
     )
     sensor_humidity: float | None = None  # Relative humidity 0-100 %
+    battery: int | None = None  # Battery level 0-100 % (BFF thermo-hygrometers)
 
     # Last activated scene (for restoring after music mode off)
     last_scene_id: str | None = None

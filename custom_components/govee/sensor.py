@@ -80,6 +80,14 @@ async def async_setup_entry(
             entities.append(GoveeHumiditySensor(coordinator, device))
         if device.supports_temperature_sensor or device.supports_humidity_sensor:
             entities.append(GoveeSensorReadingTimestampSensor(coordinator, device))
+        # BFF thermo-hygrometers carry a battery level in their settings payload
+        # (the Developer API never exposes these devices). Only create the
+        # entity when a battery reading is actually present, so SKUs without a
+        # battery field don't get a permanently-unknown sensor (issue #86).
+        if coordinator.is_bff_thermometer(device.device_id):
+            state = coordinator.get_state(device.device_id)
+            if state is not None and state.battery is not None:
+                entities.append(GoveeThermoBatterySensor(coordinator, device))
 
     # Add leak sensor entities. Register hub devices first so the leak
     # sensors' `via_device` link resolves (must run after orphan-cleanup
@@ -323,6 +331,35 @@ class GoveeHumiditySensor(_BffThermometerAvailabilityMixin, SensorEntity):
     def native_value(self) -> float | None:
         state = self.device_state
         return state.sensor_humidity if state else None
+
+
+class GoveeThermoBatterySensor(_BffThermometerAvailabilityMixin, SensorEntity):
+    """Battery level for a BFF-discovered thermo-hygrometer (issue #86).
+
+    Govee returns ``battery`` in the BFF ``deviceSettings`` payload but the
+    Developer API never exposes these devices, so this is the only battery
+    source. Availability follows the BFF mixin (ignore flapping ``online``).
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "sensor_battery"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_battery"
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.device_state
+        return state.battery if state else None
 
 
 class GoveeSensorReadingTimestampSensor(GoveeEntity, SensorEntity):
