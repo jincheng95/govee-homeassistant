@@ -19,10 +19,21 @@ CONF_SEGMENT_MODE: Final = "segment_mode"
 CONF_EXPOSE_TRANSPORT_ENTITIES: Final = "expose_transport_entities"
 CONF_ENABLE_MQTT_CONTROL: Final = "enable_mqtt_control"
 
-# Some Govee thermometer/hygrometer SKUs (H5179, H5109, H5110, HS5108, HS5106)
-# report temperatures in Fahrenheit via the Cloud API regardless of account
-# unit preference, without unit metadata. This option normalizes the value.
-CONF_API_TEMPERATURE_UNIT: Final = "api_temperature_unit"  # "celsius" | "fahrenheit"
+# Some Govee thermometer/hygrometer SKUs report temperatures in Fahrenheit via
+# the Cloud API without unit metadata, while the native sensor unit is tagged
+# Celsius — so a 101°F reading surfaces as 213.5°F in HA (issues #72, #78, #96).
+# This option controls normalization:
+#   "auto"       -> convert only for SKUs in FAHRENHEIT_REPORTING_SKUS (default)
+#   "fahrenheit" -> always convert (treat API value as °F)
+#   "celsius"    -> never convert (trust API value as °C)
+CONF_API_TEMPERATURE_UNIT: Final = "api_temperature_unit"
+
+# SKUs observed reporting sensorTemperature in Fahrenheit regardless of account
+# locale. Used by the "auto" mode to convert out-of-the-box. Compared
+# case-insensitively against GoveeDevice.sku.
+FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
+    {"H5179", "H5109", "H5110", "HS5108", "HS5106"}
+)
 
 # Defaults
 DEFAULT_POLL_INTERVAL: Final = 60  # seconds
@@ -33,7 +44,7 @@ DEFAULT_ENABLE_SEGMENTS: Final = True
 DEFAULT_SEGMENT_MODE: Final = "individual"  # "disabled", "grouped", or "individual"
 DEFAULT_EXPOSE_TRANSPORT_ENTITIES: Final = False
 DEFAULT_ENABLE_MQTT_CONTROL: Final = False
-DEFAULT_API_TEMPERATURE_UNIT: Final = "celsius"
+DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
 
 # Optimistic state handling
 # Grace window (seconds) during which API polls do NOT overwrite optimistic
