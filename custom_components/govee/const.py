@@ -35,6 +35,20 @@ FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
     {"H5179", "H5109", "H5110", "HS5108", "HS5106"}
 )
 
+
+def resolve_fahrenheit_conversion(sku: str, api_unit: str) -> bool:
+    """Whether a Developer-API ``sensor_temperature`` should be treated as °F.
+
+    Shared by the sensor entity (which converts °F→°C for display) and the
+    coordinator's BFF reading path (which must store the value in the SAME
+    unit the entity expects, so a true-°C BFF reading round-trips correctly
+    instead of being double-converted) — issues #96, #83.
+    """
+    if api_unit == "auto":
+        return sku.upper() in FAHRENHEIT_REPORTING_SKUS
+    return api_unit == "fahrenheit"
+
+
 # Defaults
 DEFAULT_POLL_INTERVAL: Final = 60  # seconds
 DEFAULT_ENABLE_GROUPS: Final = False

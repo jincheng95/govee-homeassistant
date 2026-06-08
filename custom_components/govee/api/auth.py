@@ -724,7 +724,11 @@ class GoveeAuthClient:
     async def fetch_bff_leak_sensors(
         self,
         token: str,
-    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+    ]:
         """Fetch leak sensor sub-devices and their hubs from the BFF device list API.
 
         The BFF API returns rich device data including sub-devices like
@@ -881,12 +885,54 @@ class GoveeAuthClient:
                         "name": device.get("deviceName", sku),
                     }
 
+                # Collect live temperature/humidity from lastDeviceData for
+                # non-leak, Developer-API thermometers (e.g. H5110/H5075 via an
+                # H5151 gateway, H5179). The Developer /device/state endpoint
+                # returns a stale cached reading for these BLE-bridged sensors
+                # and only refreshes lazily — but calling this BFF endpoint
+                # tickles Govee's cloud into refreshing, and lastDeviceData is
+                # the live value the app uses (issue #83, confirmed by @davcamer).
+                # Scale: tem = hundredths of °C (2800 -> 28.00); hum = tenths of
+                # % (393 -> 39.3) — note hum differs from the H5301/H5310 path.
+                # H5301/H5310 are skipped here; the dedicated thermo path owns them.
+                thermo_readings: dict[str, dict[str, Any]] = {}
+                for device in devices:
+                    sku = device.get("sku", "")
+                    if (
+                        sku in LEAK_SENSOR_SKUS
+                        or sku in LEAK_HUB_SKUS
+                        or sku in THERMO_HYGRO_BFF_SKUS
+                    ):
+                        continue
+                    device_id = device.get("device", "")
+                    if not device_id:
+                        continue
+                    device_ext = device.get("deviceExt", {})
+                    if isinstance(device_ext, str):
+                        try:
+                            device_ext = json.loads(device_ext)
+                        except (json.JSONDecodeError, TypeError):
+                            device_ext = {}
+                    ld = device_ext.get("lastDeviceData", {})
+                    if isinstance(ld, str):
+                        try:
+                            ld = json.loads(ld)
+                        except (json.JSONDecodeError, TypeError):
+                            ld = {}
+                    ld = ld if isinstance(ld, dict) else {}
+                    tem = ld.get("tem")
+                    hum = ld.get("hum")
+                    if tem is not None or hum is not None:
+                        thermo_readings[device_id] = {"tem": tem, "hum": hum}
+
                 _LOGGER.info(
-                    "Discovered %d leak sensors and %d hubs from BFF API",
+                    "Discovered %d leak sensors, %d hubs, %d thermo readings "
+                    "from BFF API",
                     len(sensors),
                     len(hubs),
+                    len(thermo_readings),
                 )
-                return sensors, hubs
+                return sensors, hubs, thermo_readings
 
         except aiohttp.ClientError as err:
             raise GoveeApiError(

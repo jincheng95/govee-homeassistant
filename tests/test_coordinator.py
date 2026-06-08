@@ -2212,3 +2212,65 @@ class TestBffThermometerDiscovery:
         coord.register_thermo_hubs()
 
         device_reg.async_get_or_create.assert_not_called()
+
+
+class TestBffThermoLiveReadings:
+    """BFF live tem/hum applied to Developer-API thermometers (issue #83)."""
+
+    def _coord(self, options=None):
+        import custom_components.govee.coordinator as coord_mod
+
+        coord = object.__new__(coord_mod.GoveeCoordinator)
+        coord._sensor_reading_changed_at = {}
+        coord._devices = {}
+        coord._states = {}
+        from types import SimpleNamespace
+
+        coord._config_entry = SimpleNamespace(options=options or {})
+        return coord
+
+    def _add_device(self, coord, device_id, sku):
+        coord._devices[device_id] = GoveeDevice.synthetic_thermometer(
+            device_id, sku, sku
+        )
+        coord._states[device_id] = GoveeDeviceState.create_empty(device_id)
+
+    def test_celsius_sku_stores_celsius_and_tenths_humidity(self):
+        # H5052 not in FAHRENHEIT_REPORTING_SKUS -> auto = no conversion.
+        coord = self._coord()
+        self._add_device(coord, "D1", "H5052")
+
+        changed = coord._apply_bff_thermo_reading("D1", {"tem": 2800, "hum": 393})
+
+        assert changed is True
+        assert coord._states["D1"].sensor_temperature == 28.0
+        assert coord._states["D1"].sensor_humidity == 39.3
+
+    def test_fahrenheit_sku_auto_stores_fahrenheit_roundtrip(self):
+        # H5110 IS in FAHRENHEIT_REPORTING_SKUS; auto -> entity will convert
+        # °F->°C, so we must store °F (28.00°C -> 82.4°F).
+        coord = self._coord()
+        self._add_device(coord, "D1", "H5110")
+
+        coord._apply_bff_thermo_reading("D1", {"tem": 2800, "hum": 393})
+
+        assert coord._states["D1"].sensor_temperature == 82.4
+
+    def test_celsius_option_forces_no_conversion(self):
+        coord = self._coord(options={"api_temperature_unit": "celsius"})
+        self._add_device(coord, "D1", "H5110")
+
+        coord._apply_bff_thermo_reading("D1", {"tem": 2800})
+
+        assert coord._states["D1"].sensor_temperature == 28.0
+
+    def test_no_tem_hum_is_noop(self):
+        coord = self._coord()
+        self._add_device(coord, "D1", "H5052")
+
+        assert coord._apply_bff_thermo_reading("D1", {}) is False
+        assert coord._states["D1"].sensor_temperature is None
+
+    def test_unknown_device_is_noop(self):
+        coord = self._coord()
+        assert coord._apply_bff_thermo_reading("missing", {"tem": 2800}) is False
