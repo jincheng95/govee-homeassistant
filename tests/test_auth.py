@@ -1513,7 +1513,7 @@ class TestBffLeakDiscovery:
         session = make_session_get(make_mock_response(200, _bff_response(devices)))
         client = GoveeAuthClient(session=session)
 
-        sensors, _hubs = await client.fetch_bff_leak_sensors(token="tok")
+        sensors, _hubs, _thermo = await client.fetch_bff_leak_sensors(token="tok")
 
         assert len(sensors) == 1
         sensor = sensors[0]
@@ -1973,3 +1973,69 @@ class TestBffThermoHygrometerDiscovery:
 
         assert census[0]["sku"] == "H5301"
         assert census[0]["in_thermo_hygro_skus"] is True
+
+
+class TestBffThermoReadings:
+    """fetch_bff_leak_sensors also returns live tem/hum for non-leak
+    Developer-API thermometers (e.g. H5110 via H5151) — issue #83."""
+
+    @pytest.mark.asyncio
+    async def test_thermo_reading_extracted_for_non_leak_device(self):
+        did = "AA:BB:CC:DD:EE:FF:11:22"
+        devices = [
+            {
+                "sku": "H5110",
+                "device": did,
+                "deviceName": "Garage",
+                "deviceExt": json.dumps(
+                    {"lastDeviceData": json.dumps({"tem": 2800, "hum": 393})}
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
+
+        assert thermo == {did: {"tem": 2800, "hum": 393}}
+
+    @pytest.mark.asyncio
+    async def test_leak_and_hub_and_bffonly_thermo_skus_excluded(self):
+        devices = [
+            {
+                "sku": "H5058",  # leak sensor — excluded
+                "device": "L1",
+                "deviceExt": json.dumps(
+                    {"lastDeviceData": json.dumps({"tem": 2000})}
+                ),
+            },
+            {
+                "sku": "H5310",  # BFF-only thermo — owned by dedicated path
+                "device": "T1",
+                "deviceExt": json.dumps(
+                    {"lastDeviceData": json.dumps({"tem": 2640})}
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
+
+        assert thermo == {}
+
+    @pytest.mark.asyncio
+    async def test_thermo_reading_omitted_when_no_tem_hum(self):
+        devices = [
+            {
+                "sku": "H5179",
+                "device": "X1",
+                "deviceExt": json.dumps({"lastDeviceData": json.dumps({})}),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
+
+        assert thermo == {}

@@ -34,7 +34,7 @@ from .const import (
     CONF_API_TEMPERATURE_UNIT,
     DEFAULT_API_TEMPERATURE_UNIT,
     DOMAIN,
-    FAHRENHEIT_REPORTING_SKUS,
+    resolve_fahrenheit_conversion,
 )
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
@@ -300,11 +300,7 @@ class GoveeTemperatureSensor(_BffThermometerAvailabilityMixin, SensorEntity):
             if config_entry is not None
             else DEFAULT_API_TEMPERATURE_UNIT
         )
-        if api_unit == "auto":
-            convert = self._device.sku.upper() in FAHRENHEIT_REPORTING_SKUS
-        else:
-            convert = api_unit == "fahrenheit"
-        if convert:
+        if resolve_fahrenheit_conversion(self._device.sku, api_unit):
             return (value - 32.0) * (5.0 / 9.0)
 
         return value
