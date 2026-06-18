@@ -28,12 +28,17 @@ from custom_components.govee.models.transport import TransportHealth
 def _stub_lan_scan(monkeypatch):
     """Stub the LAN scan so entry-diagnostics tests stay fast + offline (#57).
 
-    async_get_config_entry_diagnostics now runs a real UDP discovery scan;
-    default it to "no devices" so the existing tests don't bind a socket or
-    wait on the scan timeout. Tests that exercise the LAN block override this.
+    async_get_config_entry_diagnostics now enumerates network adapters and runs
+    a real UDP discovery scan; default both to "nothing" so the existing tests
+    don't touch the network helper or bind a socket. Tests that exercise the LAN
+    block override these.
     """
     monkeypatch.setattr(
         "custom_components.govee.diagnostics.async_scan_lan_devices",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "custom_components.govee.diagnostics.network.async_get_enabled_source_ips",
         AsyncMock(return_value=[]),
     )
 
@@ -515,3 +520,94 @@ class TestLanDiscoveryDiag:
         assert lan["scan_attempted"] is True
         assert lan["device_count"] == 0
         assert "port 4002 in use" in lan["error"]
+
+    @pytest.mark.asyncio
+    async def test_interfaces_classified_passed_and_not_leaked(
+        self, monkeypatch
+    ) -> None:
+        # Host source IPs are enumerated, passed to the scanner, and surfaced
+        # only as coarse classes — never verbatim (#57).
+        from ipaddress import IPv4Address
+
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.network.async_get_enabled_source_ips",
+            AsyncMock(
+                return_value=[
+                    IPv4Address("192.168.1.50"),
+                    IPv4Address("172.17.0.2"),  # docker bridge
+                    IPv4Address("127.0.0.1"),  # loopback dropped
+                ]
+            ),
+        )
+        scan = AsyncMock(return_value=[])
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_scan_lan_devices", scan
+        )
+        coordinator = _coordinator_stub()
+        out = await async_get_config_entry_diagnostics(
+            MagicMock(), _entry_stub(coordinator)
+        )
+
+        lan = out["lan_discovery"]
+        assert lan["interface_count"] == 2  # loopback excluded
+        assert lan["interface_classes"] == [
+            "private-192.168 (typical LAN)",
+            "private-172 (often container bridge)",
+        ]
+        # Real interface IPs are passed to the scanner but never rendered.
+        scan.assert_awaited_once_with(
+            interface_ips=["192.168.1.50", "172.17.0.2"], extra_targets=[]
+        )
+        rendered = json.dumps(out, default=str)
+        assert "192.168.1.50" not in rendered
+        assert "172.17.0.2" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_source_ip_enumeration_failure_degrades(self, monkeypatch) -> None:
+        # If the network component is unavailable, fall back to a default scan.
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.network.async_get_enabled_source_ips",
+            AsyncMock(side_effect=RuntimeError("network not set up")),
+        )
+        scan = AsyncMock(return_value=[])
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_scan_lan_devices", scan
+        )
+        out = await async_get_config_entry_diagnostics(
+            MagicMock(), _entry_stub(_coordinator_stub())
+        )
+
+        lan = out["lan_discovery"]
+        assert lan["interface_count"] == 0
+        assert lan["interface_classes"] == []
+        scan.assert_awaited_once_with(interface_ips=[], extra_targets=[])
+
+    @pytest.mark.asyncio
+    async def test_configured_lan_targets_expanded_and_redacted(
+        self, monkeypatch
+    ) -> None:
+        # CONF_LAN_TARGETS is expanded for the scan, counted in the block, and
+        # the raw option (with the user's IPs) is redacted from the dump (#57).
+        scan = AsyncMock(return_value=[])
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_scan_lan_devices", scan
+        )
+        entry = _entry_stub(_coordinator_stub())
+        entry.options = {"lan_targets": "10.20.0.0/30, 10.20.0.51"}
+        out = await async_get_config_entry_diagnostics(MagicMock(), entry)
+
+        lan = out["lan_discovery"]
+        # /30 -> .1/.2 hosts + .3 broadcast, plus the explicit .51 = 4 targets.
+        assert lan["extra_target_count"] == 4
+        _args, kwargs = scan.call_args
+        assert kwargs["extra_targets"] == [
+            "10.20.0.1",
+            "10.20.0.2",
+            "10.20.0.3",
+            "10.20.0.51",
+        ]
+        # The configured subnet/IPs must not appear verbatim anywhere in output.
+        rendered = json.dumps(out, default=str)
+        assert out["config_entry"]["options"]["lan_targets"] == "**REDACTED**"
+        assert "10.20.0.51" not in rendered
+        assert "10.20.0.0/30" not in rendered

@@ -1161,7 +1161,16 @@ Local network control without cloud dependency. Must be enabled in Govee app dev
 }
 ```
 
-**Scan Response (from device to client:4002):**
+**Scan Response (device → multicast `239.255.255.250:4002`):**
+
+> ⚠️ The device sends its reply as **multicast** to the group on port 4002, NOT
+> as a unicast back to the requester. The listening socket **must join the
+> `239.255.255.250` group** (`IP_ADD_MEMBERSHIP`) or the kernel drops every
+> reply — binding port 4002 alone yields zero devices (issue #57). On a
+> multi-homed host, join (and emit the scan) on each enabled interface. In a
+> Docker bridge container, the multicast never crosses the namespace, so host
+> networking is required.
+
 ```json
 {
   "msg": {
@@ -1264,8 +1273,14 @@ def discover_devices(timeout=5):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.settimeout(timeout)
 
-    # Bind to response port
+    # Bind to the response port
     sock.bind(('', 4002))
+
+    # REQUIRED: join the multicast group, else the kernel drops the replies
+    # (devices answer via multicast to 239.255.255.250:4002, not unicast).
+    # On a multi-homed host, join on each interface IP instead of INADDR_ANY.
+    mreq = socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton('0.0.0.0')
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
     message = json.dumps({
         "msg": {"cmd": "scan", "data": {"account_topic": "reserve"}}

@@ -42,6 +42,7 @@ from .const import (
     CONF_ENABLE_SCENES,
     CONF_ENABLE_SEGMENTS,
     CONF_EXPOSE_TRANSPORT_ENTITIES,
+    CONF_LAN_TARGETS,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
     CONF_SEGMENT_MODE,
@@ -53,6 +54,7 @@ from .const import (
     DEFAULT_ENABLE_SCENES,
     DEFAULT_ENABLE_SEGMENTS,
     DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
+    DEFAULT_LAN_TARGETS,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_SEGMENT_MODE,
     DOMAIN,
@@ -62,6 +64,7 @@ from .const import (
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
 )
+from .api.lan import LanTargetError, expand_lan_targets
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -647,29 +650,39 @@ class GoveeOptionsFlow(OptionsFlow):
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """Handle global options flow."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            # Save global options and proceed to device selection if applicable
-            self._global_options = user_input
-            _LOGGER.debug("Global options saved: %s", user_input)
+            # Validate the free-text LAN targets before saving so a bad subnet
+            # is rejected in the form, not silently dropped at scan time (#57).
+            try:
+                expand_lan_targets(user_input.get(CONF_LAN_TARGETS, ""))
+            except LanTargetError as err:
+                _LOGGER.debug("Invalid LAN targets entered: %s", err)
+                errors[CONF_LAN_TARGETS] = "invalid_lan_targets"
 
-            # Check if we have RGBIC devices to configure
-            coordinator = self.config_entry.runtime_data
-            rgbic_devices = [
-                d for d in coordinator.devices.values() if d.segment_count > 0
-            ]
+            if not errors:
+                # Save global options and proceed to device selection if needed.
+                self._global_options = user_input
+                _LOGGER.debug("Global options saved: %s", user_input)
 
-            if rgbic_devices:
-                _LOGGER.debug(
-                    "Found %d RGBIC devices, proceeding to device selection",
-                    len(rgbic_devices),
-                )
-                return await self.async_step_select_segment_devices()
-            else:
+                coordinator = self.config_entry.runtime_data
+                rgbic_devices = [
+                    d for d in coordinator.devices.values() if d.segment_count > 0
+                ]
+
+                if rgbic_devices:
+                    _LOGGER.debug(
+                        "Found %d RGBIC devices, proceeding to device selection",
+                        len(rgbic_devices),
+                    )
+                    return await self.async_step_select_segment_devices()
                 _LOGGER.debug("No RGBIC devices found, saving options")
                 return self.async_create_entry(title="", data=user_input)
 
-        options = self.config_entry.options
-        _LOGGER.debug("Showing global options form with current values: %s", options)
+        # On a validation error, re-show the form with the user's entries kept;
+        # otherwise seed it from the saved options.
+        source = user_input if user_input is not None else self.config_entry.options
+        _LOGGER.debug("Showing global options form with current values: %s", source)
 
         return self.async_show_form(
             step_id="init",
@@ -677,44 +690,49 @@ class GoveeOptionsFlow(OptionsFlow):
                 {
                     vol.Optional(
                         CONF_POLL_INTERVAL,
-                        default=options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+                        default=source.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
                     ): vol.All(vol.Coerce(int), vol.Range(min=30, max=300)),
                     vol.Optional(
                         CONF_ENABLE_GROUPS,
-                        default=options.get(CONF_ENABLE_GROUPS, DEFAULT_ENABLE_GROUPS),
+                        default=source.get(CONF_ENABLE_GROUPS, DEFAULT_ENABLE_GROUPS),
                     ): bool,
                     vol.Optional(
                         CONF_ENABLE_SCENES,
-                        default=options.get(CONF_ENABLE_SCENES, DEFAULT_ENABLE_SCENES),
+                        default=source.get(CONF_ENABLE_SCENES, DEFAULT_ENABLE_SCENES),
                     ): bool,
                     vol.Optional(
                         CONF_ENABLE_DIY_SCENES,
-                        default=options.get(
+                        default=source.get(
                             CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES
                         ),
                     ): bool,
                     vol.Optional(
                         CONF_EXPOSE_TRANSPORT_ENTITIES,
-                        default=options.get(
+                        default=source.get(
                             CONF_EXPOSE_TRANSPORT_ENTITIES,
                             DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
                         ),
                     ): bool,
                     vol.Optional(
                         CONF_ENABLE_MQTT_CONTROL,
-                        default=options.get(
+                        default=source.get(
                             CONF_ENABLE_MQTT_CONTROL,
                             DEFAULT_ENABLE_MQTT_CONTROL,
                         ),
                     ): bool,
                     vol.Optional(
                         CONF_API_TEMPERATURE_UNIT,
-                        default=options.get(
+                        default=source.get(
                             CONF_API_TEMPERATURE_UNIT, DEFAULT_API_TEMPERATURE_UNIT
                         ),
                     ): vol.In(["auto", "celsius", "fahrenheit"]),
+                    vol.Optional(
+                        CONF_LAN_TARGETS,
+                        default=source.get(CONF_LAN_TARGETS, DEFAULT_LAN_TARGETS),
+                    ): str,
                 }
             ),
+            errors=errors,
         )
 
     async def async_step_select_segment_devices(

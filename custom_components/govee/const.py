@@ -19,6 +19,13 @@ CONF_SEGMENT_MODE: Final = "segment_mode"
 CONF_EXPOSE_TRANSPORT_ENTITIES: Final = "expose_transport_entities"
 CONF_ENABLE_MQTT_CONTROL: Final = "enable_mqtt_control"
 
+# Extra LAN discovery targets for devices the local multicast scan can't reach —
+# e.g. Govee devices on a different VLAN/subnet than Home Assistant (issue #57).
+# Free-text list (comma / newline / space separated) of device IPs, broadcast
+# addresses, and CIDR subnets (≤ /24, unicast-swept since inter-VLAN firewalls
+# usually drop directed broadcast). Empty = local multicast scan only.
+CONF_LAN_TARGETS: Final = "lan_targets"
+
 # Some Govee thermometer/hygrometer SKUs report temperatures in Fahrenheit via
 # the Cloud API without unit metadata, while the native sensor unit is tagged
 # Celsius — so a 101°F reading surfaces as 213.5°F in HA (issues #72, #78, #96).
@@ -59,6 +66,7 @@ DEFAULT_SEGMENT_MODE: Final = "individual"  # "disabled", "grouped", or "individ
 DEFAULT_EXPOSE_TRANSPORT_ENTITIES: Final = False
 DEFAULT_ENABLE_MQTT_CONTROL: Final = False
 DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
+DEFAULT_LAN_TARGETS: Final = ""
 
 # Optimistic state handling
 # Grace window (seconds) during which API polls do NOT overwrite optimistic

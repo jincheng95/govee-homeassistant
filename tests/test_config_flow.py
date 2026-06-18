@@ -11,12 +11,14 @@ from custom_components.govee.api.exceptions import (
     GoveeApiError,
     GoveeAuthError,
 )
+from custom_components.govee.config_flow import GoveeOptionsFlow
 from custom_components.govee.const import (
     CONF_API_KEY,
     CONF_EMAIL,
     CONF_ENABLE_GROUPS,
     CONF_ENABLE_SCENES,
     CONF_ENABLE_SEGMENTS,
+    CONF_LAN_TARGETS,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
     DEFAULT_ENABLE_GROUPS,
@@ -216,6 +218,63 @@ class TestOptionsFlow:
         # Invalid intervals would be rejected
         assert 10 < min_interval
         assert 600 > max_interval
+
+
+def _options_flow(devices=None):
+    """A GoveeOptionsFlow wired to a stub entry with no RGBIC devices."""
+    flow = GoveeOptionsFlow()
+    entry = MagicMock()
+    entry.options = {}
+    coordinator = MagicMock()
+    coordinator.devices = devices or {}
+    entry.runtime_data = coordinator
+    # Compatibility path of OptionsFlow.config_entry (set _config_entry directly).
+    flow._config_entry = entry
+    flow.hass = MagicMock()
+    return flow
+
+
+class TestLanTargetsOption:
+    """Options-flow validation for the LAN-targets field (issue #57)."""
+
+    @pytest.mark.asyncio
+    async def test_valid_lan_targets_saved(self):
+        flow = _options_flow()
+        result = await flow.async_step_init(
+            {
+                CONF_POLL_INTERVAL: 60,
+                CONF_LAN_TARGETS: "10.20.0.0/24, 10.20.0.51",
+            }
+        )
+        assert result["type"] == "create_entry"
+        assert result["data"][CONF_LAN_TARGETS] == "10.20.0.0/24, 10.20.0.51"
+
+    @pytest.mark.asyncio
+    async def test_blank_lan_targets_ok(self):
+        flow = _options_flow()
+        result = await flow.async_step_init(
+            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: ""}
+        )
+        assert result["type"] == "create_entry"
+
+    @pytest.mark.asyncio
+    async def test_invalid_lan_targets_rejected(self):
+        flow = _options_flow()
+        result = await flow.async_step_init(
+            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "not-an-ip"}
+        )
+        # Re-shows the form with a field-level error; nothing is saved.
+        assert result["type"] == "form"
+        assert result["errors"] == {CONF_LAN_TARGETS: "invalid_lan_targets"}
+
+    @pytest.mark.asyncio
+    async def test_oversized_subnet_rejected(self):
+        flow = _options_flow()
+        result = await flow.async_step_init(
+            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "10.0.0.0/8"}
+        )
+        assert result["type"] == "form"
+        assert result["errors"] == {CONF_LAN_TARGETS: "invalid_lan_targets"}
 
 
 class TestConfigFlowSteps:

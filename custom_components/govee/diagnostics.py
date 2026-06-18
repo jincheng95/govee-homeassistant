@@ -9,19 +9,37 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import logging
 import re
 from datetime import datetime
+from ipaddress import IPv4Address, IPv4Network
 from typing import Any
 
+from homeassistant.components import network
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from .api.lan import async_scan_lan_devices
-from .const import CONF_API_KEY, CONF_EMAIL, CONF_PASSWORD, DOMAIN
+from .api.lan import LanTargetError, async_scan_lan_devices, expand_lan_targets
+from .const import (
+    CONF_API_KEY,
+    CONF_EMAIL,
+    CONF_LAN_TARGETS,
+    CONF_PASSWORD,
+    DOMAIN,
+)
 from .coordinator import GoveeCoordinator
 from .models.transport import TRANSPORT_KINDS
+
+_LOGGER = logging.getLogger(__name__)
+
+# Coarse buckets so the maintainer can spot the most common LAN-discovery
+# failure (issue #57) — HA running with a container-bridge source IP that cannot
+# reach the physical LAN's multicast — WITHOUT exposing the host's actual IP.
+_CONTAINER_BRIDGE = IPv4Network("172.16.0.0/12")
+_TYPICAL_LAN = IPv4Network("192.168.0.0/16")
+_PRIVATE_10 = IPv4Network("10.0.0.0/8")
 
 # Keys to redact from diagnostic output. Includes the raw-response identity
 # fields ("device" = MAC in /device/state + device-list, "deviceName" = the
@@ -46,6 +64,9 @@ TO_REDACT = {
     # Local network address from the LAN-discovery scan (#57) — a private IP is
     # still PII in a publicly-attached diagnostics download.
     "ip",
+    # The user's configured LAN targets reveal their internal subnets/device IPs;
+    # the scan reports only the resulting target count, so redact the raw option.
+    CONF_LAN_TARGETS,
 }
 
 # Govee device IDs are MAC-derived: 8 colon-separated hex octets
@@ -204,29 +225,84 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
     }
 
 
-async def _lan_discovery_diag() -> dict[str, Any]:
+def _classify_ip(ip: IPv4Address) -> str:
+    """Bucket a host source IP without revealing it (see ``_CONTAINER_BRIDGE``)."""
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_link_local:
+        return "link-local"
+    if ip in _CONTAINER_BRIDGE:
+        return "private-172 (often container bridge)"
+    if ip in _TYPICAL_LAN:
+        return "private-192.168 (typical LAN)"
+    if ip in _PRIVATE_10:
+        return "private-10"
+    if ip.is_private:
+        return "private-other"
+    return "public"
+
+
+async def _lan_source_interfaces(hass: HomeAssistant) -> tuple[list[str], list[str]]:
+    """Return the host's enabled IPv4 LAN source IPs and their coarse classes.
+
+    Uses HA's network component so a multi-homed host scans on every adapter.
+    Never raises — degrades to an empty list (default-route scan) on any error.
+    """
+    ips: list[str] = []
+    classes: list[str] = []
+    try:
+        for source_ip in await network.async_get_enabled_source_ips(hass):
+            if isinstance(source_ip, IPv4Address) and not source_ip.is_loopback:
+                ips.append(str(source_ip))
+                classes.append(_classify_ip(source_ip))
+    except Exception as err:  # network component unavailable — fall back
+        _LOGGER.debug("LAN discovery: could not enumerate source IPs: %s", err)
+    return ips, classes
+
+
+async def _lan_discovery_diag(
+    hass: HomeAssistant, lan_targets_raw: str = ""
+) -> dict[str, Any]:
     """Run one read-only LAN scan for the diagnostics download (issue #57).
 
     Captures which of the user's devices answer Govee's local UDP discovery and
     what they report, so the community can supply the data the full LAN feature
-    needs. Never raises — diagnostics must always produce output; the IP of each
-    responder is redacted by the shared ``_redact`` pass.
+    needs. Never raises — diagnostics must always produce output. Each responder
+    IP is redacted by the shared ``_redact`` pass; the host's own source IPs are
+    reported only as coarse classes (``interface_classes``), never verbatim, so
+    a publicly-attached download stays PII-free while still revealing the common
+    container-bridge misconfiguration.
+
+    ``lan_targets_raw`` is the user's ``CONF_LAN_TARGETS`` option — extra
+    unicast / broadcast / CIDR addresses scanned for devices on another
+    VLAN/subnet. Only the resulting target *count* is reported, never the
+    addresses.
     """
+    interface_ips, interface_classes = await _lan_source_interfaces(hass)
+    extra_targets: list[str] = []
     try:
-        devices = await async_scan_lan_devices()
-        return {
-            "scan_attempted": True,
-            "device_count": len(devices),
-            "devices": devices,
-            "error": None,
-        }
+        extra_targets = expand_lan_targets(lan_targets_raw)
+    except LanTargetError as err:  # validated at config time; tolerate stale opts
+        _LOGGER.debug("LAN discovery: ignoring invalid lan_targets: %s", err)
+
+    result: dict[str, Any] = {
+        "scan_attempted": True,
+        "device_count": 0,
+        "devices": [],
+        "interface_count": len(interface_ips),
+        "interface_classes": interface_classes,
+        "extra_target_count": len(extra_targets),
+        "error": None,
+    }
+    try:
+        devices = await async_scan_lan_devices(
+            interface_ips=interface_ips, extra_targets=extra_targets
+        )
+        result["device_count"] = len(devices)
+        result["devices"] = devices
     except Exception as err:  # never break the diagnostics download
-        return {
-            "scan_attempted": True,
-            "device_count": 0,
-            "devices": [],
-            "error": str(err),
-        }
+        result["error"] = str(err)
+    return result
 
 
 def _redact(data: dict[str, Any]) -> dict[str, Any]:
@@ -265,7 +341,9 @@ async def async_get_config_entry_diagnostics(
         "raw_api_devices": coordinator.api_client.last_raw_devices,
         "leak_sensors": _leak_diag(coordinator),
         # Read-only local-network scan to seed the LAN-API work (issue #57).
-        "lan_discovery": await _lan_discovery_diag(),
+        "lan_discovery": await _lan_discovery_diag(
+            hass, entry.options.get(CONF_LAN_TARGETS, "")
+        ),
         **_runtime_diag(coordinator),
     }
     return _redact(diagnostics_data)
