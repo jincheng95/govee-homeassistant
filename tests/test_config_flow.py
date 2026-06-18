@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 
 from custom_components.govee.api.exceptions import (
@@ -221,17 +221,31 @@ class TestOptionsFlow:
 
 
 def _options_flow(devices=None):
-    """A GoveeOptionsFlow wired to a stub entry with no RGBIC devices."""
+    """A GoveeOptionsFlow plus the stub config entry its property should return.
+
+    ``config_entry`` is a read-only property on OptionsFlow whose resolution
+    differs across HA versions, so tests patch the property with this entry
+    rather than poking internals.
+    """
     flow = GoveeOptionsFlow()
+    flow.hass = MagicMock()
     entry = MagicMock()
     entry.options = {}
     coordinator = MagicMock()
     coordinator.devices = devices or {}
     entry.runtime_data = coordinator
-    # Compatibility path of OptionsFlow.config_entry (set _config_entry directly).
-    flow._config_entry = entry
-    flow.hass = MagicMock()
-    return flow
+    return flow, entry
+
+
+async def _run_init(flow, entry, user_input):
+    """Drive async_step_init with ``flow.config_entry`` returning ``entry``."""
+    with patch.object(
+        GoveeOptionsFlow,
+        "config_entry",
+        new_callable=PropertyMock,
+        return_value=entry,
+    ):
+        return await flow.async_step_init(user_input)
 
 
 class TestLanTargetsOption:
@@ -239,29 +253,28 @@ class TestLanTargetsOption:
 
     @pytest.mark.asyncio
     async def test_valid_lan_targets_saved(self):
-        flow = _options_flow()
-        result = await flow.async_step_init(
-            {
-                CONF_POLL_INTERVAL: 60,
-                CONF_LAN_TARGETS: "10.20.0.0/24, 10.20.0.51",
-            }
+        flow, entry = _options_flow()
+        result = await _run_init(
+            flow,
+            entry,
+            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "10.20.0.0/24, 10.20.0.51"},
         )
         assert result["type"] == "create_entry"
         assert result["data"][CONF_LAN_TARGETS] == "10.20.0.0/24, 10.20.0.51"
 
     @pytest.mark.asyncio
     async def test_blank_lan_targets_ok(self):
-        flow = _options_flow()
-        result = await flow.async_step_init(
-            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: ""}
+        flow, entry = _options_flow()
+        result = await _run_init(
+            flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: ""}
         )
         assert result["type"] == "create_entry"
 
     @pytest.mark.asyncio
     async def test_invalid_lan_targets_rejected(self):
-        flow = _options_flow()
-        result = await flow.async_step_init(
-            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "not-an-ip"}
+        flow, entry = _options_flow()
+        result = await _run_init(
+            flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "not-an-ip"}
         )
         # Re-shows the form with a field-level error; nothing is saved.
         assert result["type"] == "form"
@@ -269,9 +282,9 @@ class TestLanTargetsOption:
 
     @pytest.mark.asyncio
     async def test_oversized_subnet_rejected(self):
-        flow = _options_flow()
-        result = await flow.async_step_init(
-            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "10.0.0.0/8"}
+        flow, entry = _options_flow()
+        result = await _run_init(
+            flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "10.0.0.0/8"}
         )
         assert result["type"] == "form"
         assert result["errors"] == {CONF_LAN_TARGETS: "invalid_lan_targets"}
