@@ -324,6 +324,9 @@ async def _lan_discovery_diag(hass: HomeAssistant, lan_targets_raw: str = "") ->
         "probe_attempted": False,
         "probe_response_count": 0,
         "probe_error": None,
+        # Pre-initialized so the lan_discovery schema is identical on every return
+        # path, incl. the scan-failure early return below (overwritten on success).
+        "commands_answered": [],
     }
     try:
         devices = await async_scan_lan_devices(interface_ips=interface_ips, extra_targets=extra_targets)

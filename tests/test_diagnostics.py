@@ -504,6 +504,12 @@ class TestLanDiscoveryDiag:
         assert lan["scan_attempted"] is True
         assert lan["device_count"] == 0
         assert "port 4002 in use" in lan["error"]
+        # Schema must be identical on every return path, incl. this early return:
+        # the probe keys are present even though the probe never ran.
+        for key in ("probe_attempted", "probe_response_count", "probe_error", "commands_answered"):
+            assert key in lan, f"scan-failure lan_discovery missing {key!r}"
+        assert lan["commands_answered"] == []
+        assert lan["probe_attempted"] is False
 
     @pytest.mark.asyncio
     async def test_interfaces_classified_passed_and_not_leaked(self, monkeypatch) -> None:
