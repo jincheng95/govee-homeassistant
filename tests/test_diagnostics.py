@@ -38,6 +38,10 @@ def _stub_lan_scan(monkeypatch):
         AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
+        "custom_components.govee.diagnostics.async_probe_lan_devstatus",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
         "custom_components.govee.diagnostics.network.async_get_enabled_source_ips",
         AsyncMock(return_value=[]),
     )
@@ -196,9 +200,7 @@ class TestDiagnosticsOutput:
         }
         api_client = MagicMock()
         api_client.last_raw_state = {mac_id: raw_state_payload}
-        api_client.last_raw_devices = [
-            {"device": mac_id, "sku": "H6601", "deviceName": "Living Room Lamp"}
-        ]
+        api_client.last_raw_devices = [{"device": mac_id, "sku": "H6601", "deviceName": "Living Room Lamp"}]
 
         mqtt_client = MagicMock()
         mqtt_client.available = True
@@ -230,9 +232,7 @@ class TestDiagnosticsOutput:
         rendered = json.dumps(out, default=str)
 
         # The MAC must not appear anywhere — keys, values, or nested strings.
-        assert (
-            mac_id not in rendered
-        ), f"MAC-format device id leaked into diagnostics: {mac_id} found in {rendered}"
+        assert mac_id not in rendered, f"MAC-format device id leaked into diagnostics: {mac_id} found in {rendered}"
         # No 6-or-more-octet MAC pattern anywhere.
         match = _MAC_RE.search(rendered)
         assert match is None, f"MAC-format substring leaked: {match.group(0)!r}"
@@ -266,9 +266,7 @@ class TestDiagnosticsOutput:
         state.sensor_humidity = 48.0
 
         api_client = MagicMock()
-        api_client.last_raw_state = {
-            mac_id: {"device": mac_id, "sku": "H5075", "capabilities": []}
-        }
+        api_client.last_raw_state = {mac_id: {"device": mac_id, "sku": "H5075", "capabilities": []}}
         api_client.last_raw_devices = [{"device": mac_id, "sku": "H5075"}]
 
         mqtt_client = MagicMock()
@@ -347,9 +345,7 @@ class TestLeakAndTransportDump:
         coordinator = _coordinator_stub(
             leak_sensors={sensor_mac: sensor},
             leak_states={sensor_mac: state},
-            get_transport_health=lambda did, kind: (
-                health if kind == "cloud_api" else None
-            ),
+            get_transport_health=lambda did, kind: (health if kind == "cloud_api" else None),
             devices={
                 sensor_mac: MagicMock(
                     sku="H5058",
@@ -362,9 +358,7 @@ class TestLeakAndTransportDump:
             get_state=lambda _did: None,
         )
 
-        out = await async_get_config_entry_diagnostics(
-            MagicMock(), _entry_stub(coordinator)
-        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
 
         # Leak sensor data is present (battery/is_wet survive — not PII).
         leak = next(iter(out["leak_sensors"].values()))
@@ -407,9 +401,7 @@ class TestDeviceDiagnostics:
             devices={mac_id: device},
             get_state=lambda _did: state,
         )
-        coordinator.api_client.last_raw_state = {
-            mac_id: {"device": mac_id, "sku": "H6601"}
-        }
+        coordinator.api_client.last_raw_state = {mac_id: {"device": mac_id, "sku": "H6601"}}
 
         device_entry = MagicMock()
         device_entry.id = "ha_dev_1"
@@ -420,9 +412,7 @@ class TestDeviceDiagnostics:
         device_entry.sw_version = None
         device_entry.hw_version = None
 
-        out = await async_get_device_diagnostics(
-            MagicMock(), _entry_stub(coordinator), device_entry
-        )
+        out = await async_get_device_diagnostics(MagicMock(), _entry_stub(coordinator), device_entry)
 
         # The targeted device is dumped...
         assert len(out["devices"]) == 1
@@ -456,9 +446,7 @@ class TestDeviceDiagnostics:
         device_entry.sw_version = None
         device_entry.hw_version = None
 
-        out = await async_get_device_diagnostics(
-            MagicMock(), _entry_stub(coordinator), device_entry
-        )
+        out = await async_get_device_diagnostics(MagicMock(), _entry_stub(coordinator), device_entry)
 
         # The hub's linked leak sensor is included.
         assert len(out["leak_sensors"]) == 1
@@ -487,9 +475,7 @@ class TestLanDiscoveryDiag:
             ),
         )
         coordinator = _coordinator_stub()
-        out = await async_get_config_entry_diagnostics(
-            MagicMock(), _entry_stub(coordinator)
-        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
 
         lan = out["lan_discovery"]
         assert lan["scan_attempted"] is True
@@ -512,9 +498,7 @@ class TestLanDiscoveryDiag:
             AsyncMock(side_effect=OSError("port 4002 in use")),
         )
         coordinator = _coordinator_stub()
-        out = await async_get_config_entry_diagnostics(
-            MagicMock(), _entry_stub(coordinator)
-        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
 
         lan = out["lan_discovery"]
         assert lan["scan_attempted"] is True
@@ -522,9 +506,7 @@ class TestLanDiscoveryDiag:
         assert "port 4002 in use" in lan["error"]
 
     @pytest.mark.asyncio
-    async def test_interfaces_classified_passed_and_not_leaked(
-        self, monkeypatch
-    ) -> None:
+    async def test_interfaces_classified_passed_and_not_leaked(self, monkeypatch) -> None:
         # Host source IPs are enumerated, passed to the scanner, and surfaced
         # only as coarse classes — never verbatim (#57).
         from ipaddress import IPv4Address
@@ -540,13 +522,9 @@ class TestLanDiscoveryDiag:
             ),
         )
         scan = AsyncMock(return_value=[])
-        monkeypatch.setattr(
-            "custom_components.govee.diagnostics.async_scan_lan_devices", scan
-        )
+        monkeypatch.setattr("custom_components.govee.diagnostics.async_scan_lan_devices", scan)
         coordinator = _coordinator_stub()
-        out = await async_get_config_entry_diagnostics(
-            MagicMock(), _entry_stub(coordinator)
-        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
 
         lan = out["lan_discovery"]
         assert lan["interface_count"] == 2  # loopback excluded
@@ -555,9 +533,7 @@ class TestLanDiscoveryDiag:
             "private-172 (often container bridge)",
         ]
         # Real interface IPs are passed to the scanner but never rendered.
-        scan.assert_awaited_once_with(
-            interface_ips=["192.168.1.50", "172.17.0.2"], extra_targets=[]
-        )
+        scan.assert_awaited_once_with(interface_ips=["192.168.1.50", "172.17.0.2"], extra_targets=[])
         rendered = json.dumps(out, default=str)
         assert "192.168.1.50" not in rendered
         assert "172.17.0.2" not in rendered
@@ -570,12 +546,8 @@ class TestLanDiscoveryDiag:
             AsyncMock(side_effect=RuntimeError("network not set up")),
         )
         scan = AsyncMock(return_value=[])
-        monkeypatch.setattr(
-            "custom_components.govee.diagnostics.async_scan_lan_devices", scan
-        )
-        out = await async_get_config_entry_diagnostics(
-            MagicMock(), _entry_stub(_coordinator_stub())
-        )
+        monkeypatch.setattr("custom_components.govee.diagnostics.async_scan_lan_devices", scan)
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
 
         lan = out["lan_discovery"]
         assert lan["interface_count"] == 0
@@ -583,15 +555,11 @@ class TestLanDiscoveryDiag:
         scan.assert_awaited_once_with(interface_ips=[], extra_targets=[])
 
     @pytest.mark.asyncio
-    async def test_configured_lan_targets_expanded_and_redacted(
-        self, monkeypatch
-    ) -> None:
+    async def test_configured_lan_targets_expanded_and_redacted(self, monkeypatch) -> None:
         # CONF_LAN_TARGETS is expanded for the scan, counted in the block, and
         # the raw option (with the user's IPs) is redacted from the dump (#57).
         scan = AsyncMock(return_value=[])
-        monkeypatch.setattr(
-            "custom_components.govee.diagnostics.async_scan_lan_devices", scan
-        )
+        monkeypatch.setattr("custom_components.govee.diagnostics.async_scan_lan_devices", scan)
         entry = _entry_stub(_coordinator_stub())
         entry.options = {"lan_targets": "10.20.0.0/30, 10.20.0.51"}
         out = await async_get_config_entry_diagnostics(MagicMock(), entry)
@@ -611,3 +579,119 @@ class TestLanDiscoveryDiag:
         assert out["config_entry"]["options"]["lan_targets"] == "**REDACTED**"
         assert "10.20.0.51" not in rendered
         assert "10.20.0.0/30" not in rendered
+
+
+class TestLanDevStatusProbe:
+    """Entry diagnostics probe each discovered device for full LAN state (#57)."""
+
+    @staticmethod
+    def _two_device_scan(monkeypatch):
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_scan_lan_devices",
+            AsyncMock(
+                return_value=[
+                    {"ip": "192.168.1.23", "device": "AA:BB", "sku": "H6072"},
+                    {"ip": "192.168.1.24", "device": "CC:DD", "sku": "H618A"},
+                ]
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_probe_status_attached_per_device(self, monkeypatch) -> None:
+        # One device answers devStatus, the other does not -> status None.
+        self._two_device_scan(monkeypatch)
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_probe_lan_devstatus",
+            AsyncMock(
+                return_value={
+                    "192.168.1.23": {
+                        "onOff": 1,
+                        "brightness": 80,
+                        "color": {"r": 255, "g": 0, "b": 0},
+                        "colorTemInKelvin": 0,
+                    }
+                }
+            ),
+        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
+
+        lan = out["lan_discovery"]
+        assert lan["probe_attempted"] is True
+        assert lan["probe_response_count"] == 1
+        by_sku = {d["sku"]: d for d in lan["devices"]}
+        assert by_sku["H6072"]["status"]["brightness"] == 80
+        assert by_sku["H6072"]["status"]["onOff"] == 1
+        assert by_sku["H618A"]["status"] is None
+
+    @pytest.mark.asyncio
+    async def test_probe_status_ip_and_device_inside_reply_redacted(self, monkeypatch) -> None:
+        # A firmware echoing ip/device inside devStatus is auto-redacted, while
+        # the 4 known runtime fields survive (redaction-coverage requirement).
+        self._two_device_scan(monkeypatch)
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_probe_lan_devstatus",
+            AsyncMock(
+                return_value={
+                    "192.168.1.23": {
+                        "onOff": 1,
+                        "brightness": 50,
+                        "ip": "192.168.1.23",
+                        "device": "AA:BB:CC:DD:EE:FF",
+                    }
+                }
+            ),
+        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
+
+        status = next(d["status"] for d in out["lan_discovery"]["devices"] if d["status"])
+        assert status["brightness"] == 50
+        assert status["onOff"] == 1
+        assert status["ip"] == "**REDACTED**"
+        assert status["device"] == "**REDACTED**"
+        rendered = json.dumps(out, default=str)
+        assert "AA:BB:CC:DD:EE:FF" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_is_isolated(self, monkeypatch) -> None:
+        # A probe error must not break the download; devices still present.
+        self._two_device_scan(monkeypatch)
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_probe_lan_devstatus",
+            AsyncMock(side_effect=OSError("port 4002 in use")),
+        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
+
+        lan = out["lan_discovery"]
+        assert lan["device_count"] == 2
+        assert lan["probe_attempted"] is True
+        assert lan["probe_response_count"] == 0
+        assert "port 4002 in use" in lan["probe_error"]
+        assert all(d["status"] is None for d in lan["devices"])
+
+    @pytest.mark.asyncio
+    async def test_probe_skipped_when_no_devices(self, monkeypatch) -> None:
+        # Empty scan -> probe never called, probe_attempted False.
+        probe = AsyncMock(return_value={})
+        monkeypatch.setattr("custom_components.govee.diagnostics.async_probe_lan_devstatus", probe)
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
+
+        lan = out["lan_discovery"]
+        assert lan["probe_attempted"] is False
+        assert lan["probe_response_count"] == 0
+        probe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_probe_receives_discovered_ips_and_interfaces(self, monkeypatch) -> None:
+        # The probe is handed the scan's IPs + the host source IPs (multi-homed).
+        from ipaddress import IPv4Address
+
+        self._two_device_scan(monkeypatch)
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.network.async_get_enabled_source_ips",
+            AsyncMock(return_value=[IPv4Address("192.168.1.50")]),
+        )
+        probe = AsyncMock(return_value={})
+        monkeypatch.setattr("custom_components.govee.diagnostics.async_probe_lan_devstatus", probe)
+        await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
+
+        probe.assert_awaited_once_with(["192.168.1.23", "192.168.1.24"], interface_ips=["192.168.1.50"])

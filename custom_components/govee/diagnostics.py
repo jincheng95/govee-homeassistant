@@ -21,7 +21,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from .api.lan import LanTargetError, async_scan_lan_devices, expand_lan_targets
+from .api.lan import (
+    LanTargetError,
+    async_probe_lan_devstatus,
+    async_scan_lan_devices,
+    expand_lan_targets,
+)
 from .const import (
     CONF_API_KEY,
     CONF_EMAIL,
@@ -91,10 +96,7 @@ def _anon_id(value: str) -> str:
 
 def _anonymize_device_keys(data: dict[str, Any]) -> dict[str, Any]:
     """Replace MAC-format dict keys with stable hashes; leave other keys intact."""
-    return {
-        (_anonymize_device_id(k) if isinstance(k, str) and _looks_like_mac(k) else k): v
-        for k, v in data.items()
-    }
+    return {(_anonymize_device_id(k) if isinstance(k, str) and _looks_like_mac(k) else k): v for k, v in data.items()}
 
 
 def _serialize_state(state: Any) -> dict[str, Any] | None:
@@ -260,9 +262,7 @@ async def _lan_source_interfaces(hass: HomeAssistant) -> tuple[list[str], list[s
     return ips, classes
 
 
-async def _lan_discovery_diag(
-    hass: HomeAssistant, lan_targets_raw: str = ""
-) -> dict[str, Any]:
+async def _lan_discovery_diag(hass: HomeAssistant, lan_targets_raw: str = "") -> dict[str, Any]:
     """Run one read-only LAN scan for the diagnostics download (issue #57).
 
     Captures which of the user's devices answer Govee's local UDP discovery and
@@ -293,15 +293,40 @@ async def _lan_discovery_diag(
         "interface_classes": interface_classes,
         "extra_target_count": len(extra_targets),
         "error": None,
+        "probe_attempted": False,
+        "probe_response_count": 0,
+        "probe_error": None,
     }
     try:
-        devices = await async_scan_lan_devices(
-            interface_ips=interface_ips, extra_targets=extra_targets
-        )
+        devices = await async_scan_lan_devices(interface_ips=interface_ips, extra_targets=extra_targets)
         result["device_count"] = len(devices)
         result["devices"] = devices
     except Exception as err:  # never break the diagnostics download
         result["error"] = str(err)
+        return result
+
+    # MAX-DATA probe: query each discovered device for its full LAN runtime state
+    # (issue #57 follow-up). The whole devStatus reply is captured per device so
+    # we can measure empirically how much state the LAN API exposes — building
+    # toward LAN-primary control. Best-effort and never-raise, same contract as
+    # the scan. Each devStatus field (onOff/brightness/color/colorTemInKelvin) is
+    # non-PII; any ip/device/mac key a firmware echoes is auto-redacted by the
+    # shared _redact pass. NOTE: if community downloads surface a NEW PII key
+    # (hostname, ssid, wifi MAC under a fresh key name), add it to TO_REDACT.
+    probe_ips = [d["ip"] for d in devices if d.get("ip")]
+    result["probe_attempted"] = bool(probe_ips)
+    status_by_ip: dict[str, dict[str, Any]] = {}
+    if probe_ips:
+        try:
+            status_by_ip = await async_probe_lan_devstatus(probe_ips, interface_ips=interface_ips)
+        except Exception as err:  # never break the diagnostics download
+            result["probe_error"] = str(err)
+    result["probe_response_count"] = len(status_by_ip)
+    # Attach each raw reply onto its device record by IP; non-responders get
+    # status=None so the community data shows the responder ratio explicitly.
+    for device in devices:
+        device_ip = device.get("ip")
+        device["status"] = status_by_ip.get(device_ip) if isinstance(device_ip, str) else None
     return result
 
 
@@ -341,9 +366,7 @@ async def async_get_config_entry_diagnostics(
         "raw_api_devices": coordinator.api_client.last_raw_devices,
         "leak_sensors": _leak_diag(coordinator),
         # Read-only local-network scan to seed the LAN-API work (issue #57).
-        "lan_discovery": await _lan_discovery_diag(
-            hass, entry.options.get(CONF_LAN_TARGETS, "")
-        ),
+        "lan_discovery": await _lan_discovery_diag(hass, entry.options.get(CONF_LAN_TARGETS, "")),
         **_runtime_diag(coordinator),
     }
     return _redact(diagnostics_data)
@@ -393,9 +416,7 @@ async def async_get_device_diagnostics(
             "name": device.name_by_user or device.name,
             # Anonymize the MAC inside each (domain, id) identifier tuple — it is
             # a list element, so async_redact_data's key match won't reach it.
-            "identifiers": [
-                [dom, _anon_id(ident)] for dom, ident in device.identifiers
-            ],
+            "identifiers": [[dom, _anon_id(ident)] for dom, ident in device.identifiers],
             "model": device.model,
             "sw_version": device.sw_version,
             "hw_version": device.hw_version,

@@ -1233,6 +1233,18 @@ Local network control without cloud dependency. Must be enabled in Govee app dev
 }
 ```
 
+> **Readable vs writable over LAN (verified against `Galorhallen/govee-local-api`
+> + `wez/govee2mqtt`):** `devStatus` is the ONLY read path and it returns exactly
+> these four runtime fields — `onOff`, `brightness` (0–100), `color {r,g,b}`
+> (whole-device), `colorTemInKelvin`. There is **no** scene, segment, music, DIY,
+> or sensor field. `turn`/`brightness`/`colorwc`/`ptReal` are **write-only** (no
+> response body); `ptReal` is fire-and-forget, so active scene, segment colors,
+> music mode and DIY state are **not readable over LAN** — they must come from
+> MQTT/API/optimistic state. The `lan_discovery` diagnostics block probes each
+> discovered device with `devStatus` (capturing the whole reply, to catch any
+> firmware that returns more) so this can be confirmed empirically on real
+> hardware before LAN control is built (issue #57).
+
 ### 5.4 BLE Passthrough (ptReal)
 
 Send BLE commands through WiFi for devices supporting it:
