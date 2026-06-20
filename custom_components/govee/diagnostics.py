@@ -23,7 +23,7 @@ from homeassistant.helpers.device_registry import DeviceEntry
 
 from .api.lan import (
     LanTargetError,
-    async_probe_lan_devstatus,
+    async_probe_lan_raw,
     async_scan_lan_devices,
     expand_lan_targets,
 )
@@ -97,6 +97,34 @@ def _anon_id(value: str) -> str:
 def _anonymize_device_keys(data: dict[str, Any]) -> dict[str, Any]:
     """Replace MAC-format dict keys with stable hashes; leave other keys intact."""
     return {(_anonymize_device_id(k) if isinstance(k, str) and _looks_like_mac(k) else k): v for k, v in data.items()}
+
+
+# A whole-string IPv4 dotted-quad (each octet 0-255). Anchored, so firmware
+# versions like "1.02.03" (three parts, leading zeros) never match.
+_IPV4_PATTERN = re.compile(r"^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$")
+
+
+def _scrub_lan_addresses(obj: Any) -> Any:
+    """Recursively value-redact MAC/IPv4 strings anywhere in a structure.
+
+    The LAN reality probe captures unknown keys, so key-name redaction (TO_REDACT)
+    can miss an address that arrives under an unexpected key. This walks the whole
+    captured structure and scrubs by VALUE shape instead: a MAC-format string is
+    anonymized to its stable ``device_`` hash (preserving same-device
+    correlation), an IPv4 string becomes ``REDACTED_IP``. Non-address values pass
+    through untouched.
+    """
+    if isinstance(obj, str):
+        if _looks_like_mac(obj):
+            return _anonymize_device_id(obj)
+        if _IPV4_PATTERN.match(obj):
+            return "REDACTED_IP"
+        return obj
+    if isinstance(obj, dict):
+        return {k: _scrub_lan_addresses(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_lan_addresses(v) for v in obj]
+    return obj
 
 
 def _serialize_state(state: Any) -> dict[str, Any] | None:
@@ -305,29 +333,67 @@ async def _lan_discovery_diag(hass: HomeAssistant, lan_targets_raw: str = "") ->
         result["error"] = str(err)
         return result
 
-    # MAX-DATA probe: query each discovered device for its full LAN runtime state
-    # (issue #57 follow-up). The whole devStatus reply is captured per device so
-    # we can measure empirically how much state the LAN API exposes — building
-    # toward LAN-primary control. Best-effort and never-raise, same contract as
-    # the scan. Each devStatus field (onOff/brightness/color/colorTemInKelvin) is
-    # non-PII; any ip/device/mac key a firmware echoes is auto-redacted by the
-    # shared _redact pass. NOTE: if community downloads surface a NEW PII key
-    # (hostname, ssid, wifi MAC under a fresh key name), add it to TO_REDACT.
+    # REALITY probe (issue #57): fire a read-only query battery (devStatus +
+    # status + unicast scan) at each discovered device and capture EVERY datagram
+    # it emits, completely unfiltered. We deliberately do NOT trust other
+    # integrations' field/command lists — the goal is to measure on real hardware
+    # what the firmware actually exposes (e.g. a `status` reply's `pt` BLE-hex may
+    # carry segment/scene/sensor state that the 4-field devStatus omits). Best-
+    # effort and never-raise, same contract as the scan.
+    #
+    # PII: because we capture unknown keys, key-name TO_REDACT is not enough.
+    # _scrub_lan_addresses() additionally value-redacts any MAC- or IPv4-shaped
+    # string anywhere in the capture (firmware versions like "1.02.03" are 3
+    # dotted parts, not an IPv4 quad, so they survive). A reviewer should still
+    # eyeball the first community downloads for a NEW PII key (hostname, ssid).
     probe_ips = [d["ip"] for d in devices if d.get("ip")]
     result["probe_attempted"] = bool(probe_ips)
-    status_by_ip: dict[str, dict[str, Any]] = {}
+    raw_by_ip: dict[str, list[Any]] = {}
     if probe_ips:
         try:
-            status_by_ip = await async_probe_lan_devstatus(probe_ips, interface_ips=interface_ips)
+            raw_by_ip = await async_probe_lan_raw(probe_ips, interface_ips=interface_ips)
         except Exception as err:  # never break the diagnostics download
             result["probe_error"] = str(err)
-    result["probe_response_count"] = len(status_by_ip)
-    # Attach each raw reply onto its device record by IP; non-responders get
-    # status=None so the community data shows the responder ratio explicitly.
+    result["probe_response_count"] = len(raw_by_ip)
+    # Aggregate which distinct commands answered across the whole fleet — a quick
+    # at-a-glance map of the real readable surface.
+    answered: set[str] = set()
+    for replies in raw_by_ip.values():
+        answered.update(_reply_cmds(replies))
+    result["commands_answered"] = sorted(answered)
+    # Attach per device: the full raw capture, a readable devStatus summary, and
+    # which commands that device answered. Non-responders get empty/None so the
+    # responder ratio and per-command support are explicit in the community data.
     for device in devices:
         device_ip = device.get("ip")
-        device["status"] = status_by_ip.get(device_ip) if isinstance(device_ip, str) else None
+        replies = raw_by_ip.get(device_ip, []) if isinstance(device_ip, str) else []
+        device["lan_raw"] = replies
+        device["commands_answered"] = sorted(_reply_cmds(replies))
+        device["status"] = _reply_data(replies, "devStatus")
     return result
+
+
+def _reply_cmds(replies: list[Any]) -> set[str]:
+    """The set of ``msg.cmd`` values present in a device's raw probe replies."""
+    cmds: set[str] = set()
+    for reply in replies:
+        if isinstance(reply, dict):
+            cmd = reply.get("msg", {}).get("cmd") if isinstance(reply.get("msg"), dict) else None
+            if isinstance(cmd, str):
+                cmds.add(cmd)
+    return cmds
+
+
+def _reply_data(replies: list[Any], cmd: str) -> dict[str, Any] | None:
+    """The ``msg.data`` dict of the last reply matching ``cmd`` (readable summary)."""
+    found: dict[str, Any] | None = None
+    for reply in replies:
+        if not isinstance(reply, dict):
+            continue
+        msg = reply.get("msg")
+        if isinstance(msg, dict) and msg.get("cmd") == cmd and isinstance(msg.get("data"), dict):
+            found = msg["data"]
+    return found
 
 
 def _redact(data: dict[str, Any]) -> dict[str, Any]:
@@ -336,6 +402,10 @@ def _redact(data: dict[str, Any]) -> dict[str, Any]:
     for key in ("devices", "leak_sensors"):
         if isinstance(redacted.get(key), dict):
             redacted[key] = _anonymize_device_keys(redacted[key])
+    # The LAN reality probe captures unknown keys, so additionally scrub the whole
+    # lan_discovery subtree by value shape (catches a MAC/IP under any key name).
+    if isinstance(redacted.get("lan_discovery"), dict):
+        redacted["lan_discovery"] = _scrub_lan_addresses(redacted["lan_discovery"])
     return redacted
 
 

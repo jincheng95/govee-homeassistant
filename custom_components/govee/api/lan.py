@@ -11,20 +11,21 @@ Two probes, both safe to attach to a diagnostics download:
 
 - ``async_scan_lan_devices`` — one bounded multicast ``scan`` (discovery): which
   devices answer and their identity/firmware metadata.
-- ``async_probe_lan_devstatus`` — a unicast ``devStatus`` query per discovered
-  device, capturing its full runtime reply so we can measure empirically how
-  much state the LAN API actually exposes. Verified against
-  ``Galorhallen/govee-local-api`` and ``wez/govee2mqtt``, a ``devStatus`` reply
-  carries exactly four runtime fields — ``onOff``, ``brightness``, ``color`` and
-  ``colorTemInKelvin`` — but we capture the whole ``data`` dict so a firmware
-  that returns more is not silently discarded (the entire point is discovery).
+- ``async_probe_lan_raw`` — a "reality probe": fire a battery of safe READ-ONLY
+  queries (``devStatus`` + ``status`` + a unicast ``scan``) at each discovered
+  device and capture **every** datagram it emits, completely unfiltered — whole
+  payload, any command, any field, even undecodable bytes. We do NOT trust any
+  other integration's notion of which commands exist or which fields a reply
+  carries (``govee-local-api`` parses only 4 ``devStatus`` fields and never sends
+  ``status`` at all); the point is to measure on real hardware what the firmware
+  actually exposes rather than inherit someone else's parser. In particular the
+  ``status`` command's ``pt`` (BLE-passthrough hex) field may carry
+  segment/scene/sensor state that the 4-field ``devStatus`` omits.
 
-``ptReal`` (the BLE-over-WiFi passthrough that drives scenes/segments/music) is
-deliberately NOT probed: both reference libraries send it fire-and-forget with
-no response to read back, and emitting one is a state-changing control write —
-forbidden in this read-only module. So scene/segment/music/sensor state is
-simply not readable over the LAN API; only the four ``devStatus`` fields and the
-discovery metadata are.
+``ptReal`` and the other control verbs (``turn``/``brightness``/``colorwc``) are
+deliberately NOT sent: they are state-changing writes, forbidden in this
+read-only module. Capturing what the device *volunteers* in response to read
+queries is the safe way to map the surface.
 
 Deliberately scoped: no control writes, no entities, no persistent socket — each
 call opens a socket, collects responses for a short timeout, and returns them.
@@ -32,16 +33,16 @@ Protocol per ``docs/govee-protocol-reference.md`` §6:
 
 - Scan request    -> 239.255.255.250:4001  ``{"msg":{"cmd":"scan",...}}``
 - Scan response   -> 239.255.255.250:4002  ``{"msg":{"cmd":"scan","data":{...}}}``
-- devStatus query -> <device-ip>:4003      ``{"msg":{"cmd":"devStatus","data":{}}}``
-- devStatus reply -> our :4002 (unicast OR multicast, firmware-dependent)
+- Read queries    -> <device-ip>:4003/4001 ``{"msg":{"cmd":"devStatus|status|scan","data":{}}}``
+- Replies         -> our :4002 (unicast OR multicast, firmware-dependent)
 
 Critical protocol detail (the reason early builds returned zero devices, issue
 #57): a Govee device sends its scan *response* as **multicast** to the group on
 port 4002 — it does NOT unicast the reply back to the sender. So the receive
 socket MUST join the ``239.255.255.250`` group via ``IP_ADD_MEMBERSHIP`` or the
 kernel silently drops every reply before it reaches us. Binding port 4002 alone
-is not enough. The devStatus probe reuses the same group-joined 4002 socket so
-it catches replies whether a given firmware answers unicast or multicast. This
+is not enough. The reality probe reuses the same group-joined 4002 socket so it
+catches replies whether a given firmware answers unicast or multicast. This
 mirrors ``govee-local-api`` (the library behind Home Assistant's
 ``govee_light_local``) and ``wez/govee2mqtt``.
 """
@@ -69,12 +70,13 @@ LAN_RESPONSE_PORT = 4002  # devices multicast scan responses here; we listen
 LAN_COMMAND_PORT = 4003  # devices listen here for unicast devStatus/control
 LAN_MULTICAST_TTL = 2  # let a scan / reply cross at most one router hop
 
-# devStatus probe budget. All probes share ONE socket and ONE collection window
+# Reality-probe budget. All probes share ONE socket and ONE collection window
 # (sends are fire-and-forget; replies arrive asynchronously), so total wall time
 # is bounded by the window regardless of device_count — 11 devices cost the same
 # ~2s as one. The cap bounds send-loop work against a large CIDR sweep, not wait.
-LAN_PROBE_WINDOW = 2.0  # seconds to collect all devStatus replies
+LAN_PROBE_WINDOW = 2.5  # seconds to collect all probe replies
 LAN_PROBE_MAX_DEVICES = 64  # hard cap on how many IPs we probe in one batch
+LAN_PROBE_MAX_REPLIES_PER_IP = 32  # guard against a chatty device flooding output
 
 # INADDR_ANY: join/egress on the kernel's default-route interface. Always added
 # alongside any explicit interface IPs as a catch-all for single-NIC hosts.
@@ -82,9 +84,25 @@ _DEFAULT_INTERFACE = "0.0.0.0"
 
 _SCAN_REQUEST = json.dumps({"msg": {"cmd": "scan", "data": {"account_topic": "reserve"}}}).encode("utf-8")
 
-# Empty-data devStatus query; matches DevStatusMessage in govee-local-api and
-# Request::DevStatus{} in wez/govee2mqtt. Sent unicast to <device-ip>:4003.
-_DEVSTATUS_REQUEST = json.dumps({"msg": {"cmd": "devStatus", "data": {}}}).encode("utf-8")
+# Read-only LAN query battery for the reality probe (issue #57). We do NOT trust
+# any other integration's field/command list — we send every safe READ query we
+# know of and capture whatever the hardware actually emits, so the real LAN data
+# surface is measured, not assumed. STRICTLY read-only: NO writes
+# (turn/brightness/colorwc/ptReal) — a diagnostics probe must never mutate device
+# state. Each entry is ``(cmd, port, data)`` sent unicast; ``data`` is empty so no
+# parameters are set. Replies are captured raw on 4002 regardless of cmd.
+#
+# - ``devStatus`` (:4003) — the documented status read (4 known fields).
+# - ``status``    (:4003) — undocumented in HA libs but a ``StatusResponse`` with
+#   a ``pt`` (base64 BLE passthrough) field exists in govee-local-api yet is never
+#   sent; it may carry segment/scene/sensor state the 4-field devStatus omits.
+# - ``scan``      (:4001) — unicast discovery, captured WHOLE (not the 7-field
+#   allowlist) so any extra identity/firmware fields surface.
+LAN_PROBE_COMMANDS: tuple[tuple[str, int, dict[str, Any]], ...] = (
+    ("devStatus", LAN_COMMAND_PORT, {}),
+    ("status", LAN_COMMAND_PORT, {}),
+    ("scan", LAN_DISCOVERY_PORT, {"account_topic": "reserve"}),
+)
 
 # Packed multicast group address, reused for every IP_ADD/DROP_MEMBERSHIP call.
 _GROUP_BYTES = socket.inet_aton(LAN_MULTICAST_GROUP)
@@ -187,38 +205,38 @@ class _ScanProtocol(asyncio.DatagramProtocol):
         _LOGGER.debug("LAN scan socket error: %s", exc)
 
 
-class _DevStatusProtocol(asyncio.DatagramProtocol):
-    """Collects raw Govee ``devStatus`` replies, keyed by responder IP.
+class _RawProbeProtocol(asyncio.DatagramProtocol):
+    """Captures EVERY datagram received during a probe, raw, keyed by source IP.
 
-    Separate from ``_ScanProtocol`` because that one hard-drops ``cmd != "scan"``.
-    Captures the ENTIRE ``data`` dict (no field allowlist) — the purpose of the
-    probe is to discover what firmware actually returns, so an allowlist would
-    throw away exactly the signal we want. Redaction happens downstream in
-    diagnostics ``_redact`` (key-name based: any ``ip``/``device``/``mac`` key a
-    firmware echoes inside ``data`` is auto-redacted there).
+    Deliberately unfiltered — no ``cmd`` check, no field allowlist, no shape
+    assumptions. The goal is to record exactly what the hardware emits, including
+    commands and fields no reference library parses, so the real LAN data surface
+    is *measured* rather than inherited from another integration's parser. The
+    whole ``{"msg": ...}`` payload is kept; an undecodable datagram is captured as
+    a truncated ``_unparsed`` string rather than dropped (even garbage is signal).
+
+    Keyed by the datagram SOURCE IP — correct for both reply paths (a unicast
+    reply to our 4002 source and a multicast reply to the group both carry the
+    device's own IP as the UDP source). Each IP accumulates a LIST of replies so
+    multiple commands' responses (devStatus + status + scan) are all retained.
+    Redaction is downstream in diagnostics (key-name + value-level address scrub).
     """
 
     def __init__(self) -> None:
-        self.responses: dict[str, dict[str, Any]] = {}
+        self.replies: dict[str, list[Any]] = {}
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        bucket = self.replies.setdefault(addr[0], [])
+        if len(bucket) >= LAN_PROBE_MAX_REPLIES_PER_IP:
+            return  # chatty device / broadcast storm — keep the dump bounded
         try:
-            payload = json.loads(data.decode("utf-8", errors="replace"))
-            msg = payload.get("msg", {})
-            if msg.get("cmd") != "devStatus":
-                return  # ignore scan replies / unrelated multicast noise
-            body = msg.get("data", {})
-            if not isinstance(body, dict):
-                return
-        except (ValueError, AttributeError):
-            return
-        # Key by the datagram SOURCE IP — correct for both reply paths: a
-        # unicast reply to our 4002 source and a multicast reply to the group
-        # both carry the device's own IP as the UDP source. Last reply wins.
-        self.responses[addr[0]] = body
+            payload: Any = json.loads(data.decode("utf-8", errors="replace"))
+        except ValueError:
+            payload = {"_unparsed": data.decode("utf-8", errors="replace")[:512]}
+        bucket.append(payload)
 
     def error_received(self, exc: Exception) -> None:  # pragma: no cover - rare
-        _LOGGER.debug("LAN devStatus socket error: %s", exc)
+        _LOGGER.debug("LAN raw-probe socket error: %s", exc)
 
 
 def _build_socket() -> socket.socket:
@@ -355,27 +373,30 @@ async def async_scan_lan_devices(
     return list(protocol.responses.values())
 
 
-async def async_probe_lan_devstatus(
+async def async_probe_lan_raw(
     ips: list[str],
     timeout: float = LAN_PROBE_WINDOW,
     interface_ips: list[str] | None = None,
-) -> dict[str, dict[str, Any]]:
-    """Unicast ``devStatus`` to each IP and collect raw replies for ``timeout`` s.
+    commands: tuple[tuple[str, int, dict[str, Any]], ...] = LAN_PROBE_COMMANDS,
+) -> dict[str, list[Any]]:
+    """Reality probe: fire a read-only query battery at each IP, capture all replies.
 
-    Returns ``{responder_ip: raw_data_dict}`` capturing the WHOLE reply body for
-    each device that answers — the probe exists to measure the real LAN data
-    surface, so no field allowlist is applied here (redaction is downstream in
-    diagnostics). A device that discovers but does not answer ``devStatus`` (LAN
-    control disabled in the app, BLE-only SKU) simply has no entry — the caller
-    treats a missing IP as "no status".
+    Returns ``{responder_ip: [raw_payload, ...]}`` — the WHOLE ``{"msg": ...}`` of
+    every datagram each device emits during the window, completely unfiltered. We
+    do not trust any other integration's idea of which commands exist or which
+    fields a reply carries: we send every safe READ query in ``commands`` and
+    record exactly what comes back, so the real LAN data surface is measured. A
+    device that does not answer simply has no entry.
 
-    Sends are fire-and-forget to ``<ip>:4003``; replies may return unicast to our
-    4002 source OR multicast to ``239.255.255.250:4002`` depending on firmware,
-    so we reuse the scan socket pattern (bound 4002 + group-joined) to catch
-    both. All probes share one socket and one collection window, so total wall
-    time is bounded by ``timeout`` regardless of device count. ``ips`` is capped
-    at ``LAN_PROBE_MAX_DEVICES`` so a large ``extra_targets`` sweep cannot blow up
-    the send loop.
+    ``commands`` is ``((cmd, port, data), ...)`` — STRICTLY read-only (default
+    ``LAN_PROBE_COMMANDS``: devStatus + status + unicast scan). No control writes
+    are ever sent. Each is unicast to ``<ip>:port``; replies may return unicast to
+    our 4002 source OR multicast to ``239.255.255.250:4002`` depending on
+    firmware, so we reuse the scan socket pattern (bound 4002 + group-joined) to
+    catch both. All probes share one socket and one collection window, so total
+    wall time is bounded by ``timeout`` regardless of device count. ``ips`` is
+    capped at ``LAN_PROBE_MAX_DEVICES``; per-IP capture is capped at
+    ``LAN_PROBE_MAX_REPLIES_PER_IP``.
 
     ``interface_ips`` join the multicast group on each adapter (multi-homed
     coverage), mirroring ``async_scan_lan_devices``.
@@ -389,22 +410,26 @@ async def async_probe_lan_devstatus(
 
     interfaces = list(interface_ips or [])
     targets = ips[:LAN_PROBE_MAX_DEVICES]
+    requests = [
+        (json.dumps({"msg": {"cmd": cmd, "data": data}}).encode("utf-8"), port) for cmd, port, data in commands
+    ]
 
     loop = asyncio.get_running_loop()
     sock = _build_socket()  # raises OSError if port 4002 cannot be bound
     joined = _join_group(sock, interfaces)  # catch multicast replies too
 
-    transport, protocol = await loop.create_datagram_endpoint(_DevStatusProtocol, sock=sock)
-    assert isinstance(protocol, _DevStatusProtocol)
+    transport, protocol = await loop.create_datagram_endpoint(_RawProbeProtocol, sock=sock)
+    assert isinstance(protocol, _RawProbeProtocol)
     try:
         for ip in targets:
-            try:
-                transport.sendto(_DEVSTATUS_REQUEST, (ip, LAN_COMMAND_PORT))
-            except OSError as err:  # one bad/unreachable IP must not abort the batch
-                _LOGGER.debug("LAN probe: send to %s failed: %s", ip, err)
+            for request, port in requests:
+                try:
+                    transport.sendto(request, (ip, port))
+                except OSError as err:  # one bad/unreachable IP must not abort the batch
+                    _LOGGER.debug("LAN raw probe: send to %s:%s failed: %s", ip, port, err)
         await asyncio.sleep(timeout)
     finally:
         _drop_group(sock, joined)
         transport.close()
 
-    return dict(protocol.responses)
+    return dict(protocol.replies)

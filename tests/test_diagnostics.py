@@ -38,7 +38,7 @@ def _stub_lan_scan(monkeypatch):
         AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
-        "custom_components.govee.diagnostics.async_probe_lan_devstatus",
+        "custom_components.govee.diagnostics.async_probe_lan_raw",
         AsyncMock(return_value={}),
     )
     monkeypatch.setattr(
@@ -581,8 +581,17 @@ class TestLanDiscoveryDiag:
         assert "10.20.0.0/30" not in rendered
 
 
-class TestLanDevStatusProbe:
-    """Entry diagnostics probe each discovered device for full LAN state (#57)."""
+def _devstatus_pkt(**data):
+    return {"msg": {"cmd": "devStatus", "data": data}}
+
+
+def _status_pkt(**data):
+    return {"msg": {"cmd": "status", "data": data}}
+
+
+class TestLanRealityProbe:
+    """Entry diagnostics fire a read-only query battery at each device and
+    capture every raw reply, unfiltered, to measure the real LAN surface (#57)."""
 
     @staticmethod
     def _two_device_scan(monkeypatch):
@@ -597,19 +606,17 @@ class TestLanDevStatusProbe:
         )
 
     @pytest.mark.asyncio
-    async def test_probe_status_attached_per_device(self, monkeypatch) -> None:
-        # One device answers devStatus, the other does not -> status None.
+    async def test_raw_and_summary_attached_per_device(self, monkeypatch) -> None:
+        # One device answers (devStatus + status), the other is silent.
         self._two_device_scan(monkeypatch)
         monkeypatch.setattr(
-            "custom_components.govee.diagnostics.async_probe_lan_devstatus",
+            "custom_components.govee.diagnostics.async_probe_lan_raw",
             AsyncMock(
                 return_value={
-                    "192.168.1.23": {
-                        "onOff": 1,
-                        "brightness": 80,
-                        "color": {"r": 255, "g": 0, "b": 0},
-                        "colorTemInKelvin": 0,
-                    }
+                    "192.168.1.23": [
+                        _devstatus_pkt(onOff=1, brightness=80, color={"r": 255, "g": 0, "b": 0}),
+                        _status_pkt(pt="MwUEzycAAAAA"),
+                    ]
                 }
             ),
         )
@@ -618,45 +625,106 @@ class TestLanDevStatusProbe:
         lan = out["lan_discovery"]
         assert lan["probe_attempted"] is True
         assert lan["probe_response_count"] == 1
+        assert lan["commands_answered"] == ["devStatus", "status"]
         by_sku = {d["sku"]: d for d in lan["devices"]}
-        assert by_sku["H6072"]["status"]["brightness"] == 80
-        assert by_sku["H6072"]["status"]["onOff"] == 1
-        assert by_sku["H618A"]["status"] is None
+        answerer = by_sku["H6072"]
+        # Readable devStatus summary.
+        assert answerer["status"]["brightness"] == 80
+        assert answerer["commands_answered"] == ["devStatus", "status"]
+        # Full raw capture preserved — incl. the status `pt` blob (potential
+        # segment/scene/sensor readback that devStatus omits).
+        assert len(answerer["lan_raw"]) == 2
+        assert answerer["lan_raw"][1]["msg"]["data"]["pt"] == "MwUEzycAAAAA"
+        # Silent device: empty capture, None summary.
+        silent = by_sku["H618A"]
+        assert silent["lan_raw"] == []
+        assert silent["commands_answered"] == []
+        assert silent["status"] is None
 
     @pytest.mark.asyncio
-    async def test_probe_status_ip_and_device_inside_reply_redacted(self, monkeypatch) -> None:
-        # A firmware echoing ip/device inside devStatus is auto-redacted, while
-        # the 4 known runtime fields survive (redaction-coverage requirement).
+    async def test_unknown_cmd_and_fields_preserved(self, monkeypatch) -> None:
+        # Reality, not a library's idea of reality: an undocumented cmd/field is
+        # captured verbatim.
         self._two_device_scan(monkeypatch)
         monkeypatch.setattr(
-            "custom_components.govee.diagnostics.async_probe_lan_devstatus",
+            "custom_components.govee.diagnostics.async_probe_lan_raw",
             AsyncMock(
                 return_value={
-                    "192.168.1.23": {
-                        "onOff": 1,
-                        "brightness": 50,
-                        "ip": "192.168.1.23",
-                        "device": "AA:BB:CC:DD:EE:FF",
-                    }
+                    "192.168.1.23": [{"msg": {"cmd": "mysteryCmd", "data": {"sensorTemp": 233, "extra": [1, 2]}}}]
                 }
             ),
         )
         out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
 
-        status = next(d["status"] for d in out["lan_discovery"]["devices"] if d["status"])
-        assert status["brightness"] == 50
-        assert status["onOff"] == 1
-        assert status["ip"] == "**REDACTED**"
-        assert status["device"] == "**REDACTED**"
+        answerer = next(d for d in out["lan_discovery"]["devices"] if d["lan_raw"])
+        body = answerer["lan_raw"][0]["msg"]
+        assert body["cmd"] == "mysteryCmd"
+        assert body["data"]["sensorTemp"] == 233
+        assert answerer["commands_answered"] == ["mysteryCmd"]
+        assert answerer["status"] is None  # no devStatus reply -> no summary
+
+    @pytest.mark.asyncio
+    async def test_addresses_in_raw_capture_scrubbed_by_value(self, monkeypatch) -> None:
+        # The capture keeps unknown keys, so an IP/MAC under ANY key name is
+        # value-scrubbed (key-name TO_REDACT alone is not enough). Runtime fields
+        # survive.
+        self._two_device_scan(monkeypatch)
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_probe_lan_raw",
+            AsyncMock(
+                return_value={
+                    "192.168.1.23": [
+                        _devstatus_pkt(onOff=1, brightness=50),
+                        # Addresses under UNEXPECTED key names (not in TO_REDACT).
+                        {
+                            "msg": {
+                                "cmd": "status",
+                                "data": {"gatewayAddr": "192.168.1.1", "peerMac": "AA:BB:CC:DD:EE:FF"},
+                            }
+                        },
+                    ]
+                }
+            ),
+        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
+
         rendered = json.dumps(out, default=str)
+        assert "192.168.1.1" not in rendered
         assert "AA:BB:CC:DD:EE:FF" not in rendered
+        # The scan's own ip "192.168.1.23" must also be gone.
+        assert "192.168.1.23" not in rendered
+        answerer = next(d for d in out["lan_discovery"]["devices"] if d["lan_raw"])
+        status_reply = answerer["lan_raw"][1]["msg"]["data"]
+        assert status_reply["gatewayAddr"] == "REDACTED_IP"
+        assert status_reply["peerMac"].startswith("device_")  # MAC -> stable hash
+        # Non-address runtime fields survive untouched.
+        assert answerer["lan_raw"][0]["msg"]["data"]["brightness"] == 50
+
+    @pytest.mark.asyncio
+    async def test_firmware_versions_not_mistaken_for_ip(self, monkeypatch) -> None:
+        # "1.02.03" is a 3-part firmware version, not an IPv4 quad — must survive.
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_scan_lan_devices",
+            AsyncMock(
+                return_value=[{"ip": "192.168.1.23", "device": "AA:BB", "sku": "H6072", "wifiVersionSoft": "1.02.03"}]
+            ),
+        )
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_probe_lan_raw",
+            AsyncMock(return_value={}),
+        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
+
+        device = out["lan_discovery"]["devices"][0]
+        assert device["wifiVersionSoft"] == "1.02.03"
+        assert device["sku"] == "H6072"
 
     @pytest.mark.asyncio
     async def test_probe_failure_is_isolated(self, monkeypatch) -> None:
         # A probe error must not break the download; devices still present.
         self._two_device_scan(monkeypatch)
         monkeypatch.setattr(
-            "custom_components.govee.diagnostics.async_probe_lan_devstatus",
+            "custom_components.govee.diagnostics.async_probe_lan_raw",
             AsyncMock(side_effect=OSError("port 4002 in use")),
         )
         out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
@@ -666,18 +734,19 @@ class TestLanDevStatusProbe:
         assert lan["probe_attempted"] is True
         assert lan["probe_response_count"] == 0
         assert "port 4002 in use" in lan["probe_error"]
-        assert all(d["status"] is None for d in lan["devices"])
+        assert all(d["lan_raw"] == [] and d["status"] is None for d in lan["devices"])
 
     @pytest.mark.asyncio
     async def test_probe_skipped_when_no_devices(self, monkeypatch) -> None:
         # Empty scan -> probe never called, probe_attempted False.
         probe = AsyncMock(return_value={})
-        monkeypatch.setattr("custom_components.govee.diagnostics.async_probe_lan_devstatus", probe)
+        monkeypatch.setattr("custom_components.govee.diagnostics.async_probe_lan_raw", probe)
         out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
 
         lan = out["lan_discovery"]
         assert lan["probe_attempted"] is False
         assert lan["probe_response_count"] == 0
+        assert lan["commands_answered"] == []
         probe.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -691,7 +760,7 @@ class TestLanDevStatusProbe:
             AsyncMock(return_value=[IPv4Address("192.168.1.50")]),
         )
         probe = AsyncMock(return_value={})
-        monkeypatch.setattr("custom_components.govee.diagnostics.async_probe_lan_devstatus", probe)
+        monkeypatch.setattr("custom_components.govee.diagnostics.async_probe_lan_raw", probe)
         await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
 
         probe.assert_awaited_once_with(["192.168.1.23", "192.168.1.24"], interface_ips=["192.168.1.50"])

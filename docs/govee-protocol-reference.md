@@ -1233,17 +1233,21 @@ Local network control without cloud dependency. Must be enabled in Govee app dev
 }
 ```
 
-> **Readable vs writable over LAN (verified against `Galorhallen/govee-local-api`
-> + `wez/govee2mqtt`):** `devStatus` is the ONLY read path and it returns exactly
-> these four runtime fields — `onOff`, `brightness` (0–100), `color {r,g,b}`
-> (whole-device), `colorTemInKelvin`. There is **no** scene, segment, music, DIY,
-> or sensor field. `turn`/`brightness`/`colorwc`/`ptReal` are **write-only** (no
-> response body); `ptReal` is fire-and-forget, so active scene, segment colors,
-> music mode and DIY state are **not readable over LAN** — they must come from
-> MQTT/API/optimistic state. The `lan_discovery` diagnostics block probes each
-> discovered device with `devStatus` (capturing the whole reply, to catch any
-> firmware that returns more) so this can be confirmed empirically on real
-> hardware before LAN control is built (issue #57).
+> **Readable vs writable over LAN.** Per the reference libraries
+> (`Galorhallen/govee-local-api` + `wez/govee2mqtt`), `devStatus` returns only
+> four runtime fields — `onOff`, `brightness` (0–100), `color {r,g,b}`
+> (whole-device), `colorTemInKelvin` — and `turn`/`brightness`/`colorwc`/`ptReal`
+> are write-only (no response body). **But those libraries only parse what they
+> need — they are not ground truth.** The `lan_discovery` diagnostics block runs
+> a *reality probe*: it fires a read-only query battery (`devStatus` + the
+> never-used-by-libs `status` cmd + a unicast `scan`) at each discovered device
+> and captures **every** datagram it emits, completely unfiltered (whole payload,
+> any cmd, any field). The goal is to measure on real hardware what the firmware
+> actually exposes — e.g. whether the `status` reply's `pt` BLE-passthrough hex
+> carries segment/scene/sensor state that the 4-field `devStatus` omits — rather
+> than inherit another integration's parser. No write/control verb is ever sent.
+> Captured addresses are value-scrubbed (MAC→hash, IPv4→`REDACTED_IP`) on top of
+> key-name redaction, since the capture keeps unknown keys (issue #57).
 
 ### 5.4 BLE Passthrough (ptReal)
 

@@ -43,23 +43,20 @@ def _scan_response(**data):
     return {"msg": {"cmd": "scan", "data": data}}
 
 
-def _devstatus_response(**data):
-    return {"msg": {"cmd": "devStatus", "data": data}}
-
-
 def _install_fake_probe_endpoint(monkeypatch, replies, *, bind_error=None):
-    """Patch socket + loop so async_probe_lan_devstatus runs offline.
+    """Patch socket + loop so async_probe_lan_raw runs offline.
 
-    ``replies`` is a list of ``(source_ip, data_dict)`` — each is fed to the real
-    _DevStatusProtocol as a devStatus packet from that source during the stubbed
-    collection window. Returns the MagicMock transport for sendto assertions.
+    ``replies`` is a list of ``(source_ip, raw_bytes)`` fed to the real
+    _RawProbeProtocol during the stubbed collection window. ``raw_bytes`` is sent
+    verbatim so tests can feed any cmd, malformed JSON, or garbage. Returns the
+    MagicMock transport for sendto assertions.
     """
     sock = MagicMock()
     if bind_error is not None:
         sock.bind.side_effect = bind_error
     monkeypatch.setattr(lan.socket, "socket", lambda *a, **k: sock)
 
-    proto = lan._DevStatusProtocol()
+    proto = lan._RawProbeProtocol()
     transport = MagicMock()
 
     async def _create_endpoint(_factory, sock=None):
@@ -70,14 +67,16 @@ def _install_fake_probe_endpoint(monkeypatch, replies, *, bind_error=None):
     monkeypatch.setattr(lan.asyncio, "get_running_loop", lambda: mock_loop)
 
     async def _sleep(_timeout):
-        for source_ip, data in replies:
-            proto.datagram_received(
-                json.dumps(_devstatus_response(**data)).encode("utf-8"),
-                (source_ip, lan.LAN_RESPONSE_PORT),
-            )
+        for source_ip, raw in replies:
+            proto.datagram_received(raw, (source_ip, lan.LAN_RESPONSE_PORT))
 
     monkeypatch.setattr(lan.asyncio, "sleep", _sleep)
     return transport, sock
+
+
+def _pkt(cmd, **data):
+    """A raw datagram for ``cmd`` with ``data`` body."""
+    return json.dumps({"msg": {"cmd": cmd, "data": data}}).encode("utf-8")
 
 
 @pytest.mark.asyncio
@@ -253,146 +252,145 @@ async def test_sends_scan_to_extra_targets(monkeypatch):
     assert len(addrs) == 3
 
 
-# --- devStatus probe: _DevStatusProtocol parsing ---------------------------
+# --- reality probe: _RawProbeProtocol capture ------------------------------
 
 
-def test_devstatus_parses_and_keys_by_source_ip():
-    proto = lan._DevStatusProtocol()
-    proto.datagram_received(
-        json.dumps(_devstatus_response(onOff=1, brightness=80)).encode(),
-        ("192.168.1.23", 4002),
-    )
-    proto.datagram_received(
-        json.dumps(_devstatus_response(onOff=0)).encode(),
-        ("192.168.1.24", 4002),
-    )
+def test_rawprobe_captures_all_payloads_keyed_by_source_ip():
+    # Every datagram is kept verbatim, as a list, keyed by source IP.
+    proto = lan._RawProbeProtocol()
+    proto.datagram_received(_pkt("devStatus", onOff=1, brightness=80), ("192.168.1.23", 4002))
+    proto.datagram_received(_pkt("status", pt="MwUE..."), ("192.168.1.23", 4002))
+    proto.datagram_received(_pkt("devStatus", onOff=0), ("192.168.1.24", 4002))
 
-    assert set(proto.responses) == {"192.168.1.23", "192.168.1.24"}
-    assert proto.responses["192.168.1.23"]["brightness"] == 80
-    assert proto.responses["192.168.1.24"]["onOff"] == 0
+    assert set(proto.replies) == {"192.168.1.23", "192.168.1.24"}
+    assert len(proto.replies["192.168.1.23"]) == 2
+    cmds = {r["msg"]["cmd"] for r in proto.replies["192.168.1.23"]}
+    assert cmds == {"devStatus", "status"}
 
 
-def test_devstatus_captures_whole_data_dict_no_allowlist():
-    # The probe's purpose is discovery: an unknown field MUST be preserved.
-    proto = lan._DevStatusProtocol()
-    proto.datagram_received(
-        json.dumps(
-            _devstatus_response(
-                onOff=1,
-                brightness=100,
-                color={"r": 1, "g": 2, "b": 3},
-                colorTemInKelvin=4000,
-                mysteryField=7,
-            )
-        ).encode(),
-        ("192.168.1.23", 4002),
-    )
+def test_rawprobe_keeps_unknown_cmds_and_fields():
+    # The whole point: nothing is filtered by cmd or field — reality, not a lib's
+    # idea of reality.
+    proto = lan._RawProbeProtocol()
+    proto.datagram_received(_pkt("mysteryCmd", undocumented={"a": 1}, sensor=42), ("10.0.0.5", 4002))
 
-    body = proto.responses["192.168.1.23"]
-    assert body["mysteryField"] == 7
-    assert body["color"] == {"r": 1, "g": 2, "b": 3}
-    assert body["colorTemInKelvin"] == 4000
+    body = proto.replies["10.0.0.5"][0]["msg"]
+    assert body["cmd"] == "mysteryCmd"
+    assert body["data"]["undocumented"] == {"a": 1}
+    assert body["data"]["sensor"] == 42
 
 
-def test_devstatus_ignores_scan_and_malformed():
-    proto = lan._DevStatusProtocol()
-    # A scan reply (wrong cmd) is dropped.
-    proto.datagram_received(json.dumps(_scan_response(sku="H6072")).encode(), ("192.168.1.9", 4002))
-    # Garbage bytes.
-    proto.datagram_received(b"not-json", ("192.168.1.9", 4002))
-    # devStatus but data is a list, not a dict.
-    proto.datagram_received(
-        json.dumps({"msg": {"cmd": "devStatus", "data": []}}).encode(),
-        ("192.168.1.9", 4002),
-    )
+def test_rawprobe_captures_undecodable_as_unparsed():
+    # Even garbage is signal — captured, not dropped.
+    proto = lan._RawProbeProtocol()
+    proto.datagram_received(b"\xff\xfenot-json", ("10.0.0.5", 4002))
 
-    assert proto.responses == {}
+    captured = proto.replies["10.0.0.5"][0]
+    assert "_unparsed" in captured
 
 
-def test_devstatus_last_reply_wins_per_ip():
-    proto = lan._DevStatusProtocol()
-    proto.datagram_received(json.dumps(_devstatus_response(brightness=10)).encode(), ("192.168.1.23", 4002))
-    proto.datagram_received(json.dumps(_devstatus_response(brightness=90)).encode(), ("192.168.1.23", 4002))
+def test_rawprobe_caps_replies_per_ip():
+    proto = lan._RawProbeProtocol()
+    for i in range(lan.LAN_PROBE_MAX_REPLIES_PER_IP + 5):
+        proto.datagram_received(_pkt("devStatus", n=i), ("10.0.0.5", 4002))
 
-    assert len(proto.responses) == 1
-    assert proto.responses["192.168.1.23"]["brightness"] == 90
+    assert len(proto.replies["10.0.0.5"]) == lan.LAN_PROBE_MAX_REPLIES_PER_IP
 
 
-# --- devStatus probe: async_probe_lan_devstatus ----------------------------
+# --- reality probe: async_probe_lan_raw ------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_probe_sends_devstatus_to_each_ip_on_4003(monkeypatch):
+async def test_rawprobe_sends_full_command_battery_to_each_ip(monkeypatch):
     transport, _ = _install_fake_probe_endpoint(monkeypatch, [])
 
-    await lan.async_probe_lan_devstatus(["10.0.0.5", "10.0.0.6"], timeout=0.01)
+    await lan.async_probe_lan_raw(["10.0.0.5", "10.0.0.6"], timeout=0.01)
 
-    addrs = [call.args[1] for call in transport.sendto.call_args_list]
-    assert addrs == [("10.0.0.5", lan.LAN_COMMAND_PORT), ("10.0.0.6", lan.LAN_COMMAND_PORT)]
-    payload = transport.sendto.call_args_list[0].args[0]
-    assert json.loads(payload.decode()) == {"msg": {"cmd": "devStatus", "data": {}}}
+    sent = [(json.loads(c.args[0].decode())["msg"]["cmd"], c.args[1]) for c in transport.sendto.call_args_list]
+    # Every read-only command, to its port, for each IP — and NO write verbs.
+    assert ("devStatus", ("10.0.0.5", lan.LAN_COMMAND_PORT)) in sent
+    assert ("status", ("10.0.0.5", lan.LAN_COMMAND_PORT)) in sent
+    assert ("scan", ("10.0.0.5", lan.LAN_DISCOVERY_PORT)) in sent
+    assert len(sent) == len(lan.LAN_PROBE_COMMANDS) * 2
+    cmds_sent = {cmd for cmd, _addr in sent}
+    assert cmds_sent.isdisjoint({"turn", "brightness", "colorwc", "ptReal"})
 
 
 @pytest.mark.asyncio
-async def test_probe_returns_responses_keyed_by_ip(monkeypatch):
+async def test_rawprobe_returns_replies_keyed_by_ip(monkeypatch):
     _install_fake_probe_endpoint(
         monkeypatch,
-        [("10.0.0.5", {"onOff": 1, "brightness": 42})],
+        [
+            ("10.0.0.5", _pkt("devStatus", onOff=1, brightness=42)),
+            ("10.0.0.5", _pkt("status", pt="MwUE...")),
+        ],
     )
 
-    result = await lan.async_probe_lan_devstatus(["10.0.0.5"], timeout=0.01)
+    result = await lan.async_probe_lan_raw(["10.0.0.5"], timeout=0.01)
 
-    assert result == {"10.0.0.5": {"onOff": 1, "brightness": 42}}
+    assert set(result) == {"10.0.0.5"}
+    assert len(result["10.0.0.5"]) == 2
 
 
 @pytest.mark.asyncio
-async def test_probe_empty_ips_returns_empty_no_socket(monkeypatch):
+async def test_rawprobe_empty_ips_returns_empty_no_socket(monkeypatch):
     called = MagicMock()
     monkeypatch.setattr(lan.socket, "socket", called)
 
-    result = await lan.async_probe_lan_devstatus([], timeout=0.01)
+    result = await lan.async_probe_lan_raw([], timeout=0.01)
 
     assert result == {}
     called.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_probe_caps_device_count(monkeypatch):
+async def test_rawprobe_caps_device_count(monkeypatch):
     transport, _ = _install_fake_probe_endpoint(monkeypatch, [])
     ips = [f"10.0.0.{i}" for i in range(lan.LAN_PROBE_MAX_DEVICES + 10)]
 
-    await lan.async_probe_lan_devstatus(ips, timeout=0.01)
+    await lan.async_probe_lan_raw(ips, timeout=0.01)
 
-    assert transport.sendto.call_count == lan.LAN_PROBE_MAX_DEVICES
+    # One send per command per (capped) IP.
+    assert transport.sendto.call_count == lan.LAN_PROBE_MAX_DEVICES * len(lan.LAN_PROBE_COMMANDS)
 
 
 @pytest.mark.asyncio
-async def test_probe_bind_failure_raises_oserror(monkeypatch):
+async def test_rawprobe_bind_failure_raises_oserror(monkeypatch):
     _install_fake_probe_endpoint(monkeypatch, [], bind_error=OSError("port in use"))
 
     with pytest.raises(OSError):
-        await lan.async_probe_lan_devstatus(["10.0.0.5"], timeout=0.01)
+        await lan.async_probe_lan_raw(["10.0.0.5"], timeout=0.01)
 
 
 @pytest.mark.asyncio
-async def test_probe_one_send_failure_does_not_abort_batch(monkeypatch):
-    transport, _ = _install_fake_probe_endpoint(monkeypatch, [("10.0.0.6", {"onOff": 1})])
-    transport.sendto.side_effect = [OSError("unreachable"), None]
+async def test_rawprobe_one_send_failure_does_not_abort_batch(monkeypatch):
+    transport, _ = _install_fake_probe_endpoint(monkeypatch, [("10.0.0.6", _pkt("devStatus", onOff=1))])
+    # First send raises; every subsequent send still attempted.
+    transport.sendto.side_effect = [OSError("unreachable")] + [None] * 10
 
-    result = await lan.async_probe_lan_devstatus(["10.0.0.5", "10.0.0.6"], timeout=0.01)
+    result = await lan.async_probe_lan_raw(["10.0.0.5", "10.0.0.6"], timeout=0.01)
 
-    # First send raised, second still attempted; the reply is still collected.
-    assert transport.sendto.call_count == 2
-    assert result == {"10.0.0.6": {"onOff": 1}}
+    assert transport.sendto.call_count == len(lan.LAN_PROBE_COMMANDS) * 2
+    assert result == {"10.0.0.6": [{"msg": {"cmd": "devStatus", "data": {"onOff": 1}}}]}
 
 
 @pytest.mark.asyncio
-async def test_probe_joins_multicast_group(monkeypatch):
-    # devStatus replies can arrive multicast, so the probe socket must join the
-    # group too (same #57 fix as the scan path).
+async def test_rawprobe_custom_commands_are_honored(monkeypatch):
+    # The battery is overridable (e.g. to add a future read command).
+    transport, _ = _install_fake_probe_endpoint(monkeypatch, [])
+
+    await lan.async_probe_lan_raw(["10.0.0.5"], timeout=0.01, commands=(("devInfo", 4001, {}),))
+
+    sent = [(json.loads(c.args[0].decode())["msg"]["cmd"], c.args[1]) for c in transport.sendto.call_args_list]
+    assert sent == [("devInfo", ("10.0.0.5", 4001))]
+
+
+@pytest.mark.asyncio
+async def test_rawprobe_joins_multicast_group(monkeypatch):
+    # Replies can arrive multicast, so the probe socket must join the group too.
     _, sock = _install_fake_probe_endpoint(monkeypatch, [])
 
-    await lan.async_probe_lan_devstatus(["10.0.0.5"], timeout=0.01, interface_ips=["192.168.1.50"])
+    await lan.async_probe_lan_raw(["10.0.0.5"], timeout=0.01, interface_ips=["192.168.1.50"])
 
     joins = [
         value
