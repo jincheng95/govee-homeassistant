@@ -242,6 +242,67 @@ class TestTemperatureSensorFahrenheitConversion:
         result = GoveeTemperatureSensor.native_value.fget(stub)
         assert abs(result - 38.238889) < 1e-4
 
+    def test_h717a_kettle_auto_converts_fahrenheit(self):
+        # Issue #115: H717A kettle reports 187°F under the °C-tagged unit
+        # (187°C is impossible — water boils at 100°C). Auto mode converts to
+        # ~86.1°C, the real tea temperature.
+        result = self._make_sensor_stub(187.0, "auto", sku="H717A")
+        assert abs(result - 86.111111) < 1e-4
+
+    def test_h717a_celsius_override_passthrough(self):
+        # An account whose Govee app is set to °C can opt out via the option.
+        assert self._make_sensor_stub(86.0, "celsius", sku="H717A") == 86.0
+
+
+class TestTemperatureSensorCentiDescale:
+    """Regression for #116: H5106/H5140 report sensorTemperature centi-encoded
+    (×100) over the Developer-API/MQTT path — 23.4°C arrives as 2340. The
+    GoveeTemperatureSensor.native_value path de-scales for these SKUs only,
+    magnitude-guarded so an already-scaled value is never double-divided."""
+
+    def _make_sensor_stub(self, raw_value, sku, api_unit="auto"):
+        from types import SimpleNamespace
+
+        from custom_components.govee.sensor import GoveeTemperatureSensor
+
+        state = SimpleNamespace(sensor_temperature=raw_value)
+        coordinator = SimpleNamespace(
+            config_entry=SimpleNamespace(options={"api_temperature_unit": api_unit})
+        )
+        stub = SimpleNamespace(
+            device_state=state,
+            coordinator=coordinator,
+            _device=SimpleNamespace(sku=sku),
+        )
+        return GoveeTemperatureSensor.native_value.fget(stub)
+
+    def test_h5106_descales_centi_value(self):
+        # 2340 -> 23.4°C (the "I would be dead at 2340°C" report).
+        assert self._make_sensor_stub(2340, "H5106") == 23.4
+
+    def test_h5140_descales_centi_value(self):
+        assert self._make_sensor_stub(2510, "H5140") == 25.1
+
+    def test_negative_centi_value(self):
+        # Cold garage: -500 -> -5.0°C.
+        assert self._make_sensor_stub(-500, "H5106") == -5.0
+
+    def test_below_threshold_passthrough(self):
+        # A plausible already-scaled reading (e.g. a hot garage at 95°F) is
+        # below the centi threshold and must NOT be divided.
+        assert self._make_sensor_stub(95.0, "H5106") == 95.0
+
+    def test_other_sku_never_descaled(self):
+        # A SKU not in CENTI_TEMPERATURE_SKUS is untouched even at high
+        # magnitude — e.g. an H5300-class grill probe genuinely reading 250°F.
+        assert self._make_sensor_stub(250.0, "H6072") == 250.0
+
+    def test_descale_runs_before_fahrenheit_conversion(self):
+        # If a centi SKU were also forced to °F, de-scale must run first:
+        # 7400 -> 74.0°F -> ~23.33°C, not (7400-32)*5/9.
+        result = self._make_sensor_stub(7400, "H5106", api_unit="fahrenheit")
+        assert abs(result - 23.333333) < 1e-4
+
 
 class TestSyntheticThermometer:
     """GoveeDevice.synthetic_thermometer backs BFF-only H5301 discovery (#86)."""

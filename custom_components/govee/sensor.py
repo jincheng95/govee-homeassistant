@@ -34,6 +34,7 @@ from .const import (
     CONF_API_TEMPERATURE_UNIT,
     DEFAULT_API_TEMPERATURE_UNIT,
     DOMAIN,
+    descale_centi_temperature,
     resolve_fahrenheit_conversion,
 )
 from .coordinator import GoveeCoordinator
@@ -285,6 +286,13 @@ class GoveeTemperatureSensor(_BffThermometerAvailabilityMixin, SensorEntity):
             return None
 
         value = float(state.sensor_temperature)
+
+        # Some SKUs (CENTI_TEMPERATURE_SKUS, e.g. H5106/H5140 air-quality / CO₂
+        # monitors) report sensorTemperature centi-encoded (×100) over the
+        # Developer-API/MQTT path — 23.4°C arrives as 2340. De-scale BEFORE the
+        # °F→°C step so the magnitude guard and conversion see the true number
+        # (issue #116).
+        value = descale_centi_temperature(self._device.sku, value)
 
         # Some thermometer/hygrometer SKUs (FAHRENHEIT_REPORTING_SKUS) return °F
         # via the Cloud API without unit metadata, while the native unit is
