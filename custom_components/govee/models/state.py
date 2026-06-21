@@ -181,6 +181,10 @@ class GoveeDeviceState:
     # named scene. Often "" on poll, so the select is optimistic like HDMI/scene.
     preset_scene: int | None = None
 
+    # Appliance nightlight scene (H5089/H7124, issue #114): integer id of the
+    # active named nightlightScene mode option.
+    nightlight_scene: int | None = None
+
     # DreamView (Movie Mode) state
     dreamview_enabled: bool | None = None  # DreamView on/off
 
@@ -323,6 +327,11 @@ class GoveeDeviceState:
                     self.hdmi_source = _coerce_int(value)
                 elif instance == "presetScene":
                     self.preset_scene = _coerce_int(value)
+                elif instance == "nightlightScene":
+                    # Appliance nightlight named scene (H5089/H7124, #114).
+                    parsed_ns = _coerce_int(value)
+                    if parsed_ns is not None:
+                        self.nightlight_scene = parsed_ns
 
             elif cap_type == "devices.capabilities.property":
                 # Read-only sensor properties on devices like H5109 and

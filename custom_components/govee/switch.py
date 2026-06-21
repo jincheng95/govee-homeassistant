@@ -62,8 +62,11 @@ async def async_setup_entry(
         if device.is_plug and device.supports_power:
             entities.append(GoveePlugSwitchEntity(coordinator, device))
 
-        # Create switch for night light toggle (lights with night light mode)
-        if device.supports_night_light:
+        # Create switch for night light toggle (lights with night light mode).
+        # Appliances whose nightlight has brightness/colour get a richer
+        # nightlight *light* entity instead, so skip the plain switch for them
+        # to avoid duplicate on/off controls (issue #114).
+        if device.supports_night_light and not device.has_nightlight_light:
             entities.append(GoveeNightLightSwitchEntity(coordinator, device))
 
         # Create switch for music mode toggle

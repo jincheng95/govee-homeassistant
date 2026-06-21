@@ -16,6 +16,7 @@ from custom_components.govee.models import (
     GoveeCapability,
     GoveeDevice,
     GoveeDeviceState,
+    ModeCommand,
     RangeCommand,
     ToggleCommand,
     WorkModeCommand,
@@ -116,6 +117,29 @@ _HUMIDITY_RANGE = {
     "range": {"min": 30, "max": 80, "precision": 1},
 }
 
+# nightlightScene options differ per SKU (H5089 0-based, H7124 1-based), so the
+# select must read them from the capability rather than hardcoding.
+_H5089_NIGHTLIGHT_SCENE = {
+    "dataType": "ENUM",
+    "options": [
+        {"name": "Forest", "value": 0},
+        {"name": "Ocean", "value": 1},
+        {"name": "Wetland", "value": 2},
+        {"name": "Leisurely", "value": 3},
+        {"name": "Asleep", "value": 4},
+    ],
+}
+_H7124_NIGHTLIGHT_SCENE = {
+    "dataType": "ENUM",
+    "options": [
+        {"name": "Forest", "value": 1},
+        {"name": "Ocean", "value": 2},
+        {"name": "Wetland", "value": 3},
+        {"name": "Leisurely", "value": 4},
+        {"name": "Asleep", "value": 5},
+    ],
+}
+
 
 def _h5106() -> GoveeDevice:
     return GoveeDevice(
@@ -143,7 +167,7 @@ def _h7124() -> GoveeDevice:
             _cap(CAPABILITY_TOGGLE, "nightlightToggle"),
             _cap(CAPABILITY_RANGE, INSTANCE_BRIGHTNESS),
             _cap(CAPABILITY_COLOR_SETTING, INSTANCE_COLOR_RGB),
-            _cap(CAPABILITY_MODE, "nightlightScene"),
+            _cap(CAPABILITY_MODE, "nightlightScene", _H7124_NIGHTLIGHT_SCENE),
             _cap(CAPABILITY_PROPERTY, "filterLifeTime"),
             _cap(CAPABILITY_PROPERTY, "airQuality"),
         ),
@@ -176,7 +200,7 @@ def _h5089() -> GoveeDevice:
             _cap(CAPABILITY_TOGGLE, "nightlightToggle"),
             _cap(CAPABILITY_RANGE, INSTANCE_BRIGHTNESS),
             _cap(CAPABILITY_COLOR_SETTING, INSTANCE_COLOR_RGB),
-            _cap(CAPABILITY_MODE, "nightlightScene"),
+            _cap(CAPABILITY_MODE, "nightlightScene", _H5089_NIGHTLIGHT_SCENE),
             # Order shuffled to prove sorting by socket number.
             _cap(CAPABILITY_TOGGLE, "socketToggle2"),
             _cap(CAPABILITY_TOGGLE, "socketToggle1"),
@@ -606,3 +630,229 @@ class TestH7152Humidifier:
         assert isinstance(cmd, WorkModeCommand)
         assert cmd.work_mode == 1  # gearMode
         assert cmd.mode_value == 2  # Medium
+
+
+# --------------------------------------------------------------------------- #
+# Phase C — nightlight controls (light entity + scene select)
+# --------------------------------------------------------------------------- #
+
+
+def _rgb_light_with_nightlight() -> GoveeDevice:
+    """A real RGB light that also has a nightlightToggle.
+
+    Its brightness/colour belong to the MAIN light, so it must NOT get a
+    nightlight light entity (the nightlight stays a simple on/off switch).
+    """
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:60:01",
+        sku="H6001",
+        name="Desk Lamp",
+        device_type=DEVICE_TYPE_LIGHT,
+        capabilities=(
+            _cap(CAPABILITY_ON_OFF, INSTANCE_POWER),
+            _cap(CAPABILITY_RANGE, INSTANCE_BRIGHTNESS),
+            _cap(CAPABILITY_COLOR_SETTING, INSTANCE_COLOR_RGB),
+            _cap(CAPABILITY_TOGGLE, "nightlightToggle"),
+        ),
+    )
+
+
+class TestNightlightDeviceModel:
+    def test_h5089_is_not_a_main_light(self):
+        # Outlet extender colour belongs to the nightlight (refines #59).
+        assert _h5089().is_light_device is False
+
+    def test_h5089_has_nightlight_light(self):
+        assert _h5089().has_nightlight_light is True
+
+    def test_h7124_has_nightlight_light(self):
+        assert _h7124().has_nightlight_light is True
+
+    def test_real_light_keeps_main_light_not_nightlight_entity(self):
+        dev = _rgb_light_with_nightlight()
+        assert dev.is_light_device is True
+        assert dev.has_nightlight_light is False
+
+    def test_plain_purifier_without_nightlight_has_none(self):
+        assert _h7152().has_nightlight_light is False
+
+    def test_nightlight_scene_options(self):
+        opts = _h7124().get_nightlight_scene_options()
+        names = {o["name"]: o["value"] for o in opts}
+        assert names["Forest"] == 1 and names["Asleep"] == 5
+        assert _h7124().supports_nightlight_scene is True
+
+
+class TestNightlightStateParsing:
+    def test_nightlight_scene_parsed(self):
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_api(
+            {"capabilities": [{"type": CAPABILITY_MODE, "instance": "nightlightScene", "state": {"value": 4}}]}
+        )
+        assert state.nightlight_scene == 4
+
+    def test_nightlight_toggle_parsed_into_toggles(self):
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_api(
+            {"capabilities": [{"type": CAPABILITY_TOGGLE, "instance": "nightlightToggle", "state": {"value": 1}}]}
+        )
+        assert state.toggles["nightlightToggle"] is True
+
+
+class TestNightlightLightEntity:
+    @pytest.fixture
+    def device(self):
+        return _h7124()
+
+    @pytest.fixture
+    def state(self, device):
+        s = GoveeDeviceState(device_id=device.device_id, online=True)
+        s.brightness = 100
+        s.toggles = {"nightlightToggle": True}
+        return s
+
+    @pytest.fixture
+    def entity(self, device, state):
+        from custom_components.govee.light import GoveeNightLightEntity
+
+        e = GoveeNightLightEntity(_coordinator_with_state(device, state), device)
+        e.async_write_ha_state = MagicMock()
+        return e
+
+    def test_unique_id(self, entity, device):
+        assert entity.unique_id == f"{device.device_id}_nightlight"
+
+    def test_is_on_from_nightlight_toggle(self, entity):
+        assert entity.is_on is True
+
+    @pytest.mark.asyncio
+    async def test_turn_off_sends_nightlight_toggle(self, entity):
+        await entity.async_turn_off()
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, ToggleCommand)
+        assert cmd.toggle_instance == "nightlightToggle"
+        assert cmd.enabled is False
+        assert entity.is_on is False
+
+    @pytest.mark.asyncio
+    async def test_turn_on_with_brightness_sends_brightness(self, device, state):
+        from homeassistant.components.light import ATTR_BRIGHTNESS
+        from custom_components.govee.light import GoveeNightLightEntity
+        from custom_components.govee.models import BrightnessCommand
+
+        state.toggles = {"nightlightToggle": False}
+        entity = GoveeNightLightEntity(_coordinator_with_state(device, state), device)
+        entity.async_write_ha_state = MagicMock()
+        await entity.async_turn_on(**{ATTR_BRIGHTNESS: 255})
+
+        cmds = [c.args[1] for c in entity.coordinator.async_control_device.call_args_list]
+        assert any(isinstance(c, BrightnessCommand) for c in cmds)
+        # Off -> also sends nightlightToggle on.
+        assert any(isinstance(c, ToggleCommand) and c.enabled for c in cmds)
+
+
+class TestNightlightSceneSelect:
+    @pytest.fixture
+    def device(self):
+        return _h5089()
+
+    @pytest.fixture
+    def entity(self, device):
+        from custom_components.govee.select import GoveeNightlightSceneSelectEntity
+
+        state = GoveeDeviceState(device_id=device.device_id, online=True)
+        state.nightlight_scene = 2  # Wetland
+        e = GoveeNightlightSceneSelectEntity(
+            _coordinator_with_state(device, state),
+            device,
+            device.get_nightlight_scene_options(),
+        )
+        e.async_write_ha_state = MagicMock()
+        return e
+
+    def test_options(self, entity):
+        assert entity.options == ["Forest", "Ocean", "Wetland", "Leisurely", "Asleep"]
+
+    def test_current_option_from_state(self, entity):
+        assert entity.current_option == "Wetland"
+
+    @pytest.mark.asyncio
+    async def test_select_sends_mode_command(self, entity):
+        await entity.async_select_option("Ocean")
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, ModeCommand)
+        assert cmd.mode_instance == "nightlightScene"
+        assert cmd.value == 1  # H5089 Ocean = 1
+
+
+class TestNightlightPlatformWiring:
+    async def _setup_light(self, device):
+        from custom_components.govee import light as light_mod
+
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        entry.options = {}
+        added: list = []
+        await light_mod.async_setup_entry(
+            MagicMock(), entry, lambda ents: added.extend(ents)
+        )
+        return [type(e).__name__ for e in added]
+
+    async def _setup_switch(self, device):
+        from custom_components.govee import switch as switch_mod
+
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        added: list = []
+        await switch_mod.async_setup_entry(
+            MagicMock(), entry, lambda ents: added.extend(ents)
+        )
+        return [type(e).__name__ for e in added]
+
+    async def _setup_select(self, device):
+        from custom_components.govee import select as select_mod
+
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        entry.options = {}
+        added: list = []
+        await select_mod.async_setup_entry(
+            MagicMock(), entry, lambda ents: added.extend(ents)
+        )
+        return [type(e).__name__ for e in added]
+
+    async def test_h5089_light_wiring(self):
+        names = await self._setup_light(_h5089())
+        # Nightlight light entity, but NOT the conflated main GoveeLightEntity.
+        assert "GoveeNightLightEntity" in names
+        assert "GoveeLightEntity" not in names
+
+    async def test_h5089_no_redundant_night_light_switch(self):
+        names = await self._setup_switch(_h5089())
+        assert "GoveeNightLightSwitchEntity" not in names
+
+    async def test_h5089_scene_select(self):
+        names = await self._setup_select(_h5089())
+        assert "GoveeNightlightSceneSelectEntity" in names
+
+    async def test_h7124_nightlight_wiring(self):
+        light_names = await self._setup_light(_h7124())
+        switch_names = await self._setup_switch(_h7124())
+        select_names = await self._setup_select(_h7124())
+        assert "GoveeNightLightEntity" in light_names
+        assert "GoveeNightLightSwitchEntity" not in switch_names
+        assert "GoveeNightlightSceneSelectEntity" in select_names
+
+    async def test_real_light_keeps_switch_no_nightlight_entity(self):
+        dev = _rgb_light_with_nightlight()
+        light_names = await self._setup_light(dev)
+        switch_names = await self._setup_switch(dev)
+        assert "GoveeNightLightEntity" not in light_names
+        assert "GoveeLightEntity" in light_names
+        assert "GoveeNightLightSwitchEntity" in switch_names

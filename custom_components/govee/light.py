@@ -45,7 +45,9 @@ from .models import (
     PowerCommand,
     RGBColor,
     SceneCommand,
+    ToggleCommand,
 )
+from .models.device import INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
 from .platforms.segment import GoveeSegmentEntity
 
@@ -80,6 +82,13 @@ async def async_setup_entry(
         # appear as a light bulb (issue #54).
         if device.is_light_device and device.supports_power:
             entities.append(GoveeLightEntity(coordinator, device, enable_scenes))
+
+        # Appliances whose only light is the nightlight (e.g. H5089 outlet
+        # extender, H7124 purifier) get a dedicated nightlight light entity —
+        # on/off via nightlightToggle, brightness + colour from the shared
+        # range/colour capabilities (issue #114).
+        if device.has_nightlight_light and not device.is_group:
+            entities.append(GoveeNightLightEntity(coordinator, device))
 
         # Create segment entities for RGBIC devices based on per-device mode
         if device.supports_segments and device.segment_count > 0:
@@ -399,3 +408,160 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
             scenes = await self.coordinator.async_get_scenes(self._device_id)
             if scenes:
                 self._build_effect_mapping(scenes)
+
+
+class GoveeNightLightEntity(GoveeEntity, LightEntity):
+    """Dedicated light entity for an appliance's nightlight (issue #114).
+
+    Used for appliances whose only light is the nightlight — the H5089 outlet
+    extender and H7124 air purifier. On/off uses the ``nightlightToggle``
+    capability (NOT the device's ``powerSwitch``, which is the outlet/appliance),
+    while brightness and RGB colour come from the shared
+    ``range::brightness`` / ``color_setting::colorRgb`` capabilities that, on
+    these appliances, belong to the nightlight. The named nightlightScene modes
+    are surfaced by a separate select entity.
+    """
+
+    _attr_translation_key = "govee_nightlight"
+    _attr_icon = "mdi:lightbulb-night"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        """Initialize the nightlight entity."""
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_nightlight"
+
+        modes: set[ColorMode] = set()
+        if device.supports_rgb:
+            modes.add(ColorMode.RGB)
+        if device.supports_color_temp:
+            modes.add(ColorMode.COLOR_TEMP)
+        if not modes and device.supports_brightness:
+            modes.add(ColorMode.BRIGHTNESS)
+        if not modes:
+            modes.add(ColorMode.ONOFF)
+        self._attr_supported_color_modes = modes
+
+        self._brightness_min, self._brightness_max = device.brightness_range
+
+    def _ha_to_device_brightness(self, ha_brightness: int) -> int:
+        ratio = ha_brightness / HA_BRIGHTNESS_MAX
+        result = int(
+            self._brightness_min + ratio * (self._brightness_max - self._brightness_min)
+        )
+        return max(self._brightness_min, min(self._brightness_max, result))
+
+    def _device_to_ha_brightness(self, device_brightness: int) -> int:
+        device_range = self._brightness_max - self._brightness_min
+        if device_range <= 0:
+            return 0
+        result = int(
+            (device_brightness - self._brightness_min)
+            / device_range
+            * HA_BRIGHTNESS_MAX
+        )
+        return max(0, min(HA_BRIGHTNESS_MAX, result))
+
+    @property
+    def color_mode(self) -> ColorMode:
+        """Return current colour mode (always within supported_color_modes)."""
+        state = self.device_state
+        modes = self.supported_color_modes or {ColorMode.ONOFF}
+        if state and state.color_temp_kelvin is not None and ColorMode.COLOR_TEMP in modes:
+            return ColorMode.COLOR_TEMP
+        if state and state.color is not None and ColorMode.RGB in modes:
+            return ColorMode.RGB
+        if ColorMode.RGB in modes:
+            return ColorMode.RGB
+        if ColorMode.BRIGHTNESS in modes:
+            return ColorMode.BRIGHTNESS
+        if ColorMode.COLOR_TEMP in modes:
+            return ColorMode.COLOR_TEMP
+        return ColorMode(next(iter(modes)))
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the nightlight is on (live nightlightToggle state)."""
+        state = self.device_state
+        if state is None:
+            return None
+        return state.toggles.get(INSTANCE_NIGHT_LIGHT)
+
+    @property
+    def brightness(self) -> int | None:
+        """Return nightlight brightness (0-255)."""
+        state = self.device_state
+        if state is None:
+            return None
+        return self._device_to_ha_brightness(state.brightness)
+
+    @property
+    def rgb_color(self) -> tuple[int, int, int] | None:
+        """Return nightlight RGB colour."""
+        state = self.device_state
+        if state and state.color:
+            return state.color.as_tuple
+        return None
+
+    @property
+    def color_temp_kelvin(self) -> int | None:
+        """Return nightlight colour temperature in Kelvin."""
+        state = self.device_state
+        return state.color_temp_kelvin if state and state.color_temp_kelvin else None
+
+    @property
+    def min_color_temp_kelvin(self) -> int:
+        """Return minimum colour temperature in Kelvin."""
+        temp_range = self._device.color_temp_range
+        return temp_range.min_kelvin if temp_range else 2000
+
+    @property
+    def max_color_temp_kelvin(self) -> int:
+        """Return maximum colour temperature in Kelvin."""
+        temp_range = self._device.color_temp_range
+        return temp_range.max_kelvin if temp_range else 9000
+
+    async def _set_toggle(self, enabled: bool) -> bool:
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            ToggleCommand(toggle_instance=INSTANCE_NIGHT_LIGHT, enabled=enabled),
+        )
+        if success:
+            state = self.device_state
+            if state is not None:
+                state.toggles[INSTANCE_NIGHT_LIGHT] = enabled
+            self.async_write_ha_state()
+        return success
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the nightlight on with optional brightness/colour."""
+        if ATTR_BRIGHTNESS in kwargs:
+            device_brightness = self._ha_to_device_brightness(kwargs[ATTR_BRIGHTNESS])
+            await self.coordinator.async_control_device(
+                self._device_id, BrightnessCommand(brightness=device_brightness)
+            )
+
+        if ATTR_RGB_COLOR in kwargs:
+            r, g, b = kwargs[ATTR_RGB_COLOR]
+            await self.coordinator.async_control_device(
+                self._device_id, ColorCommand(color=RGBColor(r=r, g=g, b=b))
+            )
+
+        if ATTR_COLOR_TEMP_KELVIN in kwargs:
+            await self.coordinator.async_control_device(
+                self._device_id, ColorTempCommand(kelvin=kwargs[ATTR_COLOR_TEMP_KELVIN])
+            )
+
+        has_attribute = any(
+            k in kwargs
+            for k in (ATTR_BRIGHTNESS, ATTR_RGB_COLOR, ATTR_COLOR_TEMP_KELVIN)
+        )
+        if not has_attribute or not self.is_on:
+            await self._set_toggle(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the nightlight off."""
+        await self._set_toggle(False)

@@ -66,6 +66,10 @@ INSTANCE_SEGMENT_COLOR = "segmentedColorRgb"
 INSTANCE_SCENE = "lightScene"
 INSTANCE_DIY = "diyScene"
 INSTANCE_NIGHT_LIGHT = "nightlightToggle"
+# Named light+colour scenes for an appliance's nightlight (H5089/H7124) — a
+# devices.capabilities.mode whose options carry the localized name + integer id
+# the control payload uses (issue #114).
+INSTANCE_NIGHTLIGHT_SCENE = "nightlightScene"
 INSTANCE_GRADUAL_ON = "gradientToggle"
 INSTANCE_TIMER = "timer"
 INSTANCE_OSCILLATION = "oscillationToggle"
@@ -933,6 +937,12 @@ class GoveeDevice:
             or self.is_aroma_diffuser
         ):
             return False
+        # An outlet extender whose colour belongs to a nightlight (it also
+        # exposes nightlightToggle) is represented by a dedicated nightlight
+        # light entity, not a conflated main light on the outlet's powerSwitch
+        # (issue #114, refines #59).
+        if self.is_plug and self.supports_night_light:
+            return False
         if self.is_plug and not (self.supports_rgb or self.supports_color_temp):
             return False
         return (
@@ -940,6 +950,38 @@ class GoveeDevice:
             or self.supports_rgb
             or self.supports_color_temp
         )
+
+    @property
+    def has_nightlight_light(self) -> bool:
+        """Whether the device's nightlight warrants a full light entity (#114).
+
+        True for appliances whose only light is the nightlight (e.g. the H5089
+        outlet extender, H7124 purifier): the nightlight has on/off
+        (nightlightToggle) plus brightness/colour, so it maps onto a light
+        entity. A real light (is_light_device) owns brightness/colour for its
+        main light, so its nightlight stays a simple on/off switch.
+        """
+        if self.is_light_device:
+            return False
+        return self.supports_night_light and (
+            self.supports_brightness or self.supports_rgb or self.supports_color_temp
+        )
+
+    @property
+    def supports_nightlight_scene(self) -> bool:
+        """Check if device exposes a nightlightScene mode capability (#114)."""
+        return any(
+            cap.type == CAPABILITY_MODE and cap.instance == INSTANCE_NIGHTLIGHT_SCENE
+            for cap in self.capabilities
+        )
+
+    def get_nightlight_scene_options(self) -> list[dict[str, Any]]:
+        """Extract nightlightScene options as {"name", "value"} dicts (#114)."""
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_MODE and cap.instance == INSTANCE_NIGHTLIGHT_SCENE:
+                options: list[dict[str, Any]] = cap.parameters.get("options", [])
+                return options
+        return []
 
     @property
     def brightness_range(self) -> tuple[int, int]:

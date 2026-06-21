@@ -118,6 +118,9 @@
       "govee_light": {
         "name": "{device_name}"
       },
+      "govee_nightlight": {
+        "name": "Night Light"
+      },
       "govee_segment": {
         "name": "{device_name} Segment {segment_index}"
       },
@@ -148,6 +151,9 @@
       },
       "govee_preset_scene_select": {
         "name": "Scene"
+      },
+      "govee_nightlight_scene_select": {
+        "name": "Night Light Scene"
       }
     },
     "switch": {

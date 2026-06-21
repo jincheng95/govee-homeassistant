@@ -25,6 +25,7 @@ from .const import (
     SUFFIX_HDMI_SOURCE_SELECT,
     SUFFIX_HEATER_FAN_SPEED,
     SUFFIX_MUSIC_MODE_SELECT,
+    SUFFIX_NIGHTLIGHT_SCENE_SELECT,
     SUFFIX_PRESET_SCENE_SELECT,
     SUFFIX_PURIFIER_MODE_SELECT,
     SUFFIX_SCENE_SELECT,
@@ -40,6 +41,7 @@ from .models import (
 )
 from .models.device import (
     INSTANCE_HDMI_SOURCE,
+    INSTANCE_NIGHTLIGHT_SCENE,
     INSTANCE_PRESET_SCENE,
     INSTANCE_PURIFIER_MODE,
 )
@@ -214,6 +216,24 @@ async def async_setup_entry(
                     "Created preset scene select entity for %s with %d scenes",
                     device.name,
                     len(preset_scene_options),
+                )
+
+        # Nightlight scene selector for appliances with a nightlight (H5089
+        # outlet extender, H7124 purifier) — issue #114.
+        if device.supports_nightlight_scene:
+            nightlight_scene_options = device.get_nightlight_scene_options()
+            if nightlight_scene_options:
+                entities.append(
+                    GoveeNightlightSceneSelectEntity(
+                        coordinator=coordinator,
+                        device=device,
+                        options=nightlight_scene_options,
+                    )
+                )
+                _LOGGER.debug(
+                    "Created nightlight scene select entity for %s with %d scenes",
+                    device.name,
+                    len(nightlight_scene_options),
                 )
 
     async_add_entities(entities)
@@ -631,6 +651,71 @@ class GoveeHdmiSourceSelectEntity(GoveeEntity, SelectEntity):
             _LOGGER.warning(
                 "Failed to set HDMI source '%s' on %s",
                 option,
+                self._device.name,
+            )
+
+
+class GoveeNightlightSceneSelectEntity(GoveeEntity, SelectEntity):
+    """Govee nightlight scene select entity (issue #114).
+
+    Dropdown of the named ``nightlightScene`` modes (e.g. Forest, Ocean) on
+    appliances with a nightlight — the H5089 outlet extender and H7124 air
+    purifier.
+    """
+
+    _attr_translation_key = "govee_nightlight_scene_select"
+    _attr_icon = "mdi:weather-night"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+        options: list[dict[str, Any]],
+    ) -> None:
+        """Initialize the nightlight scene select entity."""
+        super().__init__(coordinator, device)
+
+        self._option_map: dict[str, int] = {}
+        option_names: list[str] = []
+        for opt in options:
+            name = opt.get("name", "")
+            value = opt.get("value")
+            if name and value is not None:
+                self._option_map[name] = value
+                option_names.append(name)
+
+        self._attr_options = option_names
+        self._attr_unique_id = (
+            f"{device.device_id}{SUFFIX_NIGHTLIGHT_SCENE_SELECT}"
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the active nightlight scene name from state."""
+        state = self.coordinator.get_state(self._device_id)
+        if state and state.nightlight_scene is not None:
+            for name, value in self._option_map.items():
+                if value == state.nightlight_scene:
+                    return name
+        return self._attr_options[0] if self._attr_options else None
+
+    async def async_select_option(self, option: str) -> None:
+        """Handle nightlight scene selection."""
+        value = self._option_map.get(option)
+        if value is None:
+            _LOGGER.warning("Unknown nightlight scene option: %s", option)
+            return
+
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            ModeCommand(mode_instance=INSTANCE_NIGHTLIGHT_SCENE, value=value),
+        )
+        if success:
+            self.async_write_ha_state()
+            _LOGGER.debug(
+                "Set nightlight scene '%s' (value=%d) on %s",
+                option,
+                value,
                 self._device.name,
             )
 
