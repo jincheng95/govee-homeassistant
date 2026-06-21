@@ -271,6 +271,7 @@
           "mode": {
             "state": {
               "low": "Low",
+              "medium": "Medium",
               "high": "High",
               "auto": "Auto",
               "dryer": "Dryer"
