@@ -171,6 +171,15 @@
       },
       "govee_light_zone": {
         "name": "Light Zone {zone}"
+      },
+      "govee_socket": {
+        "name": "Outlet {socket}"
+      },
+      "govee_main_light": {
+        "name": "Main Light"
+      },
+      "govee_background_light": {
+        "name": "Background Light"
       }
     },
     "sensor": {
@@ -188,6 +197,12 @@
       },
       "sensor_humidity": {
         "name": "Humidity"
+      },
+      "sensor_air_quality": {
+        "name": "Air Quality"
+      },
+      "sensor_filter_life": {
+        "name": "Filter Life"
       },
       "sensor_battery": {
         "name": "Battery"

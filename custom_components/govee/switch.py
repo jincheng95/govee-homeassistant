@@ -17,11 +17,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
+    SUFFIX_BACKGROUND_LIGHT,
     SUFFIX_DREAMVIEW,
     SUFFIX_HEATER_AUTO_STOP,
     SUFFIX_LIGHT_ZONE,
+    SUFFIX_MAIN_LIGHT,
     SUFFIX_MUSIC_MODE,
     SUFFIX_NIGHT_LIGHT,
+    SUFFIX_SOCKET,
 )
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
@@ -33,7 +36,11 @@ from .models import (
     ToggleCommand,
     create_night_light_command,
 )
-from .models.device import INSTANCE_THERMOSTAT_TOGGLE
+from .models.device import (
+    INSTANCE_BACKGROUND_LIGHT_TOGGLE,
+    INSTANCE_MAIN_LIGHT_TOGGLE,
+    INSTANCE_THERMOSTAT_TOGGLE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -131,6 +138,48 @@ async def async_setup_entry(
                     zone_index + 1,
                     instance,
                     device.name,
+                )
+
+            # Per-outlet switches for multi-socket plugs (e.g. H5089's two
+            # socketToggle{N} outlets). These return live state on poll, unlike
+            # the optimistic light zones (issue #114).
+            for socket_index, instance in enumerate(device.socket_toggle_instances):
+                entities.append(
+                    GoveeSocketSwitchEntity(
+                        coordinator, device, instance, socket_index
+                    )
+                )
+                _LOGGER.debug(
+                    "Created outlet switch %d (%s) for %s",
+                    socket_index + 1,
+                    instance,
+                    device.name,
+                )
+
+            # Separate main / background light toggles on ceiling-fan lights
+            # (H1310/H1370). Govee returns "" for these on poll, so they are
+            # optimistic + RestoreEntity like the light zones (issue #114).
+            if device.supports_main_light_toggle:
+                entities.append(
+                    GoveeNamedLightSwitchEntity(
+                        coordinator,
+                        device,
+                        INSTANCE_MAIN_LIGHT_TOGGLE,
+                        "govee_main_light",
+                        SUFFIX_MAIN_LIGHT,
+                        "mdi:ceiling-light",
+                    )
+                )
+            if device.supports_background_light_toggle:
+                entities.append(
+                    GoveeNamedLightSwitchEntity(
+                        coordinator,
+                        device,
+                        INSTANCE_BACKGROUND_LIGHT_TOGGLE,
+                        "govee_background_light",
+                        SUFFIX_BACKGROUND_LIGHT,
+                        "mdi:wall-sconce-flat",
+                    )
                 )
 
     async_add_entities(entities)
@@ -282,6 +331,128 @@ class GoveeLightZoneSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
     @property
     def is_on(self) -> bool:
         """Return True if the zone is on (optimistic)."""
+        return self._is_on
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the light zone on."""
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            ToggleCommand(toggle_instance=self._toggle_instance, enabled=True),
+        )
+        if success:
+            self._is_on = True
+            self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the light zone off."""
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            ToggleCommand(toggle_instance=self._toggle_instance, enabled=False),
+        )
+        if success:
+            self._is_on = False
+            self.async_write_ha_state()
+
+
+class GoveeSocketSwitchEntity(GoveeEntity, SwitchEntity):
+    """One independently switchable outlet on a multi-socket plug (issue #114).
+
+    Outlet extenders like the H5089 expose each socket as a ``socketToggle{N}``
+    capability and return a live 0/1 value on poll, so this switch reads real
+    state (unlike the optimistic light-zone switch). The command result is
+    written back to coordinator state for immediate UI feedback; the next poll
+    reconfirms it.
+    """
+
+    _attr_device_class = SwitchDeviceClass.OUTLET
+    _attr_translation_key = "govee_socket"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+        toggle_instance: str,
+        socket_index: int,
+    ) -> None:
+        """Initialize the outlet switch entity.
+
+        Args:
+            coordinator: Govee data coordinator.
+            device: Device this switch controls.
+            toggle_instance: The ``socketToggle{N}`` capability instance.
+            socket_index: Zero-based outlet index (for unique_id + name).
+        """
+        super().__init__(coordinator, device)
+
+        self._toggle_instance = toggle_instance
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_SOCKET}{socket_index}"
+        self._attr_translation_placeholders = {"socket": str(socket_index + 1)}
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the outlet is on (live state)."""
+        state = self.device_state
+        return state.toggles.get(self._toggle_instance) if state else None
+
+    async def _set(self, enabled: bool) -> None:
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            ToggleCommand(toggle_instance=self._toggle_instance, enabled=enabled),
+        )
+        if success:
+            state = self.device_state
+            if state is not None:
+                state.toggles[self._toggle_instance] = enabled
+            self.async_write_ha_state()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the outlet on."""
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the outlet off."""
+        await self._set(False)
+
+
+class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
+    """On/off switch for a named light zone — main or background — on ceiling-fan
+    lights (H1310/H1370, issue #114).
+
+    Govee returns "" for these toggles on poll, so state is optimistic and
+    restored across restarts via RestoreEntity (the same approach as the
+    light-zone and night-light switches).
+    """
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+        toggle_instance: str,
+        translation_key: str,
+        unique_suffix: str,
+        icon: str,
+    ) -> None:
+        """Initialize the named light toggle switch entity."""
+        super().__init__(coordinator, device)
+
+        self._toggle_instance = toggle_instance
+        self._attr_translation_key = translation_key
+        self._attr_unique_id = f"{device.device_id}{unique_suffix}"
+        self._attr_icon = icon
+
+        # Optimistic state — Govee does not report these toggles on poll.
+        self._is_on = False
+
+    async def async_added_to_hass(self) -> None:
+        """Restore optimistic state on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state:
+            self._is_on = last_state.state == "on"
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if the light zone is on (optimistic)."""
         return self._is_on
 
     async def async_turn_on(self, **kwargs: Any) -> None:

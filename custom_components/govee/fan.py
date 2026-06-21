@@ -133,10 +133,28 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
         # Build supported features based on device capabilities
         features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
 
+        # Map preset name -> work_mode value for non-gear, non-Auto top-level
+        # work modes (e.g. H7124's Sleep/Turbo, H7126's Custom). Normal
+        # (gearMode) and Auto are always offered for backward compatibility.
+        self._preset_work_modes: dict[str, int] = {}
         if device.supports_work_mode:
             features |= FanEntityFeature.SET_SPEED
             features |= FanEntityFeature.PRESET_MODE
-            self._attr_preset_modes = FAN_PRESET_MODES
+            extra_presets: list[str] = []
+            for opt in device.get_fan_speed_options():
+                wm = opt.get("work_mode")
+                name = str(opt.get("name", ""))
+                if wm is None or wm in (WORK_MODE_GEAR, WORK_MODE_AUTO) or not name:
+                    continue
+                if name not in self._preset_work_modes:
+                    self._preset_work_modes[name] = int(wm)
+                    extra_presets.append(name)
+            self._attr_preset_modes = FAN_PRESET_MODES + extra_presets
+
+        # Reverse lookup work_mode value -> preset name (issue #114).
+        self._work_mode_to_preset: dict[int, str] = {
+            wm: name for name, wm in self._preset_work_modes.items()
+        }
 
         if device.supports_oscillation:
             features |= FanEntityFeature.OSCILLATE
@@ -178,6 +196,8 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
         Maps work_mode to preset:
         - 1 (gearMode) -> Normal
         - 3 (Auto) -> Auto
+        - other top-level work modes (Sleep/Turbo/Custom) -> their own preset
+          (issue #114)
         """
         state = self.device_state
         if state is None or state.work_mode is None:
@@ -185,6 +205,8 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
 
         if state.work_mode == WORK_MODE_AUTO:
             return PRESET_MODE_AUTO
+        if state.work_mode in self._work_mode_to_preset:
+            return self._work_mode_to_preset[state.work_mode]
         return PRESET_MODE_NORMAL
 
     @property
@@ -247,6 +269,11 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
         if preset_mode == PRESET_MODE_AUTO:
             work_mode = WORK_MODE_AUTO
             mode_value = 0  # Not used in auto mode
+        elif preset_mode in self._preset_work_modes:
+            # Sleep / Turbo / Custom etc. — top-level work mode, no speed value
+            # (issue #114).
+            work_mode = self._preset_work_modes[preset_mode]
+            mode_value = 0
         else:
             # Normal mode - use current speed or default to medium
             work_mode = WORK_MODE_GEAR

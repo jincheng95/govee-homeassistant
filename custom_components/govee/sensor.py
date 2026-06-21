@@ -79,6 +79,12 @@ async def async_setup_entry(
             entities.append(GoveeTemperatureSensor(coordinator, device))
         if device.supports_humidity_sensor:
             entities.append(GoveeHumiditySensor(coordinator, device))
+        # Air-quality index (H5106 monitor, H7124/H7126 purifiers) and filter
+        # remaining-life (% on purifiers) — read-only properties (issue #114).
+        if device.supports_air_quality:
+            entities.append(GoveeAirQualitySensor(coordinator, device))
+        if device.supports_filter_life:
+            entities.append(GoveeFilterLifeSensor(coordinator, device))
         if device.supports_temperature_sensor or device.supports_humidity_sensor:
             entities.append(GoveeSensorReadingTimestampSensor(coordinator, device))
         # BFF thermo-hygrometers carry a battery level in their settings payload
@@ -312,6 +318,61 @@ class GoveeTemperatureSensor(_BffThermometerAvailabilityMixin, SensorEntity):
             return (value - 32.0) * (5.0 / 9.0)
 
         return value
+
+
+class GoveeAirQualitySensor(GoveeEntity, SensorEntity):
+    """Read-only air-quality index (H5106 monitor, H7124/H7126) — issue #114.
+
+    Backed by the ``devices.capabilities.property`` / ``airQuality`` capability.
+    The Developer API returns a single index integer (no PM2.5 µg/m³ field), so
+    this surfaces that index under the HA AQI device class.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "sensor_air_quality"
+    _attr_device_class = SensorDeviceClass.AQI
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_air_quality"
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.device_state
+        return state.air_quality if state else None
+
+
+class GoveeFilterLifeSensor(GoveeEntity, SensorEntity):
+    """Read-only remaining filter life % on air purifiers (H7124/H7126, #114).
+
+    Backed by the ``devices.capabilities.property`` / ``filterLifeTime``
+    capability, reported as a 0-100 percentage.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "sensor_filter_life"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_icon = "mdi:air-filter"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_filter_life"
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.device_state
+        return state.filter_life if state else None
 
 
 class GoveeHumiditySensor(_BffThermometerAvailabilityMixin, SensorEntity):

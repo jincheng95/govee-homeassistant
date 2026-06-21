@@ -1,0 +1,608 @@
+"""Tests for issue #114 — multi-SKU feature support (Phase A + B).
+
+Phase A: AQI + filter-life sensors (H5106/H7124/H7126); H7152 dehumidifier
+configured-humidity setpoint (range::humidity) + Medium gear mode.
+Phase B: H5089 per-outlet switches; H1310/H1370 main/background light toggles;
+H7124 fan presets (Sleep/Auto/Turbo).
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from custom_components.govee.models import (
+    GoveeCapability,
+    GoveeDevice,
+    GoveeDeviceState,
+    RangeCommand,
+    ToggleCommand,
+    WorkModeCommand,
+)
+from custom_components.govee.models.device import (
+    CAPABILITY_COLOR_SETTING,
+    CAPABILITY_EVENT,
+    CAPABILITY_MODE,
+    CAPABILITY_ON_OFF,
+    CAPABILITY_PROPERTY,
+    CAPABILITY_RANGE,
+    CAPABILITY_TOGGLE,
+    CAPABILITY_WORK_MODE,
+    DEVICE_TYPE_DEHUMIDIFIER,
+    DEVICE_TYPE_LIGHT,
+    DEVICE_TYPE_PLUG,
+    DEVICE_TYPE_PURIFIER,
+    DEVICE_TYPE_THERMOMETER,
+    INSTANCE_BRIGHTNESS,
+    INSTANCE_COLOR_RGB,
+    INSTANCE_HUMIDITY,
+    INSTANCE_POWER,
+    INSTANCE_WORK_MODE,
+)
+
+
+def _cap(cap_type: str, instance: str, params: dict | None = None) -> GoveeCapability:
+    return GoveeCapability(type=cap_type, instance=instance, parameters=params or {})
+
+
+# --------------------------------------------------------------------------- #
+# Device fixtures (shapes from issue-#114 diagnostics)
+# --------------------------------------------------------------------------- #
+
+_H7124_WORKMODE = {
+    "dataType": "STRUCT",
+    "fields": [
+        {
+            "fieldName": "workMode",
+            "options": [
+                {"name": "gearMode", "value": 1},
+                {"name": "Sleep", "value": 5},
+                {"name": "Auto", "value": 3},
+                {"name": "Turbo", "value": 7},
+            ],
+        },
+        {
+            "fieldName": "modeValue",
+            "options": [
+                {
+                    "name": "gearMode",
+                    "options": [
+                        {"name": "Low", "value": 1},
+                        {"name": "Medium", "value": 2},
+                        {"name": "High", "value": 3},
+                    ],
+                },
+                {"defaultValue": 0, "name": "Sleep"},
+                {"defaultValue": 0, "name": "Auto"},
+                {"defaultValue": 0, "name": "Turbo"},
+            ],
+        },
+    ],
+}
+
+_H7152_WORKMODE = {
+    "dataType": "STRUCT",
+    "fields": [
+        {
+            "fieldName": "workMode",
+            "options": [
+                {"name": "gearMode", "value": 1},
+                {"name": "Auto", "value": 3},
+                {"name": "Dryer", "value": 8},
+            ],
+        },
+        {
+            "fieldName": "modeValue",
+            "options": [
+                {
+                    "name": "gearMode",
+                    "options": [
+                        {"name": "Low", "value": 1},
+                        {"name": "Medium", "value": 2},
+                        {"name": "High", "value": 3},
+                    ],
+                },
+                {"name": "Auto", "range": {"min": 80, "max": 80}},
+                {"defaultValue": 0, "name": "Dryer"},
+            ],
+        },
+    ],
+}
+
+_HUMIDITY_RANGE = {
+    "unit": "unit.percent",
+    "dataType": "INTEGER",
+    "range": {"min": 30, "max": 80, "precision": 1},
+}
+
+
+def _h5106() -> GoveeDevice:
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:51:06",
+        sku="H5106",
+        name="Garage AQI Monitor",
+        device_type=DEVICE_TYPE_THERMOMETER,
+        capabilities=(
+            _cap(CAPABILITY_PROPERTY, "sensorTemperature"),
+            _cap(CAPABILITY_PROPERTY, "sensorHumidity"),
+            _cap(CAPABILITY_PROPERTY, "airQuality"),
+        ),
+    )
+
+
+def _h7124() -> GoveeDevice:
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:71:24",
+        sku="H7124",
+        name="Sunroom Air Purifier",
+        device_type=DEVICE_TYPE_PURIFIER,
+        capabilities=(
+            _cap(CAPABILITY_ON_OFF, INSTANCE_POWER),
+            _cap(CAPABILITY_WORK_MODE, INSTANCE_WORK_MODE, _H7124_WORKMODE),
+            _cap(CAPABILITY_TOGGLE, "nightlightToggle"),
+            _cap(CAPABILITY_RANGE, INSTANCE_BRIGHTNESS),
+            _cap(CAPABILITY_COLOR_SETTING, INSTANCE_COLOR_RGB),
+            _cap(CAPABILITY_MODE, "nightlightScene"),
+            _cap(CAPABILITY_PROPERTY, "filterLifeTime"),
+            _cap(CAPABILITY_PROPERTY, "airQuality"),
+        ),
+    )
+
+
+def _h7152() -> GoveeDevice:
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:71:52",
+        sku="H7152",
+        name="Basement Dehumidifier",
+        device_type=DEVICE_TYPE_DEHUMIDIFIER,
+        capabilities=(
+            _cap(CAPABILITY_ON_OFF, INSTANCE_POWER),
+            _cap(CAPABILITY_RANGE, INSTANCE_HUMIDITY, _HUMIDITY_RANGE),
+            _cap(CAPABILITY_WORK_MODE, INSTANCE_WORK_MODE, _H7152_WORKMODE),
+            _cap(CAPABILITY_EVENT, "waterFullEvent"),
+        ),
+    )
+
+
+def _h5089() -> GoveeDevice:
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:50:89",
+        sku="H5089",
+        name="Smart Outlet Extender",
+        device_type=DEVICE_TYPE_PLUG,
+        capabilities=(
+            _cap(CAPABILITY_ON_OFF, INSTANCE_POWER),
+            _cap(CAPABILITY_TOGGLE, "nightlightToggle"),
+            _cap(CAPABILITY_RANGE, INSTANCE_BRIGHTNESS),
+            _cap(CAPABILITY_COLOR_SETTING, INSTANCE_COLOR_RGB),
+            _cap(CAPABILITY_MODE, "nightlightScene"),
+            # Order shuffled to prove sorting by socket number.
+            _cap(CAPABILITY_TOGGLE, "socketToggle2"),
+            _cap(CAPABILITY_TOGGLE, "socketToggle1"),
+        ),
+    )
+
+
+def _h1310() -> GoveeDevice:
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:13:10",
+        sku="H1310",
+        name="Basement Bedroom Fan",
+        device_type=DEVICE_TYPE_LIGHT,
+        capabilities=(
+            _cap(CAPABILITY_ON_OFF, INSTANCE_POWER),
+            _cap(CAPABILITY_RANGE, INSTANCE_BRIGHTNESS),
+            _cap(CAPABILITY_TOGGLE, "mainLightToggle"),
+            _cap(CAPABILITY_TOGGLE, "backgroundLightToggle"),
+            _cap(CAPABILITY_TOGGLE, "fanToggle"),
+            _cap(CAPABILITY_MODE, "fanSpeedMode"),
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Device-model helpers
+# --------------------------------------------------------------------------- #
+
+
+class TestDeviceModelHelpers:
+    def test_air_quality_and_filter_life_detection(self):
+        assert _h5106().supports_air_quality is True
+        assert _h5106().supports_filter_life is False
+        assert _h7124().supports_air_quality is True
+        assert _h7124().supports_filter_life is True
+
+    def test_socket_toggle_instances_sorted(self):
+        assert _h5089().socket_toggle_instances == ["socketToggle1", "socketToggle2"]
+
+    def test_plain_light_has_no_socket_toggles(self):
+        assert _h1310().socket_toggle_instances == []
+
+    def test_main_background_light_toggles(self):
+        dev = _h1310()
+        assert dev.supports_main_light_toggle is True
+        assert dev.supports_background_light_toggle is True
+
+    def test_socket_plug_has_no_named_light_toggles(self):
+        dev = _h5089()
+        assert dev.supports_main_light_toggle is False
+        assert dev.supports_background_light_toggle is False
+
+    def test_humidity_range_capability(self):
+        assert _h7152().supports_humidity_range is True
+        assert _h7124().supports_humidity_range is False
+
+    def test_auto_modevalue_is_setpoint_h7152_false(self):
+        # H7152 pins Auto modeValue to 80/80 -> setpoint lives in range::humidity.
+        assert _h7152().auto_mode_value_is_setpoint() is False
+
+    def test_auto_modevalue_is_setpoint_h7150_true(self):
+        # Real-range Auto modeValue (30-80) -> setpoint IS the modeValue.
+        dev = GoveeDevice(
+            device_id="x",
+            sku="H7150",
+            name="d",
+            device_type=DEVICE_TYPE_DEHUMIDIFIER,
+            capabilities=(
+                _cap(
+                    CAPABILITY_WORK_MODE,
+                    INSTANCE_WORK_MODE,
+                    {
+                        "fields": [
+                            {"fieldName": "workMode", "options": [{"name": "Auto", "value": 3}]},
+                            {
+                                "fieldName": "modeValue",
+                                "options": [{"name": "Auto", "range": {"min": 30, "max": 80}}],
+                            },
+                        ]
+                    },
+                ),
+            ),
+        )
+        assert dev.auto_mode_value_is_setpoint() is True
+
+
+# --------------------------------------------------------------------------- #
+# State parsing
+# --------------------------------------------------------------------------- #
+
+
+class TestStateParsing:
+    def test_air_quality_and_humidity_parsed(self):
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_api(
+            {
+                "capabilities": [
+                    {"type": CAPABILITY_PROPERTY, "instance": "airQuality", "state": {"value": 1}},
+                    {"type": CAPABILITY_PROPERTY, "instance": "sensorHumidity", "state": {"value": 64.2}},
+                ]
+            }
+        )
+        assert state.air_quality == 1
+        assert state.sensor_humidity == 64.2
+
+    def test_filter_life_parsed(self):
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_api(
+            {"capabilities": [{"type": CAPABILITY_PROPERTY, "instance": "filterLifeTime", "state": {"value": 89}}]}
+        )
+        assert state.filter_life == 89
+
+    def test_configured_humidity_parsed(self):
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_api(
+            {"capabilities": [{"type": CAPABILITY_RANGE, "instance": "humidity", "state": {"value": 60}}]}
+        )
+        assert state.configured_humidity == 60
+
+    def test_socket_toggles_parsed(self):
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_api(
+            {
+                "capabilities": [
+                    {"type": CAPABILITY_TOGGLE, "instance": "socketToggle1", "state": {"value": 1}},
+                    {"type": CAPABILITY_TOGGLE, "instance": "socketToggle2", "state": {"value": 0}},
+                ]
+            }
+        )
+        assert state.toggles == {"socketToggle1": True, "socketToggle2": False}
+
+    def test_empty_toggle_value_preserves_last(self):
+        state = GoveeDeviceState(device_id="x")
+        state.toggles["socketToggle1"] = True
+        state.update_from_api(
+            {"capabilities": [{"type": CAPABILITY_TOGGLE, "instance": "socketToggle1", "state": {"value": ""}}]}
+        )
+        # "" (offline / no value) must not clobber the last-known True.
+        assert state.toggles["socketToggle1"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Sensor entities
+# --------------------------------------------------------------------------- #
+
+
+def _coordinator_with_state(device: GoveeDevice, state: GoveeDeviceState) -> MagicMock:
+    c = MagicMock()
+    c.devices = {device.device_id: device}
+    c.get_state = MagicMock(return_value=state)
+    c.async_control_device = AsyncMock(return_value=True)
+    c.is_bff_thermometer = MagicMock(return_value=False)
+    return c
+
+
+class TestSensorEntities:
+    def test_air_quality_native_value(self):
+        from custom_components.govee.sensor import GoveeAirQualitySensor
+
+        dev = _h5106()
+        state = GoveeDeviceState(device_id=dev.device_id)
+        state.air_quality = 3
+        entity = GoveeAirQualitySensor(_coordinator_with_state(dev, state), dev)
+        assert entity.native_value == 3
+        assert entity.unique_id == f"{dev.device_id}_air_quality"
+
+    def test_filter_life_native_value(self):
+        from custom_components.govee.sensor import GoveeFilterLifeSensor
+
+        dev = _h7124()
+        state = GoveeDeviceState(device_id=dev.device_id)
+        state.filter_life = 89
+        entity = GoveeFilterLifeSensor(_coordinator_with_state(dev, state), dev)
+        assert entity.native_value == 89
+        assert entity.unique_id == f"{dev.device_id}_filter_life"
+
+    async def test_setup_creates_sensors(self):
+        from custom_components.govee import sensor as sensor_mod
+
+        dev = _h7124()
+        state = GoveeDeviceState(device_id=dev.device_id)
+        coordinator = _coordinator_with_state(dev, state)
+        coordinator.mqtt_client = None
+        coordinator.leak_sensors = {}
+        coordinator.register_thermo_hubs = MagicMock()
+        coordinator.register_leak_hubs = MagicMock()
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        added: list = []
+        await sensor_mod.async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
+
+        names = {type(e).__name__ for e in added}
+        assert "GoveeAirQualitySensor" in names
+        assert "GoveeFilterLifeSensor" in names
+
+
+# --------------------------------------------------------------------------- #
+# Switch entities
+# --------------------------------------------------------------------------- #
+
+
+class TestSocketSwitch:
+    @pytest.fixture
+    def device(self):
+        return _h5089()
+
+    @pytest.fixture
+    def state(self, device):
+        s = GoveeDeviceState(device_id=device.device_id, online=True)
+        s.toggles = {"socketToggle1": True, "socketToggle2": False}
+        return s
+
+    @pytest.fixture
+    def entity(self, device, state):
+        from custom_components.govee.switch import GoveeSocketSwitchEntity
+
+        e = GoveeSocketSwitchEntity(
+            _coordinator_with_state(device, state), device, "socketToggle1", 0
+        )
+        e.async_write_ha_state = MagicMock()
+        return e
+
+    def test_is_on_reads_live_state(self, entity):
+        assert entity.is_on is True
+
+    def test_name_placeholder(self, entity):
+        assert entity._attr_translation_placeholders == {"socket": "1"}
+
+    @pytest.mark.asyncio
+    async def test_turn_off_sends_toggle(self, entity):
+        await entity.async_turn_off()
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, ToggleCommand)
+        assert cmd.toggle_instance == "socketToggle1"
+        assert cmd.enabled is False
+        assert entity.is_on is False  # written back to live state
+
+    @pytest.mark.asyncio
+    async def test_failure_does_not_flip(self, entity):
+        entity.coordinator.async_control_device.return_value = False
+        await entity.async_turn_off()
+        assert entity.is_on is True
+
+
+class TestNamedLightSwitch:
+    @pytest.fixture
+    def device(self):
+        return _h1310()
+
+    @pytest.fixture
+    def entity(self, device):
+        from custom_components.govee.const import SUFFIX_MAIN_LIGHT
+        from custom_components.govee.switch import GoveeNamedLightSwitchEntity
+        from custom_components.govee.models.device import INSTANCE_MAIN_LIGHT_TOGGLE
+
+        state = GoveeDeviceState(device_id=device.device_id, online=True)
+        e = GoveeNamedLightSwitchEntity(
+            _coordinator_with_state(device, state),
+            device,
+            INSTANCE_MAIN_LIGHT_TOGGLE,
+            "govee_main_light",
+            SUFFIX_MAIN_LIGHT,
+            "mdi:ceiling-light",
+        )
+        e.async_write_ha_state = MagicMock()
+        return e
+
+    def test_starts_off_optimistic(self, entity):
+        assert entity.is_on is False
+
+    @pytest.mark.asyncio
+    async def test_turn_on_sends_main_toggle(self, entity):
+        await entity.async_turn_on()
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, ToggleCommand)
+        assert cmd.toggle_instance == "mainLightToggle"
+        assert cmd.enabled is True
+        assert entity.is_on is True
+
+
+class TestSwitchPlatformWiring:
+    async def _setup(self, device):
+        from custom_components.govee import switch as switch_mod
+
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        added: list = []
+        await switch_mod.async_setup_entry(
+            MagicMock(), entry, lambda ents: added.extend(ents)
+        )
+        return added
+
+    async def test_h5089_creates_two_outlet_switches(self):
+        added = await self._setup(_h5089())
+        sockets = [e for e in added if type(e).__name__ == "GoveeSocketSwitchEntity"]
+        assert len(sockets) == 2
+        assert sorted(e._toggle_instance for e in sockets) == [
+            "socketToggle1",
+            "socketToggle2",
+        ]
+
+    async def test_h1310_creates_main_and_background_switches(self):
+        added = await self._setup(_h1310())
+        named = [
+            e._toggle_instance
+            for e in added
+            if type(e).__name__ == "GoveeNamedLightSwitchEntity"
+        ]
+        assert sorted(named) == ["backgroundLightToggle", "mainLightToggle"]
+
+
+# --------------------------------------------------------------------------- #
+# Fan presets (H7124)
+# --------------------------------------------------------------------------- #
+
+
+class TestH7124FanPresets:
+    @pytest.fixture
+    def device(self):
+        return _h7124()
+
+    @pytest.fixture
+    def fan(self, device):
+        from custom_components.govee.fan import GoveeFanEntity
+
+        state = GoveeDeviceState(device_id=device.device_id, online=True)
+        return GoveeFanEntity(_coordinator_with_state(device, state), device)
+
+    def test_preset_modes_include_sleep_turbo(self, fan):
+        from custom_components.govee.fan import PRESET_MODE_AUTO, PRESET_MODE_NORMAL
+
+        assert fan.preset_modes == [PRESET_MODE_NORMAL, PRESET_MODE_AUTO, "Sleep", "Turbo"]
+
+    def test_preset_mode_maps_sleep(self, device):
+        from custom_components.govee.fan import GoveeFanEntity
+
+        state = GoveeDeviceState(device_id=device.device_id, online=True)
+        state.work_mode = 5  # Sleep
+        fan = GoveeFanEntity(_coordinator_with_state(device, state), device)
+        assert fan.preset_mode == "Sleep"
+
+    def test_preset_mode_maps_turbo(self, device):
+        from custom_components.govee.fan import GoveeFanEntity
+
+        state = GoveeDeviceState(device_id=device.device_id, online=True)
+        state.work_mode = 7  # Turbo
+        fan = GoveeFanEntity(_coordinator_with_state(device, state), device)
+        assert fan.preset_mode == "Turbo"
+
+    @pytest.mark.asyncio
+    async def test_set_preset_turbo_sends_work_mode(self, fan):
+        await fan.async_set_preset_mode("Turbo")
+        cmd = fan.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, WorkModeCommand)
+        assert cmd.work_mode == 7
+        assert cmd.mode_value == 0
+
+
+# --------------------------------------------------------------------------- #
+# Dehumidifier setpoint + Medium (H7152)
+# --------------------------------------------------------------------------- #
+
+
+class TestH7152Humidifier:
+    @pytest.fixture
+    def device(self):
+        return _h7152()
+
+    @pytest.fixture
+    def state(self, device):
+        s = GoveeDeviceState(device_id=device.device_id, online=True)
+        s.power_state = True
+        s.work_mode = 3  # Auto (pinned modeValue=0 on this SKU)
+        s.mode_value = 0
+        s.configured_humidity = 60
+        return s
+
+    @pytest.fixture
+    def entity(self, device, state):
+        from custom_components.govee.humidifier import GoveeHumidifierEntity
+
+        return GoveeHumidifierEntity(_coordinator_with_state(device, state), device)
+
+    def test_available_modes_include_medium(self, entity):
+        from custom_components.govee.humidifier import (
+            MODE_AUTO,
+            MODE_DRYER,
+            MODE_HIGH,
+            MODE_LOW,
+            MODE_MEDIUM,
+        )
+
+        assert entity.available_modes == [
+            MODE_LOW,
+            MODE_MEDIUM,
+            MODE_HIGH,
+            MODE_AUTO,
+            MODE_DRYER,
+        ]
+
+    def test_target_humidity_from_range_capability(self, entity):
+        # Real setpoint is range::humidity=60, NOT the pinned Auto modeValue (0).
+        assert entity.target_humidity == 60
+
+    @pytest.mark.asyncio
+    async def test_set_humidity_uses_range_command(self, entity):
+        await entity.async_set_humidity(55)
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, RangeCommand)
+        assert cmd.range_instance == INSTANCE_HUMIDITY
+        assert cmd.value == 55
+
+    @pytest.mark.asyncio
+    async def test_set_humidity_clamps(self, entity):
+        await entity.async_set_humidity(10)
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert cmd.value == 30  # clamped to min
+
+    @pytest.mark.asyncio
+    async def test_set_mode_medium(self, entity):
+        from custom_components.govee.humidifier import MODE_MEDIUM
+
+        await entity.async_set_mode(MODE_MEDIUM)
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, WorkModeCommand)
+        assert cmd.work_mode == 1  # gearMode
+        assert cmd.mode_value == 2  # Medium

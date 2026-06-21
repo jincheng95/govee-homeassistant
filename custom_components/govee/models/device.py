@@ -108,6 +108,16 @@ INSTANCE_BODY_APPEARED_EVENT = "bodyAppearedEvent"
 INSTANCE_SENSOR_TEMPERATURE = "sensorTemperature"
 INSTANCE_SENSOR_HUMIDITY = "sensorHumidity"
 
+# Air-quality index + filter remaining-life, exposed as read-only sensors on
+# air-quality monitors (H5106) and air purifiers (H7124/H7126) — issue #114.
+INSTANCE_AIR_QUALITY = "airQuality"
+INSTANCE_FILTER_LIFE = "filterLifeTime"
+
+# Separate main/background light toggles on ceiling-fan lights (H1310/H1370).
+# Distinct from the numeric ``light{N}Toggle`` zone toggles — issue #114.
+INSTANCE_MAIN_LIGHT_TOGGLE = "mainLightToggle"
+INSTANCE_BACKGROUND_LIGHT_TOGGLE = "backgroundLightToggle"
+
 # Device type for stand-alone temperature/humidity sensors.
 DEVICE_TYPE_THERMOMETER = "devices.types.thermometer"
 
@@ -337,6 +347,43 @@ class GoveeDevice:
         return [instance for _, instance in sorted(matches)]
 
     @property
+    def socket_toggle_instances(self) -> list[str]:
+        """Independently switchable outlets on multi-socket plugs (issue #114).
+
+        Outlet extenders like the H5089 expose each physical socket as a
+        ``socketToggle{N}`` ``devices.capabilities.toggle``. Unlike the
+        main/background light toggles, the API returns a live 0/1 value for
+        these on poll, so the switch reads real state. Returns instance names
+        sorted by socket number, e.g. ``["socketToggle1", "socketToggle2"]``.
+        """
+        pattern = re.compile(r"socketToggle(\d+)")
+        matches: list[tuple[int, str]] = []
+        for cap in self.capabilities:
+            if cap.type != CAPABILITY_TOGGLE:
+                continue
+            m = pattern.fullmatch(cap.instance)
+            if m:
+                matches.append((int(m.group(1)), cap.instance))
+        return [instance for _, instance in sorted(matches)]
+
+    @property
+    def supports_main_light_toggle(self) -> bool:
+        """Check if device exposes a separate main-light toggle (H1310/H1370)."""
+        return any(
+            cap.type == CAPABILITY_TOGGLE and cap.instance == INSTANCE_MAIN_LIGHT_TOGGLE
+            for cap in self.capabilities
+        )
+
+    @property
+    def supports_background_light_toggle(self) -> bool:
+        """Check if device exposes a separate background-light toggle (#114)."""
+        return any(
+            cap.type == CAPABILITY_TOGGLE
+            and cap.instance == INSTANCE_BACKGROUND_LIGHT_TOGGLE
+            for cap in self.capabilities
+        )
+
+    @property
     def supports_scenes(self) -> bool:
         """Check if device supports dynamic scenes."""
         return any(cap.is_scene for cap in self.capabilities)
@@ -460,6 +507,28 @@ class GoveeDevice:
         )
 
     @property
+    def supports_air_quality(self) -> bool:
+        """Check if device exposes an airQuality property (H5106, H7124/H7126).
+
+        Read-only index surfaced as an HA sensor — issue #114.
+        """
+        return any(
+            cap.type == CAPABILITY_PROPERTY and cap.instance == INSTANCE_AIR_QUALITY
+            for cap in self.capabilities
+        )
+
+    @property
+    def supports_filter_life(self) -> bool:
+        """Check if device exposes a filterLifeTime property (air purifiers).
+
+        Read-only remaining-life percentage surfaced as an HA sensor — #114.
+        """
+        return any(
+            cap.type == CAPABILITY_PROPERTY and cap.instance == INSTANCE_FILTER_LIFE
+            for cap in self.capabilities
+        )
+
+    @property
     def is_thermometer(self) -> bool:
         """Check if device is a stand-alone thermometer/hygrometer."""
         return self.device_type == DEVICE_TYPE_THERMOMETER
@@ -477,6 +546,38 @@ class GoveeDevice:
                     int(range_data.get("max", 80)),
                 )
         return (30, 80)
+
+    @property
+    def supports_humidity_range(self) -> bool:
+        """Check if device exposes a range::humidity setpoint capability (#114)."""
+        return any(
+            cap.type == CAPABILITY_RANGE and cap.instance == INSTANCE_HUMIDITY
+            for cap in self.capabilities
+        )
+
+    def auto_mode_value_is_setpoint(self) -> bool:
+        """Whether the Auto work-mode's modeValue carries the humidity setpoint.
+
+        The H7150 advertises Auto ``modeValue`` as a real range (e.g. 30–80) —
+        the target humidity lives there. The H7152 pins Auto ``modeValue`` to a
+        single point (80/80) and carries the real setpoint in the separate
+        ``range::humidity`` capability instead, so for it the modeValue is NOT
+        the setpoint (issue #114). Returns False when there is no Auto modeValue
+        range to read.
+        """
+        for cap in self.capabilities:
+            if cap.type != CAPABILITY_WORK_MODE or cap.instance != INSTANCE_WORK_MODE:
+                continue
+            for f in cap.parameters.get("fields", []):
+                if f.get("fieldName") != "modeValue":
+                    continue
+                for opt in f.get("options", []):
+                    if str(opt.get("name", "")).strip().lower() == "auto":
+                        rng = opt.get("range") or {}
+                        mn, mx = rng.get("min"), rng.get("max")
+                        if mn is not None and mx is not None:
+                            return bool(mn != mx)
+        return False
 
     def get_humidifier_work_mode_options(self) -> list[dict[str, Any]]:
         """Extract top-level work mode options for humidifier/dehumidifier.

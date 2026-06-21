@@ -28,7 +28,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
-from .models import GoveeDevice, PowerCommand, WorkModeCommand
+from .models import GoveeDevice, PowerCommand, RangeCommand, WorkModeCommand
+from .models.device import INSTANCE_HUMIDITY
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,9 +38,13 @@ PARALLEL_UPDATES = 0
 # Canonical mode names surfaced to Home Assistant. The set of modes offered
 # by a given device is intersected with these at entity-construction time.
 MODE_LOW = "low"
+MODE_MEDIUM = "medium"
 MODE_HIGH = "high"
 MODE_AUTO = "auto"
 MODE_DRYER = "dryer"
+
+# gearMode sub-option names map onto these canonical HA modes.
+_GEAR_MODES = (MODE_LOW, MODE_MEDIUM, MODE_HIGH)
 
 # Map canonical HA mode name -> (govee_mode_name, fallback_mode_value).
 # govee_mode_name is matched case-insensitively against the device's
@@ -47,6 +52,7 @@ MODE_DRYER = "dryer"
 # capability doesn't specify a value (e.g. Dryer always sends 0).
 _MODE_ALIASES: dict[str, tuple[str, int]] = {
     MODE_LOW: ("low", 1),
+    MODE_MEDIUM: ("medium", 2),
     MODE_HIGH: ("high", 3),
     MODE_AUTO: ("auto", 0),
     MODE_DRYER: ("dryer", 0),
@@ -100,6 +106,12 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
         self._attr_min_humidity = min_h
         self._attr_max_humidity = max_h
 
+        # H7150 carries the target in the Auto modeValue; H7152 pins Auto to a
+        # fixed point and carries the setpoint in a separate range::humidity
+        # capability instead. Pick the right read/write path per device (#114).
+        self._auto_modevalue_is_setpoint = device.auto_mode_value_is_setpoint()
+        self._has_humidity_range = device.supports_humidity_range
+
         # Build per-device maps from the capability so the entity honours
         # whatever the device actually advertises (values may vary by SKU).
         self._mode_to_work_mode: dict[str, int] = {}
@@ -113,7 +125,7 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
             if value is None:
                 continue
             for ha_mode, (alias, _default) in _MODE_ALIASES.items():
-                if name == alias and ha_mode not in (MODE_LOW, MODE_HIGH):
+                if name == alias and ha_mode not in _GEAR_MODES:
                     self._mode_to_work_mode[ha_mode] = int(value)
                     self._work_mode_to_mode[int(value)] = ha_mode
 
@@ -134,7 +146,7 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
                 value = gear.get("value")
                 if value is None:
                     continue
-                if name in (MODE_LOW, MODE_HIGH):
+                if name in _GEAR_MODES:
                     self._mode_to_work_mode[name] = gear_work_mode
                     self._mode_to_mode_value[name] = int(value)
                     self._gear_mode_values[name] = int(value)
@@ -145,7 +157,7 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
                 self._mode_to_mode_value.setdefault(ha_mode, _MODE_ALIASES[ha_mode][1])
 
         # Final mode list, ordered for a consistent UI.
-        ordered = [MODE_LOW, MODE_HIGH, MODE_AUTO, MODE_DRYER]
+        ordered = [MODE_LOW, MODE_MEDIUM, MODE_HIGH, MODE_AUTO, MODE_DRYER]
         self._attr_available_modes = [
             m for m in ordered if m in self._mode_to_work_mode
         ]
@@ -178,18 +190,26 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
 
     @property
     def target_humidity(self) -> int | None:
-        """Return the target humidity percentage (Auto mode only)."""
+        """Return the target humidity percentage.
+
+        For H7150-style devices the setpoint lives in the Auto-mode modeValue
+        and is only meaningful while in Auto. For H7152-style devices it lives
+        in the persistent ``range::humidity`` capability and applies regardless
+        of mode (issue #114).
+        """
         state = self.device_state
         if state is None:
             return None
-        auto_work_mode = self._mode_to_work_mode.get(MODE_AUTO)
-        if (
-            auto_work_mode is not None
-            and state.work_mode == auto_work_mode
-            and state.mode_value is not None
-        ):
-            return int(state.mode_value)
-        return None
+        if self._auto_modevalue_is_setpoint:
+            auto_work_mode = self._mode_to_work_mode.get(MODE_AUTO)
+            if (
+                auto_work_mode is not None
+                and state.work_mode == auto_work_mode
+                and state.mode_value is not None
+            ):
+                return int(state.mode_value)
+            return None
+        return state.configured_humidity
 
     # --------------------------------------------------------------------- #
     # Commands
@@ -232,14 +252,27 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
         )
 
     async def async_set_humidity(self, humidity: int) -> None:
-        """Set the target humidity — switches the device into Auto mode."""
+        """Set the target humidity.
+
+        H7150-style devices set it via the Auto-mode modeValue (WorkModeCommand);
+        H7152-style devices set it via the dedicated ``range::humidity``
+        capability (RangeCommand) — issue #114.
+        """
+        clamped = max(self._attr_min_humidity, min(self._attr_max_humidity, humidity))
+
+        if not self._auto_modevalue_is_setpoint and self._has_humidity_range:
+            await self.coordinator.async_control_device(
+                self._device_id,
+                RangeCommand(range_instance=INSTANCE_HUMIDITY, value=int(clamped)),
+            )
+            return
+
         auto_work_mode = self._mode_to_work_mode.get(MODE_AUTO)
         if auto_work_mode is None:
             raise ValueError(
                 f"{self._device.sku} does not support target-humidity (Auto) mode"
             )
 
-        clamped = max(self._attr_min_humidity, min(self._attr_max_humidity, humidity))
         await self.coordinator.async_control_device(
             self._device_id,
             WorkModeCommand(work_mode=auto_work_mode, mode_value=int(clamped)),

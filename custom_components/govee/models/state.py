@@ -199,6 +199,10 @@ class GoveeDeviceState:
     # ``mode_value`` above; the humidifier entity interprets it based on
     # ``work_mode``. Only the event flag needs its own field.
     water_full: bool | None = None  # Dehumidifier water-tank-full event
+    # Configured humidity setpoint from the range::humidity capability (H7152,
+    # issue #114). Distinct from the Auto-mode modeValue setpoint used by the
+    # H7150 — see GoveeDevice.auto_mode_value_is_setpoint.
+    configured_humidity: int | None = None
 
     # Standalone water-leak detector trip (H5054, issue #62). True when water
     # is detected. Arrives via the bodyAppearedEvent event capability — the
@@ -213,6 +217,17 @@ class GoveeDeviceState:
     )
     sensor_humidity: float | None = None  # Relative humidity 0-100 %
     battery: int | None = None  # Battery level 0-100 % (BFF thermo-hygrometers)
+
+    # Read-only air-quality index + filter remaining-life (%), for air-quality
+    # monitors and air purifiers (H5106/H7124/H7126, issue #114).
+    air_quality: int | None = None
+    filter_life: int | None = None
+
+    # Live state of generic toggle capabilities keyed by instance (e.g.
+    # ``socketToggle1`` on the H5089). Only populated when the API returns a
+    # real 0/1 value; toggles reported as "" on poll (e.g. mainLightToggle)
+    # stay absent and the entity uses optimistic state instead (issue #114).
+    toggles: dict[str, bool] = field(default_factory=dict)
 
     # Last activated scene (for restoring after music mode off)
     last_scene_id: str | None = None
@@ -270,6 +285,11 @@ class GoveeDeviceState:
                     self.brightness = (
                         parsed_brightness if parsed_brightness is not None else 100
                     )
+                elif instance == "humidity":
+                    # Dehumidifier configured setpoint (H7152, issue #114).
+                    parsed_humidity = _coerce_int(value)
+                    if parsed_humidity is not None:
+                        self.configured_humidity = parsed_humidity
 
             elif cap_type == "devices.capabilities.color_setting":
                 if instance == "colorRgb":
@@ -285,6 +305,13 @@ class GoveeDeviceState:
                     self.oscillating = bool(value)
                 elif instance == "dreamViewToggle":
                     self.dreamview_enabled = bool(value)
+                else:
+                    # Generic toggles (e.g. socketToggle1/2 on the H5089) that
+                    # report a live 0/1 value. Skip "" (offline / no value) so
+                    # the last-known state is preserved (issue #114).
+                    parsed_toggle = _coerce_int(value)
+                    if parsed_toggle is not None:
+                        self.toggles[instance] = bool(parsed_toggle)
 
             elif cap_type == "devices.capabilities.work_mode":
                 if instance == "workMode" and isinstance(value, dict):
@@ -313,6 +340,16 @@ class GoveeDeviceState:
                     parsed = _coerce_sensor_value(value, _SENSOR_HUMIDITY_STRUCT_KEYS)
                     if parsed is not None:
                         self.sensor_humidity = parsed
+                elif instance == "airQuality":
+                    # Read-only air-quality index (H5106/H7124/H7126, #114).
+                    parsed_aq = _coerce_int(value)
+                    if parsed_aq is not None:
+                        self.air_quality = parsed_aq
+                elif instance == "filterLifeTime":
+                    # Read-only remaining filter life % (air purifiers, #114).
+                    parsed_fl = _coerce_int(value)
+                    if parsed_fl is not None:
+                        self.filter_life = parsed_fl
 
             elif cap_type == "devices.capabilities.event":
                 # Event capabilities (e.g. waterFullEvent) report a boolean-
