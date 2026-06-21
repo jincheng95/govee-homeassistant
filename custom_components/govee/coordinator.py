@@ -809,6 +809,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     len(self._thermo_bff_devices),
                 )
 
+            # Battery is the one BFF field we DO apply for these thermometers:
+            # the Developer API never exposes it, and unlike tem/hum it's a plain
+            # 0-100 int with no gateway-dependent scale (#83 follow-up).
+            self._apply_bff_thermo_battery(thermo_readings)
+
             # Start the 5-min BFF poll if we have leak sensors OR thermometers
             # whose readings we refresh via the BFF tickle (#83).
             if self._leak_sensors or self._thermo_bff_devices:
@@ -817,6 +822,30 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         except Exception as err:
             _LOGGER.warning("Failed to discover leak sensors: %s", err)
             # Non-fatal: integration continues without leak sensors
+
+    def _apply_bff_thermo_battery(
+        self, thermo_readings: dict[str, dict[str, Any]]
+    ) -> None:
+        """Apply BFF-reported battery to BLE-bridged Developer-API thermometers.
+
+        The Developer API doesn't expose battery for these sensors (e.g. H5110
+        via an H5151/H5044 gateway), but the BFF ``deviceSettings`` carries it.
+        Unlike the BFF ``tem``/``hum`` (scale varies by gateway — used only as a
+        tickle, #102), battery is a plain 0-100 int, so it's safe to store.
+        Devices whose BFF entry has no battery are left untouched, so no battery
+        entity is created for them (issue #83).
+        """
+        for dev_id in set(thermo_readings) & set(self._devices):
+            battery = thermo_readings[dev_id].get("battery")
+            if battery is None:
+                continue
+            state = self._states.get(dev_id)
+            if state is None:
+                continue
+            try:
+                state.battery = int(battery)
+            except (TypeError, ValueError):
+                continue
 
     async def _discover_bff_thermometers(self) -> None:
         """Discover thermo-hygrometers (H5301) via the BFF device list (issue #86).
@@ -1039,13 +1068,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 (
                     sensor_data,
                     _hub_data,
-                    _thermo_readings,
+                    thermo_readings,
                 ) = await auth_client.fetch_bff_leak_sensors(
                     self._iot_credentials.token
                 )
         except Exception as err:
             _LOGGER.debug("BFF poll failed: %s", err)
             return
+
+        # Refresh BLE-bridged thermometer battery from the BFF data (#83). The
+        # tem/hum are still discarded (scale varies, #102) — battery only.
+        self._apply_bff_thermo_battery(thermo_readings)
 
         # Update state for each known sensor
         now_s = time.time()
@@ -1091,8 +1124,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # thermometers; the regular Developer poll picks up the fresh, correctly
         # scaled value. We deliberately do NOT apply the BFF `tem`/`hum` here —
         # its scale varies by gateway and a fixed divisor over-scaled humidity
-        # 10x on every BFF cycle (#102). The reading is discarded (`_thermo_
-        # readings`); the tickle alone is what these thermometers need (#83).
+        # 10x on every BFF cycle (#102). Only battery is applied (above), since
+        # it's plain 0-100 and absent from the Developer API (#83).
 
         # Notify leak sensor entities only (avoids churning unrelated
         # light / switch entities that also subscribe to the coordinator).

@@ -86,14 +86,15 @@ async def async_setup_entry(
             entities.append(GoveeFilterLifeSensor(coordinator, device))
         if device.supports_temperature_sensor or device.supports_humidity_sensor:
             entities.append(GoveeSensorReadingTimestampSensor(coordinator, device))
-        # BFF thermo-hygrometers carry a battery level in their settings payload
-        # (the Developer API never exposes these devices). Only create the
-        # entity when a battery reading is actually present, so SKUs without a
-        # battery field don't get a permanently-unknown sensor (issue #86).
-        if coordinator.is_bff_thermometer(device.device_id):
-            state = coordinator.get_state(device.device_id)
-            if state is not None and state.battery is not None:
-                entities.append(GoveeThermoBatterySensor(coordinator, device))
+        # Battery level from the BFF API, for either a BFF-synthesized
+        # thermo-hygrometer (H5301, #86) OR a Developer-API BLE-bridged
+        # thermometer whose battery the BFF carries but the Developer API does
+        # not (e.g. H5110 via H5151, #83). Only create the entity when a battery
+        # reading is actually present, so SKUs without one don't get a
+        # permanently-unknown sensor.
+        state = coordinator.get_state(device.device_id)
+        if state is not None and state.battery is not None:
+            entities.append(GoveeThermoBatterySensor(coordinator, device))
 
     # Register gateway hubs (leak + thermo) before async_add_entities so the
     # entities' `via_device` links resolve (must run after orphan-cleanup in

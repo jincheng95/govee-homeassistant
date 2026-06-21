@@ -436,3 +436,117 @@ class TestThermoDeviceInfoViaDevice:
     def test_no_via_device_when_not_bridged(self):
         info = self._device_info("")
         assert "via_device" not in info
+
+
+class TestDeveloperThermometerBattery:
+    """H5110-style Developer-API thermometers get battery from the BFF (#83).
+
+    Battery is absent from the Developer API for these BLE-bridged sensors but
+    present in the BFF deviceSettings; the coordinator applies it and the sensor
+    platform creates a battery entity when present.
+    """
+
+    def _thermo_device(self, did="AA:BB:CC:DD:EE:FF:51:10"):
+        from custom_components.govee.models import GoveeCapability, GoveeDevice
+        from custom_components.govee.models.device import (
+            CAPABILITY_PROPERTY,
+            DEVICE_TYPE_THERMOMETER,
+            INSTANCE_SENSOR_HUMIDITY,
+            INSTANCE_SENSOR_TEMPERATURE,
+        )
+
+        return GoveeDevice(
+            device_id=did,
+            sku="H5110",
+            name="Closet",
+            device_type=DEVICE_TYPE_THERMOMETER,
+            capabilities=(
+                GoveeCapability(CAPABILITY_PROPERTY, INSTANCE_SENSOR_TEMPERATURE, {}),
+                GoveeCapability(CAPABILITY_PROPERTY, INSTANCE_SENSOR_HUMIDITY, {}),
+            ),
+        )
+
+    def test_apply_bff_thermo_battery_sets_state(self):
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        state = GoveeDeviceState(device_id=did)
+        fake = SimpleNamespace(
+            _states={did: state}, _devices={did: self._thermo_device(did)}
+        )
+        GoveeCoordinator._apply_bff_thermo_battery(
+            fake, {did: {"tem": 2200, "hum": 500, "battery": 87}}
+        )
+        assert state.battery == 87
+
+    def test_apply_bff_thermo_battery_skips_when_absent(self):
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        state = GoveeDeviceState(device_id=did)
+        fake = SimpleNamespace(
+            _states={did: state}, _devices={did: self._thermo_device(did)}
+        )
+        GoveeCoordinator._apply_bff_thermo_battery(
+            fake, {did: {"tem": 2200, "hum": 500, "battery": None}}
+        )
+        assert state.battery is None
+
+    async def test_battery_sensor_created_when_battery_present(self):
+        from unittest.mock import MagicMock
+
+        from custom_components.govee import sensor as sensor_mod
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        device = self._thermo_device(did)
+        state = GoveeDeviceState(device_id=did)
+        state.battery = 87
+
+        coordinator = MagicMock()
+        coordinator.devices = {did: device}
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.is_bff_thermometer = MagicMock(return_value=False)  # Developer-API
+        coordinator.mqtt_client = None
+        coordinator.leak_sensors = {}
+        coordinator.register_thermo_hubs = MagicMock()
+        coordinator.register_leak_hubs = MagicMock()
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        added: list = []
+        await sensor_mod.async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
+
+        battery = [e for e in added if type(e).__name__ == "GoveeThermoBatterySensor"]
+        assert len(battery) == 1
+        assert battery[0].unique_id == f"{did}_battery"
+
+    async def test_no_battery_sensor_when_absent(self):
+        from unittest.mock import MagicMock
+
+        from custom_components.govee import sensor as sensor_mod
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        device = self._thermo_device(did)
+        state = GoveeDeviceState(device_id=did)  # battery None
+
+        coordinator = MagicMock()
+        coordinator.devices = {did: device}
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.is_bff_thermometer = MagicMock(return_value=False)
+        coordinator.mqtt_client = None
+        coordinator.leak_sensors = {}
+        coordinator.register_thermo_hubs = MagicMock()
+        coordinator.register_leak_hubs = MagicMock()
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        added: list = []
+        await sensor_mod.async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
+
+        assert not [e for e in added if type(e).__name__ == "GoveeThermoBatterySensor"]

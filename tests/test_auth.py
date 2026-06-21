@@ -1997,7 +1997,51 @@ class TestBffThermoReadings:
 
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
-        assert thermo == {did: {"tem": 2800, "hum": 393}}
+        assert thermo == {did: {"tem": 2800, "hum": 393, "battery": None}}
+
+    @pytest.mark.asyncio
+    async def test_thermo_battery_extracted_from_device_settings(self):
+        # H5110 battery lives in deviceSettings, not lastDeviceData (#83).
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        devices = [
+            {
+                "sku": "H5110",
+                "device": did,
+                "deviceName": "Closet",
+                "deviceExt": json.dumps(
+                    {
+                        "lastDeviceData": json.dumps({"tem": 2200, "hum": 500}),
+                        "deviceSettings": json.dumps({"battery": 87}),
+                    }
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
+
+        assert thermo == {did: {"tem": 2200, "hum": 500, "battery": 87}}
+
+    @pytest.mark.asyncio
+    async def test_thermo_reading_included_when_only_battery(self):
+        # A device with battery but no tem/hum is still tracked (#83).
+        did = "AA:BB:CC:DD:EE:FF:51:11"
+        devices = [
+            {
+                "sku": "H5110",
+                "device": did,
+                "deviceExt": json.dumps(
+                    {"deviceSettings": json.dumps({"battery": 42})}
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
+
+        assert thermo == {did: {"tem": None, "hum": None, "battery": 42}}
 
     @pytest.mark.asyncio
     async def test_leak_and_hub_and_bffonly_thermo_skus_excluded(self):

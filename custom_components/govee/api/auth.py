@@ -923,10 +923,25 @@ class GoveeAuthClient:
                         except (json.JSONDecodeError, TypeError):
                             ld = {}
                     ld = ld if isinstance(ld, dict) else {}
+                    # Battery lives in deviceSettings (same place the leak +
+                    # H5301 paths read it), NOT lastDeviceData. The Developer API
+                    # doesn't expose battery for these BLE-bridged thermometers
+                    # (H5110 via H5151), so the BFF list is the only source (#83).
+                    settings = device_ext.get("deviceSettings", {})
+                    if isinstance(settings, str):
+                        try:
+                            settings = json.loads(settings)
+                        except (json.JSONDecodeError, TypeError):
+                            settings = {}
+                    battery = settings.get("battery") if isinstance(settings, dict) else None
                     tem = ld.get("tem")
                     hum = ld.get("hum")
-                    if tem is not None or hum is not None:
-                        thermo_readings[device_id] = {"tem": tem, "hum": hum}
+                    if tem is not None or hum is not None or battery is not None:
+                        thermo_readings[device_id] = {
+                            "tem": tem,
+                            "hum": hum,
+                            "battery": battery,
+                        }
 
                 _LOGGER.info(
                     "Discovered %d leak sensors, %d hubs, %d thermo readings "
