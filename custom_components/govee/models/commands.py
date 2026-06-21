@@ -32,6 +32,7 @@ from .device import (
     INSTANCE_POWER,
     INSTANCE_SCENE,
     INSTANCE_SEGMENT_COLOR,
+    INSTANCE_SNAPSHOT,
     INSTANCE_TARGET_TEMPERATURE,
     INSTANCE_WORK_MODE,
 )
@@ -210,6 +211,29 @@ class DIYSceneCommand(DeviceCommand):
 
     def get_value(self) -> int:
         return self.scene_id
+
+
+@dataclass(frozen=True)
+class SnapshotCommand(DeviceCommand):
+    """Command to recall a saved device snapshot (issue #114).
+
+    Snapshots are a ``dynamic_scene`` instance whose option ``value`` (an
+    integer id, or occasionally a STRUCT) is sent verbatim — mirroring the
+    diyScene shape.
+    """
+
+    snapshot_value: Any  # raw option value: int id or STRUCT dict
+
+    @property
+    def capability_type(self) -> str:
+        return CAPABILITY_DYNAMIC_SCENE
+
+    @property
+    def instance(self) -> str:
+        return INSTANCE_SNAPSHOT
+
+    def get_value(self) -> Any:
+        return self.snapshot_value
 
 
 @dataclass(frozen=True)

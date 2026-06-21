@@ -18,11 +18,13 @@ from custom_components.govee.models import (
     GoveeDeviceState,
     ModeCommand,
     RangeCommand,
+    SnapshotCommand,
     ToggleCommand,
     WorkModeCommand,
 )
 from custom_components.govee.models.device import (
     CAPABILITY_COLOR_SETTING,
+    CAPABILITY_DYNAMIC_SCENE,
     CAPABILITY_EVENT,
     CAPABILITY_MODE,
     CAPABILITY_ON_OFF,
@@ -221,6 +223,11 @@ def _h1310() -> GoveeDevice:
             _cap(CAPABILITY_TOGGLE, "backgroundLightToggle"),
             _cap(CAPABILITY_TOGGLE, "fanToggle"),
             _cap(CAPABILITY_MODE, "fanSpeedMode"),
+            _cap(
+                CAPABILITY_DYNAMIC_SCENE,
+                "snapshot",
+                {"options": [{"name": "Ambient Light w/ Fan", "value": 3862070}]},
+            ),
         ),
     )
 
@@ -856,3 +863,103 @@ class TestNightlightPlatformWiring:
         assert "GoveeNightLightEntity" not in light_names
         assert "GoveeLightEntity" in light_names
         assert "GoveeNightLightSwitchEntity" in switch_names
+
+
+# --------------------------------------------------------------------------- #
+# Phase D — snapshots (dynamic_scene::snapshot)
+# --------------------------------------------------------------------------- #
+
+
+class TestSnapshotDeviceModel:
+    def test_supports_snapshots(self):
+        assert _h1310().supports_snapshots is True
+        assert _h5089().supports_snapshots is False
+
+    def test_get_snapshot_options(self):
+        opts = _h1310().get_snapshot_options()
+        assert opts == [{"name": "Ambient Light w/ Fan", "value": 3862070}]
+
+
+class TestSnapshotState:
+    def test_snapshot_parsed_when_present(self):
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_api(
+            {"capabilities": [{"type": CAPABILITY_DYNAMIC_SCENE, "instance": "snapshot", "state": {"value": 3862070}}]}
+        )
+        assert state.active_snapshot == 3862070
+
+    def test_empty_snapshot_value_ignored(self):
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_api(
+            {"capabilities": [{"type": CAPABILITY_DYNAMIC_SCENE, "instance": "snapshot", "state": {"value": ""}}]}
+        )
+        assert state.active_snapshot is None
+
+
+class TestSnapshotCommand:
+    def test_payload(self):
+        cmd = SnapshotCommand(snapshot_value=3862070)
+        payload = cmd.to_api_payload()
+        assert payload == {
+            "type": "devices.capabilities.dynamic_scene",
+            "instance": "snapshot",
+            "value": 3862070,
+        }
+
+
+class TestSnapshotSelect:
+    @pytest.fixture
+    def device(self):
+        return _h1310()
+
+    @pytest.fixture
+    def entity(self, device):
+        from custom_components.govee.select import GoveeSnapshotSelectEntity
+
+        state = GoveeDeviceState(device_id=device.device_id, online=True)
+        e = GoveeSnapshotSelectEntity(
+            _coordinator_with_state(device, state), device, device.get_snapshot_options()
+        )
+        e.async_write_ha_state = MagicMock()
+        return e
+
+    def test_options(self, entity):
+        assert entity.options == ["Ambient Light w/ Fan"]
+
+    def test_current_option_none_until_selected(self, entity):
+        assert entity.current_option is None
+
+    @pytest.mark.asyncio
+    async def test_select_sends_snapshot_command_and_tracks(self, entity):
+        await entity.async_select_option("Ambient Light w/ Fan")
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, SnapshotCommand)
+        assert cmd.snapshot_value == 3862070
+        # Optimistically tracked.
+        assert entity.current_option == "Ambient Light w/ Fan"
+
+
+class TestSnapshotPlatformWiring:
+    async def _setup_select(self, device, enable_scenes=True):
+        from custom_components.govee import select as select_mod
+
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        coordinator.async_get_scenes = AsyncMock(return_value=[])
+        coordinator.async_get_diy_scenes = AsyncMock(return_value=[])
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        entry.options = {"enable_scenes": enable_scenes, "enable_diy_scenes": False}
+        added: list = []
+        await select_mod.async_setup_entry(
+            MagicMock(), entry, lambda ents: added.extend(ents)
+        )
+        return [type(e).__name__ for e in added]
+
+    async def test_h1310_gets_snapshot_select(self):
+        names = await self._setup_select(_h1310())
+        assert "GoveeSnapshotSelectEntity" in names
+
+    async def test_snapshot_select_gated_on_enable_scenes(self):
+        names = await self._setup_select(_h1310(), enable_scenes=False)
+        assert "GoveeSnapshotSelectEntity" not in names

@@ -65,6 +65,10 @@ INSTANCE_COLOR_TEMP = "colorTemperatureK"
 INSTANCE_SEGMENT_COLOR = "segmentedColorRgb"
 INSTANCE_SCENE = "lightScene"
 INSTANCE_DIY = "diyScene"
+# Saved device "snapshots" — a third dynamic_scene instance whose named options
+# (e.g. "Ambient Light w/ Fan") are carried inline in the discovery capability
+# (issue #114). Re-adds support lost in the entities/ refactor.
+INSTANCE_SNAPSHOT = "snapshot"
 INSTANCE_NIGHT_LIGHT = "nightlightToggle"
 # Named light+colour scenes for an appliance's nightlight (H5089/H7124) — a
 # devices.capabilities.mode whose options carry the localized name + integer id
@@ -396,6 +400,27 @@ class GoveeDevice:
     def supports_diy_scenes(self) -> bool:
         """Check if device supports DIY scenes."""
         return any(cap.is_diy_scene for cap in self.capabilities)
+
+    @property
+    def supports_snapshots(self) -> bool:
+        """Check if device exposes saved snapshots (dynamic_scene::snapshot, #114)."""
+        return any(
+            cap.type == CAPABILITY_DYNAMIC_SCENE and cap.instance == INSTANCE_SNAPSHOT
+            for cap in self.capabilities
+        )
+
+    def get_snapshot_options(self) -> list[dict[str, Any]]:
+        """Extract snapshot options as {"name", "value"} dicts (issue #114).
+
+        Snapshots are carried inline in the device's dynamic_scene::snapshot
+        capability from /user/devices — no separate endpoint (the historical
+        /device/snapshots endpoint 404s).
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_DYNAMIC_SCENE and cap.instance == INSTANCE_SNAPSHOT:
+                options: list[dict[str, Any]] = cap.parameters.get("options", [])
+                return options
+        return []
 
     @property
     def supports_night_light(self) -> bool:

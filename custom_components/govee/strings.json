@@ -137,6 +137,9 @@
       "govee_scene_select": {
         "name": "Scene"
       },
+      "govee_snapshot_select": {
+        "name": "Snapshot"
+      },
       "govee_diy_scene_select": {
         "name": "DIY Scene"
       },

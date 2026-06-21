@@ -159,6 +159,7 @@ class GoveeDeviceState:
     active_scene: str | None = None
     active_scene_name: str | None = None  # Display name of active scene
     active_diy_scene: str | None = None  # DIY scene ID (separate from regular scenes)
+    active_snapshot: int | None = None  # Active saved snapshot id (issue #114)
     segments: list[SegmentState] = field(default_factory=list)
     diy_style: str | None = None  # DIY animation style (Fade, Jumping, etc.)
     diy_style_value: int | None = None  # DIY animation style numeric value (0-4)
@@ -359,6 +360,14 @@ class GoveeDeviceState:
                     parsed_fl = _coerce_int(value)
                     if parsed_fl is not None:
                         self.filter_life = parsed_fl
+
+            elif cap_type == "devices.capabilities.dynamic_scene":
+                if instance == "snapshot":
+                    # Saved snapshot recall (H1310 etc., #114). Often "" on
+                    # poll, so the select also tracks it optimistically.
+                    parsed_snap = _coerce_int(value)
+                    if parsed_snap is not None:
+                        self.active_snapshot = parsed_snap
 
             elif cap_type == "devices.capabilities.event":
                 # Event capabilities (e.g. waterFullEvent) report a boolean-

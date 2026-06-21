@@ -29,6 +29,7 @@ from .const import (
     SUFFIX_PRESET_SCENE_SELECT,
     SUFFIX_PURIFIER_MODE_SELECT,
     SUFFIX_SCENE_SELECT,
+    SUFFIX_SNAPSHOT_SELECT,
 )
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
@@ -37,6 +38,7 @@ from .models import (
     ModeCommand,
     MusicModeCommand,
     SceneCommand,
+    SnapshotCommand,
     WorkModeCommand,
 )
 from .models.device import (
@@ -112,6 +114,24 @@ async def async_setup_entry(
                     )
                 )
                 _LOGGER.debug("Created scene select entity for %s", device.name)
+
+        # Saved snapshots (e.g. H1310 "Ambient Light w/ Fan") — carried inline
+        # in the device capability, gated with regular scenes (issue #114).
+        if enable_scenes and device.supports_snapshots:
+            snapshot_options = device.get_snapshot_options()
+            if snapshot_options:
+                entities.append(
+                    GoveeSnapshotSelectEntity(
+                        coordinator=coordinator,
+                        device=device,
+                        options=snapshot_options,
+                    )
+                )
+                _LOGGER.debug(
+                    "Created snapshot select entity for %s with %d snapshots",
+                    device.name,
+                    len(snapshot_options),
+                )
 
         # DIY scenes and DIY style selector
         # Availability gated on MQTT at runtime (no REST endpoint for DIY)
@@ -717,6 +737,84 @@ class GoveeNightlightSceneSelectEntity(GoveeEntity, SelectEntity):
                 option,
                 value,
                 self._device.name,
+            )
+
+
+def _snapshot_id(value: Any) -> int | None:
+    """Normalize a snapshot option value to a comparable scalar id."""
+    if isinstance(value, dict):
+        raw = value.get("id") or value.get("paramId")
+    else:
+        raw = value
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+class GoveeSnapshotSelectEntity(GoveeEntity, SelectEntity):
+    """Govee snapshot select entity (issue #114).
+
+    Dropdown of saved device "snapshots" (e.g. the H1310's "Ambient Light w/
+    Fan"). Snapshot options live inline in the dynamic_scene::snapshot
+    capability; selecting one recalls it. Govee returns "" for the active
+    snapshot on poll, so the current option is tracked optimistically.
+    """
+
+    _attr_translation_key = "govee_snapshot_select"
+    _attr_icon = "mdi:camera-iris"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+        options: list[dict[str, Any]],
+    ) -> None:
+        """Initialize the snapshot select entity."""
+        super().__init__(coordinator, device)
+
+        self._option_map: dict[str, Any] = {}
+        option_names: list[str] = []
+        for opt in options:
+            name = opt.get("name", "")
+            value = opt.get("value")
+            if name and value is not None:
+                self._option_map[name] = value
+                option_names.append(name)
+
+        self._attr_options = option_names
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_SNAPSHOT_SELECT}"
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the active snapshot name from state, if known."""
+        state = self.coordinator.get_state(self._device_id)
+        if state and state.active_snapshot is not None:
+            for name, value in self._option_map.items():
+                if _snapshot_id(value) == state.active_snapshot:
+                    return name
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        """Recall the selected snapshot."""
+        if option not in self._option_map:
+            _LOGGER.warning("Unknown snapshot option: %s", option)
+            return
+
+        value = self._option_map[option]
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            SnapshotCommand(snapshot_value=value),
+        )
+        if success:
+            state = self.coordinator.get_state(self._device_id)
+            if state is not None:
+                state.active_snapshot = _snapshot_id(value)
+            self.async_write_ha_state()
+            _LOGGER.debug(
+                "Recalled snapshot '%s' on %s", option, self._device.name
             )
 
 
