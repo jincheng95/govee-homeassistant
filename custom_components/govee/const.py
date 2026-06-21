@@ -41,23 +41,13 @@ CONF_API_TEMPERATURE_UNIT: Final = "api_temperature_unit"
 #   H717A (smart kettle): reports its temperature in °F under the °C-tagged
 #     native unit, so 187°F surfaced as 187°C — impossible for a kettle (water
 #     boils at 100°C); real value ~86°C (issue #115).
+#   H5106 / H5140 (air-quality / CO₂ monitors): report °F as a plain float
+#     (e.g. 73.9°F ≈ 23.3°C), surfaced under the °C unit as a "wrong large
+#     value". Confirmed by reporter diagnostics (issue #116) — they are NOT
+#     centi-encoded, just Fahrenheit; same class as #72/#78/#96.
 FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
-    {"H5179", "H5109", "H5110", "HS5108", "HS5106", "H717A"}
+    {"H5179", "H5109", "H5110", "HS5108", "HS5106", "H717A", "H5106", "H5140"}
 )
-
-# SKUs whose sensorTemperature arrives centi-encoded (×100) over the
-# Developer-API / MQTT path — e.g. 23.4°C as the integer 2340 — without unit
-# metadata, unlike the H5179 family which sends an already-scaled float. The BFF
-# side-channel has its own de-scaler (api/auth.py:_bff_reading); this covers the
-# Developer-API/MQTT path for air-quality / CO₂ monitors (issue #116). Compared
-# case-insensitively against GoveeDevice.sku.
-CENTI_TEMPERATURE_SKUS: Final = frozenset({"H5106", "H5140"})
-
-# Above this absolute magnitude a CENTI_TEMPERATURE_SKUS reading is treated as
-# centi-encoded and divided by 100. Set well above any plausible ambient °C/°F
-# reading (~130°F in a hot garage) and far below centi room temps (~1500+), so a
-# value that is already scaled is never double-divided.
-CENTI_TEMPERATURE_THRESHOLD: Final = 200.0
 
 
 def resolve_fahrenheit_conversion(sku: str, api_unit: str) -> bool:
@@ -71,22 +61,6 @@ def resolve_fahrenheit_conversion(sku: str, api_unit: str) -> bool:
     if api_unit == "auto":
         return sku.upper() in FAHRENHEIT_REPORTING_SKUS
     return api_unit == "fahrenheit"
-
-
-def descale_centi_temperature(sku: str, value: float) -> float:
-    """De-scale a centi-encoded ``sensor_temperature`` for SKUs that report ×100.
-
-    Only applies to ``CENTI_TEMPERATURE_SKUS`` and only when the value's
-    magnitude clearly exceeds any real ambient reading, so an already-scaled
-    value is never double-divided (issue #116). Must run BEFORE any °F→°C
-    conversion so the magnitude guard sees the true number.
-    """
-    if (
-        sku.upper() in CENTI_TEMPERATURE_SKUS
-        and abs(value) >= CENTI_TEMPERATURE_THRESHOLD
-    ):
-        return value / 100.0
-    return value
 
 
 # Defaults
