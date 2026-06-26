@@ -1,15 +1,19 @@
-"""Tests for the pure LAN-transport models + helpers (issue #57).
+"""Tests for the LAN-transport models, helpers, and client (issue #57).
 
-Covers ``parse_dev_status`` (the four-field LAN data ceiling, with strict
-rejection of partial/garbage/wrong-command datagrams) and ``correlate_scan``
-(exact + hex-normalized device-id correlation, group skipping, no IP guessing,
-and unmatched accounting). All pure — no sockets, no Home Assistant.
+Covers the pure helpers ``parse_dev_status`` (the four-field LAN data ceiling,
+with strict rejection of partial/garbage/wrong-command datagrams) and
+``correlate_scan`` (exact + hex-normalized device-id correlation, group skipping,
+no IP guessing, and unmatched accounting), plus :class:`GoveeLanClient` —
+lifecycle/dual-socket design (LAN-008) and the read/send API + source-IP dispatch
+(LAN-009). The client tests use fake sockets/transports and drive the dispatch
+directly; they NEVER open a real socket or touch the network.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import socket
 
 import pytest
@@ -28,6 +32,11 @@ from custom_components.govee.models.state import RGBColor
 def _dev_status(**data):
     """Wrap ``data`` in the Govee ``devStatus`` reply envelope."""
     return {"msg": {"cmd": "devStatus", "data": data}}
+
+
+def _dev_status_bytes(**overrides):
+    """A complete devStatus reply envelope, JSON-encoded as an on-wire datagram."""
+    return json.dumps(_dev_status(**_full_data(**overrides))).encode("utf-8")
 
 
 def _full_data(**overrides):
@@ -641,20 +650,23 @@ class TestGoveeLanClientStart:
         _patch_sockets(monkeypatch, recv_sock, send_sock)
         endpoints = _patch_create_endpoint(monkeypatch)
 
-        received: list[tuple[str, bytes]] = []
-        client = GoveeLanClient(lambda ip, payload: received.append((ip, payload)))
+        # LAN-009: the client parses internally and only delivers PARSED,
+        # unsolicited devStatus pushes (no read in flight) to on_dev_status.
+        pushes: list[tuple[str, LanDevStatus]] = []
+        client = GoveeLanClient(lambda ip, status: pushes.append((ip, status)))
         await client.async_start([])
 
         # endpoints[0] is the receive (:4002 multicast) protocol, endpoints[1]
-        # the ephemeral send-socket (unicast reply) protocol — both forward.
+        # the ephemeral send-socket (unicast reply) protocol — a valid devStatus
+        # on EITHER reaches the dispatch and is delivered as a parsed push.
         recv_proto = endpoints[0][1]
         send_proto = endpoints[1][1]
-        recv_proto.datagram_received(b"multicast-push", ("10.0.0.5", 4002))
-        send_proto.datagram_received(b"unicast-reply", ("10.0.0.6", 4003))
+        recv_proto.datagram_received(_dev_status_bytes(brightness=40), ("10.0.0.5", 4002))
+        send_proto.datagram_received(_dev_status_bytes(brightness=60), ("10.0.0.6", 4003))
 
-        assert received == [
-            ("10.0.0.5", b"multicast-push"),
-            ("10.0.0.6", b"unicast-reply"),
+        assert pushes == [
+            ("10.0.0.5", LanDevStatus(True, 40, RGBColor(255, 0, 0), None)),
+            ("10.0.0.6", LanDevStatus(True, 60, RGBColor(255, 0, 0), None)),
         ]
 
     async def test_idempotent_start_is_a_noop(self, monkeypatch):
@@ -771,3 +783,267 @@ class TestGoveeLanClientStop:
         client = GoveeLanClient(lambda ip, payload: None)
         await client.async_stop()
         assert client.available is False
+
+
+# ==============================================================================
+# GoveeLanClient read/send API + source-IP dispatch (story LAN-009).
+#
+# Same fakes as the lifecycle tests. A "responder" is wired onto the fake SEND
+# transport so a simulated device answers a devStatus query INSTANTLY (the reply
+# is fed straight back through the client's own dispatch), which lets the async
+# read methods resolve without any real socket or timing dependence.
+# ==============================================================================
+
+
+def _raise_oserror(*_args, **_kwargs):
+    """A ``sendto`` stand-in that always raises ``OSError`` (unreachable host)."""
+    raise OSError("simulated send failure")
+
+
+def _wire_responder(client, replies):
+    """Make the fake send socket inject a devStatus reply when ``sendto`` fires.
+
+    ``replies`` maps a target IP to the raw reply bytes the "device" answers with
+    (or ``None`` for a silent device). When the client sends to an IP with a
+    non-``None`` reply, that reply is dispatched synchronously through the
+    client's own :meth:`_handle_datagram`, simulating an instant answer.
+    """
+    transport = client._send_transport
+    base = transport.sendto
+
+    def sendto(data, addr=None):
+        base(data, addr)
+        if addr is not None:
+            reply = replies.get(addr[0])
+            if reply is not None:
+                client._handle_datagram(addr[0], reply)
+
+    transport.sendto = sendto
+
+
+async def _start_client(monkeypatch, on_dev_status=None, replies=None):
+    """Build + start a client over fakes; return ``(client, pushes)``.
+
+    ``pushes`` is the list the default ``on_dev_status`` appends unsolicited
+    ``(ip, status)`` pushes to (unless ``on_dev_status`` is supplied). ``replies``,
+    when given, wires an instant-answering responder onto the send transport.
+    """
+    recv_sock = _FakeSocket()
+    send_sock = _FakeSocket()
+    _patch_sockets(monkeypatch, recv_sock, send_sock)
+    _patch_create_endpoint(monkeypatch)
+
+    pushes: list[tuple[str, LanDevStatus]] = []
+    callback = on_dev_status if on_dev_status is not None else (lambda ip, status: pushes.append((ip, status)))
+    client = GoveeLanClient(callback)
+    await client.async_start([])
+    if replies is not None:
+        _wire_responder(client, replies)
+    return client, pushes
+
+
+# ------------------------------------------------------------------------------
+# async_send_command — fire-and-forget unicast to <ip>:4003 from the send socket
+# ------------------------------------------------------------------------------
+
+
+class TestAsyncSendCommand:
+    """Build the envelope, send from the dedicated socket, True/False contract."""
+
+    async def test_builds_envelope_and_targets_command_port(self, monkeypatch):
+        client, _ = await _start_client(monkeypatch)
+
+        ok = await client.async_send_command("10.0.0.5", "turn", {"value": 1})
+
+        assert ok is True
+        data, addr = client._send_transport.sent[-1]
+        assert addr == ("10.0.0.5", lan_client.LAN_COMMAND_PORT)
+        assert json.loads(data.decode("utf-8")) == {"msg": {"cmd": "turn", "data": {"value": 1}}}
+
+    async def test_sends_from_the_dedicated_send_socket_only(self, monkeypatch):
+        # The unicast write must leave the ephemeral send socket, never the shared
+        # :4002 receive socket (critic blocking #4).
+        client, _ = await _start_client(monkeypatch)
+
+        await client.async_send_command("10.0.0.5", "devStatus", {})
+
+        assert len(client._send_transport.sent) == 1
+        assert client._recv_transport.sent == []
+
+    async def test_returns_false_on_sendto_oserror(self, monkeypatch):
+        client, _ = await _start_client(monkeypatch)
+        client._send_transport.sendto = _raise_oserror
+
+        assert await client.async_send_command("10.0.0.5", "turn", {"value": 0}) is False
+
+    async def test_returns_false_when_unavailable(self):
+        # A never-started client has no send transport — send is a no-op False.
+        client = GoveeLanClient(lambda ip, status: None)
+        assert await client.async_send_command("10.0.0.5", "turn", {}) is False
+
+
+# ------------------------------------------------------------------------------
+# async_read_one — one query, await one parsed reply from THAT ip
+# ------------------------------------------------------------------------------
+
+
+class TestAsyncReadOne:
+    """Returns the parsed reply, or None on timeout / send failure / unavailable."""
+
+    async def test_returns_parsed_reply_from_queried_ip(self, monkeypatch):
+        client, pushes = await _start_client(
+            monkeypatch, replies={"10.0.0.7": _dev_status_bytes(brightness=55)}
+        )
+
+        status = await client.async_read_one("10.0.0.7", timeout=0.5)
+
+        assert status == LanDevStatus(True, 55, RGBColor(255, 0, 0), None)
+        # A solicited reply must NOT also fire the unsolicited push callback.
+        assert pushes == []
+        # The in-flight read was cleaned up.
+        assert client._pending_reads == {}
+
+    async def test_returns_none_on_timeout(self, monkeypatch):
+        # No responder wired -> the queried device never answers.
+        client, _ = await _start_client(monkeypatch)
+
+        status = await client.async_read_one("10.0.0.5", timeout=0.02)
+
+        assert status is None
+        assert client._pending_reads == {}
+
+    async def test_returns_none_on_send_failure(self, monkeypatch):
+        client, _ = await _start_client(monkeypatch)
+        client._send_transport.sendto = _raise_oserror
+
+        status = await client.async_read_one("10.0.0.5", timeout=0.5)
+
+        assert status is None
+        assert client._pending_reads == {}
+
+    async def test_returns_none_when_unavailable(self):
+        client = GoveeLanClient(lambda ip, status: None)
+        assert await client.async_read_one("10.0.0.5", timeout=0.01) is None
+
+
+# ------------------------------------------------------------------------------
+# async_read_batch — one shared bounded window, only answering ips returned
+# ------------------------------------------------------------------------------
+
+
+class TestAsyncReadBatch:
+    """Collect replies for one shared window; return only the ips that answered."""
+
+    async def test_returns_only_ips_that_answered(self, monkeypatch):
+        client, pushes = await _start_client(
+            monkeypatch,
+            replies={
+                "10.0.0.1": _dev_status_bytes(brightness=10),
+                "10.0.0.3": _dev_status_bytes(brightness=30),
+            },
+        )
+
+        result = await client.async_read_batch(["10.0.0.1", "10.0.0.2", "10.0.0.3"], window=0.05)
+
+        assert set(result) == {"10.0.0.1", "10.0.0.3"}
+        assert result["10.0.0.1"].brightness_0_100 == 10
+        assert result["10.0.0.3"].brightness_0_100 == 30
+        # Solicited replies never double-dispatch to the push callback.
+        assert pushes == []
+        assert client._pending_reads == {}
+
+    async def test_total_wall_time_bounded_by_one_shared_window(self, monkeypatch):
+        # Eight silent ips share ONE window: total time ~= window, NOT 8 * window.
+        client, _ = await _start_client(monkeypatch)
+        ips = [f"10.0.0.{i}" for i in range(8)]
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        result = await client.async_read_batch(ips, window=0.1)
+        elapsed = loop.time() - start
+
+        assert result == {}
+        assert elapsed >= 0.09  # it did wait the shared window once
+        assert elapsed < 0.5  # but not once per ip (which would be ~0.8s)
+        assert client._pending_reads == {}
+
+    async def test_duplicate_ips_are_de_duplicated(self, monkeypatch):
+        client, _ = await _start_client(
+            monkeypatch, replies={"10.0.0.1": _dev_status_bytes(brightness=10)}
+        )
+
+        result = await client.async_read_batch(["10.0.0.1", "10.0.0.1"], window=0.05)
+
+        assert set(result) == {"10.0.0.1"}
+        # One query per unique ip, despite the duplicate in the input.
+        assert len(client._send_transport.sent) == 1
+        assert client._pending_reads == {}
+
+    async def test_empty_ips_returns_empty(self, monkeypatch):
+        client, _ = await _start_client(monkeypatch)
+        assert await client.async_read_batch([], window=0.01) == {}
+
+    async def test_returns_empty_when_unavailable(self):
+        client = GoveeLanClient(lambda ip, status: None)
+        assert await client.async_read_batch(["10.0.0.5"], window=0.01) == {}
+
+
+# ------------------------------------------------------------------------------
+# _handle_datagram — source-IP dispatch, solicited/unsolicited split, ignore
+# ------------------------------------------------------------------------------
+
+
+class TestSourceIpDispatch:
+    """Valid devStatus dispatched by source IP; garbage ignored; no double-fire."""
+
+    async def test_unsolicited_devstatus_goes_to_push_callback(self, monkeypatch):
+        # No read in flight for the source IP -> it is an external-change push.
+        client, pushes = await _start_client(monkeypatch)
+
+        client._handle_datagram("10.0.0.8", _dev_status_bytes(brightness=77))
+
+        assert pushes == [("10.0.0.8", LanDevStatus(True, 77, RGBColor(255, 0, 0), None))]
+
+    async def test_solicited_reply_routes_to_collector_not_push(self, monkeypatch):
+        # A read in flight for the IP claims its reply; the push must NOT also fire.
+        client, pushes = await _start_client(monkeypatch)
+        collector = lan_client._ReadCollector(asyncio.get_running_loop())
+        client._register_read("10.0.0.1", collector)
+
+        client._handle_datagram("10.0.0.1", _dev_status_bytes(brightness=11))
+
+        assert collector.future.done()
+        assert collector.future.result().brightness_0_100 == 11
+        assert pushes == []  # no double-dispatch
+        client._unregister_read("10.0.0.1", collector)
+
+    async def test_in_flight_read_isolates_other_ips_to_push(self, monkeypatch):
+        # While a read is in flight for IP A, an unsolicited reply from IP B (no
+        # read in flight) still goes to the push callback — correlation is by IP.
+        client, pushes = await _start_client(monkeypatch)
+        collector = lan_client._ReadCollector(asyncio.get_running_loop())
+        client._register_read("10.0.0.1", collector)
+
+        client._handle_datagram("10.0.0.1", _dev_status_bytes(brightness=11))
+        client._handle_datagram("10.0.0.2", _dev_status_bytes(brightness=22))
+
+        assert collector.future.result().brightness_0_100 == 11
+        assert pushes == [("10.0.0.2", LanDevStatus(True, 22, RGBColor(255, 0, 0), None))]
+        client._unregister_read("10.0.0.1", collector)
+
+    async def test_garbage_and_non_devstatus_are_ignored(self, monkeypatch):
+        client, pushes = await _start_client(monkeypatch)
+
+        client._handle_datagram("10.0.0.9", b"not-json-garbage{{{")
+        client._handle_datagram("10.0.0.9", json.dumps({"msg": {"cmd": "scan", "data": {}}}).encode("utf-8"))
+        client._handle_datagram("10.0.0.9", json.dumps({"msg": {"cmd": "devStatus", "data": {}}}).encode("utf-8"))
+
+        # None of these is a well-formed devStatus reply -> nothing dispatched.
+        assert pushes == []
+
+    async def test_unregister_unknown_ip_is_a_noop(self, monkeypatch):
+        # Defensive: unregistering an ip with no in-flight read must not raise.
+        client, _ = await _start_client(monkeypatch)
+        collector = lan_client._ReadCollector(asyncio.get_running_loop())
+        client._unregister_read("10.0.0.123", collector)
+        assert client._pending_reads == {}

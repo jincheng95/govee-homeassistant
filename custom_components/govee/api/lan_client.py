@@ -31,14 +31,17 @@ or sockets:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import socket
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ..const import LAN_READ_WINDOW, LAN_WRITE_CONFIRM_TIMEOUT
 from ..models.state import RGBColor
 from .lan import (
+    LAN_COMMAND_PORT,
     LAN_MULTICAST_TTL,
     LAN_RESPONSE_PORT,
     _build_socket,
@@ -300,10 +303,11 @@ class _RealtimeProtocol(asyncio.DatagramProtocol):
     instance can serve BOTH of :class:`GoveeLanClient`'s sockets (the group-joined
     :4002 socket carrying multicast scan responses + unsolicited multicast
     devStatus pushes, and the ephemeral send socket carrying the firmware's
-    unicast replies). Parsing (``parse_dev_status``) and dispatch live in a later
-    wave (LAN-009); keeping this protocol I/O-shaped only means the source-IP key
+    unicast replies). Parsing (``parse_dev_status``) and source-IP dispatch live
+    in :meth:`GoveeLanClient._handle_datagram`, which the client injects here as
+    ``on_datagram``; keeping this protocol I/O-shaped only means the source-IP key
     — the only device identity a devStatus reply carries — is preserved for the
-    callback to correlate.
+    handler to correlate.
     """
 
     def __init__(self, on_datagram: Callable[[str, bytes], None]) -> None:
@@ -319,13 +323,47 @@ class _RealtimeProtocol(asyncio.DatagramProtocol):
         _LOGGER.debug("LAN realtime socket error: %s", exc)
 
 
+class _ReadCollector:
+    """A single in-flight solicited read awaiting a devStatus reply for one IP.
+
+    A read (``async_read_one`` / one entry of ``async_read_batch``) registers a
+    collector under the queried IP. When the persistent dispatch sees a valid
+    devStatus from that source IP it calls :meth:`deliver`, which resolves the
+    collector's future with the parsed status. The future also lets
+    ``async_read_one`` return the instant the reply lands instead of waiting out
+    its whole timeout. The FIRST reply wins; later duplicates for the same IP are
+    ignored so a chatty device cannot overwrite an already-collected value.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Create the future the queried IP's reply will resolve."""
+        self.future: asyncio.Future[LanDevStatus] = loop.create_future()
+
+    def deliver(self, status: LanDevStatus) -> None:
+        """Resolve the future with ``status`` unless it is already resolved."""
+        if not self.future.done():
+            self.future.set_result(status)
+
+
 class GoveeLanClient:
     """Persistent, coordinator-owned Govee LAN (UDP) transport client (issue #57).
 
-    Story LAN-008 implements ONLY the lifecycle, the dual-socket design and the
-    datagram-forwarding protocol. The public read/send surface
-    (``async_read_batch`` / ``async_read_one`` / ``async_send_command``) plus the
-    parse-and-dispatch wiring arrive in a later wave (LAN-009).
+    Story LAN-008 implemented the lifecycle, the dual-socket design and the
+    datagram-forwarding protocol. Story LAN-009 adds the read/send surface
+    (``async_send_command`` / ``async_read_batch`` / ``async_read_one``) and the
+    parse-and-dispatch wiring: every inbound datagram is parsed once via
+    ``parse_dev_status`` and, for a VALID devStatus, dispatched keyed by the
+    datagram SOURCE IP — the only device identity a devStatus reply carries.
+
+    Source-IP dispatch + solicited/unsolicited split (:meth:`_handle_datagram`):
+
+    - While a solicited read (``async_read_batch`` / ``async_read_one``) is in
+      flight for a given IP, that IP's reply is routed to the read's collector and
+      is NOT forwarded to the unsolicited push callback (no double-dispatch).
+    - A devStatus from an IP with NO read in flight is an unsolicited push (an
+      external change) and is delivered to ``on_dev_status`` for the coordinator
+      to apply in a later wave.
+    - A garbage / non-devStatus / scan datagram is parsed to ``None`` and ignored.
 
     Dual-socket design (critic blocking #4 — a single co-bound :4002 socket would
     have its unicast devStatus replies load-balanced ~50/50 with HA's official
@@ -348,28 +386,38 @@ class GoveeLanClient:
 
     Usage::
 
-        client = GoveeLanClient(on_datagram)
+        client = GoveeLanClient(on_dev_status)
         await client.async_start(interface_ips)
         if client.available:
-            ...  # later waves read/send through the sockets
+            statuses = await client.async_read_batch(["10.0.0.5"])
+            ok = await client.async_send_command("10.0.0.5", "turn", {"value": 1})
         await client.async_stop()
     """
 
-    def __init__(self, on_datagram: Callable[[str, bytes], None]) -> None:
+    def __init__(self, on_dev_status: Callable[[str, LanDevStatus], None]) -> None:
         """Initialize the client.
 
         Args:
-            on_datagram: Synchronous callback ``(source_ip, raw_payload)`` invoked
-                for every datagram received on EITHER socket. Parsing and dispatch
-                are the callback's responsibility (wired in LAN-009).
+            on_dev_status: Synchronous callback ``(source_ip, status)`` invoked for
+                every UNSOLICITED devStatus push — a valid devStatus from an IP
+                with no solicited read in flight. The client parses every datagram
+                itself; the callback receives only parsed, already-correlated
+                pushes (the coordinator wires this in a later wave to apply
+                real-time external-change pushes). Replies that satisfy an
+                in-flight read are routed to that read instead and never fire this
+                callback.
         """
-        self._on_datagram = on_datagram
+        self._on_dev_status = on_dev_status
         self._available = False
         self._recv_sock: socket.socket | None = None
         self._send_sock: socket.socket | None = None
         self._recv_transport: asyncio.DatagramTransport | None = None
         self._send_transport: asyncio.DatagramTransport | None = None
         self._joined: list[str] = []
+        # Solicited reads in flight, keyed by queried source IP. A list per IP
+        # tolerates a batch read and a one-off read overlapping on the same IP;
+        # both collectors receive the reply. Empty when no read is outstanding.
+        self._pending_reads: dict[str, list[_ReadCollector]] = {}
 
     @property
     def available(self) -> bool:
@@ -428,10 +476,10 @@ class GoveeLanClient:
 
         try:
             recv_transport, _ = await loop.create_datagram_endpoint(
-                lambda: _RealtimeProtocol(self._on_datagram), sock=recv_sock
+                lambda: _RealtimeProtocol(self._handle_datagram), sock=recv_sock
             )
             send_transport, _ = await loop.create_datagram_endpoint(
-                lambda: _RealtimeProtocol(self._on_datagram), sock=send_sock
+                lambda: _RealtimeProtocol(self._handle_datagram), sock=send_sock
             )
         except OSError as err:
             _LOGGER.warning("Govee LAN transport disabled: could not attach datagram endpoint: %s", err)
@@ -475,3 +523,166 @@ class GoveeLanClient:
 
         self._recv_sock = None
         self._send_sock = None
+
+    # ------------------------------------------------------------------ #
+    # Parse-and-dispatch (the persistent receive path, story LAN-009)
+    # ------------------------------------------------------------------ #
+
+    def _handle_datagram(self, src_ip: str, raw: bytes) -> None:
+        """Parse one inbound datagram and dispatch a valid devStatus by source IP.
+
+        Injected as the ``on_datagram`` callback of BOTH sockets'
+        :class:`_RealtimeProtocol`, so it sees every datagram the client receives.
+        The datagram is JSON-decoded and run through ``parse_dev_status``; anything
+        that is not a well-formed devStatus reply (scan responses, ``status``
+        replies, the empty-query echo, garbage bytes) parses to ``None`` and is
+        silently ignored.
+
+        A valid devStatus is dispatched keyed by ``src_ip`` — the only device
+        identity a devStatus carries. If a solicited read is in flight for that IP
+        the reply belongs to it and is routed there WITHOUT also firing the
+        unsolicited push callback (no double-dispatch); otherwise it is an
+        unsolicited push delivered to ``on_dev_status``.
+
+        Args:
+            src_ip: The datagram's source IP address.
+            raw: The raw datagram bytes.
+        """
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            return  # undecodable bytes — not a devStatus, ignore
+        status = parse_dev_status(payload)
+        if status is None:
+            return  # scan/status/garbage/partial — never fabricate state
+
+        collectors = self._pending_reads.get(src_ip)
+        if collectors:
+            # Solicited: route to the in-flight read(s) for this IP and do NOT
+            # also fire the unsolicited push callback (avoids double-dispatch).
+            for collector in list(collectors):
+                collector.deliver(status)
+            return
+        # Unsolicited push: an external change with no read awaiting this IP.
+        self._on_dev_status(src_ip, status)
+
+    def _register_read(self, ip: str, collector: _ReadCollector) -> None:
+        """Mark ``collector`` as awaiting a solicited reply from ``ip``."""
+        self._pending_reads.setdefault(ip, []).append(collector)
+
+    def _unregister_read(self, ip: str, collector: _ReadCollector) -> None:
+        """Remove ``collector`` from ``ip``'s in-flight list, pruning empties."""
+        collectors = self._pending_reads.get(ip)
+        if not collectors:
+            return
+        if collector in collectors:
+            collectors.remove(collector)
+        if not collectors:
+            del self._pending_reads[ip]
+
+    # ------------------------------------------------------------------ #
+    # Public read/send surface (story LAN-009)
+    # ------------------------------------------------------------------ #
+
+    async def async_send_command(self, ip: str, cmd: str, data: dict[str, Any]) -> bool:
+        """Fire-and-forget a single LAN command at ``<ip>:4003``.
+
+        Builds ``{"msg": {"cmd": cmd, "data": data}}`` and sends it from the
+        DEDICATED EPHEMERAL send socket — never the shared :4002 receive socket —
+        so the firmware's unicast reply comes back to a port this integration
+        solely owns (critic blocking #4). This is fire-and-forget: it does not
+        wait for or confirm a reply.
+
+        Args:
+            ip: The device's LAN IP address.
+            cmd: The Govee LAN command verb (e.g. ``"devStatus"``, ``"turn"``).
+            data: The command's ``data`` payload (``{}`` for a status query).
+
+        Returns:
+            ``True`` iff the datagram was handed to the socket without an
+            ``OSError``; ``False`` (logged at debug) when the client is
+            unavailable or ``sendto`` raised ``OSError``.
+        """
+        if not self._available or self._send_transport is None:
+            return False
+        message = json.dumps({"msg": {"cmd": cmd, "data": data}}).encode("utf-8")
+        try:
+            self._send_transport.sendto(message, (ip, LAN_COMMAND_PORT))
+        except OSError as err:
+            _LOGGER.debug("LAN send %s to %s:%d failed: %s", cmd, ip, LAN_COMMAND_PORT, err)
+            return False
+        return True
+
+    async def async_read_one(self, ip: str, timeout: float = LAN_WRITE_CONFIRM_TIMEOUT) -> LanDevStatus | None:
+        """Send one devStatus query to ``ip`` and await a parsed reply from it.
+
+        Registers a collector for ``ip`` BEFORE sending so a fast reply is never
+        missed, sends the query, and waits up to ``timeout`` for the dispatch to
+        resolve the collector with a parsed devStatus from that same IP. Used by
+        the coordinator's verify-by-read write confirm (a later wave).
+
+        Args:
+            ip: The device's LAN IP address.
+            timeout: Seconds to wait for the reply before giving up.
+
+        Returns:
+            The parsed :class:`LanDevStatus` from ``ip``, or ``None`` on timeout,
+            send failure, or when the client is unavailable.
+        """
+        if not self._available:
+            return None
+        loop = asyncio.get_running_loop()
+        collector = _ReadCollector(loop)
+        self._register_read(ip, collector)
+        try:
+            if not await self.async_send_command(ip, "devStatus", {}):
+                return None
+            return await asyncio.wait_for(collector.future, timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._unregister_read(ip, collector)
+
+    async def async_read_batch(self, ips: list[str], window: float = LAN_READ_WINDOW) -> dict[str, LanDevStatus]:
+        """Query every IP once and collect replies over ONE shared window.
+
+        Sends a devStatus query to each unique IP, then collects replies for a
+        single bounded ``window`` shared across all of them, so total wall time is
+        bounded by ``window`` regardless of ``len(ips)``. Each reply is routed by
+        source IP to its collector by the persistent dispatch; only IPs that
+        answered with a valid devStatus appear in the result.
+
+        Args:
+            ips: The LAN IPs to query (duplicates are de-duplicated).
+            window: Seconds to collect replies (shared across all IPs).
+
+        Returns:
+            ``{source_ip: LanDevStatus}`` for the IPs that answered within the
+            window. Empty when the client is unavailable or ``ips`` is empty.
+        """
+        result: dict[str, LanDevStatus] = {}
+        if not self._available or not ips:
+            return result
+
+        loop = asyncio.get_running_loop()
+        collectors: dict[str, _ReadCollector] = {}
+        for ip in ips:
+            if ip in collectors:
+                continue  # de-dupe: one collector/registration per IP
+            collector = _ReadCollector(loop)
+            collectors[ip] = collector
+            self._register_read(ip, collector)
+
+        try:
+            for ip in collectors:
+                await self.async_send_command(ip, "devStatus", {})
+            # One shared window: wait the full duration so the wall time is bounded
+            # by ``window`` and independent of how many IPs reply (or don't).
+            await asyncio.sleep(window)
+            for ip, collector in collectors.items():
+                if collector.future.done():
+                    result[ip] = collector.future.result()
+        finally:
+            for ip, collector in collectors.items():
+                self._unregister_read(ip, collector)
+        return result
