@@ -88,6 +88,37 @@ OPTIMISTIC_GRACE_CAP_SECONDS: Final = 15
 # appears within this window without a manual reload.
 DEVICE_REDISCOVERY_INTERVAL: Final = 300
 
+# LAN transport constants (issue #57)
+# Runtime tuning for the local UDP (:4002/:4003) transport. These are NOT
+# user-facing options — the only LAN option is CONF_LAN_TARGETS (above), which
+# feeds extra cross-VLAN unicast scan targets. LAN auto-enables when a device
+# answers the discovery scan and its scan MAC correlates to a coordinator
+# device_id; there is no enable toggle.
+#
+# Wall-clock window (seconds) for one shared solicited read-batch collection.
+# Bounds how long async_read_batch waits to gather devStatus replies.
+LAN_READ_WINDOW: Final = 1.0
+# Timeout (seconds) for the verify-by-read confirm after a LAN write. A reply
+# within this window confirms the write; otherwise the command falls through
+# to MQTT/REST so a device is never stranded.
+LAN_WRITE_CONFIRM_TIMEOUT: Final = 0.5
+# How often (seconds) to re-run the LAN discovery scan and re-correlate scan
+# MACs to device_ids. Re-promotes demoted devices and picks up new ones / IP
+# reassignments. Mirrors DEVICE_REDISCOVERY_INTERVAL throttling.
+LAN_RESCAN_INTERVAL: Final = 300
+# Consecutive solicited-read misses before a device is demoted out of the LAN
+# device map so both reads and writes fall back to MQTT/REST.
+LAN_READ_MISS_DEMOTE_THRESHOLD: Final = 3
+# Age (seconds) past which a device's last successful LAN exchange is treated as
+# stale, marking its 'lan' transport health unavailable. Set just above the 60s
+# default poll so a single missed poll is tolerated.
+LAN_STALE_SECONDS: Final = 90
+# Time-to-live (seconds) for a scan MAC↔IP correlation. A devStatus read is only
+# applied for an IP whose correlation is fresher than this, guarding against
+# DHCP IP reassignment mis-routing a read to the wrong device. Kept at or above
+# LAN_RESCAN_INTERVAL so a correlation stays valid across a full rescan cycle.
+LAN_CORRELATION_TTL_SECONDS: Final = 600
+
 # BLE constants
 # Govee AWS/BLE advert manufacturer ID. Verified against
 # Bluetooth-Devices/govee-ble (used by H5127 and related). Additional IDs

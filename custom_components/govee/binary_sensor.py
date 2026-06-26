@@ -1,7 +1,8 @@
 """Binary sensor platform for Govee integration.
 
 Exposes per-device connectivity status for each transport (Cloud REST
-API, AWS IoT MQTT, direct BLE) as CONNECTIVITY diagnostic entities.
+API, AWS IoT MQTT, direct BLE, local LAN) as CONNECTIVITY diagnostic
+entities.
 
 Also provides leak sensor binary sensors:
 - Moisture detection (real-time via MQTT multiSync)
@@ -48,6 +49,7 @@ _TRANSPORT_SPECS: tuple[tuple[TransportKind, str, str], ...] = (
     ("cloud_api", "cloud_api_connectivity", "mdi:cloud"),
     ("mqtt", "mqtt_connectivity", "mdi:cloud-sync"),
     ("ble", "ble_connectivity", "mdi:bluetooth"),
+    ("lan", "lan_connectivity", "mdi:lan"),
 )
 
 

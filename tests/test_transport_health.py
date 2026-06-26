@@ -9,6 +9,7 @@ import pytest
 
 from custom_components.govee.coordinator import GoveeCoordinator
 from custom_components.govee.models import (
+    TRANSPORT_KINDS,
     GoveeDeviceState,
     PowerCommand,
     TransportHealth,
@@ -244,3 +245,48 @@ class TestSegmentLockInit:
         coord = _bare_coordinator()
         coord._segment_locks = {}  # defensive — also set by real __init__
         assert isinstance(coord._segment_locks, dict)
+
+
+class TestLanTransportKind:
+    """The 'lan' transport kind is auto-provisioned alongside the others."""
+
+    def test_lan_in_transport_kinds(self):
+        assert "lan" in TRANSPORT_KINDS
+
+    def test_ensure_provisions_lan_entry(self):
+        tracker = TransportHealthTracker()
+        tracker.ensure("dev1")
+        health = tracker.get("dev1", "lan")
+        assert health is not None
+        assert isinstance(health, TransportHealth)
+        assert health.transport == "lan"
+
+    def test_lan_entry_defaults_unavailable(self):
+        tracker = TransportHealthTracker()
+        tracker.ensure("dev1")
+        health = tracker.get("dev1", "lan")
+        assert health is not None
+        assert health.is_available is False
+        assert health.last_success_ts is None
+        assert health.last_send_ts is None
+        assert health.last_failure_ts is None
+
+    def test_ensure_provisions_every_kind_including_lan(self):
+        tracker = TransportHealthTracker()
+        tracker.ensure("dev1")
+        for kind in TRANSPORT_KINDS:
+            assert tracker.get("dev1", kind) is not None
+
+    def test_lan_health_records_success(self):
+        tracker = TransportHealthTracker()
+        tracker.record_success("dev1", "lan")
+        health = tracker.get("dev1", "lan")
+        assert health is not None
+        assert health.is_available is True
+        assert health.last_success_ts is not None
+
+    def test_coordinator_provisions_lan_via_ensure(self):
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock()
+        coord._ensure_transport_health("dev1")
+        assert coord.get_transport_health("dev1", "lan") is not None

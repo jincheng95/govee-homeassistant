@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 # Candidate keys a thermometer/hygrometer reading may hide behind. The Govee
 # state shape varies by SKU and transport: REST returns either a plain number
@@ -140,6 +140,26 @@ class SegmentState:
         color = RGBColor.from_dict(data.get("color", {}))
         brightness = data.get("brightness", 100)
         return cls(index=index, color=color, brightness=brightness)
+
+
+class LanDevStatusLike(Protocol):
+    """Structural shape of a parsed Govee LAN ``devStatus`` reply.
+
+    Declared here — rather than imported from :mod:`..api.lan_client` — so the
+    state model stays free of API-layer imports and no import cycle forms. Any
+    object exposing these four read-only fields satisfies it (the coordinator's
+    ``LanDevStatus`` does).
+
+    The Govee LAN protocol exposes only four readable fields, so this is the
+    full data ceiling. ``brightness`` is DEVICE-NATIVE: the caller rescales the
+    raw LAN 0-100 value into the device's brightness range before the overlay,
+    and the entity layer handles any native↔0-255 conversion.
+    """
+
+    on: bool | None
+    brightness: int | None
+    color: RGBColor | None
+    color_temp_kelvin: int | None
 
 
 @dataclass
@@ -462,6 +482,93 @@ class GoveeDeviceState:
         # A confirmed push ends the optimistic grace window — from this point
         # on API polls are authoritative again for power/brightness.
         self.clear_optimistic_window()
+
+    def update_from_lan(
+        self, data: LanDevStatusLike, *, skip_power_brightness: bool = False
+    ) -> None:
+        """Overlay a Govee LAN ``devStatus`` reply onto the existing state.
+
+        A hardened sibling of :meth:`update_from_mqtt`. The Govee LAN protocol
+        exposes only four readable fields (onOff, brightness 0-100, color RGB,
+        colorTemInKelvin), so this method mutates ONLY ``power_state`` /
+        ``brightness`` / ``color`` / ``color_temp_kelvin`` and leaves every
+        other field (scenes, segments, sensors, heater, music, …) untouched by
+        simply not referencing it — the same in-place mechanism that keeps the
+        MQTT overlay safe.
+
+        Unlike the MQTT overlay it applies three guards the LAN data ceiling
+        forces:
+
+        * **Mode-aware** — while a scene, DIY scene, music mode, or DreamView
+          is active, ``color``/``color_temp_kelvin`` are NOT written (and
+          brightness is skipped too). LAN reports the live, non-zero per-frame
+          RGB of a running effect, so writing it would churn the color
+          attribute and flip the color mode every poll even though
+          ``active_scene`` itself is preserved. Color/CT are only adopted in a
+          plain RGB/CT mode.
+        * **{0,0,0} sentinel** — an incoming color that packs to 0 never
+          overwrites a real, non-zero ``color`` (mirrors the cloud-poll guard).
+        * **color/color_temp mutual exclusion** — ``devStatus`` carries both,
+          so a non-zero ``colorTemInKelvin`` adopts color temp and clears
+          ``color``; otherwise a non-zero color adopts ``color`` and clears
+          color temp. This stops per-poll RGB↔CT flapping.
+
+        Brightness is written DEVICE-NATIVE; the caller rescales the LAN 0-100
+        value into the device's brightness range before calling.
+
+        Args:
+            data: Parsed LAN ``devStatus`` exposing ``on`` (bool|None),
+                ``brightness`` (device-native int|None), ``color``
+                (RGBColor|None), and ``color_temp_kelvin`` (int|None).
+            skip_power_brightness: When True (the coordinator's optimistic
+                grace window) skip writing power/brightness AND preserve the
+                in-flight optimistic window — ``clear_optimistic_window`` is
+                NOT called.
+        """
+        # A devStatus reply is direct proof of life, mirroring update_from_mqtt
+        # and the BLE online-flip — flip availability immediately.
+        self.source = "lan"
+        self.online = True
+
+        # An active effect (scene/DIY/music/DreamView) means the readable
+        # color/brightness no longer describe a static state — only power stays
+        # meaningful, so skip the rest to avoid per-poll churn.
+        in_effect = bool(
+            self.active_scene
+            or self.active_diy_scene
+            or self.music_mode_enabled
+            or self.dreamview_enabled
+        )
+
+        if not skip_power_brightness:
+            if data.on is not None:
+                self.power_state = data.on
+            # Brightness is meaningless mid-effect, so only adopt it in a plain
+            # mode (and never during the optimistic grace window above).
+            if not in_effect and data.brightness is not None:
+                self.brightness = data.brightness
+
+        # Color / color temp are only trustworthy in a plain RGB/CT mode.
+        if not in_effect:
+            ct = data.color_temp_kelvin
+            incoming_color = data.color
+            if ct is not None and ct > 0:
+                # CT mode: adopt color temp, clear RGB (mutual exclusion).
+                self.color_temp_kelvin = ct
+                self.color = None
+            elif incoming_color is not None and incoming_color.as_packed_int != 0:
+                # RGB mode: adopt color, clear CT (mutual exclusion).
+                self.color = incoming_color
+                self.color_temp_kelvin = None
+            # else: incoming color is absent or the {0,0,0} sentinel — leave the
+            # existing color/color_temp untouched so a transient 0 frame can't
+            # erase a real color.
+
+        # Outside the grace window a confirmed read is authoritative again, so
+        # end the optimistic period (matches update_from_mqtt). During grace,
+        # leave it intact so an in-flight command isn't prematurely overwritten.
+        if not skip_power_brightness:
+            self.clear_optimistic_window()
 
     def apply_optimistic_power(self, power_on: bool) -> None:
         """Apply optimistic power state update."""

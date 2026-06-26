@@ -248,6 +248,9 @@
       "ble_connectivity": {
         "name": "Bluetooth"
       },
+      "lan_connectivity": {
+        "name": "LAN"
+      },
       "govee_water_full": {
         "name": "Water Tank Full"
       },

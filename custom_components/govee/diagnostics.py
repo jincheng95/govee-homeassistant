@@ -15,7 +15,12 @@ from datetime import datetime
 from ipaddress import IPv4Address, IPv4Network
 from typing import Any
 
-from homeassistant.components import network
+# LAN source-IP enumeration now lives in api/lan.async_get_lan_interface_ips, but
+# the ``network`` module is still imported here so its attributes resolve under
+# ``custom_components.govee.diagnostics.network`` (the patch point existing tests
+# monkeypatch). It is the same shared module object the hoisted helper calls, so
+# patches applied here still take effect there.
+from homeassistant.components import network  # noqa: F401
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -23,6 +28,7 @@ from homeassistant.helpers.device_registry import DeviceEntry
 
 from .api.lan import (
     LanTargetError,
+    async_get_lan_interface_ips,
     async_probe_lan_raw,
     async_scan_lan_devices,
     expand_lan_targets,
@@ -279,18 +285,15 @@ def _classify_ip(ip: IPv4Address) -> str:
 async def _lan_source_interfaces(hass: HomeAssistant) -> tuple[list[str], list[str]]:
     """Return the host's enabled IPv4 LAN source IPs and their coarse classes.
 
-    Uses HA's network component so a multi-homed host scans on every adapter.
-    Never raises — degrades to an empty list (default-route scan) on any error.
+    Delegates the actual enumeration to the shared
+    :func:`async_get_lan_interface_ips` helper (also used by the LAN transport
+    client, issue #57) so there is a single implementation, then layers on the
+    diagnostics-only coarse classification via :func:`_classify_ip` — the host's
+    real IPs are never rendered, only their privacy-safe buckets. Never raises;
+    an empty list means "default-route scan".
     """
-    ips: list[str] = []
-    classes: list[str] = []
-    try:
-        for source_ip in await network.async_get_enabled_source_ips(hass):
-            if isinstance(source_ip, IPv4Address) and not source_ip.is_loopback:
-                ips.append(str(source_ip))
-                classes.append(_classify_ip(source_ip))
-    except Exception as err:  # network component unavailable — fall back
-        _LOGGER.debug("LAN discovery: could not enumerate source IPs: %s", err)
+    ips = await async_get_lan_interface_ips(hass)
+    classes = [_classify_ip(IPv4Address(ip)) for ip in ips]
     return ips, classes
 
 

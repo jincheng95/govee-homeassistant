@@ -9,6 +9,7 @@ from custom_components.govee.models import (
     GoveeDeviceState,
     GoveeCapability,
     RGBColor,
+    SegmentState,
     PowerCommand,
     BrightnessCommand,
     ColorCommand,
@@ -38,6 +39,22 @@ from custom_components.govee.models.device import (
     INSTANCE_HDMI_SOURCE,
     INSTANCE_DREAMVIEW,
 )
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FakeLanStatus:
+    """Minimal LanDevStatus-like object for update_from_lan tests.
+
+    Mirrors the four-field LAN data ceiling (onOff, device-native brightness,
+    color, colorTemInKelvin) without importing the api layer.
+    """
+
+    on: bool | None = None
+    brightness: int | None = None
+    color: RGBColor | None = None
+    color_temp_kelvin: int | None = None
+
 
 # ==============================================================================
 # RGBColor Tests
@@ -973,6 +990,216 @@ class TestGoveeDeviceState:
         state.color = RGBColor(0, 0, 0)
         state.apply_optimistic_diy_scene("456")
         assert state.last_color is None
+
+    # --------------------------------------------------------------------------
+    # update_from_lan — mode-aware partial overlay (Sprint 6, LAN issue #57)
+    # --------------------------------------------------------------------------
+
+    def test_lan_sets_source_and_online(self):
+        """A devStatus reply is proof of life: source=lan, online=True."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.online = False  # simulate stale cloud "offline"
+        state.source = "api"
+
+        state.update_from_lan(FakeLanStatus(on=True))
+
+        assert state.source == "lan"
+        assert state.online is True
+
+    def test_lan_writes_only_the_four_readable_fields(self):
+        """Plain-mode LAN overlay updates only power/brightness/color/CT.
+
+        Every other field — scenes, segments, sensors, heater, music STRUCT,
+        HDMI, toggles — must be preserved by simply not being referenced.
+        """
+        state = GoveeDeviceState.create_empty("dev")
+        # Non-targeted fields populated; none of them put us in an effect mode.
+        state.segments = [SegmentState(index=0, color=RGBColor(1, 2, 3))]
+        state.sensor_temperature = 21.5
+        state.sensor_humidity = 47.0
+        state.battery = 88
+        state.heater_temperature = 25
+        state.hdmi_source = 2
+        state.music_mode_value = 4  # STRUCT value, not the enabled flag
+        state.toggles = {"socketToggle1": True}
+        state.active_snapshot = 7
+        state.last_scene_id = "keep-me"
+
+        state.update_from_lan(
+            FakeLanStatus(on=True, brightness=50, color=RGBColor(10, 20, 30))
+        )
+
+        # The four readable fields were overlaid...
+        assert state.power_state is True
+        assert state.brightness == 50
+        assert state.color == RGBColor(10, 20, 30)
+        assert state.color_temp_kelvin is None  # nulled by mutual exclusion
+        # ...and nothing else was touched.
+        assert state.segments == [SegmentState(index=0, color=RGBColor(1, 2, 3))]
+        assert state.sensor_temperature == 21.5
+        assert state.sensor_humidity == 47.0
+        assert state.battery == 88
+        assert state.heater_temperature == 25
+        assert state.hdmi_source == 2
+        assert state.music_mode_value == 4
+        assert state.toggles == {"socketToggle1": True}
+        assert state.active_snapshot == 7
+        assert state.last_scene_id == "keep-me"
+
+    def test_lan_brightness_written_device_native(self):
+        """Brightness is stored verbatim — no 0-255 conversion here."""
+        state = GoveeDeviceState.create_empty("dev")
+        state.update_from_lan(FakeLanStatus(brightness=37))
+        assert state.brightness == 37
+
+    def test_lan_none_fields_preserve_existing(self):
+        """Absent (None) readable fields must not clobber known values."""
+        state = GoveeDeviceState.create_empty("dev")
+        state.power_state = True
+        state.brightness = 64
+        state.color = RGBColor(9, 9, 9)
+
+        state.update_from_lan(FakeLanStatus())  # all four None
+
+        assert state.power_state is True
+        assert state.brightness == 64
+        assert state.color == RGBColor(9, 9, 9)
+
+    @pytest.mark.parametrize(
+        "effect_field",
+        ["active_scene", "active_diy_scene", "music_mode_enabled", "dreamview_enabled"],
+    )
+    def test_lan_effect_mode_skips_color_ct_and_brightness(self, effect_field):
+        """During any effect, LAN must not write color, CT, or brightness.
+
+        LAN reports the live per-frame RGB of a running scene, so adopting it
+        would churn the color attribute every poll. Power still updates.
+        """
+        state = GoveeDeviceState.create_empty("dev")
+        setattr(state, effect_field, True if "enabled" in effect_field else "scene-x")
+        state.brightness = 100
+        state.color = None
+        state.color_temp_kelvin = None
+
+        state.update_from_lan(
+            FakeLanStatus(
+                on=True,
+                brightness=42,
+                color=RGBColor(200, 100, 50),  # live scene frame
+                color_temp_kelvin=3500,
+            )
+        )
+
+        # Color/CT/brightness all skipped...
+        assert state.color is None
+        assert state.color_temp_kelvin is None
+        assert state.brightness == 100
+        # ...but power and the effect itself survive.
+        assert state.power_state is True
+        assert getattr(state, effect_field)
+
+    def test_lan_zero_color_sentinel_preserves_existing_color(self):
+        """An incoming {0,0,0} must not erase a real non-zero color."""
+        state = GoveeDeviceState.create_empty("dev")
+        state.color = RGBColor(255, 0, 0)
+
+        state.update_from_lan(
+            FakeLanStatus(color=RGBColor(0, 0, 0), color_temp_kelvin=0)
+        )
+
+        assert state.color == RGBColor(255, 0, 0)
+
+    def test_lan_zero_color_sentinel_leaves_color_none(self):
+        """{0,0,0} with no prior color leaves color as None (no fake black)."""
+        state = GoveeDeviceState.create_empty("dev")
+        assert state.color is None
+
+        state.update_from_lan(FakeLanStatus(color=RGBColor(0, 0, 0)))
+
+        assert state.color is None
+
+    def test_lan_color_temp_positive_nulls_color(self):
+        """colorTemInKelvin>0 adopts CT and clears RGB (mutual exclusion)."""
+        state = GoveeDeviceState.create_empty("dev")
+        state.color = RGBColor(255, 0, 0)
+
+        state.update_from_lan(
+            FakeLanStatus(color=RGBColor(10, 10, 10), color_temp_kelvin=4000)
+        )
+
+        assert state.color_temp_kelvin == 4000
+        assert state.color is None
+
+    def test_lan_nonzero_color_nulls_color_temp(self):
+        """A non-zero color adopts RGB and clears CT (inverse exclusion)."""
+        state = GoveeDeviceState.create_empty("dev")
+        state.color_temp_kelvin = 4000
+        state.color = None
+
+        state.update_from_lan(
+            FakeLanStatus(color=RGBColor(0, 128, 255), color_temp_kelvin=0)
+        )
+
+        assert state.color == RGBColor(0, 128, 255)
+        assert state.color_temp_kelvin is None
+
+    def test_lan_color_temp_zero_is_not_a_mode(self):
+        """colorTemInKelvin==0 is treated as unset, not a CT mode switch."""
+        state = GoveeDeviceState.create_empty("dev")
+        state.color = RGBColor(1, 2, 3)
+
+        state.update_from_lan(FakeLanStatus(color=None, color_temp_kelvin=0))
+
+        # Neither branch fires: existing color is preserved, CT stays unset.
+        assert state.color == RGBColor(1, 2, 3)
+        assert state.color_temp_kelvin is None
+
+    def test_lan_clears_optimistic_window_when_not_grace(self):
+        """A normal read confirms state and ends the optimistic window."""
+        state = GoveeDeviceState.create_empty("dev")
+        state.apply_optimistic_brightness(50)
+        assert state.last_optimistic_update is not None
+
+        state.update_from_lan(FakeLanStatus(on=True, brightness=50))
+
+        assert state.last_optimistic_update is None
+
+    def test_lan_skip_power_brightness_preserves_grace_window(self):
+        """skip_power_brightness keeps the optimistic window and value.
+
+        During the grace window an in-flight optimistic write must not be
+        overwritten by a racing LAN read, and the window must stay open.
+        """
+        state = GoveeDeviceState.create_empty("dev")
+        state.apply_optimistic_brightness(50)
+        state.apply_optimistic_power(False)
+        opened_at = state.last_optimistic_update
+        assert opened_at is not None
+
+        state.update_from_lan(
+            FakeLanStatus(on=True, brightness=99),
+            skip_power_brightness=True,
+        )
+
+        # Power/brightness untouched, grace window intact.
+        assert state.power_state is False
+        assert state.brightness == 50
+        assert state.last_optimistic_update == opened_at
+        # Proof of life still recorded.
+        assert state.source == "lan"
+        assert state.online is True
+
+    def test_lan_skip_power_brightness_still_adopts_color(self):
+        """The grace flag gates only power/brightness, not color/CT."""
+        state = GoveeDeviceState.create_empty("dev")
+        state.color = None
+
+        state.update_from_lan(
+            FakeLanStatus(color=RGBColor(5, 6, 7)),
+            skip_power_brightness=True,
+        )
+
+        assert state.color == RGBColor(5, 6, 7)
 
 
 # ==============================================================================

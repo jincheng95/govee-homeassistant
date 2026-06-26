@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+from ipaddress import IPv4Address, IPv6Address
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -445,3 +446,70 @@ def test_expand_lan_targets_rejects_large_subnet():
 def test_expand_lan_targets_rejects_garbage():
     with pytest.raises(lan.LanTargetError):
         lan.expand_lan_targets("not-an-ip")
+
+
+# --- async_get_lan_interface_ips -------------------------------------------
+#
+# The single shared interface-IP enumeration hoisted out of diagnostics (#57) so
+# both the diagnostics scan and the future persistent LAN client use one
+# implementation. Patched on the shared ``network`` module object so the call
+# inside the helper picks up the mock.
+
+
+@pytest.mark.asyncio
+async def test_interface_ips_filters_loopback_and_non_ipv4(monkeypatch):
+    # Only enabled, non-loopback IPv4 addresses survive — IPv6 and loopback drop.
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_enabled_source_ips",
+        AsyncMock(
+            return_value=[
+                IPv4Address("192.168.1.50"),
+                IPv4Address("10.0.0.5"),
+                IPv4Address("127.0.0.1"),  # loopback -> dropped
+                IPv6Address("fe80::1"),  # non-IPv4 -> dropped
+            ]
+        ),
+    )
+
+    ips = await lan.async_get_lan_interface_ips(MagicMock())
+
+    assert ips == ["192.168.1.50", "10.0.0.5"]
+
+
+@pytest.mark.asyncio
+async def test_interface_ips_returns_plain_strings(monkeypatch):
+    # Returns str (not IPv4Address) so it can flow straight into the scan helpers.
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_enabled_source_ips",
+        AsyncMock(return_value=[IPv4Address("192.168.1.50")]),
+    )
+
+    ips = await lan.async_get_lan_interface_ips(MagicMock())
+
+    assert ips == ["192.168.1.50"]
+    assert all(isinstance(ip, str) for ip in ips)
+
+
+@pytest.mark.asyncio
+async def test_interface_ips_empty_when_none_enabled(monkeypatch):
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_enabled_source_ips",
+        AsyncMock(return_value=[]),
+    )
+
+    assert await lan.async_get_lan_interface_ips(MagicMock()) == []
+
+
+@pytest.mark.asyncio
+async def test_interface_ips_degrades_to_empty_on_error(monkeypatch):
+    # Network component not set up -> never raise; fall back to default-route scan.
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_enabled_source_ips",
+        AsyncMock(side_effect=RuntimeError("network not set up")),
+    )
+
+    assert await lan.async_get_lan_interface_ips(MagicMock()) == []

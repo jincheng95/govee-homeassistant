@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-TransportKind = Literal["cloud_api", "mqtt", "ble"]
+TransportKind = Literal["cloud_api", "mqtt", "ble", "lan"]
 
-TRANSPORT_KINDS: tuple[TransportKind, ...] = ("cloud_api", "mqtt", "ble")
+TRANSPORT_KINDS: tuple[TransportKind, ...] = ("cloud_api", "mqtt", "ble", "lan")
 
 
 @dataclass

@@ -56,6 +56,9 @@ import socket
 from ipaddress import AddressValueError, IPv4Address, IPv4Network
 from typing import Any
 
+from homeassistant.components import network
+from homeassistant.core import HomeAssistant
+
 _LOGGER = logging.getLogger(__name__)
 
 # A LAN-target CIDR may expand to at most this many addresses (a /24). Larger
@@ -171,6 +174,29 @@ def expand_lan_targets(raw: str | None) -> list[str]:
             raise LanTargetError(f"'{token}' is not a valid IP or subnet") from err
 
     return targets
+
+
+async def async_get_lan_interface_ips(hass: HomeAssistant) -> list[str]:
+    """Return the host's enabled, non-loopback IPv4 source IPs as strings.
+
+    Uses Home Assistant's ``network`` component so a multi-homed host can scan /
+    join the multicast group on every enabled adapter. This is the single shared
+    enumeration used by BOTH the diagnostics LAN scan and the persistent LAN
+    transport client (issue #57), so the two never drift.
+
+    Non-IPv4 (e.g. IPv6) and loopback addresses are excluded. Never raises —
+    degrades to an empty list (meaning "default-route interface only") if the
+    network component is unavailable or errors, so every caller can always
+    proceed without a try/except of its own.
+    """
+    ips: list[str] = []
+    try:
+        for source_ip in await network.async_get_enabled_source_ips(hass):
+            if isinstance(source_ip, IPv4Address) and not source_ip.is_loopback:
+                ips.append(str(source_ip))
+    except Exception as err:  # network component unavailable — fall back
+        _LOGGER.debug("LAN discovery: could not enumerate source IPs: %s", err)
+    return ips
 
 
 class _ScanProtocol(asyncio.DatagramProtocol):
