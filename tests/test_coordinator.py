@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -3123,3 +3123,429 @@ class TestLanReadPath:
         assert result[self.DEVICE_ID].power_state is True
         assert result[self.DEVICE_ID].brightness == 80
         assert result[self.DEVICE_ID].source == "lan"
+
+
+class _FakeWriteClient:
+    """LAN client fake exposing only the write-tier surface (LAN-012).
+
+    ``send_result`` is what ``async_send_command`` returns (the real client
+    returns ``False`` when ``sendto`` raises OSError). ``read_reply`` is what the
+    verify-by-read ``async_read_one`` returns (``None`` = no confirmation).
+    """
+
+    def __init__(self, *, send_result: bool = True, read_reply: Any = None) -> None:
+        self.available = True
+        self.send_result = send_result
+        self.read_reply = read_reply
+        self.send_calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.read_calls: list[tuple[str, float]] = []
+
+    async def async_send_command(
+        self, ip: str, cmd: str, data: dict[str, Any]
+    ) -> bool:
+        self.send_calls.append((ip, cmd, data))
+        return self.send_result
+
+    async def async_read_one(self, ip: str, timeout: float = 0.5) -> Any:
+        self.read_calls.append((ip, timeout))
+        return self.read_reply
+
+
+class TestTryLanCommand:
+    """Coordinator LAN control tier: verify-by-read, write-health gate,
+    fall-through (LAN-012). Precedence is BLE > LAN > MQTT > REST."""
+
+    DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
+    IP = "10.0.0.5"
+
+    def _status(self, **kw):
+        from custom_components.govee.api.lan_client import LanDevStatus
+
+        defaults = dict(
+            on=True,
+            brightness_0_100=80,
+            color=RGBColor(255, 0, 0),
+            color_temp_kelvin=None,
+        )
+        defaults.update(kw)
+        return LanDevStatus(**defaults)
+
+    def _info(self, *, ip=None, device_id=None):
+        import time
+
+        from custom_components.govee.api.lan_client import LanDeviceInfo
+
+        return LanDeviceInfo(
+            device_id=device_id or self.DEVICE_ID,
+            ip=ip or self.IP,
+            mac=device_id or self.DEVICE_ID,
+            sku="H6072",
+            firmware="1.0.0",
+            last_correlated_ts=time.monotonic(),
+        )
+
+    def _coord(
+        self,
+        *,
+        brightness_max: int = 100,
+        is_group: bool = False,
+        device_id: str | None = None,
+        sku: str = "H6072",
+    ):
+        import custom_components.govee.coordinator as coord_mod
+
+        dev_id = device_id or self.DEVICE_ID
+        hass = MagicMock()
+        config_entry = MagicMock()
+        config_entry.entry_id = "test_entry"
+        config_entry.options = {}
+        coord = coord_mod.GoveeCoordinator(
+            hass=hass,
+            config_entry=config_entry,
+            api_client=MagicMock(),
+            iot_credentials=None,
+            poll_interval=60,
+        )
+        caps = (
+            GoveeCapability(
+                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
+            ),
+            GoveeCapability(
+                type=CAPABILITY_RANGE,
+                instance=INSTANCE_BRIGHTNESS,
+                parameters={"range": {"min": 0, "max": brightness_max}},
+            ),
+        )
+        coord._devices[dev_id] = GoveeDevice(
+            device_id=dev_id,
+            sku=sku,
+            name="Test Light",
+            device_type="devices.types.light",
+            capabilities=caps,
+            is_group=is_group,
+        )
+        coord._states[dev_id] = GoveeDeviceState.create_empty(dev_id)
+        coord.async_set_updated_data = MagicMock()
+        return coord, coord_mod
+
+    def _ready_coord(self, **kw):
+        """A coord wired for a successful LAN write: correlated + LAN-available."""
+        coord, coord_mod = self._coord(**kw)
+        dev_id = kw.get("device_id") or self.DEVICE_ID
+        coord._lan_devices[dev_id] = self._info(device_id=dev_id)
+        # Mark LAN available so the write-health gate passes (a prior read).
+        coord._record_transport_success(dev_id, "lan")
+        return coord, coord_mod
+
+    # ---- happy paths -------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_confirmed_power_records_and_returns_true(self):
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=self._status(on=True))
+        coord._lan_client = client
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+
+        assert result is True
+        # Sent the LAN turn-on command to the correlated IP.
+        assert client.send_calls == [(self.IP, "turn", {"value": 1})]
+        # Confirm read happened.
+        assert client.read_calls and client.read_calls[0][0] == self.IP
+        # Optimistic state applied immediately (step 7).
+        assert coord._states[self.DEVICE_ID].power_state is True
+        coord.async_set_updated_data.assert_called()
+        # Verify-by-read recording: the WRITE stamps send + success.
+        health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert health is not None
+        assert health.is_available is True
+        assert health.last_send_ts is not None
+        assert health.last_failure_reason is None
+
+    @pytest.mark.asyncio
+    async def test_confirmed_brightness_within_tolerance_returns_true(self):
+        coord, _ = self._ready_coord()
+        # Requested 50; device reports 51 (within ±2) -> confirmed.
+        client = _FakeWriteClient(read_reply=self._status(brightness_0_100=51))
+        coord._lan_client = client
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID,
+            coord._devices[self.DEVICE_ID],
+            BrightnessCommand(brightness=50),
+        )
+
+        assert result is True
+        assert client.send_calls == [(self.IP, "brightness", {"value": 50})]
+        assert coord._states[self.DEVICE_ID].brightness == 50  # optimistic value
+
+    @pytest.mark.asyncio
+    async def test_confirmed_brightness_rescaled_for_non_0_100_device(self):
+        coord, _ = self._ready_coord(brightness_max=254)
+        # Device-native 127 -> LAN 50; reports back LAN 50 -> native 127, |0| ok.
+        client = _FakeWriteClient(read_reply=self._status(brightness_0_100=50))
+        coord._lan_client = client
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID,
+            coord._devices[self.DEVICE_ID],
+            BrightnessCommand(brightness=127),
+        )
+
+        assert result is True
+        assert client.send_calls == [(self.IP, "brightness", {"value": 50})]
+
+    # ---- unconfirmed / mismatch -> fall through ----------------------------
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_read_none_returns_false(self):
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=None)  # device never answers
+        coord._lan_client = client
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+
+        assert result is False
+        # Send + confirm-read both attempted; optimistic applied before falling.
+        assert client.send_calls
+        assert client.read_calls
+        assert coord._states[self.DEVICE_ID].power_state is True
+        health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert health is not None and health.last_failure_reason == "unconfirmed"
+
+    @pytest.mark.asyncio
+    async def test_send_failure_returns_false_without_reading(self):
+        coord, _ = self._ready_coord()
+        # sendto OSError surfaces as a False return from async_send_command.
+        client = _FakeWriteClient(send_result=False)
+        coord._lan_client = client
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+
+        assert result is False
+        assert client.send_calls  # send attempted
+        assert client.read_calls == []  # no confirm read after a failed send
+        # Optimistic NOT applied when the send itself failed.
+        coord.async_set_updated_data.assert_not_called()
+        health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert health is not None and health.last_failure_reason == "send_failed"
+
+    @pytest.mark.asyncio
+    async def test_power_value_mismatch_returns_false(self):
+        coord, _ = self._ready_coord()
+        # Asked ON, device reports OFF -> mismatch -> fall through.
+        client = _FakeWriteClient(read_reply=self._status(on=False))
+        coord._lan_client = client
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+
+        assert result is False
+        health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert health is not None and health.last_failure_reason == "value_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_power_reply_on_none_is_mismatch(self):
+        """A plug whose devStatus lacks onOff -> reply.on None -> never matches."""
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=self._status(on=None))
+        coord._lan_client = client
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+
+        assert result is False
+        health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert health is not None and health.last_failure_reason == "value_mismatch"
+
+    @pytest.mark.asyncio
+    async def test_brightness_out_of_tolerance_returns_false(self):
+        coord, _ = self._ready_coord()
+        # Asked 50, device reports 60 (>2) -> mismatch.
+        client = _FakeWriteClient(read_reply=self._status(brightness_0_100=60))
+        coord._lan_client = client
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID,
+            coord._devices[self.DEVICE_ID],
+            BrightnessCommand(brightness=50),
+        )
+
+        assert result is False
+        health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert health is not None and health.last_failure_reason == "value_mismatch"
+
+    # ---- early-return guards (never touch the wire) ------------------------
+
+    @pytest.mark.asyncio
+    async def test_no_lan_client_returns_false(self):
+        coord, _ = self._ready_coord()
+        coord._lan_client = None
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_group_device_returns_false(self):
+        coord, _ = self._ready_coord(is_group=True)
+        client = _FakeWriteClient(read_reply=self._status())
+        coord._lan_client = client
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+        assert result is False
+        assert client.send_calls == []
+
+    @pytest.mark.asyncio
+    async def test_numeric_device_id_returns_false(self):
+        numeric_id = "11825917"
+        coord, _ = self._ready_coord(device_id=numeric_id)
+        client = _FakeWriteClient(read_reply=self._status())
+        coord._lan_client = client
+        result = await coord._try_lan_command(
+            numeric_id, coord._devices[numeric_id], PowerCommand(power_on=True)
+        )
+        assert result is False
+        assert client.send_calls == []
+
+    @pytest.mark.asyncio
+    async def test_not_in_lan_devices_returns_false(self):
+        coord, _ = self._coord()
+        coord._record_transport_success(self.DEVICE_ID, "lan")  # available but...
+        coord._lan_devices = {}  # ...not correlated
+        client = _FakeWriteClient(read_reply=self._status())
+        coord._lan_client = client
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+        assert result is False
+        assert client.send_calls == []
+
+    @pytest.mark.asyncio
+    async def test_write_health_gate_bootstrap_falls_through(self):
+        """First control after startup: lan health exists but defaults
+        is_available=False, so the write-health gate falls through (#57)."""
+        coord, _ = self._coord()
+        coord._lan_devices[self.DEVICE_ID] = self._info()
+        coord._ensure_transport_health(self.DEVICE_ID)  # lan default unavailable
+        client = _FakeWriteClient(read_reply=self._status())
+        coord._lan_client = client
+
+        health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert health is not None and health.is_available is False  # precondition
+
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+
+        assert result is False
+        assert client.send_calls == []  # gate blocks before the wire
+
+    @pytest.mark.asyncio
+    async def test_health_none_returns_false(self):
+        coord, _ = self._coord()
+        coord._lan_devices[self.DEVICE_ID] = self._info()
+        # No transport-health entry at all for this device -> gate returns False.
+        coord._transport = TransportHealthTracker()
+        client = _FakeWriteClient(read_reply=self._status())
+        coord._lan_client = client
+        result = await coord._try_lan_command(
+            self.DEVICE_ID, coord._devices[self.DEVICE_ID], PowerCommand(power_on=True)
+        )
+        assert result is False
+        assert client.send_calls == []
+
+    @pytest.mark.asyncio
+    async def test_color_command_never_uses_lan(self):
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=self._status())
+        coord._lan_client = client
+        result = await coord._try_lan_command(
+            self.DEVICE_ID,
+            coord._devices[self.DEVICE_ID],
+            ColorCommand(color=RGBColor(0, 255, 0)),
+        )
+        assert result is False
+        assert client.send_calls == []  # command_to_lan returns None for colour
+
+    @pytest.mark.asyncio
+    async def test_color_temp_command_never_uses_lan(self):
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=self._status())
+        coord._lan_client = client
+        result = await coord._try_lan_command(
+            self.DEVICE_ID,
+            coord._devices[self.DEVICE_ID],
+            ColorTempCommand(kelvin=4000),
+        )
+        assert result is False
+        assert client.send_calls == []
+
+    # ---- precedence BLE > LAN > MQTT > REST --------------------------------
+
+    @pytest.mark.asyncio
+    async def test_precedence_ble_beats_lan(self, monkeypatch):
+        coord, coord_mod = self._ready_coord()
+        monkeypatch.setattr(coord_mod, "HAS_BLUETOOTH", True)
+        coord._ble_devices = {self.DEVICE_ID: MagicMock()}
+        coord._try_ble_command = AsyncMock(return_value=True)
+        coord._try_lan_command = AsyncMock(return_value=True)
+
+        result = await coord.async_control_device(
+            self.DEVICE_ID, PowerCommand(power_on=True)
+        )
+
+        assert result is True
+        coord._try_ble_command.assert_awaited_once()
+        coord._try_lan_command.assert_not_awaited()  # BLE short-circuited
+
+    @pytest.mark.asyncio
+    async def test_precedence_lan_beats_mqtt(self, monkeypatch):
+        coord, coord_mod = self._ready_coord()
+        monkeypatch.setattr(coord_mod, "HAS_BLUETOOTH", False)
+        coord._enable_mqtt_control = True
+        coord._mqtt_client = MagicMock(connected=True)
+        coord._try_lan_command = AsyncMock(return_value=True)
+        coord._try_mqtt_command = AsyncMock(return_value=True)
+
+        result = await coord.async_control_device(
+            self.DEVICE_ID, PowerCommand(power_on=True)
+        )
+
+        assert result is True
+        coord._try_lan_command.assert_awaited_once()
+        coord._try_mqtt_command.assert_not_awaited()  # LAN short-circuited
+
+    @pytest.mark.asyncio
+    async def test_unconfirmed_lan_falls_through_to_mqtt_then_rest(self, monkeypatch):
+        """End-to-end: an unconfirmed LAN write must reach MQTT, then REST,
+        so the device is never stranded."""
+        coord, coord_mod = self._ready_coord()
+        monkeypatch.setattr(coord_mod, "HAS_BLUETOOTH", False)
+        # Real LAN attempt that cannot confirm (device never answers the read).
+        coord._lan_client = _FakeWriteClient(read_reply=None)
+        # MQTT is enabled + connected but also "fails" so REST is the deliverer.
+        coord._enable_mqtt_control = True
+        coord._mqtt_client = MagicMock(connected=True)
+        coord._try_mqtt_command = AsyncMock(return_value=False)
+        coord._api_client.control_device = AsyncMock(return_value=True)
+
+        result = await coord.async_control_device(
+            self.DEVICE_ID, PowerCommand(power_on=True)
+        )
+
+        assert result is True  # REST delivered it
+        coord._try_mqtt_command.assert_awaited_once()  # fell through LAN -> MQTT
+        coord._api_client.control_device.assert_awaited_once()  # MQTT -> REST
+        lan_health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert lan_health is not None
+        assert lan_health.last_failure_reason == "unconfirmed"

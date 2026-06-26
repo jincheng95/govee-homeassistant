@@ -61,7 +61,7 @@ from .api.lan_client import (
     LanDeviceInfo,
     correlate_scan,
 )
-from .api.lan_control import lan_brightness_to_device
+from .api.lan_control import command_to_lan, lan_brightness_to_device
 from .const import (
     CONF_ENABLE_MQTT_CONTROL,
     CONF_LAN_TARGETS,
@@ -71,6 +71,7 @@ from .const import (
     LAN_CORRELATION_TTL_SECONDS,
     LAN_READ_MISS_DEMOTE_THRESHOLD,
     LAN_RESCAN_INTERVAL,
+    LAN_WRITE_CONFIRM_TIMEOUT,
     OPTIMISTIC_GRACE_CAP_SECONDS,
 )
 from .models import (
@@ -124,6 +125,13 @@ STATE_FETCH_TIMEOUT = 30
 # with a small gap so a "scene" that hits every segment doesn't drop
 # commands with empty JSON responses (issue #53).
 SEGMENT_COMMAND_PACING_SECONDS = 0.12
+
+# Tolerance (device-native brightness units) for confirming a LAN brightness
+# write by reading the device back. A LAN devStatus reports brightness on the
+# coarse 0-100 scale, so rescaling it into a wider device range (and the
+# round-trip back) can drift by a unit or two; ±2 absorbs that without masking
+# a genuinely wrong value (issue #57).
+LAN_BRIGHTNESS_CONFIRM_TOLERANCE = 2
 
 # BFF polling interval for leak sensor state (seconds)
 BFF_POLL_INTERVAL = 300  # 5 minutes
@@ -2133,7 +2141,19 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     self._apply_optimistic_update(device_id, command)
                     self.async_set_updated_data(self._states)
                     return True
-                # BLE failed — fall through to REST
+                # BLE failed — fall through to LAN/MQTT/REST
+
+            # LAN (UDP) control tier — sits between BLE and MQTT so precedence
+            # is BLE > LAN > MQTT > REST. Unlike the BLE/MQTT blocks above,
+            # _try_lan_command owns its optimistic update + transport recording
+            # internally: a LAN write is unacked, so it applies optimistic state
+            # immediately for snappy UI, then confirms by reading the device
+            # back. A confirmed write returns True here; an unreachable /
+            # unconfirmed / value-mismatched write returns False and falls
+            # through to MQTT -> REST, so a device is never stranded.
+            if await self._try_lan_command(device_id, device, command):
+                return True
+            # LAN unavailable / unconfirmed — fall through to MQTT/REST.
 
             # MQTT-native control tier: when enabled and connected, push
             # power/brightness/color over the AWS IoT channel (~50ms) instead
@@ -2234,6 +2254,147 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # Pace the next acquire so bursts don't trip silent rate limiting.
             await asyncio.sleep(SEGMENT_COMMAND_PACING_SECONDS)
             return success
+
+    async def _try_lan_command(
+        self,
+        device_id: str,
+        device: GoveeDevice,
+        command: DeviceCommand,
+    ) -> bool:
+        """Attempt a LAN (UDP) control write, verified by reading the device back.
+
+        The LAN control tier sits between BLE and MQTT (BLE > LAN > MQTT >
+        REST). A LAN write is fire-and-forget and unacknowledged, so this
+        method confirms it by reading the device's reported state back within
+        ``LAN_WRITE_CONFIRM_TIMEOUT`` and requiring an exact (power) /
+        within-tolerance (brightness) match. Anything that cannot be confirmed —
+        LAN disabled, a group / numeric id, an uncorrelated device, stale LAN
+        write-health, a non-LAN command, a failed send, no reply, or a value
+        mismatch — returns ``False`` so the caller falls through to MQTT/REST,
+        which re-applies the optimistic state and actually delivers the write.
+        A device is therefore never stranded on a LAN write the firmware ignored.
+
+        On a confirmed write the LAN send + success are recorded and the
+        device's real reported values are locked in via :meth:`_apply_lan_read`;
+        an optimistic update is applied immediately (before the blocking confirm
+        read) so the UI responds in ~0ms.
+
+        Args:
+            device_id: The device to control.
+            device: The device's :class:`GoveeDevice` (sku / group / range).
+            command: The domain command to send.
+
+        Returns:
+            ``True`` only when the write was confirmed by a matching readback.
+        """
+        # [1] LAN disabled or degraded — the client is the master switch.
+        if self._lan_client is None:
+            return False
+
+        # [2] Group / numeric ids have no LAN unicast identity.
+        if device.is_group or device_id.isdigit():
+            return False
+
+        # [3] Not a correlated LAN device — no IP to write to.
+        info = self._lan_devices.get(device_id)
+        if info is None:
+            return False
+
+        # [4] Write-health gate: never write into a black hole. A device whose
+        #     reads have gone stale — or which has never had a successful LAN
+        #     read yet (TransportHealth defaults is_available=False, so the
+        #     FIRST control after startup falls through HERE until the first LAN
+        #     read marks it available) — must fall back to MQTT/REST.
+        health = self._transport.get(device_id, "lan")
+        if health is None or not health.is_available:
+            return False
+
+        # [5] Only power + brightness map to LAN; colour / colour-temp / scenes /
+        #     segments / music / DIY / work-modes / toggles (and the H5080/H5083
+        #     power quirk) return None so they keep using REST, where the write
+        #     is acknowledged and no readback confirmation is needed.
+        mapped = command_to_lan(command, device.sku, device.brightness_range)
+        if mapped is None:
+            return False
+        cmd, data = mapped
+
+        # [6] Fire-and-forget unicast write. A sendto OSError (surfaced as a
+        #     False return) means the device is unreachable on LAN right now —
+        #     record the failure and fall through.
+        ip = info.ip
+        sent = await self._lan_client.async_send_command(ip, cmd, data)
+        if not sent:
+            self._record_transport_failure(device_id, "lan", "send_failed")
+            return False
+
+        # [7] Apply optimistic state immediately for ~0ms UI feedback, before the
+        #     confirm read blocks for up to LAN_WRITE_CONFIRM_TIMEOUT.
+        self._apply_optimistic_update(device_id, command)
+        self.async_set_updated_data(self._states)
+
+        # [8] Verify-by-read: a LAN write is unacked, so read the device back and
+        #     require the reported value to match what we sent.
+        reply = await self._lan_client.async_read_one(ip, LAN_WRITE_CONFIRM_TIMEOUT)
+        if reply is None:
+            # No confirmation in the window — fall through to MQTT/REST, which
+            # re-applies the optimistic update and actually delivers the write.
+            self._record_transport_failure(device_id, "lan", "unconfirmed")
+            return False
+
+        if not self._lan_write_confirmed(device, command, reply):
+            # The device answered but does not report the value we sent (it
+            # ignored / delayed the write, or a plug lacks onOff). Fall through.
+            self._record_transport_failure(device_id, "lan", "value_mismatch")
+            return False
+
+        # Confirmed: stamp the LAN write (send + success — the verify-by-read
+        # recording asymmetry) and lock in the real device-reported values.
+        self._record_transport_send(device_id, "lan")
+        self._record_transport_success(device_id, "lan")
+        self._apply_lan_read(device_id, reply)
+        return True
+
+    def _lan_write_confirmed(
+        self,
+        device: GoveeDevice,
+        command: DeviceCommand,
+        reply: LanDevStatus,
+    ) -> bool:
+        """Return ``True`` when a LAN readback confirms the just-sent write.
+
+        Only power and brightness reach LAN (``command_to_lan`` returns ``None``
+        for everything else), so only those two are confirmable:
+
+        * :class:`PowerCommand` — require an exact ``reply.on == command.power_on``.
+          A plug whose ``devStatus`` lacks ``onOff`` reports ``reply.on is None``
+          and so never matches, falling through instead of being stranded on a
+          write the device ignored.
+        * :class:`BrightnessCommand` — scale the LAN 0-100 readback into the
+          device-native range and require it within
+          ``LAN_BRIGHTNESS_CONFIRM_TOLERANCE`` of the requested value, absorbing
+          0-100<->native rounding.
+
+        Any other command type is treated as unconfirmable (returns ``False``).
+        Such commands should never reach LAN, so this is a defensive backstop.
+
+        Args:
+            device: The device under control (for its brightness range).
+            command: The command that was sent.
+            reply: The parsed LAN ``devStatus`` readback.
+
+        Returns:
+            ``True`` only when the readback matches the sent value.
+        """
+        if isinstance(command, PowerCommand):
+            return reply.on == command.power_on
+        if isinstance(command, BrightnessCommand):
+            if reply.brightness_0_100 is None:
+                return False
+            native = lan_brightness_to_device(
+                reply.brightness_0_100, device.brightness_range
+            )
+            return abs(native - command.brightness) <= LAN_BRIGHTNESS_CONFIRM_TOLERANCE
+        return False
 
     async def _try_mqtt_command(
         self, device_id: str, sku: str, command: DeviceCommand

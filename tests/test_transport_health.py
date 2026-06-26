@@ -26,6 +26,10 @@ def _bare_coordinator() -> GoveeCoordinator:
     coord._ble_devices = {}
     coord._transport = TransportHealthTracker()
     coord._mqtt_client = None
+    # The LAN control tier (story LAN-012) reads self._lan_client first; a
+    # bypassed __init__ must still provide it so async_control_device can fall
+    # through LAN -> MQTT -> REST as these tests expect.
+    coord._lan_client = None
     return coord
 
 
