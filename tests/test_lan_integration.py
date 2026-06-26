@@ -609,7 +609,7 @@ class TestDhcpReassignment:
         monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
         monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
 
-        coord._last_lan_rescan = 0.0  # force the throttled rescan to run
+        coord._request_lan_rescan()  # force the throttled rescan to run
         await coord._async_maybe_rescan_lan()
 
         # The stale A->IP mapping is invalidated; the IP now belongs to B only.

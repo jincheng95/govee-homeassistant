@@ -741,6 +741,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 return
             self._lan_devices = matched
             self._lan_unmatched = list(unmatched)
+            # Stamp the rescan throttle at setup so the first periodic rescan
+            # waits a full LAN_RESCAN_INTERVAL from here — independent of host
+            # uptime — rather than firing a redundant rescan on the next poll
+            # (which a 0.0 sentinel would on a long-uptime host).
+            self._last_lan_rescan = time.monotonic()
             # Promote the client only after correlation succeeds.
             self._lan_client = client
         except Exception:
@@ -815,8 +820,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         must re-correlate immediately rather than wait out ``LAN_RESCAN_INTERVAL``.
         Idempotent (it only clears the throttle timestamp), so a burst of
         unknown-IP pushes can never trigger a rescan flood.
+
+        Uses ``-inf`` rather than ``0.0`` so ``now - self._last_lan_rescan``
+        always exceeds ``LAN_RESCAN_INTERVAL`` regardless of host uptime:
+        ``time.monotonic()`` counts seconds since boot, so on a freshly-booted
+        Home Assistant host (monotonic < ``LAN_RESCAN_INTERVAL``) a ``0.0``
+        sentinel still reads as throttled and would silently swallow the forced
+        rescan — the DHCP re-correlation of blocking #3 would never fire.
         """
-        self._last_lan_rescan = 0.0
+        self._last_lan_rescan = float("-inf")
 
     def _in_optimistic_grace(self, existing_state: GoveeDeviceState) -> bool:
         """Return ``True`` while a device is inside its optimistic grace window.

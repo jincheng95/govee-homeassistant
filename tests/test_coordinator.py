@@ -2695,7 +2695,7 @@ class TestLanLifecycle:
         # No _lan_devices entry maps to this IP -> unknown source, skip + rescan.
         assert coord._on_lan_dev_status("10.0.0.5", status) is None
         assert coord._states[self.DEVICE_ID] == before  # untouched
-        assert coord._last_lan_rescan == 0.0  # re-correlation forced (blocking #3)
+        assert coord._last_lan_rescan == float("-inf")  # re-correlation forced (blocking #3)
 
 
 class _FakeReadClient:
@@ -2935,7 +2935,7 @@ class TestLanReadPath:
         coord._on_lan_dev_status(self.IP, self._status(on=True))
 
         assert coord._states[self.DEVICE_ID] == before  # not clobbered
-        assert coord._last_lan_rescan == 0.0  # re-correlate forced
+        assert coord._last_lan_rescan == float("-inf")  # re-correlate forced
         coord.async_set_updated_data.assert_not_called()
 
     def test_push_ambiguous_ip_skips(self):
@@ -2950,7 +2950,7 @@ class TestLanReadPath:
         coord._on_lan_dev_status(self.IP, self._status())
 
         coord.async_set_updated_data.assert_not_called()
-        assert coord._last_lan_rescan == 0.0
+        assert coord._last_lan_rescan == float("-inf")
 
     # ---- _refresh_lan_reads demotion + reset -------------------------------
 
@@ -3079,10 +3079,40 @@ class TestLanReadPath:
         assert scans["count"] == 0
 
         # Forced (throttle cleared, as the push path does) -> runs + correlates.
-        coord._last_lan_rescan = 0.0
+        coord._request_lan_rescan()
         await coord._async_maybe_rescan_lan()
         assert scans["count"] == 1
         assert self.DEVICE_ID in coord._lan_devices  # re-promoted from scan
+
+    async def test_forced_rescan_runs_on_low_monotonic_clock(self, monkeypatch):
+        """Regression: a forced rescan must run even just after host boot.
+
+        time.monotonic() counts seconds since boot, so on a freshly-booted host
+        (monotonic < LAN_RESCAN_INTERVAL) a 0.0 force sentinel still read as
+        throttled and silently swallowed the DHCP re-correlation. _request_lan_
+        rescan now uses -inf, which beats the throttle at any clock value.
+        """
+        import custom_components.govee.coordinator as coord_mod
+
+        coord, _ = self._coord()
+        coord._lan_client = _FakeReadClient()
+        scans = {"count": 0}
+
+        async def _ifaces(hass):
+            return []
+
+        async def _scan(*, interface_ips, extra_targets):
+            scans["count"] += 1
+            return self._scan_record()
+
+        # Simulate a host only 5s past boot — well inside LAN_RESCAN_INTERVAL.
+        monkeypatch.setattr(coord_mod.time, "monotonic", lambda: 5.0)
+        monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
+
+        coord._request_lan_rescan()
+        await coord._async_maybe_rescan_lan()
+        assert scans["count"] == 1  # ran despite monotonic() == 5 < 300
 
     def _scan_record(self):
         return [
