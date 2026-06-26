@@ -663,3 +663,99 @@ class TestGoveeCeilingFanOscillation:
         assert isinstance(cmd, ToggleCommand)
         assert cmd.enabled is False
         assert fan_entity.oscillating is False
+
+
+# ==============================================================================
+# Issue #120 — duplicate "Auto" preset must not be emitted (HomeKit IID crash)
+# ==============================================================================
+
+
+def _h7106_device():
+    """H7106-shaped fan whose workMode list has its own "Auto" (value != 3).
+
+    Reproduces issue #120: the device advertises a top-level work mode literally
+    named "Auto" with a value other than WORK_MODE_AUTO (3). Before the fix this
+    was appended as an extra preset on top of the built-in "Auto", producing a
+    duplicate that crashes the HomeKit bridge with a duplicate-IID error.
+    """
+    from custom_components.govee.models import GoveeDevice, GoveeCapability
+    from custom_components.govee.models.device import (
+        CAPABILITY_ON_OFF,
+        CAPABILITY_WORK_MODE,
+        INSTANCE_POWER,
+        INSTANCE_WORK_MODE,
+    )
+
+    workmode = {
+        "dataType": "STRUCT",
+        "fields": [
+            {
+                "fieldName": "workMode",
+                "options": [
+                    {"name": "gearMode", "value": 1},
+                    {"name": "Auto", "value": 6},  # device's own "Auto", != 3
+                    {"name": "Sleep", "value": 5},
+                ],
+            },
+            {
+                "fieldName": "modeValue",
+                "options": [
+                    {
+                        "name": "gearMode",
+                        "options": [
+                            {"name": "Low", "value": 1},
+                            {"name": "High", "value": 2},
+                        ],
+                    },
+                    {"defaultValue": 0, "name": "Auto"},
+                    {"defaultValue": 0, "name": "Sleep"},
+                ],
+            },
+        ],
+    }
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:71:06",
+        sku="H7106",
+        name="Living Room Fan",
+        device_type="devices.types.fan",
+        capabilities=(
+            GoveeCapability(
+                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
+            ),
+            GoveeCapability(
+                type=CAPABILITY_WORK_MODE,
+                instance=INSTANCE_WORK_MODE,
+                parameters=workmode,
+            ),
+        ),
+    )
+
+
+class TestFanDuplicatePreset:
+    """Issue #120: a device "Auto"/"Normal" work mode must not duplicate built-ins."""
+
+    @pytest.fixture
+    def h7106_entity(self):
+        device = _h7106_device()
+        state = MagicMock()
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        return GoveeFanEntity(coordinator, device)
+
+    def test_no_duplicate_auto_preset(self, h7106_entity):
+        modes = h7106_entity.preset_modes
+        # Built-in Auto/Normal present exactly once; the device's colliding
+        # "Auto" is dropped, while the unique "Sleep" still surfaces.
+        assert modes.count(PRESET_MODE_AUTO) == 1
+        assert modes.count(PRESET_MODE_NORMAL) == 1
+        assert "Sleep" in modes
+        # No name appears twice (the HomeKit IID-collision precondition).
+        assert len(modes) == len(set(modes))
+
+    def test_collided_auto_not_in_work_mode_map(self, h7106_entity):
+        # The dropped "Auto" must not leak into the preset->work_mode map, so
+        # selecting "Auto" maps to the built-in WORK_MODE_AUTO, not value 6.
+        assert "Auto" not in h7106_entity._preset_work_modes
+        assert h7106_entity._preset_work_modes.get("Sleep") == 5

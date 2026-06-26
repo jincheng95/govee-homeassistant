@@ -146,6 +146,13 @@ class GoveeFanEntity(GoveeEntity, FanEntity):
                 name = str(opt.get("name", ""))
                 if wm is None or wm in (WORK_MODE_GEAR, WORK_MODE_AUTO) or not name:
                     continue
+                # Skip work modes whose name collides with a built-in preset
+                # (e.g. H7106 exposes its own "Auto" work mode with a value !=
+                # WORK_MODE_AUTO). Without this the built-in "Auto" is offered
+                # twice, which crashes the HomeKit bridge with a duplicate-IID
+                # error (issue #120).
+                if name.lower() in (p.lower() for p in FAN_PRESET_MODES):
+                    continue
                 if name not in self._preset_work_modes:
                     self._preset_work_modes[name] = int(wm)
                     extra_presets.append(name)

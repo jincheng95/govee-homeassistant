@@ -139,6 +139,68 @@ def _shape_skeleton(obj: Any, _depth: int = 0) -> Any:
     return type(obj).__name__
 
 
+# Value-level identity patterns masked in the redacted BFF value dump (#114).
+_IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+_MACVAL_RE = re.compile(r"^[0-9A-Fa-f]{2}([:_-][0-9A-Fa-f]{2}){3,}$")
+# Dict keys whose *values* are identity/PII regardless of shape — dropped from
+# the redacted dump. Matched case-insensitively as a substring, so "deviceName",
+# "wifiSsid", "bleName", "latitude" etc. are all covered (#114).
+_BFF_PII_KEY_SUBSTRINGS = (
+    "name",
+    "mac",
+    "address",
+    "ssid",
+    "bssid",
+    "uuid",
+    "token",
+    "secret",
+    "topic",
+    "latitude",
+    "longitude",
+    "email",
+)
+
+
+def _redact_bff_values(obj: Any, _depth: int = 0) -> Any:
+    """Recursively redact identity values from a BFF settings/data subtree (#114).
+
+    Companion to ``_shape_skeleton`` but *preserves* the diagnostic-useful
+    scalars (numbers, bools, short non-identity strings) so a diagnostics
+    download can reveal which fields the BFF actually carries per device
+    (battery, signal, current temp/humidity, air-quality, …). Masks MAC/IP-
+    shaped values, drops MAC-shaped or identity-named keys, truncates long
+    strings (certs/base64), and parses nested JSON-encoded string fields.
+    """
+    if _depth > 8:
+        return "..."
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for key, value in obj.items():
+            if not isinstance(key, str) or _HEXKEY_RE.match(key):
+                continue
+            if any(s in key.lower() for s in _BFF_PII_KEY_SUBSTRINGS):
+                out[key] = "[REDACTED]"
+                continue
+            out[key] = _redact_bff_values(value, _depth + 1)
+        return out
+    if isinstance(obj, list):
+        return [_redact_bff_values(v, _depth + 1) for v in obj[:20]]
+    if isinstance(obj, str):
+        stripped = obj.strip()
+        if stripped[:1] in ("{", "[") and len(stripped) < 100_000:
+            try:
+                return _redact_bff_values(json.loads(stripped), _depth + 1)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        if _MACVAL_RE.match(stripped) or _IP_RE.match(stripped):
+            return "[REDACTED]"
+        if len(obj) > 40:
+            return f"[truncated, {len(obj)} chars]"
+        return obj
+    # int / float / bool / None pass through — these are the readings we want.
+    return obj
+
+
 # Govee Account API endpoints
 GOVEE_LOGIN_URL = "https://app2.govee.com/account/rest/account/v2/login"
 GOVEE_VERIFICATION_URL = "https://app2.govee.com/account/rest/account/v1/verification"
@@ -1194,6 +1256,43 @@ class GoveeAuthClient:
         if self._last_bff_raw_response is None:
             return None
         return _shape_skeleton(self._last_bff_raw_response)
+
+    def bff_device_values(self) -> list[dict[str, Any]]:
+        """Redacted per-device BFF scalar values, for diagnostics (#114).
+
+        The census reports leak-discovery *flags* and the skeleton reports
+        *shape* only — neither reveals the actual sensor values the BFF carries
+        per device. This emits the scalar fields from each device's
+        ``deviceSettings`` and ``lastDeviceData`` with identity values redacted,
+        so a diagnostics download can answer "does the BFF expose battery /
+        signal / current temp-humidity / air-quality for SKUs beyond leak +
+        thermo sensors?" — e.g. H5220 battery, H7152 dehumidifier humidity,
+        H5106 air quality — without exposing MACs, names, or IPs.
+        """
+        out: list[dict[str, Any]] = []
+        for device in self._last_bff_raw_devices:
+            if not isinstance(device, dict):
+                continue
+            device_ext = device.get("deviceExt", {})
+            if isinstance(device_ext, str):
+                try:
+                    device_ext = json.loads(device_ext)
+                except (json.JSONDecodeError, TypeError):
+                    device_ext = {}
+            if not isinstance(device_ext, dict):
+                device_ext = {}
+            entry: dict[str, Any] = {"sku": device.get("sku", "")}
+            for section in ("deviceSettings", "lastDeviceData"):
+                raw = device_ext.get(section)
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError):
+                        raw = None
+                if isinstance(raw, dict):
+                    entry[section] = _redact_bff_values(raw)
+            out.append(entry)
+        return out
 
     async def request_verification_code(
         self,

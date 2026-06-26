@@ -1678,6 +1678,64 @@ class TestBffResponseSkeleton:
         assert client.bff_response_skeleton() is None
 
 
+class TestBffDeviceValues:
+    """Redacted per-device BFF scalar values for diagnostics (#114)."""
+
+    @pytest.mark.asyncio
+    async def test_values_keep_readings_redact_identity(self):
+        """Numeric readings pass through; MAC/IP/name fields are redacted."""
+        devices = [
+            {
+                "sku": "H7152",
+                "device": "03:9C:DC:06:75:4B:10:7C",
+                "deviceName": "Bedroom Dehumidifier",
+                "deviceExt": json.dumps(
+                    {
+                        "deviceSettings": json.dumps(
+                            {
+                                "battery": 87,
+                                "wifiSoftVersion": "1.02.11",
+                                "address": "03:9C:DC:06:75:4B:10:7C",
+                                "ip": "192.168.1.50",
+                            }
+                        ),
+                        "lastDeviceData": {"tem": 2350, "hum": 5500, "online": True},
+                    }
+                ),
+            }
+        ]
+        client = GoveeAuthClient(
+            session=make_session_get(make_mock_response(200, _bff_response(devices)))
+        )
+        await client.fetch_bff_leak_sensors(token="tok")
+        values = client.bff_device_values()
+
+        assert len(values) == 1
+        entry = values[0]
+        assert entry["sku"] == "H7152"
+        # Diagnostic readings survive (this is the whole point — #114).
+        assert entry["deviceSettings"]["battery"] == 87
+        assert entry["deviceSettings"]["wifiSoftVersion"] == "1.02.11"
+        assert entry["lastDeviceData"]["tem"] == 2350
+        assert entry["lastDeviceData"]["hum"] == 5500
+        assert entry["lastDeviceData"]["online"] is True
+        # Identity fields are masked — by key name and by value shape.
+        assert entry["deviceSettings"]["address"] == "[REDACTED]"
+        assert entry["deviceSettings"]["ip"] == "[REDACTED]"
+
+        # No identity leaks anywhere in the serialized dump.
+        blob = json.dumps(values)
+        assert "Bedroom Dehumidifier" not in blob
+        assert "03:9C:DC" not in blob
+        assert "192.168.1.50" not in blob
+
+    @pytest.mark.asyncio
+    async def test_values_empty_before_fetch(self):
+        """No values until a BFF fetch populates the raw device list."""
+        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, {})))
+        assert client.bff_device_values() == []
+
+
 class TestFetchWaterDetectorStates:
     """Standalone H5054 state via the BFF device list (issue #62)."""
 

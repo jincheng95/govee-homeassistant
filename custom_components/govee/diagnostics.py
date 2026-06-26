@@ -243,6 +243,10 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
         # PII-free shape of the raw BFF response — distinguishes "absent" from
         # "present under an unexpected path/shape" when the census is empty.
         "bff_response_skeleton": coordinator.bff_response_skeleton,
+        # Redacted per-device BFF scalar values (deviceSettings + lastDeviceData)
+        # — reveals which readings the BFF carries per device, to scope future
+        # battery / temp-humidity / air-quality support beyond leak+thermo (#114).
+        "bff_device_values": coordinator.bff_device_values,
         "has_iot_credentials": coordinator.has_iot_credentials,
         "device_topic_count": coordinator.device_topic_count,
         "api": {

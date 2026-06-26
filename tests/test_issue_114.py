@@ -364,15 +364,23 @@ def _coordinator_with_state(device: GoveeDevice, state: GoveeDeviceState) -> Mag
 
 
 class TestSensorEntities:
-    def test_air_quality_native_value(self):
-        from custom_components.govee.sensor import GoveeAirQualitySensor
+    def test_air_quality_presence_is_binary(self):
+        # #114: airQuality is a constant presence index, not a real reading, so
+        # it's now a diagnostic binary sensor (on = non-zero), not an AQI sensor.
+        from custom_components.govee.binary_sensor import GoveeAirQualityBinarySensor
 
         dev = _h5106()
         state = GoveeDeviceState(device_id=dev.device_id)
-        state.air_quality = 3
-        entity = GoveeAirQualitySensor(_coordinator_with_state(dev, state), dev)
-        assert entity.native_value == 3
+        state.air_quality = 1
+        entity = GoveeAirQualityBinarySensor(_coordinator_with_state(dev, state), dev)
+        assert entity.is_on is True
         assert entity.unique_id == f"{dev.device_id}_air_quality"
+
+        state.air_quality = 0
+        assert entity.is_on is False
+
+        state.air_quality = None
+        assert entity.is_on is None
 
     def test_filter_life_native_value(self):
         from custom_components.govee.sensor import GoveeFilterLifeSensor
@@ -400,8 +408,9 @@ class TestSensorEntities:
         await sensor_mod.async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
 
         names = {type(e).__name__ for e in added}
-        assert "GoveeAirQualitySensor" in names
         assert "GoveeFilterLifeSensor" in names
+        # Air-quality moved to the binary_sensor platform (#114).
+        assert "GoveeAirQualitySensor" not in names
 
 
 # --------------------------------------------------------------------------- #

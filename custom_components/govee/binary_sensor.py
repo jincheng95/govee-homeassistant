@@ -72,6 +72,12 @@ async def async_setup_entry(
         # device list with a bodyAppearedEvent capability — issue #62.
         if device.supports_water_leak_event:
             entities.append(GoveeWaterLeakBinarySensor(coordinator, device))
+        # Air-quality sensor presence (H5106 monitor, H7124/H7126 purifiers).
+        # Govee's Developer API returns only a constant index (always 1 on the
+        # H5106), never a real PM2.5 measurement, so this is a diagnostic
+        # presence flag rather than a numeric AQI sensor — issue #114.
+        if device.supports_air_quality:
+            entities.append(GoveeAirQualityBinarySensor(coordinator, device))
         # Overall per-device connectivity (one entity, always exposed) — carries
         # the full per-transport last-received / last-sent breakdown as
         # attributes. The granular per-transport entities below stay opt-in.
@@ -180,6 +186,36 @@ class GoveeWaterLeakBinarySensor(GoveeEntity, BinarySensorEntity):
         """Return True when water is detected."""
         state = self.device_state
         return state.water_leak if state else None
+
+
+class GoveeAirQualityBinarySensor(GoveeEntity, BinarySensorEntity):
+    """Air-quality sensor presence flag (H5106, H7124/H7126) — issue #114.
+
+    The Developer API's ``airQuality`` property returns a single index integer
+    with no PM2.5 µg/m³ field, and in practice it never moves off a constant
+    value (always ``1`` on the H5106) — it reports that an air-quality sensor is
+    *present*, not a usable reading. So this is a diagnostic on/off entity
+    (``on`` = the device reports a non-zero air-quality value) rather than the
+    earlier numeric AQI sensor, which read as a real measurement it never was.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.PRESENCE
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "air_quality_sensor"
+    _attr_icon = "mdi:air-filter"
+
+    def __init__(self, coordinator: GoveeCoordinator, device: Any) -> None:
+        """Initialize the air-quality presence binary sensor."""
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_air_quality"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when the device reports a non-zero air-quality value."""
+        state = self.device_state
+        if state is None or state.air_quality is None:
+            return None
+        return state.air_quality > 0
 
 
 class GoveeDeviceConnectivity(GoveeEntity, BinarySensorEntity):

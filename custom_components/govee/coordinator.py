@@ -274,6 +274,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # PII-free structural skeleton of the raw BFF response — distinguishes
         # "leak sensors absent" from "present under an unexpected shape" (#87).
         self._bff_response_skeleton: Any = None
+        # Redacted per-device BFF scalar values (deviceSettings + lastDeviceData)
+        # — reveals which fields the BFF carries per device (battery, signal,
+        # temp/humidity, air-quality) for SKUs beyond leak+thermo sensors (#114).
+        self._bff_device_values: list[dict[str, Any]] = []
 
     @property
     def devices(self) -> dict[str, GoveeDevice]:
@@ -416,6 +420,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def bff_response_skeleton(self) -> Any:
         """PII-free structural skeleton of the last raw BFF response."""
         return self._bff_response_skeleton
+
+    @property
+    def bff_device_values(self) -> list[dict[str, Any]]:
+        """Redacted per-device BFF scalar values for diagnostics (#114)."""
+        return self._bff_device_values
 
     def _note_sensor_reading_change(
         self,
@@ -759,6 +768,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 # closes (#87).
                 self._bff_device_census = auth_client.bff_device_census()
                 self._bff_response_skeleton = auth_client.bff_response_skeleton()
+                self._bff_device_values = auth_client.bff_device_values()
 
             self._leak_hubs = hub_data
             for sensor in sensor_data:
@@ -870,6 +880,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 # thermo-hygro SKU flags even when no leak sensors are present.
                 self._bff_device_census = auth_client.bff_device_census()
                 self._bff_response_skeleton = auth_client.bff_response_skeleton()
+                self._bff_device_values = auth_client.bff_device_values()
 
             for sensor in sensors:
                 device_id = sensor["device_id"]

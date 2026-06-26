@@ -207,9 +207,6 @@
       "sensor_humidity": {
         "name": "Humidity"
       },
-      "sensor_air_quality": {
-        "name": "Air Quality"
-      },
       "sensor_filter_life": {
         "name": "Filter Life"
       },
@@ -256,6 +253,9 @@
       },
       "govee_water_leak": {
         "name": "Water Leak"
+      },
+      "air_quality_sensor": {
+        "name": "Air Quality Sensor"
       },
       "leak_online": {
         "name": "LoRa"

@@ -78,10 +78,10 @@ async def async_setup_entry(
             entities.append(GoveeTemperatureSensor(coordinator, device))
         if device.supports_humidity_sensor:
             entities.append(GoveeHumiditySensor(coordinator, device))
-        # Air-quality index (H5106 monitor, H7124/H7126 purifiers) and filter
-        # remaining-life (% on purifiers) — read-only properties (issue #114).
-        if device.supports_air_quality:
-            entities.append(GoveeAirQualitySensor(coordinator, device))
+        # Filter remaining-life (% on purifiers) — read-only property (#114).
+        # The air-quality reading is a binary presence flag (Govee returns a
+        # constant index, never a real measurement) and lives on the
+        # binary_sensor platform instead (#114).
         if device.supports_filter_life:
             entities.append(GoveeFilterLifeSensor(coordinator, device))
         if device.supports_temperature_sensor or device.supports_humidity_sensor:
@@ -311,33 +311,6 @@ class GoveeTemperatureSensor(_BffThermometerAvailabilityMixin, SensorEntity):
             return (value - 32.0) * (5.0 / 9.0)
 
         return value
-
-
-class GoveeAirQualitySensor(GoveeEntity, SensorEntity):
-    """Read-only air-quality index (H5106 monitor, H7124/H7126) — issue #114.
-
-    Backed by the ``devices.capabilities.property`` / ``airQuality`` capability.
-    The Developer API returns a single index integer (no PM2.5 µg/m³ field), so
-    this surfaces that index under the HA AQI device class.
-    """
-
-    _attr_has_entity_name = True
-    _attr_translation_key = "sensor_air_quality"
-    _attr_device_class = SensorDeviceClass.AQI
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(
-        self,
-        coordinator: GoveeCoordinator,
-        device: GoveeDevice,
-    ) -> None:
-        super().__init__(coordinator, device)
-        self._attr_unique_id = f"{device.device_id}_air_quality"
-
-    @property
-    def native_value(self) -> int | None:
-        state = self.device_state
-        return state.air_quality if state else None
 
 
 class GoveeFilterLifeSensor(GoveeEntity, SensorEntity):
