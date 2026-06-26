@@ -586,6 +586,26 @@ class TestLanDiscoveryDiag:
         assert "10.20.0.51" not in rendered
         assert "10.20.0.0/30" not in rendered
 
+    @pytest.mark.asyncio
+    async def test_lan_transport_counts_present_and_int(self, monkeypatch) -> None:
+        # PII-free LAN census (#57): the entry diagnostics surface how many
+        # devices are LAN-active vs. unmatched as plain integer counts, so
+        # MAC-format drift is observable from a download without any address.
+        coordinator = _coordinator_stub(
+            _lan_devices={"dev1": object(), "dev2": object()},
+            _lan_unmatched=[{"device": "AA:BB"}],
+        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
+
+        assert out["lan_active_count"] == 2
+        assert out["lan_unmatched_count"] == 1
+        assert isinstance(out["lan_active_count"], int)
+        assert isinstance(out["lan_unmatched_count"], int)
+        # Counts only — no scan->device_id join and no address leaks.
+        rendered = json.dumps(out, default=str)
+        assert "dev1" not in rendered
+        assert "AA:BB" not in rendered
+
 
 def _devstatus_pkt(**data):
     return {"msg": {"cmd": "devStatus", "data": data}}

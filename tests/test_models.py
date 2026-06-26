@@ -1185,8 +1185,10 @@ class TestGoveeDeviceState:
         assert state.power_state is False
         assert state.brightness == 50
         assert state.last_optimistic_update == opened_at
-        # Proof of life still recorded.
-        assert state.source == "lan"
+        # Proof of life flips online, but source stays "optimistic" so the
+        # grace window keeps gating subsequent LAN reads in the same window
+        # (a "lan" stamp here would end grace and revert the next read).
+        assert state.source == "optimistic"
         assert state.online is True
 
     def test_lan_skip_power_brightness_still_adopts_color(self):

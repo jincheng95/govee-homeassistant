@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from custom_components.govee.const import LAN_STALE_SECONDS
 from custom_components.govee.coordinator import GoveeCoordinator
 from custom_components.govee.models import (
     TRANSPORT_KINDS,
@@ -290,3 +291,106 @@ class TestLanTransportKind:
         coord._devices["dev1"] = MagicMock()
         coord._ensure_transport_health("dev1")
         assert coord.get_transport_health("dev1", "lan") is not None
+
+
+class TestLanStaleness:
+    """refresh_lan_staleness: no_lan_presence vs stale_lan, mirroring BLE."""
+
+    def test_marks_no_lan_presence_for_non_lan_devices(self):
+        """A device absent from lan_active_ids gets a meaningful reason."""
+        tracker = TransportHealthTracker()
+        tracker.refresh_lan_staleness(["dev1", "group1"], set())
+        for device_id in ("dev1", "group1"):
+            health = tracker.get(device_id, "lan")
+            assert health is not None
+            assert health.is_available is False
+            assert health.last_failure_reason == "no_lan_presence"
+
+    def test_marks_stale_lan_past_threshold(self):
+        """A LAN-active device whose last read is too old goes stale_lan."""
+        tracker = TransportHealthTracker()
+        tracker.ensure("dev1")
+        old = datetime.now(timezone.utc) - timedelta(seconds=LAN_STALE_SECONDS + 5)
+        tracker.get("dev1", "lan").mark_success(old)
+
+        tracker.refresh_lan_staleness(["dev1"], {"dev1"})
+
+        health = tracker.get("dev1", "lan")
+        assert health is not None
+        assert health.is_available is False
+        assert health.last_failure_reason == "stale_lan"
+
+    def test_keeps_fresh_active_device_available(self):
+        """A LAN-active device read within the window stays available."""
+        tracker = TransportHealthTracker()
+        tracker.record_success("dev1", "lan")  # fresh success, available
+
+        tracker.refresh_lan_staleness(["dev1"], {"dev1"})
+
+        health = tracker.get("dev1", "lan")
+        assert health is not None
+        assert health.is_available is True
+        assert health.last_failure_reason is None
+
+    def test_active_device_without_success_is_left_alone(self):
+        """Active but never-read device is neither stale nor no_presence."""
+        tracker = TransportHealthTracker()
+        tracker.ensure("dev1")  # no success recorded -> last_success_ts None
+
+        tracker.refresh_lan_staleness(["dev1"], {"dev1"})
+
+        health = tracker.get("dev1", "lan")
+        assert health is not None
+        assert health.last_failure_reason is None  # not flagged stale
+
+    def test_boundary_below_threshold_not_stale(self):
+        """Just inside the window is still available (one missed poll tolerated)."""
+        tracker = TransportHealthTracker()
+        tracker.ensure("dev1")
+        recent = datetime.now(timezone.utc) - timedelta(seconds=LAN_STALE_SECONDS - 5)
+        tracker.get("dev1", "lan").mark_success(recent)
+
+        tracker.refresh_lan_staleness(["dev1"], {"dev1"})
+
+        health = tracker.get("dev1", "lan")
+        assert health is not None
+        assert health.is_available is True
+        assert health.last_failure_reason is None
+
+    def test_coordinator_refresh_lan_staleness_delegates(self):
+        """Coordinator passes lan_active_ids = set(self._lan_devices)."""
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock()
+        coord._devices["dev2"] = MagicMock()
+        coord._lan_devices = {"dev1": MagicMock()}  # only dev1 is LAN-active
+        coord._transport.record_success("dev1", "lan")  # fresh read
+
+        coord._refresh_lan_staleness()
+
+        h1 = coord.get_transport_health("dev1", "lan")
+        h2 = coord.get_transport_health("dev2", "lan")
+        assert h1 is not None and h1.is_available is True
+        assert h2 is not None and h2.is_available is False
+        assert h2.last_failure_reason == "no_lan_presence"
+
+    def test_apply_lan_read_records_lan_success(self):
+        """An applied devStatus read marks 'lan' health available (read=>success)."""
+        from custom_components.govee.api.lan_client import LanDevStatus
+
+        coord = _bare_coordinator()
+        coord._devices["dev1"] = MagicMock(brightness_range=(0, 100))
+        state = GoveeDeviceState.create_empty("dev1")
+        coord._states["dev1"] = state
+        coord.async_set_updated_data = MagicMock()
+
+        coord._apply_lan_read(
+            "dev1",
+            LanDevStatus(
+                on=True, brightness_0_100=50, color=None, color_temp_kelvin=None
+            ),
+        )
+
+        health = coord.get_transport_health("dev1", "lan")
+        assert health is not None
+        assert health.is_available is True
+        assert health.last_success_ts is not None

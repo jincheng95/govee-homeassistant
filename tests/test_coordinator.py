@@ -2428,3 +2428,698 @@ class TestPeriodicRediscovery:
         await coord._async_maybe_rediscover_devices()
 
         coord.hass.config_entries.async_schedule_reload.assert_not_called()
+
+
+# ==============================================================================
+# LAN (UDP) transport lifecycle — story LAN-010 (issue #57)
+# ==============================================================================
+
+
+class _FakeLanClient:
+    """Minimal stand-in for GoveeLanClient — no sockets, tracks calls."""
+
+    def __init__(self, available: bool = True) -> None:
+        self.available = available
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.started_with: Any = None
+
+    async def async_start(self, interface_ips: list[str]) -> None:
+        self.start_calls += 1
+        self.started_with = interface_ips
+
+    async def async_stop(self) -> None:
+        self.stop_calls += 1
+
+
+class TestLanLifecycle:
+    """Coordinator LAN setup (open LAST + leak-proof teardown) and shutdown."""
+
+    # Correlates to the scan record's ``device`` below.
+    DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
+
+    def _coord(self, options: dict[str, Any] | None = None):
+        import custom_components.govee.coordinator as coord_mod
+
+        hass = MagicMock()
+        config_entry = MagicMock()
+        config_entry.entry_id = "test_entry"
+        # Real dict so options.get() resolves defaults deterministically.
+        config_entry.options = options if options is not None else {}
+        coord = coord_mod.GoveeCoordinator(
+            hass=hass,
+            config_entry=config_entry,
+            api_client=MagicMock(),
+            iot_credentials=None,
+            poll_interval=60,
+        )
+        coord._devices[self.DEVICE_ID] = GoveeDevice(
+            device_id=self.DEVICE_ID,
+            sku="H6072",
+            name="Test Light",
+            device_type="devices.types.light",
+            capabilities=(),
+            is_group=False,
+        )
+        return coord, coord_mod
+
+    def _matching_scan(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "device": self.DEVICE_ID,
+                "ip": "10.0.0.5",
+                "sku": "H6072",
+                "wifiVersionSoft": "1.0.0",
+            }
+        ]
+
+    @staticmethod
+    def _patch_lan(monkeypatch, coord_mod, *, scan, client, probe=None):
+        """Patch the LAN module helpers the coordinator imported.
+
+        ``probe`` (optional dict) records whether the scan ran and how many
+        clients were constructed, so the "off" escape hatch can be verified.
+        """
+
+        async def _ifaces(hass):
+            return []
+
+        async def _scan(*, interface_ips, extra_targets):
+            if probe is not None:
+                probe["scanned"] = True
+                probe["extra_targets"] = extra_targets
+            return scan
+
+        def _factory(callback):
+            if probe is not None:
+                probe["constructed"] = probe.get("constructed", 0) + 1
+            return client
+
+        monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
+        monkeypatch.setattr(coord_mod, "GoveeLanClient", _factory)
+
+    @pytest.mark.asyncio
+    async def test_disabled_clean_when_client_unavailable(self, monkeypatch):
+        """async_start that degrades (available False) -> client None, stopped."""
+        coord, coord_mod = self._coord()
+        client = _FakeLanClient(available=False)
+        self._patch_lan(monkeypatch, coord_mod, scan=self._matching_scan(), client=client)
+
+        await coord._async_setup_lan()  # must not raise
+
+        assert coord._lan_client is None
+        assert coord._lan_devices == {}
+        assert client.stop_calls == 1  # released whatever the bind grabbed
+
+    @pytest.mark.asyncio
+    async def test_off_escape_hatch_skips_setup(self, monkeypatch):
+        """CONF_LAN_TARGETS='off' (any case) skips scan + client entirely."""
+        coord, coord_mod = self._coord(options={"lan_targets": "  OFF  "})
+        probe: dict[str, Any] = {}
+        client = _FakeLanClient(available=True)
+        self._patch_lan(
+            monkeypatch, coord_mod, scan=self._matching_scan(), client=client, probe=probe
+        )
+
+        await coord._async_setup_lan()
+
+        assert coord._lan_client is None
+        assert probe.get("scanned") is None  # scan never ran
+        assert probe.get("constructed") is None  # no client constructed
+        assert client.start_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_correlated_scan_populates_lan_devices(self, monkeypatch):
+        """A scan that correlates to a device_id enables LAN and keeps the client."""
+        coord, coord_mod = self._coord()
+        client = _FakeLanClient(available=True)
+        self._patch_lan(monkeypatch, coord_mod, scan=self._matching_scan(), client=client)
+
+        await coord._async_setup_lan()
+
+        assert coord._lan_client is client
+        assert self.DEVICE_ID in coord._lan_devices
+        info = coord._lan_devices[self.DEVICE_ID]
+        assert info.ip == "10.0.0.5"
+        assert info.last_correlated_ts > 0  # stamped from the monotonic clock
+        assert coord._lan_unmatched == []
+        assert client.start_calls == 1
+        assert client.stop_calls == 0
+        assert client.started_with == []  # interface ips passed through
+
+    @pytest.mark.asyncio
+    async def test_no_correlation_stops_client(self, monkeypatch):
+        """Scan answered but nothing correlated -> stop+None (no held sockets)."""
+        coord, coord_mod = self._coord()
+        client = _FakeLanClient(available=True)
+        unmatched_scan = [
+            {"device": "99:99:99:99:99:99:99:99", "ip": "10.0.0.9", "sku": "H6072"}
+        ]
+        self._patch_lan(monkeypatch, coord_mod, scan=unmatched_scan, client=client)
+
+        await coord._async_setup_lan()
+
+        assert coord._lan_client is None
+        assert coord._lan_devices == {}
+        assert client.stop_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_scan_oserror_degrades_clean(self, monkeypatch):
+        """A scan OSError (port :4002 held) degrades cleanly without a client."""
+        coord, coord_mod = self._coord()
+        probe: dict[str, Any] = {}
+
+        async def _ifaces(hass):
+            return []
+
+        async def _scan(*, interface_ips, extra_targets):
+            raise OSError("port 4002 in use")
+
+        def _factory(callback):
+            probe["constructed"] = probe.get("constructed", 0) + 1
+            return _FakeLanClient()
+
+        monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
+        monkeypatch.setattr(coord_mod, "GoveeLanClient", _factory)
+
+        await coord._async_setup_lan()  # must not raise
+
+        assert coord._lan_client is None
+        assert probe.get("constructed") is None  # never reached client construction
+
+    @pytest.mark.asyncio
+    async def test_failure_after_open_stops_client_no_leak(self, monkeypatch):
+        """Any raise after the socket opens stops the client before propagating."""
+        coord, coord_mod = self._coord()
+        client = _FakeLanClient(available=True)
+        self._patch_lan(monkeypatch, coord_mod, scan=self._matching_scan(), client=client)
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("correlation blew up")
+
+        monkeypatch.setattr(coord_mod, "correlate_scan", _boom)
+
+        with pytest.raises(RuntimeError, match="correlation blew up"):
+            await coord._async_setup_lan()
+
+        # The partially-built setup must not strand the bound socket.
+        assert client.stop_calls == 1
+        assert coord._lan_client is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_lan_targets_tolerated(self, monkeypatch):
+        """A bad LAN-targets option is ignored, not fatal — LAN still sets up."""
+        coord, coord_mod = self._coord(options={"lan_targets": "not-an-ip/8"})
+        client = _FakeLanClient(available=True)
+        self._patch_lan(monkeypatch, coord_mod, scan=self._matching_scan(), client=client)
+
+        await coord._async_setup_lan()  # LanTargetError swallowed
+
+        assert coord._lan_client is client
+        assert self.DEVICE_ID in coord._lan_devices
+
+    @pytest.mark.asyncio
+    async def test_async_shutdown_closes_lan_client(self, monkeypatch):
+        """async_shutdown stops the LAN client and clears the reference."""
+        coord, _ = self._coord()
+        client = _FakeLanClient(available=True)
+        coord._lan_client = client
+        coord._api_client.close = _make_async(None)
+
+        await coord.async_shutdown()
+
+        assert client.stop_calls == 1
+        assert coord._lan_client is None
+
+    @pytest.mark.asyncio
+    async def test_setup_lan_runs_last_in_async_setup(self, monkeypatch):
+        """_async_setup calls _async_setup_lan after all fallible discovery steps."""
+        coord, _ = self._coord()
+        order: list[str] = []
+
+        async def _discover():
+            order.append("discover")
+
+        async def _leaks():
+            order.append("leaks")
+
+        async def _thermo():
+            order.append("thermo")
+
+        async def _setup_lan():
+            order.append("lan")
+
+        monkeypatch.setattr(coord, "_discover_devices", _discover)
+        monkeypatch.setattr(coord, "_discover_leak_sensors", _leaks)
+        monkeypatch.setattr(coord, "_discover_bff_thermometers", _thermo)
+        monkeypatch.setattr(coord, "_async_setup_lan", _setup_lan)
+
+        await coord._async_setup()
+
+        assert order[-1] == "lan"  # LAN is always opened last (blocking #5)
+        assert order.index("discover") < order.index("lan")
+
+    def test_on_lan_dev_status_unknown_ip_skips_and_rescans(self):
+        """A push from an uncorrelated IP must not mutate state; it forces rescan."""
+        coord, _ = self._coord()
+        coord._states[self.DEVICE_ID] = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        coord._last_lan_rescan = 12345.0  # a non-zero throttle to observe the reset
+        before = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        from custom_components.govee.api.lan_client import LanDevStatus
+
+        status = LanDevStatus(
+            on=True, brightness_0_100=50, color=None, color_temp_kelvin=None
+        )
+        # No _lan_devices entry maps to this IP -> unknown source, skip + rescan.
+        assert coord._on_lan_dev_status("10.0.0.5", status) is None
+        assert coord._states[self.DEVICE_ID] == before  # untouched
+        assert coord._last_lan_rescan == 0.0  # re-correlation forced (blocking #3)
+
+
+class _FakeReadClient:
+    """Minimal LAN client exposing only ``async_read_batch`` for the read path.
+
+    ``batch`` maps a queried IP to the :class:`LanDevStatus` it answers with;
+    IPs absent from ``batch`` simply do not reply (read miss).
+    """
+
+    def __init__(self, batch: dict[str, Any] | None = None) -> None:
+        self.available = True
+        self.batch = batch or {}
+        self.read_calls: list[list[str]] = []
+
+    async def async_read_batch(
+        self, ips: list[str], window: float = 1.0
+    ) -> dict[str, Any]:
+        self.read_calls.append(list(ips))
+        return {ip: self.batch[ip] for ip in ips if ip in self.batch}
+
+
+class TestLanReadPath:
+    """Coordinator LAN read overlay, DHCP guard, demotion and rescan (LAN-011)."""
+
+    DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
+    IP = "10.0.0.5"
+
+    def _status(self, **kw):
+        from custom_components.govee.api.lan_client import LanDevStatus
+
+        defaults = dict(
+            on=True, brightness_0_100=80, color=RGBColor(255, 0, 0), color_temp_kelvin=None
+        )
+        defaults.update(kw)
+        return LanDevStatus(**defaults)
+
+    def _info(self, *, ip=None, ts=None, device_id=None):
+        from custom_components.govee.api.lan_client import LanDeviceInfo
+
+        return LanDeviceInfo(
+            device_id=device_id or self.DEVICE_ID,
+            ip=ip or self.IP,
+            mac=device_id or self.DEVICE_ID,
+            sku="H6072",
+            firmware="1.0.0",
+            last_correlated_ts=ts if ts is not None else __import__("time").monotonic(),
+        )
+
+    def _coord(self, *, brightness_max: int = 100):
+        import custom_components.govee.coordinator as coord_mod
+
+        hass = MagicMock()
+        config_entry = MagicMock()
+        config_entry.entry_id = "test_entry"
+        config_entry.options = {}
+        coord = coord_mod.GoveeCoordinator(
+            hass=hass,
+            config_entry=config_entry,
+            api_client=MagicMock(),
+            iot_credentials=None,
+            poll_interval=60,
+        )
+        caps = (
+            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+            GoveeCapability(
+                type=CAPABILITY_RANGE,
+                instance=INSTANCE_BRIGHTNESS,
+                parameters={"range": {"min": 0, "max": brightness_max}},
+            ),
+        )
+        coord._devices[self.DEVICE_ID] = GoveeDevice(
+            device_id=self.DEVICE_ID,
+            sku="H6072",
+            name="Test Light",
+            device_type="devices.types.light",
+            capabilities=caps,
+            is_group=False,
+        )
+        coord.async_set_updated_data = MagicMock()
+        coord.async_update_listeners = MagicMock()
+        return coord, coord_mod
+
+    # ---- _apply_lan_read overlay semantics ---------------------------------
+
+    def test_overlay_writes_four_fields_in_plain_mode(self):
+        coord, _ = self._coord()
+        state = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        state.online = False
+        state.power_state = False
+        state.brightness = 40
+        state.color = RGBColor(10, 20, 30)
+        coord._states[self.DEVICE_ID] = state
+
+        coord._apply_lan_read(self.DEVICE_ID, self._status())
+
+        assert state.power_state is True
+        assert state.brightness == 80  # (0,100) device -> identity rescale
+        assert state.color == RGBColor(255, 0, 0)
+        assert state.color_temp_kelvin is None
+        assert state.online is True
+        assert state.source == "lan"
+        coord.async_set_updated_data.assert_called_once()
+
+    def test_overlay_preserves_scene_segments_sensors(self):
+        from custom_components.govee.models.state import SegmentState
+
+        coord, _ = self._coord()
+        state = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        state.power_state = False
+        state.active_scene = "123"
+        state.active_scene_name = "Sunrise"
+        state.segments = [SegmentState(index=0, color=RGBColor(1, 2, 3))]
+        state.sensor_temperature = 22.5
+        state.color = RGBColor(9, 9, 9)
+        state.brightness = 33
+        coord._states[self.DEVICE_ID] = state
+
+        # devStatus reports a live scene-frame colour + brightness — must be
+        # ignored mid-effect; only power is adopted.
+        coord._apply_lan_read(
+            self.DEVICE_ID,
+            self._status(on=True, brightness_0_100=70, color=RGBColor(200, 100, 50)),
+        )
+
+        assert state.power_state is True  # power still tracked
+        assert state.active_scene == "123"  # scene preserved
+        assert state.active_scene_name == "Sunrise"
+        assert state.segments == [SegmentState(index=0, color=RGBColor(1, 2, 3))]
+        assert state.sensor_temperature == 22.5
+        assert state.color == RGBColor(9, 9, 9)  # NOT overwritten mid-effect
+        assert state.brightness == 33  # NOT overwritten mid-effect
+
+    def test_overlay_skips_power_brightness_within_grace(self):
+        import time
+
+        coord, _ = self._coord()
+        state = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        state.power_state = True
+        state.brightness = 90
+        state.color = RGBColor(1, 2, 3)
+        state.source = "optimistic"
+        state.last_optimistic_update = time.monotonic()  # fresh -> in grace
+        coord._states[self.DEVICE_ID] = state
+
+        # LAN says off/dim with a {0,0,0} colour (sentinel preserves colour).
+        coord._apply_lan_read(
+            self.DEVICE_ID,
+            self._status(on=False, brightness_0_100=5, color=RGBColor(0, 0, 0)),
+        )
+
+        assert state.power_state is True  # power skipped in grace
+        assert state.brightness == 90  # brightness skipped in grace
+        assert state.color == RGBColor(1, 2, 3)  # {0,0,0} sentinel preserved
+        assert state.last_optimistic_update is not None  # grace window preserved
+
+    def test_two_reads_in_grace_window_do_not_revert(self):
+        """Regression: a second LAN read in one grace window must not revert.
+
+        update_from_lan keeps source="optimistic" during grace; otherwise the
+        first read would flip source to "lan", end the window (the grace test
+        gates on source), and the second read would overwrite the in-flight
+        power/brightness — flip-flopping the UI back to the pre-command state.
+        (critic BLOCK on the read-side wiring.)
+        """
+        import time
+
+        coord, _ = self._coord()
+        state = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        state.power_state = True
+        state.brightness = 90
+        state.source = "optimistic"
+        state.last_optimistic_update = time.monotonic()  # fresh -> in grace
+        coord._states[self.DEVICE_ID] = state
+
+        stale = self._status(on=False, brightness_0_100=5, color=RGBColor(0, 0, 0))
+        coord._apply_lan_read(self.DEVICE_ID, stale)  # read #1 in grace
+        assert state.source == "optimistic"  # window must stay open for read #2
+        coord._apply_lan_read(self.DEVICE_ID, stale)  # read #2 still in grace
+
+        # Both reads skipped power/brightness — no flip-flop.
+        assert state.power_state is True
+        assert state.brightness == 90
+
+    def test_overlay_rescales_brightness_for_non_0_100_device(self):
+        coord, _ = self._coord(brightness_max=254)
+        state = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        coord._states[self.DEVICE_ID] = state
+
+        coord._apply_lan_read(self.DEVICE_ID, self._status(brightness_0_100=50))
+
+        assert state.brightness == 127  # 50/100 * 254 -> device-native, not 50
+
+    def test_overlay_none_state_never_raises(self):
+        coord, _ = self._coord()
+        # device_id absent from _states -> additive/abortable, no raise.
+        coord._apply_lan_read("NO:SUCH:DEVICE", self._status())
+        coord.async_set_updated_data.assert_not_called()
+
+    def test_overlay_no_change_does_not_notify(self):
+        coord, _ = self._coord()
+        state = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        state.online = True
+        state.power_state = True
+        state.brightness = 80
+        state.color = RGBColor(255, 0, 0)
+        coord._states[self.DEVICE_ID] = state
+
+        coord._apply_lan_read(self.DEVICE_ID, self._status())  # identical values
+
+        coord.async_set_updated_data.assert_not_called()  # BFF churn-avoidance
+
+    # ---- _on_lan_dev_status push guard (blocking #3) -----------------------
+
+    def test_push_fresh_correlation_applies(self):
+        coord, _ = self._coord()
+        coord._states[self.DEVICE_ID] = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        coord._lan_devices[self.DEVICE_ID] = self._info()
+
+        coord._on_lan_dev_status(self.IP, self._status(on=True))
+
+        assert coord._states[self.DEVICE_ID].power_state is True
+        coord.async_set_updated_data.assert_called_once()
+
+    def test_push_stale_correlation_skips_and_rescans(self):
+        import time
+
+        from custom_components.govee.const import LAN_CORRELATION_TTL_SECONDS
+
+        coord, _ = self._coord()
+        before = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        coord._states[self.DEVICE_ID] = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        coord._lan_devices[self.DEVICE_ID] = self._info(
+            ts=time.monotonic() - (LAN_CORRELATION_TTL_SECONDS + 10)
+        )
+        coord._last_lan_rescan = 999.0
+
+        coord._on_lan_dev_status(self.IP, self._status(on=True))
+
+        assert coord._states[self.DEVICE_ID] == before  # not clobbered
+        assert coord._last_lan_rescan == 0.0  # re-correlate forced
+        coord.async_set_updated_data.assert_not_called()
+
+    def test_push_ambiguous_ip_skips(self):
+        coord, _ = self._coord()
+        other = "BB:BB:BB:BB:BB:BB:BB:BB"
+        coord._states[self.DEVICE_ID] = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        # Two devices claim the same IP -> ambiguous -> skip + rescan.
+        coord._lan_devices[self.DEVICE_ID] = self._info(ip=self.IP)
+        coord._lan_devices[other] = self._info(ip=self.IP, device_id=other)
+        coord._last_lan_rescan = 999.0
+
+        coord._on_lan_dev_status(self.IP, self._status())
+
+        coord.async_set_updated_data.assert_not_called()
+        assert coord._last_lan_rescan == 0.0
+
+    # ---- _refresh_lan_reads demotion + reset -------------------------------
+
+    @pytest.mark.asyncio
+    async def test_refresh_demotes_after_k_misses(self):
+        from custom_components.govee.const import LAN_READ_MISS_DEMOTE_THRESHOLD
+
+        coord, _ = self._coord()
+        coord._states[self.DEVICE_ID] = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        coord._lan_devices[self.DEVICE_ID] = self._info()
+        coord._lan_client = _FakeReadClient(batch={})  # never replies
+
+        for i in range(1, LAN_READ_MISS_DEMOTE_THRESHOLD):
+            await coord._refresh_lan_reads()
+            assert coord._lan_read_misses[self.DEVICE_ID] == i
+            assert self.DEVICE_ID in coord._lan_devices
+
+        await coord._refresh_lan_reads()  # K-th miss -> demote
+        assert self.DEVICE_ID not in coord._lan_devices
+        assert self.DEVICE_ID not in coord._lan_read_misses
+
+    @pytest.mark.asyncio
+    async def test_refresh_reply_resets_misses_and_overlays(self):
+        coord, _ = self._coord()
+        state = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        state.power_state = False
+        coord._states[self.DEVICE_ID] = state
+        coord._lan_devices[self.DEVICE_ID] = self._info()
+        coord._lan_read_misses[self.DEVICE_ID] = 2  # accumulated misses
+        coord._lan_client = _FakeReadClient(batch={self.IP: self._status(on=True)})
+
+        await coord._refresh_lan_reads()
+
+        assert coord._lan_read_misses[self.DEVICE_ID] == 0  # reset on reply
+        assert state.power_state is True  # overlaid
+        # Poll path mutates in place (notify=False) — no re-entrant push.
+        coord.async_set_updated_data.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_noop_without_client_or_devices(self):
+        coord, _ = self._coord()
+        # No client.
+        await coord._refresh_lan_reads()
+        # Client but no correlated devices.
+        coord._lan_client = _FakeReadClient()
+        await coord._refresh_lan_reads()
+        assert coord._lan_client.read_calls == []
+
+    # ---- rescan / re-correlation (blocking #3 (b)) -------------------------
+
+    def test_merge_drops_stale_ip_reclaimed_by_other_device(self):
+        from custom_components.govee.api.lan_client import LanDeviceInfo
+
+        coord, _ = self._coord()
+        other = "BB:BB:BB:BB:BB:BB:BB:BB"
+        # Old map: device A at IP X.
+        coord._lan_devices[self.DEVICE_ID] = self._info(ip=self.IP)
+        coord._lan_read_misses[self.DEVICE_ID] = 1
+        # Fresh scan: a DIFFERENT device B now answers from IP X.
+        matched = {
+            other: LanDeviceInfo(
+                device_id=other,
+                ip=self.IP,
+                mac=other,
+                sku="H6072",
+                firmware="1",
+                last_correlated_ts=1.0,
+            )
+        }
+        coord._merge_lan_correlation(matched, [])
+
+        assert self.DEVICE_ID not in coord._lan_devices  # stale A dropped
+        assert other in coord._lan_devices  # B promoted
+        assert self.DEVICE_ID not in coord._lan_read_misses
+
+    def test_merge_repromotes_and_keeps_transient_miss(self):
+        from custom_components.govee.api.lan_client import LanDeviceInfo
+
+        coord, _ = self._coord()
+        kept = "CC:CC:CC:CC:CC:CC:CC:CC"
+        # A demoted device that re-answers, plus an unrelated device that
+        # didn't answer this scan but keeps a non-conflicting IP.
+        coord._lan_devices[kept] = self._info(ip="10.0.0.9", device_id=kept)
+        coord._lan_read_misses[self.DEVICE_ID] = 5
+        matched = {
+            self.DEVICE_ID: LanDeviceInfo(
+                device_id=self.DEVICE_ID,
+                ip=self.IP,
+                mac=self.DEVICE_ID,
+                sku="H6072",
+                firmware="1",
+                last_correlated_ts=2.0,
+            )
+        }
+        coord._merge_lan_correlation(matched, [{"device": "x"}])
+
+        assert coord._lan_read_misses[self.DEVICE_ID] == 0  # re-promoted
+        assert self.DEVICE_ID in coord._lan_devices
+        assert kept in coord._lan_devices  # transient miss kept
+        assert coord._lan_unmatched == [{"device": "x"}]
+
+    @pytest.mark.asyncio
+    async def test_rescan_throttled_then_runs(self, monkeypatch):
+        import time
+
+        import custom_components.govee.coordinator as coord_mod
+
+        coord, _ = self._coord()
+        coord._lan_client = _FakeReadClient()
+
+        async def _ifaces(hass):
+            return []
+
+        scans = {"count": 0}
+
+        async def _scan(*, interface_ips, extra_targets):
+            scans["count"] += 1
+            return self._scan_record()
+
+        monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
+
+        # Throttled: a recent rescan blocks a new one.
+        coord._last_lan_rescan = time.monotonic()
+        await coord._async_maybe_rescan_lan()
+        assert scans["count"] == 0
+
+        # Forced (throttle cleared, as the push path does) -> runs + correlates.
+        coord._last_lan_rescan = 0.0
+        await coord._async_maybe_rescan_lan()
+        assert scans["count"] == 1
+        assert self.DEVICE_ID in coord._lan_devices  # re-promoted from scan
+
+    def _scan_record(self):
+        return [
+            {
+                "device": self.DEVICE_ID,
+                "ip": self.IP,
+                "sku": "H6072",
+                "wifiVersionSoft": "1.0.0",
+            }
+        ]
+
+    # ---- overlay runs AFTER cloud fan-in -----------------------------------
+
+    @pytest.mark.asyncio
+    async def test_overlay_runs_after_cloud_fan_in(self, monkeypatch):
+        coord, _ = self._coord()
+        coord._states[self.DEVICE_ID] = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        coord._lan_devices[self.DEVICE_ID] = self._info()
+        coord._lan_client = _FakeReadClient(
+            batch={self.IP: self._status(on=True, brightness_0_100=80)}
+        )
+
+        async def _fetch(device_id, device):
+            # Fresh cloud object every poll: power off, dim.
+            fresh = GoveeDeviceState.create_empty(device_id)
+            fresh.power_state = False
+            fresh.brightness = 10
+            fresh.source = "api"
+            return fresh
+
+        monkeypatch.setattr(coord, "_fetch_device_state", _fetch)
+        # Rescan is throttled (already-fresh) so it doesn't re-scan here.
+        coord._last_lan_rescan = __import__("time").monotonic()
+
+        result = await coord._async_update_data()
+
+        # The LAN read overlaid the FRESH cloud object, not the reverse.
+        assert result[self.DEVICE_ID].power_state is True
+        assert result[self.DEVICE_ID].brightness == 80
+        assert result[self.DEVICE_ID].source == "lan"

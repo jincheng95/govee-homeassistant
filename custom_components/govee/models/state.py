@@ -526,9 +526,15 @@ class GoveeDeviceState:
                 NOT called.
         """
         # A devStatus reply is direct proof of life, mirroring update_from_mqtt
-        # and the BLE online-flip — flip availability immediately.
-        self.source = "lan"
+        # and the BLE online-flip — flip availability immediately. But DO NOT
+        # stamp source="lan" during the optimistic grace window: the coordinator
+        # gates the window on source == "optimistic", so overwriting it here
+        # would end grace after the first read and let a later read in the same
+        # window revert the in-flight power/brightness. The cloud poll keeps the
+        # optimistic marker alive during grace for exactly this reason (#57).
         self.online = True
+        if not skip_power_brightness:
+            self.source = "lan"
 
         # An active effect (scene/DIY/music/DreamView) means the readable
         # color/brightness no longer describe a static state — only power stays

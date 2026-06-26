@@ -10,6 +10,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -48,11 +49,28 @@ except ImportError:  # pragma: no cover — HA installs without Bluetooth
 from .ble_advertisement import BleAdvertisementHandler
 from .ble_advertisement import sku_from_ble_name as _sku_from_ble_name  # noqa: F401
 from .api.mqtt_control import command_to_mqtt
+from .api.lan import (
+    LanTargetError,
+    async_get_lan_interface_ips,
+    async_scan_lan_devices,
+    expand_lan_targets,
+)
+from .api.lan_client import (
+    GoveeLanClient,
+    LanDevStatus,
+    LanDeviceInfo,
+    correlate_scan,
+)
+from .api.lan_control import lan_brightness_to_device
 from .const import (
     CONF_ENABLE_MQTT_CONTROL,
+    CONF_LAN_TARGETS,
     DEFAULT_ENABLE_MQTT_CONTROL,
     DEVICE_REDISCOVERY_INTERVAL,
     DOMAIN,
+    LAN_CORRELATION_TTL_SECONDS,
+    LAN_READ_MISS_DEMOTE_THRESHOLD,
+    LAN_RESCAN_INTERVAL,
     OPTIMISTIC_GRACE_CAP_SECONDS,
 )
 from .models import (
@@ -115,6 +133,25 @@ BFF_POLL_INTERVAL = 300  # 5 minutes
 # #62); a leak surfaces with up to this much latency. Kept conservative because
 # the account API's rate limit is unverified (homebridge issue #543).
 WATER_DETECTOR_POLL_INTERVAL = 120  # 2 minutes
+
+
+@dataclasses.dataclass
+class _LanReadOverlay:
+    """Device-native LAN ``devStatus`` shaped for ``update_from_lan`` (issue #57).
+
+    The parsed :class:`LanDevStatus` carries brightness on the LAN 0-100 scale
+    (``brightness_0_100``), but :meth:`GoveeDeviceState.update_from_lan` expects
+    DEVICE-NATIVE brightness under ``brightness`` (the ``LanDevStatusLike``
+    protocol). This tiny adapter holds the rescaled value so the coordinator
+    rescales exactly once, before the overlay, as the design requires. It is a
+    plain (mutable) dataclass so its attributes are settable, satisfying the
+    ``LanDevStatusLike`` protocol's read-write members.
+    """
+
+    on: bool | None
+    brightness: int | None
+    color: RGBColor | None
+    color_temp_kelvin: int | None
 
 
 class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
@@ -279,6 +316,20 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # temp/humidity, air-quality) for SKUs beyond leak+thermo sensors (#114).
         self._bff_device_values: list[dict[str, Any]] = []
 
+        # LAN (UDP) transport (issue #57). Auto-enabled when a device answers
+        # the discovery scan AND its scan MAC correlates to a known device_id;
+        # there is no enable toggle. ``_lan_client`` stays None when LAN is
+        # disabled, degraded, or nothing correlated — every LAN path keys off it.
+        self._lan_client: GoveeLanClient | None = None
+        # Correlated LAN devices keyed by coordinator device_id.
+        self._lan_devices: dict[str, LanDeviceInfo] = {}
+        # Scan records that matched no device_id (counted for diagnostics).
+        self._lan_unmatched: list[Mapping[str, Any]] = []
+        # Consecutive solicited-read misses per device, for demotion (LAN-011).
+        self._lan_read_misses: dict[str, int] = {}
+        # Monotonic timestamp of the last LAN rescan, for throttling (LAN-011).
+        self._last_lan_rescan: float = 0.0
+
     @property
     def devices(self) -> dict[str, GoveeDevice]:
         """Get all discovered devices."""
@@ -395,6 +446,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._transport.refresh_ble_staleness(
             self._devices, set(self._ble_devices.keys())
         )
+
+    def _refresh_lan_staleness(self) -> None:
+        """Mark LAN unavailable for non-LAN or stale-read devices (issue #57).
+
+        LAN-active = currently correlated in ``self._lan_devices`` (answered the
+        scan and matched a device_id). Everything else gets ``no_lan_presence``;
+        a correlated device whose last applied read is stale gets ``stale_lan``.
+        Runs AFTER :meth:`_refresh_lan_reads` so a read applied this cycle has
+        already stamped success and the device is not falsely marked stale.
+        """
+        self._transport.refresh_lan_staleness(self._devices, set(self._lan_devices))
 
     @property
     def states(self) -> dict[str, GoveeDeviceState]:
@@ -576,6 +638,385 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if self._water_detectors and self._iot_credentials:
             await self._poll_water_detectors()
             self._schedule_water_detector_poll()
+
+        # LAN (UDP) transport is opened LAST, after every fallible discovery /
+        # login step above, so a partially-built setup can never strand a bound
+        # :4002 socket — if one of those steps raises ConfigEntryNotReady the LAN
+        # client is never opened, and any failure inside _async_setup_lan after
+        # the socket opens stops the client before propagating (#57, blocking #5).
+        await self._async_setup_lan()
+
+    async def _async_setup_lan(self) -> None:
+        """Set up the LAN (UDP) transport — the LAST step of coordinator setup.
+
+        Auto-enables the local UDP transport (issue #57) when at least one
+        device answers the LAN discovery scan AND its scan MAC correlates to a
+        known ``device_id``. There is no enable toggle: correlation IS the gate.
+        The only LAN option is ``CONF_LAN_TARGETS`` (extra cross-VLAN unicast
+        targets); setting it to the literal ``"off"`` (case-insensitive) is the
+        rollback escape hatch that skips LAN setup entirely, leaving
+        ``self._lan_client`` ``None`` so every LAN path is bypassed.
+
+        Opened LAST in :meth:`_async_setup` (after every fallible discovery /
+        login step) and, once the client's socket is bound, wrapped so any
+        subsequent failure stops the client before the exception propagates — a
+        partially-built setup must never strand a bound socket (blocking #5).
+        The discovery scan and ``async_start`` degrade cleanly (never raise into
+        setup) when port :4002 is held by another local-control app.
+
+        LAN-011 fills in the runtime read/rescan/health wiring; this method only
+        owns the lifecycle (open LAST, correlate, leak-proof teardown).
+        """
+        raw_targets = self._config_entry.options.get(CONF_LAN_TARGETS, "")
+        # Rollback escape hatch: an explicit "off" disables LAN with no socket
+        # work, so a user can opt out of the auto-enabled transport entirely.
+        if isinstance(raw_targets, str) and raw_targets.strip().lower() == "off":
+            _LOGGER.info("Govee LAN transport disabled via %s='off'", CONF_LAN_TARGETS)
+            return
+
+        # Tolerate a stale / invalid targets option: a bad cross-VLAN entry must
+        # not break LAN setup, let alone the integration. Fall back to no extras.
+        try:
+            extra_targets = expand_lan_targets(
+                raw_targets if isinstance(raw_targets, str) else ""
+            )
+        except LanTargetError as err:
+            _LOGGER.warning(
+                "Ignoring invalid %s option (%r): %s",
+                CONF_LAN_TARGETS,
+                raw_targets,
+                err,
+            )
+            extra_targets = []
+
+        interface_ips = await async_get_lan_interface_ips(self.hass)
+
+        # The discovery scan must never raise into setup: an OSError (port :4002
+        # held by another local-control app without SO_REUSEPORT) means "no LAN
+        # data", so degrade cleanly to MQTT/REST.
+        try:
+            scan = await async_scan_lan_devices(
+                interface_ips=interface_ips,
+                extra_targets=extra_targets,
+            )
+        except OSError as err:
+            _LOGGER.info(
+                "Govee LAN discovery scan could not bind, LAN disabled: %s", err
+            )
+            return
+
+        client = GoveeLanClient(self._on_lan_dev_status)
+        await client.async_start(interface_ips)
+        if not client.available:
+            # Clean degrade: the :4002 bind failed (held by a non-sharing app).
+            # Release whatever it grabbed and stay LAN-disabled (client None).
+            await client.async_stop()
+            return
+
+        # From here the client owns a bound socket. ANY failure must stop it
+        # before propagating so a partially-built setup never strands the bind
+        # (blocking #5) — even though the steps below are not expected to raise.
+        try:
+            matched, unmatched = correlate_scan(
+                scan, set(self._devices), time.monotonic()
+            )
+            if not matched:
+                # Auto-enable gate not met: the scan answered but nothing
+                # correlated to a device_id. Don't hold sockets for nothing —
+                # stop the client and stay disabled.
+                _LOGGER.debug(
+                    "Govee LAN: scan answered but no device correlated "
+                    "(%d unmatched) — LAN disabled",
+                    len(unmatched),
+                )
+                await client.async_stop()
+                return
+            self._lan_devices = matched
+            self._lan_unmatched = list(unmatched)
+            # Promote the client only after correlation succeeds.
+            self._lan_client = client
+        except Exception:
+            await client.async_stop()
+            raise
+
+        _LOGGER.info(
+            "Govee LAN transport enabled for %d device(s) (%d unmatched scan "
+            "record(s))",
+            len(self._lan_devices),
+            len(self._lan_unmatched),
+        )
+
+    @callback
+    def _on_lan_dev_status(self, src_ip: str, status: LanDevStatus) -> None:
+        """Apply an unsolicited LAN ``devStatus`` push, guarded by source IP.
+
+        Injected into :class:`GoveeLanClient` as its ``on_dev_status`` callback.
+        A ``devStatus`` reply carries no device identity, so the only key is the
+        datagram source IP — which a DHCP reassignment can silently re-point at a
+        different device (critic blocking #3). The push is applied ONLY when the
+        source IP reverse-resolves to exactly one correlated device whose
+        correlation is still fresh (within ``LAN_CORRELATION_TTL_SECONDS``); any
+        ambiguity (unknown IP, stale correlation, or two devices sharing one IP)
+        skips the push and requests a re-correlation so the next poll fixes the
+        map, rather than clobbering a guessed device. The mode-aware overlay and
+        the optimistic-grace guard live in :meth:`_apply_lan_read`, shared with
+        the solicited poll path.
+
+        Args:
+            src_ip: The datagram's source IP address.
+            status: The parsed LAN ``devStatus`` snapshot.
+        """
+        device_id = self._lan_device_id_for_ip(src_ip)
+        if device_id is None:
+            # Unknown or ambiguous source IP: a DHCP reassignment may have left
+            # the IP->device map stale. Re-correlate before trusting it again and
+            # do NOT apply to a guessed device — fall back to cloud (blocking #3).
+            self._request_lan_rescan()
+            return
+        info = self._lan_devices[device_id]
+        if (time.monotonic() - info.last_correlated_ts) >= LAN_CORRELATION_TTL_SECONDS:
+            # Correlation too old to trust this IP mapping; re-correlate first
+            # and skip — a stale map could route this reply to the wrong device.
+            self._request_lan_rescan()
+            return
+        # Unsolicited push: notify HA only when a value actually changed.
+        self._apply_lan_read(device_id, status)
+
+    def _lan_device_id_for_ip(self, src_ip: str) -> str | None:
+        """Reverse-resolve a LAN source IP to its correlated ``device_id``.
+
+        Returns the single correlated ``device_id`` currently mapped to
+        ``src_ip``, or ``None`` when no device maps to it (unknown IP) or more
+        than one does (ambiguous, e.g. a botched DHCP lease) — the only safe
+        answer is to skip LAN for that datagram (blocking #3).
+        """
+        matches = [
+            device_id
+            for device_id, info in self._lan_devices.items()
+            if info.ip == src_ip
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    @callback
+    def _request_lan_rescan(self) -> None:
+        """Force the next LAN rescan to bypass its throttle (blocking #3).
+
+        Called from the unsolicited-push path when a ``devStatus`` arrives from an
+        IP that is unknown or whose correlation has gone stale: a DHCP
+        reassignment may have invalidated the IP<->device map, so the next poll
+        must re-correlate immediately rather than wait out ``LAN_RESCAN_INTERVAL``.
+        Idempotent (it only clears the throttle timestamp), so a burst of
+        unknown-IP pushes can never trigger a rescan flood.
+        """
+        self._last_lan_rescan = 0.0
+
+    def _in_optimistic_grace(self, existing_state: GoveeDeviceState) -> bool:
+        """Return ``True`` while a device is inside its optimistic grace window.
+
+        A control command that just fired marks the state ``source`` as
+        ``optimistic`` and stamps ``last_optimistic_update``; for a short window
+        (two poll intervals, capped at ``OPTIMISTIC_GRACE_CAP_SECONDS``) a slower
+        authoritative read — the cloud poll or a solicited LAN read — must not
+        overwrite the in-flight power/brightness and flip-flop the UI. Extracted
+        so the cloud poll and the LAN overlay share one definition (issue #57).
+        """
+        if existing_state.source != "optimistic":
+            return False
+        optimistic_ts = existing_state.last_optimistic_update
+        if optimistic_ts is None:
+            return False
+        poll_seconds = (
+            self.update_interval.total_seconds()
+            if self.update_interval is not None
+            else 60.0
+        )
+        grace_window = min(2 * poll_seconds, OPTIMISTIC_GRACE_CAP_SECONDS)
+        return (time.monotonic() - optimistic_ts) < grace_window
+
+    def _apply_lan_read(
+        self, device_id: str, status: LanDevStatus, *, notify: bool = True
+    ) -> None:
+        """Overlay a parsed LAN ``devStatus`` onto a device's existing state.
+
+        Additive and abortable: a device with no existing state returns without
+        raising, so a stray reply can never strand or corrupt state. Brightness is
+        rescaled from the LAN 0-100 domain into the device's native range BEFORE
+        the overlay (``state.brightness`` is device-native), and the overlay
+        honours the optimistic grace window so a solicited read cannot clobber an
+        in-flight command. The mode-aware / {0,0,0}-sentinel / colour-vs-CT
+        mutual-exclusion guards live in
+        :meth:`GoveeDeviceState.update_from_lan`.
+
+        Args:
+            device_id: The correlated device to overlay.
+            status: The parsed LAN ``devStatus`` reply.
+            notify: When ``True`` (the unsolicited-push path) call
+                ``async_set_updated_data`` only if a value actually changed (BFF
+                churn-avoidance). The solicited poll path passes ``False`` and
+                mutates in place, letting ``_async_update_data`` return
+                ``self._states`` so HA fires listeners without a re-entrant
+                ``async_set_updated_data`` (critic advisory).
+        """
+        existing = self._states.get(device_id)
+        if existing is None:
+            return
+
+        device = self._devices.get(device_id)
+        brightness_range = device.brightness_range if device is not None else (0, 100)
+        native_brightness = (
+            lan_brightness_to_device(status.brightness_0_100, brightness_range)
+            if status.brightness_0_100 is not None
+            else None
+        )
+        overlay = _LanReadOverlay(
+            on=status.on,
+            brightness=native_brightness,
+            color=status.color,
+            color_temp_kelvin=status.color_temp_kelvin,
+        )
+
+        before = (
+            existing.power_state,
+            existing.brightness,
+            existing.color,
+            existing.color_temp_kelvin,
+            existing.online,
+        )
+        existing.update_from_lan(
+            overlay, skip_power_brightness=self._in_optimistic_grace(existing)
+        )
+        # A devStatus reply reaching here is a confirmed inbound read — proof of
+        # life — so stamp LAN read success (read => success). This is the read
+        # half of the LAN recording asymmetry (see refresh_lan_staleness): the
+        # write half lives in the LAN control tier. Recording here keeps the
+        # device LAN-available so the very next _refresh_lan_staleness pass
+        # leaves it active instead of demoting it to stale_lan.
+        self._record_transport_success(device_id, "lan")
+        after = (
+            existing.power_state,
+            existing.brightness,
+            existing.color,
+            existing.color_temp_kelvin,
+            existing.online,
+        )
+        if notify and before != after:
+            self.async_set_updated_data(self._states)
+
+    async def _refresh_lan_reads(self) -> None:
+        """Solicit a ``devStatus`` from each correlated LAN device and overlay it.
+
+        Sends one batched query to every correlated device's current IP and
+        overlays each reply onto the FRESH cloud state in place — no re-entrant
+        ``async_set_updated_data``: ``_async_update_data`` returns ``self._states``
+        so HA fires listeners. A device that answers resets its miss counter; a
+        device silent for ``LAN_READ_MISS_DEMOTE_THRESHOLD`` consecutive polls is
+        demoted out of the LAN map so reads AND writes fall back to MQTT/REST
+        until a rescan re-promotes it.
+        """
+        if self._lan_client is None or not self._lan_devices:
+            return
+
+        ip_to_device = {
+            info.ip: device_id
+            for device_id, info in self._lan_devices.items()
+            if info.ip
+        }
+        if not ip_to_device:
+            return
+
+        replies = await self._lan_client.async_read_batch(list(ip_to_device))
+
+        demoted: list[str] = []
+        for ip, device_id in ip_to_device.items():
+            status = replies.get(ip)
+            if status is not None:
+                # Mutate in place (notify=False) — see _apply_lan_read.
+                self._apply_lan_read(device_id, status, notify=False)
+                self._lan_read_misses[device_id] = 0
+            else:
+                misses = self._lan_read_misses.get(device_id, 0) + 1
+                self._lan_read_misses[device_id] = misses
+                if misses >= LAN_READ_MISS_DEMOTE_THRESHOLD:
+                    demoted.append(device_id)
+
+        for device_id in demoted:
+            self._lan_devices.pop(device_id, None)
+            self._lan_read_misses.pop(device_id, None)
+            _LOGGER.debug(
+                "Govee LAN: demoting %s after %d consecutive read misses — reads "
+                "and writes fall back to MQTT/REST until a rescan re-promotes it",
+                device_id,
+                LAN_READ_MISS_DEMOTE_THRESHOLD,
+            )
+
+    async def _async_maybe_rescan_lan(self) -> None:
+        """Re-scan + re-correlate LAN devices on a throttled cadence (issue #57).
+
+        Mirrors :meth:`_async_maybe_rediscover_devices`' monotonic throttle. A
+        rescan re-promotes devices demoted by read-misses, picks up newly added
+        devices, and — critically — re-correlates IP<->device_id mappings so a
+        DHCP IP reassignment cannot leave the read path pointed at the wrong
+        device (blocking #3). Never raises: a scan hiccup must not fail the poll.
+        :meth:`_request_lan_rescan` can clear the throttle so an unknown-IP push
+        forces the next call to run.
+        """
+        if self._lan_client is None:
+            return
+        now = time.monotonic()
+        if now - self._last_lan_rescan < LAN_RESCAN_INTERVAL:
+            return
+        self._last_lan_rescan = now
+
+        raw_targets = self._config_entry.options.get(CONF_LAN_TARGETS, "")
+        try:
+            extra_targets = expand_lan_targets(
+                raw_targets if isinstance(raw_targets, str) else ""
+            )
+        except LanTargetError:
+            extra_targets = []
+
+        try:
+            interface_ips = await async_get_lan_interface_ips(self.hass)
+            scan = await async_scan_lan_devices(
+                interface_ips=interface_ips,
+                extra_targets=extra_targets,
+            )
+        except OSError as err:
+            _LOGGER.debug("Govee LAN rescan could not bind/scan: %s", err)
+            return
+
+        matched, unmatched = correlate_scan(scan, set(self._devices), now)
+        self._merge_lan_correlation(matched, unmatched)
+
+    def _merge_lan_correlation(
+        self,
+        matched: dict[str, LanDeviceInfo],
+        unmatched: list[Mapping[str, Any]],
+    ) -> None:
+        """Merge a fresh LAN correlation into the live device map (blocking #3).
+
+        Fresh matches are authoritative for IP<->device_id and reset the
+        read-miss counter (re-promoting demoted devices). A previously-correlated
+        device that did NOT answer this scan is kept (a transient scan miss;
+        read-miss demotion handles a real drop) UNLESS its old IP is now claimed
+        by a DIFFERENT device — that stale mapping is invalidated and dropped so a
+        DHCP reassignment can never misroute a future read (blocking #3 (b)).
+        """
+        claimed_ips = {info.ip for info in matched.values() if info.ip}
+        rebuilt: dict[str, LanDeviceInfo] = {}
+        for device_id, info in self._lan_devices.items():
+            if device_id in matched:
+                continue  # superseded by the fresh correlation below
+            if info.ip and info.ip in claimed_ips:
+                # Old IP now belongs to a different device — drop the stale map.
+                self._lan_read_misses.pop(device_id, None)
+                continue
+            rebuilt[device_id] = info
+        for device_id, info in matched.items():
+            rebuilt[device_id] = info
+            self._lan_read_misses[device_id] = 0
+        self._lan_devices = rebuilt
+        self._lan_unmatched = list(unmatched)
 
     async def _discover_devices(self) -> None:
         """Discover all devices from Govee API."""
@@ -1436,6 +1877,19 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._refresh_mqtt_health()
         self._refresh_ble_staleness()
 
+        # LAN overlay (issue #57): re-correlate (throttled) then overlay the
+        # fresh cloud state with the latest solicited devStatus reads. Runs AFTER
+        # the cloud fan-in so LAN overlays FRESH cloud objects, never the reverse,
+        # and mutates in place so the return below fires HA listeners without a
+        # re-entrant async_set_updated_data. Failure-isolated: a LAN hiccup must
+        # never fail the state poll.
+        try:
+            await self._async_maybe_rescan_lan()
+            await self._refresh_lan_reads()
+            self._refresh_lan_staleness()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Govee LAN read refresh failed: %s", err)
+
         return self._states
 
     async def _fetch_device_state(
@@ -1494,32 +1948,22 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 # (e.g. BLE-out-of-range or slow AWS propagation). Preserve
                 # the optimistic power/brightness for a short window instead
                 # of flipflopping the UI. MQTT pushes clear the window early.
-                grace_cap = OPTIMISTIC_GRACE_CAP_SECONDS
-                poll_seconds = (
-                    self.update_interval.total_seconds()
-                    if self.update_interval is not None
-                    else 60.0
-                )
-                grace_window = min(2 * poll_seconds, grace_cap)
-                optimistic_ts = existing_state.last_optimistic_update
-                in_grace = (
-                    existing_state.source == "optimistic"
-                    and optimistic_ts is not None
-                    and (time.monotonic() - optimistic_ts) < grace_window
-                )
-                if in_grace and existing_state.power_state != state.power_state:
+                # The grace test is shared with the LAN read path (#57).
+                if (
+                    self._in_optimistic_grace(existing_state)
+                    and existing_state.power_state != state.power_state
+                ):
                     _LOGGER.debug(
-                        "Preserving optimistic power for %s during %ds grace "
+                        "Preserving optimistic power for %s during grace "
                         "(API=%s optimistic=%s)",
                         device_id,
-                        int(grace_window),
                         state.power_state,
                         existing_state.power_state,
                     )
                     state.power_state = existing_state.power_state
                     state.brightness = existing_state.brightness
                     state.source = "optimistic"
-                    state.last_optimistic_update = optimistic_ts
+                    state.last_optimistic_update = existing_state.last_optimistic_update
 
                 # Log state transitions from API for debugging stale-state issues
                 if existing_state.power_state != state.power_state:
@@ -2432,5 +2876,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if self._mqtt_client:
             await self._mqtt_client.async_stop()
             self._mqtt_client = None
+
+        # Drop the multicast group and release the :4002 bind so a reload /
+        # unload never leaks the LAN socket (issue #57, blocking #5).
+        if self._lan_client is not None:
+            await self._lan_client.async_stop()
+            self._lan_client = None
 
         await self._api_client.close()

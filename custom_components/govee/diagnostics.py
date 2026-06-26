@@ -447,6 +447,14 @@ async def async_get_config_entry_diagnostics(
         "leak_sensors": _leak_diag(coordinator),
         # Read-only local-network scan to seed the LAN-API work (issue #57).
         "lan_discovery": await _lan_discovery_diag(hass, entry.options.get(CONF_LAN_TARGETS, "")),
+        # PII-free LAN transport census (#57): how many devices are currently
+        # correlated to a LAN address (active) vs. how many answered the scan but
+        # did not match a coordinator device_id (unmatched — surfaces MAC-format
+        # drift). Counts only — no address and no scan->device_id join is exposed,
+        # so the auto-enabled LAN transport stays observable from a download
+        # alone, without hardware and without leaking any address.
+        "lan_active_count": len(coordinator._lan_devices),
+        "lan_unmatched_count": len(coordinator._lan_unmatched),
         **_runtime_diag(coordinator),
     }
     return _redact(diagnostics_data)

@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
+from .const import LAN_STALE_SECONDS
 from .models.transport import (
     TRANSPORT_KINDS,
     TransportHealth,
@@ -116,3 +117,52 @@ class TransportHealthTracker:
             if (now - last).total_seconds() > BLE_STALE_SECONDS:
                 ble.is_available = False
                 ble.last_failure_reason = "stale_advertisement"
+
+    def refresh_lan_staleness(
+        self,
+        device_ids: Iterable[str],
+        lan_active_ids: set[str],
+    ) -> None:
+        """Mark LAN unavailable for absent or stale devices (issue #57).
+
+        Modelled on :meth:`refresh_ble_staleness`. The ``lan`` health entry is
+        auto-provisioned for *every* device (groups, sensors, BLE-only devices
+        included), but only devices that answered the LAN discovery scan and
+        correlated to a ``device_id`` are LAN-active. This gives the otherwise
+        blank ``lan`` entry a meaningful failure reason:
+
+        * A device not in ``lan_active_ids`` is marked unavailable with reason
+          ``no_lan_presence`` — it never participated in LAN at all (the common
+          case for groups, sensors and BLE-only devices).
+        * A LAN-active device whose last successful exchange is older than
+          :data:`~custom_components.govee.const.LAN_STALE_SECONDS` is marked
+          unavailable with reason ``stale_lan`` — it was reachable but has gone
+          quiet, so the write-health gate must stop routing writes to it.
+
+        Recording asymmetry vs MQTT (intentional — the LAN control tier relies
+        on it): for LAN a confirmed inbound devStatus *read* records success
+        and a confirmed *write* records send + success, but an unconfirmed or
+        failed write records FAILURE. MQTT, which cannot verify by read, stamps
+        a bare send-only success on publish. Do **not** add a send-only success
+        for LAN: a verify-by-read transport must never report a write the
+        device silently dropped as healthy, or a stranded device would look
+        available.
+
+        Args:
+            device_ids: Every known device (LAN-active or not).
+            lan_active_ids: The subset currently correlated in the LAN map.
+        """
+        now = datetime.now(timezone.utc)
+        for device_id in device_ids:
+            self.ensure(device_id)
+            lan = self._health[device_id]["lan"]
+            if device_id not in lan_active_ids:
+                lan.is_available = False
+                lan.last_failure_reason = "no_lan_presence"
+                continue
+            last = lan.last_success_ts
+            if last is None:
+                continue
+            if (now - last).total_seconds() > LAN_STALE_SECONDS:
+                lan.is_available = False
+                lan.last_failure_reason = "stale_lan"
