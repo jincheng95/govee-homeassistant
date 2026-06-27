@@ -109,6 +109,14 @@ LAN_RESCAN_INTERVAL: Final = 300
 # Consecutive solicited-read misses before a device is demoted out of the LAN
 # device map so both reads and writes fall back to MQTT/REST.
 LAN_READ_MISS_DEMOTE_THRESHOLD: Final = 3
+# Consecutive LAN write-confirm misses (verify-by-read timeout / value mismatch)
+# before the 'lan' transport is marked unavailable. Hysteresis (issue #57): a
+# freshly powered Govee controller routinely can't unicast a devStatus reply
+# within LAN_WRITE_CONFIRM_TIMEOUT, so a SINGLE miss must not flip the LAN
+# connectivity sensor off and gate writes to MQTT — a flap synced to control
+# activity. The command still falls through to MQTT/REST on every miss; only the
+# availability flip is deferred. A successful read resets the streak.
+LAN_CONFIRM_MISS_THRESHOLD: Final = 3
 # Age (seconds) past which a device's last successful LAN exchange is treated as
 # stale, marking its 'lan' transport health unavailable. Set just above the 60s
 # default poll so a single missed poll is tolerated.

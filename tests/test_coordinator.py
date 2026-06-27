@@ -3344,8 +3344,12 @@ class TestTryLanCommand:
         assert client.send_calls
         assert client.read_calls
         assert coord._states[self.DEVICE_ID].power_state is True
+        # Hysteresis (#57): a SINGLE confirm miss must NOT flip LAN unavailable
+        # (that would flap the lan_connectivity sensor on every power-on); it only
+        # counts toward the threshold. The command still fell through.
         health = coord._transport.get(self.DEVICE_ID, "lan")
-        assert health is not None and health.last_failure_reason == "unconfirmed"
+        assert health is not None and health.is_available is True
+        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
 
     @pytest.mark.asyncio
     async def test_send_failure_returns_false_without_reading(self):
@@ -3378,8 +3382,10 @@ class TestTryLanCommand:
         )
 
         assert result is False
+        # Single miss -> fall through but no flip (hysteresis, #57).
         health = coord._transport.get(self.DEVICE_ID, "lan")
-        assert health is not None and health.last_failure_reason == "value_mismatch"
+        assert health is not None and health.is_available is True
+        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
 
     @pytest.mark.asyncio
     async def test_power_reply_on_none_is_mismatch(self):
@@ -3393,8 +3399,10 @@ class TestTryLanCommand:
         )
 
         assert result is False
+        # Single miss -> fall through but no flip (hysteresis, #57).
         health = coord._transport.get(self.DEVICE_ID, "lan")
-        assert health is not None and health.last_failure_reason == "value_mismatch"
+        assert health is not None and health.is_available is True
+        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
 
     @pytest.mark.asyncio
     async def test_brightness_out_of_tolerance_returns_false(self):
@@ -3410,8 +3418,52 @@ class TestTryLanCommand:
         )
 
         assert result is False
+        # Single miss -> fall through but no flip (hysteresis, #57).
         health = coord._transport.get(self.DEVICE_ID, "lan")
-        assert health is not None and health.last_failure_reason == "value_mismatch"
+        assert health is not None and health.is_available is True
+        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
+
+    # ---- confirm-miss hysteresis (#57) -------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_confirm_misses_flip_lan_only_after_threshold(self):
+        """N consecutive confirm misses flip LAN down; fewer do not (#57)."""
+        from custom_components.govee.const import LAN_CONFIRM_MISS_THRESHOLD
+
+        coord, _ = self._ready_coord()
+        coord._lan_client = _FakeWriteClient(read_reply=None)  # never confirms
+        dev = coord._devices[self.DEVICE_ID]
+
+        # First THRESHOLD-1 misses: LAN stays available (sensor must not flap).
+        for _ in range(LAN_CONFIRM_MISS_THRESHOLD - 1):
+            assert await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True)) is False
+            assert coord._transport.get(self.DEVICE_ID, "lan").is_available is True
+
+        # The Nth consecutive miss flips it unavailable + records the reason.
+        assert await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True)) is False
+        health = coord._transport.get(self.DEVICE_ID, "lan")
+        assert health.is_available is False
+        assert health.last_failure_reason == "unconfirmed"
+
+    @pytest.mark.asyncio
+    async def test_successful_read_resets_confirm_miss_streak(self):
+        """A confirmed inbound read clears the confirm-miss streak (#57)."""
+        from custom_components.govee.const import LAN_CONFIRM_MISS_THRESHOLD
+
+        coord, _ = self._ready_coord()
+        coord._lan_client = _FakeWriteClient(read_reply=None)
+        dev = coord._devices[self.DEVICE_ID]
+
+        for _ in range(LAN_CONFIRM_MISS_THRESHOLD - 1):
+            await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True))
+        assert coord._lan_confirm_misses[self.DEVICE_ID] == LAN_CONFIRM_MISS_THRESHOLD - 1
+
+        # A poll read lands -> streak reset -> next miss starts from 1, no flip.
+        coord._apply_lan_read(self.DEVICE_ID, self._status())
+        assert self.DEVICE_ID not in coord._lan_confirm_misses
+        await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True))
+        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
+        assert coord._transport.get(self.DEVICE_ID, "lan").is_available is True
 
     # ---- early-return guards (never touch the wire) ------------------------
 
@@ -3578,4 +3630,7 @@ class TestTryLanCommand:
         coord._api_client.control_device.assert_awaited_once()  # MQTT -> REST
         lan_health = coord._transport.get(self.DEVICE_ID, "lan")
         assert lan_health is not None
-        assert lan_health.last_failure_reason == "unconfirmed"
+        # The command still falls through LAN -> MQTT -> REST on a single miss,
+        # but LAN stays available (no flap on one miss — hysteresis, #57).
+        assert lan_health.is_available is True
+        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
