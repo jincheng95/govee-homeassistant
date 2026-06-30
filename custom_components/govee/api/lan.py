@@ -199,6 +199,54 @@ async def async_get_lan_interface_ips(hass: HomeAssistant) -> list[str]:
     return ips
 
 
+async def async_get_lan_broadcast_addresses(hass: HomeAssistant) -> list[str]:
+    """Return the IPv4 directed-broadcast address of each enabled LAN adapter.
+
+    Newer Govee devices — and some access points / firmware — silently ignore
+    the multicast discovery scan yet DO answer a scan sent to the subnet's
+    directed-broadcast address (issue #57: an H707B reported zero multicast
+    discovery, yet a broadcast ``scan`` to ``x.x.x.255`` reached it and unblocked
+    local control). This derives those ``x.x.x.255``-style broadcast addresses
+    from Home Assistant's adapter list so the discovery scan reaches such devices
+    automatically, without the user hand-configuring a broadcast LAN target.
+
+    Uses HA's ``network.async_get_adapters`` for the per-adapter netmask
+    (``async_get_enabled_source_ips`` returns bare IPs with no prefix). Skips
+    disabled adapters, loopback / link-local addresses, and ``/31``-``/32``
+    point-to-point addresses (which have no usable directed broadcast).
+    Deduplicated, order-preserving, and never raises — degrades to an empty list
+    if the network component is unavailable, so every caller can proceed.
+    """
+    broadcasts: list[str] = []
+    seen: set[str] = set()
+    try:
+        for adapter in await network.async_get_adapters(hass):
+            if not adapter.get("enabled", True):
+                continue
+            for ipv4 in adapter.get("ipv4", []):
+                address = ipv4.get("address")
+                prefix = ipv4.get("network_prefix")
+                if not address or prefix is None:
+                    continue
+                try:
+                    ip = IPv4Address(address)
+                    if ip.is_loopback or ip.is_link_local:
+                        continue
+                    net = IPv4Network(f"{address}/{prefix}", strict=False)
+                except (AddressValueError, ValueError):
+                    continue
+                # /31 and /32 have no usable directed-broadcast address.
+                if net.num_addresses <= 2:
+                    continue
+                broadcast = str(net.broadcast_address)
+                if broadcast not in seen:
+                    seen.add(broadcast)
+                    broadcasts.append(broadcast)
+    except Exception as err:  # network component unavailable — fall back
+        _LOGGER.debug("LAN discovery: could not enumerate adapters: %s", err)
+    return broadcasts
+
+
 class _ScanProtocol(asyncio.DatagramProtocol):
     """Collects well-formed Govee ``scan`` responses; ignores everything else."""
 
@@ -358,6 +406,7 @@ async def async_scan_lan_devices(
     timeout: float = 2.0,
     interface_ips: list[str] | None = None,
     extra_targets: list[str] | None = None,
+    broadcast_targets: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Send one multicast ``scan`` and collect responses for ``timeout`` seconds.
 
@@ -375,6 +424,11 @@ async def async_scan_lan_devices(
     multicast cannot reach — e.g. on another VLAN. The scan is sent to each in
     addition to the multicast; replies return unicast to our 4002 source.
 
+    ``broadcast_targets`` are the host's auto-derived per-subnet directed-broadcast
+    addresses (from ``async_get_lan_broadcast_addresses``). Newer devices that
+    ignore the multicast scan still answer a broadcast scan (issue #57), so the
+    scan is sent to each of these as well — no user configuration required.
+
     Raises ``OSError`` if the response socket cannot be bound (e.g. port 4002 in
     use by another local-control app that does not share the port); callers
     should treat that as "no data".
@@ -382,6 +436,7 @@ async def async_scan_lan_devices(
     loop = asyncio.get_running_loop()
     interfaces = list(interface_ips or [])
     targets = list(extra_targets or [])
+    broadcasts = list(broadcast_targets or [])
 
     sock = _build_socket()  # raises OSError if port 4002 cannot be bound
     joined = _join_group(sock, interfaces)
@@ -391,6 +446,9 @@ async def async_scan_lan_devices(
     try:
         _send_scan(sock, transport, interfaces)
         _send_targets(transport, targets)
+        # Auto-derived subnet broadcast(s): reach newer devices that ignore the
+        # multicast scan but answer a directed broadcast (issue #57).
+        _send_targets(transport, broadcasts)
         await asyncio.sleep(timeout)
     finally:
         _drop_group(sock, joined)

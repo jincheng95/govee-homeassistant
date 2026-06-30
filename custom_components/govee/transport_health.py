@@ -140,11 +140,17 @@ class TransportHealthTracker:
           quiet, so the write-health gate must stop routing writes to it.
 
         Recording asymmetry vs MQTT (intentional — the LAN control tier relies
-        on it): for LAN a confirmed inbound devStatus *read* records success
-        and a confirmed *write* records send + success, but an unconfirmed or
-        failed write records FAILURE. MQTT, which cannot verify by read, stamps
-        a bare send-only success on publish. Do **not** add a send-only success
-        for LAN: a verify-by-read transport must never report a write the
+        on it): for LAN a confirmed inbound devStatus *read* records success and
+        a confirmed *write* records send + success. An UNCONFIRMED write (no
+        devStatus reply within ``LAN_WRITE_CONFIRM_TIMEOUT``, or a value
+        mismatch) records NO transport-health change — it drives write
+        suppression only (``coordinator._note_lan_write_miss``, #57); flipping
+        the ``lan`` transport unavailable on confirm misses was the reported flap
+        (the sensor dropping to Disconnected the instant a device was turned on),
+        so transport health is read-driven. Only a hard ``send_failed`` OSError
+        records a LAN transport FAILURE. MQTT, which cannot verify by read,
+        stamps a bare send-only success on publish. Do **not** add a send-only
+        success for LAN: a verify-by-read transport must never report a write the
         device silently dropped as healthy, or a stranded device would look
         available.
 

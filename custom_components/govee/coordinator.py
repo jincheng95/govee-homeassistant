@@ -51,6 +51,7 @@ from .ble_advertisement import sku_from_ble_name as _sku_from_ble_name  # noqa: 
 from .api.mqtt_control import command_to_mqtt
 from .api.lan import (
     LanTargetError,
+    async_get_lan_broadcast_addresses,
     async_get_lan_interface_ips,
     async_scan_lan_devices,
     expand_lan_targets,
@@ -68,11 +69,12 @@ from .const import (
     DEFAULT_ENABLE_MQTT_CONTROL,
     DEVICE_REDISCOVERY_INTERVAL,
     DOMAIN,
-    LAN_CONFIRM_MISS_THRESHOLD,
     LAN_CORRELATION_TTL_SECONDS,
     LAN_READ_MISS_DEMOTE_THRESHOLD,
     LAN_RESCAN_INTERVAL,
     LAN_WRITE_CONFIRM_TIMEOUT,
+    LAN_WRITE_SUPPRESS_SECONDS,
+    LAN_WRITE_SUPPRESS_THRESHOLD,
     OPTIMISTIC_GRACE_CAP_SECONDS,
 )
 from .models import (
@@ -336,9 +338,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._lan_unmatched: list[Mapping[str, Any]] = []
         # Consecutive solicited-read misses per device, for demotion (LAN-011).
         self._lan_read_misses: dict[str, int] = {}
-        # Consecutive LAN write-confirm misses per device, for availability
-        # hysteresis so a single power-on confirm miss can't flap LAN off (#57).
-        self._lan_confirm_misses: dict[str, int] = {}
+        # Consecutive LAN write-confirm failures (value mismatch / no reply) per
+        # device. Drives WRITE suppression only — never transport health, which
+        # is read-driven — so a device that reports a write late never flaps the
+        # lan_connectivity sensor off (#57, the value_mismatch flap).
+        self._lan_write_misses: dict[str, int] = {}
+        # Monotonic deadline until which LAN write *attempts* are skipped for a
+        # device whose recent writes did not confirm. Reads keep using LAN (the
+        # sensor stays Connected); writes fall straight to MQTT/REST without
+        # paying the verify-by-read confirm timeout each time (#57).
+        self._lan_write_suppressed_until: dict[str, float] = {}
         # Monotonic timestamp of the last LAN rescan, for throttling (LAN-011).
         self._last_lan_rescan: float = 0.0
 
@@ -445,26 +454,77 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """Stamp a failed transport use."""
         self._transport.record_failure(device_id, transport, reason)
 
-    def _record_lan_confirm_miss(self, device_id: str, reason: str) -> None:
-        """Account a LAN write-confirm miss with hysteresis (issue #57).
+    def _note_lan_write_miss(self, device_id: str) -> None:
+        """Account a LAN write-confirm failure; suppress writes if persistent (#57).
 
-        A verify-by-read miss does NOT prove LAN is down: a freshly powered Govee
-        controller routinely cannot unicast a ``devStatus`` reply within
-        ``LAN_WRITE_CONFIRM_TIMEOUT``, or briefly reports its pre-command state.
-        The write has already fallen through to MQTT/REST (the caller returns
-        ``False``), so the command is delivered regardless. Flipping the ``lan``
-        transport unavailable on a SINGLE miss would drop the lan_connectivity
-        sensor and gate off every further LAN write until the next poll read heals
-        it — a flap synced to control activity (the reported symptom). So only
-        mark LAN unavailable after ``LAN_CONFIRM_MISS_THRESHOLD`` consecutive
-        misses with no intervening successful read; ``_apply_lan_read`` resets the
-        streak. (A ``send_failed`` OSError is still a hard, immediate failure —
-        that path is genuine LAN unreachability, not a confirm race.)
+        A verify-by-read failure — the device answered with a different value, or
+        did not answer within ``LAN_WRITE_CONFIRM_TIMEOUT`` — does NOT mean LAN is
+        down. The UDP datagram was sent; on a value mismatch a ``devStatus`` even
+        came back, which is direct proof the transport is alive. It almost always
+        means a freshly-powered controller is reporting its pre-command state
+        late. So this NEVER touches transport health (health is read-driven: the
+        solicited poll read and unsolicited pushes own it). Flipping the ``lan``
+        transport unavailable on confirm misses is exactly the flap users
+        reported — the lan_connectivity sensor dropping to Disconnected the
+        instant a device was turned on.
+
+        Instead it counts consecutive write-confirm failures and, after
+        ``LAN_WRITE_SUPPRESS_THRESHOLD`` of them, suppresses LAN write *attempts*
+        for ``LAN_WRITE_SUPPRESS_SECONDS`` so the device's writes fall straight to
+        MQTT/REST without each paying the confirm timeout — while LAN reads keep
+        working and the sensor stays Connected. A confirmed write
+        (:meth:`_clear_lan_write_misses`) or the cooldown expiry re-arms LAN
+        writes, so a device that begins confirming again is picked back up. (A
+        ``send_failed`` OSError remains a hard, immediate transport failure — that
+        path is genuine LAN unreachability, not a confirm race.)
         """
-        misses = self._lan_confirm_misses.get(device_id, 0) + 1
-        self._lan_confirm_misses[device_id] = misses
-        if misses >= LAN_CONFIRM_MISS_THRESHOLD:
-            self._record_transport_failure(device_id, "lan", reason)
+        misses = self._lan_write_misses.get(device_id, 0) + 1
+        self._lan_write_misses[device_id] = misses
+        if misses >= LAN_WRITE_SUPPRESS_THRESHOLD:
+            self._lan_write_suppressed_until[device_id] = (
+                time.monotonic() + LAN_WRITE_SUPPRESS_SECONDS
+            )
+            _LOGGER.debug(
+                "Govee LAN: suppressing LAN write attempts for %s after %d "
+                "unconfirmed writes — writes use MQTT/REST for %ds; LAN reads "
+                "and the connectivity sensor are unaffected",
+                device_id,
+                misses,
+                LAN_WRITE_SUPPRESS_SECONDS,
+            )
+
+    def _clear_lan_write_misses(self, device_id: str) -> None:
+        """Re-arm LAN writes for a device (confirmed write): reset streak + cooldown."""
+        self._lan_write_misses.pop(device_id, None)
+        self._lan_write_suppressed_until.pop(device_id, None)
+
+    def _lan_writes_suppressed(self, device_id: str) -> bool:
+        """Whether LAN write *attempts* are currently in cooldown for a device (#57).
+
+        Returns ``True`` while the device is inside its post-failure cooldown, so
+        :meth:`_try_lan_command` skips the LAN write (and its confirm-read wait)
+        and falls straight to MQTT/REST. When the cooldown has elapsed it re-arms
+        the device (clearing the streak) and returns ``False`` so the next command
+        probes the LAN write path again. Reads are never affected.
+        """
+        deadline = self._lan_write_suppressed_until.get(device_id)
+        if deadline is None:
+            return False
+        if time.monotonic() >= deadline:
+            self._clear_lan_write_misses(device_id)
+            return False
+        return True
+
+    def lan_write_suppressed(self, device_id: str) -> bool:
+        """Read-only view of LAN write suppression for diagnostics (issue #57).
+
+        Unlike :meth:`_lan_writes_suppressed` this never re-arms an expired
+        cooldown, so a diagnostics download cannot mutate runtime state. ``True``
+        means LAN reads are healthy but the device's writes are currently routed
+        to MQTT/REST because recent LAN writes did not confirm.
+        """
+        deadline = self._lan_write_suppressed_until.get(device_id)
+        return deadline is not None and time.monotonic() < deadline
 
     def _refresh_mqtt_health(self) -> None:
         """Propagate MQTT client connection state to per-device health."""
@@ -723,6 +783,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             extra_targets = []
 
         interface_ips = await async_get_lan_interface_ips(self.hass)
+        # Auto-derived per-subnet broadcast(s): reach newer devices that ignore
+        # the multicast scan but answer a directed broadcast (issue #57).
+        broadcast_targets = await async_get_lan_broadcast_addresses(self.hass)
 
         # The discovery scan must never raise into setup: an OSError (port :4002
         # held by another local-control app without SO_REUSEPORT) means "no LAN
@@ -731,6 +794,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             scan = await async_scan_lan_devices(
                 interface_ips=interface_ips,
                 extra_targets=extra_targets,
+                broadcast_targets=broadcast_targets,
             )
         except OSError as err:
             _LOGGER.info(
@@ -937,10 +1001,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # device LAN-available so the very next _refresh_lan_staleness pass
         # leaves it active instead of demoting it to stale_lan.
         self._record_transport_success(device_id, "lan")
-        # A confirmed inbound read proves LAN is alive — clear any write-confirm
-        # miss streak so transient power-on misses never accumulate to a flip
-        # once the device starts answering again (#57).
-        self._lan_confirm_misses.pop(device_id, None)
+        # NOTE: a confirmed inbound READ proves the transport is alive (recorded
+        # above) but says nothing about whether WRITES land, so it must NOT reset
+        # the write-miss streak — only a confirmed write
+        # (:meth:`_clear_lan_write_misses`) or the suppression cooldown does that
+        # (#57). Resetting here would let a polling device whose writes never
+        # confirm pay the verify-by-read timeout on every single command forever.
         after = (
             existing.power_state,
             existing.brightness,
@@ -991,7 +1057,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         for device_id in demoted:
             self._lan_devices.pop(device_id, None)
             self._lan_read_misses.pop(device_id, None)
-            self._lan_confirm_misses.pop(device_id, None)
+            self._lan_write_misses.pop(device_id, None)
+            self._lan_write_suppressed_until.pop(device_id, None)
             _LOGGER.debug(
                 "Govee LAN: demoting %s after %d consecutive read misses — reads "
                 "and writes fall back to MQTT/REST until a rescan re-promotes it",
@@ -1027,9 +1094,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         try:
             interface_ips = await async_get_lan_interface_ips(self.hass)
+            broadcast_targets = await async_get_lan_broadcast_addresses(self.hass)
             scan = await async_scan_lan_devices(
                 interface_ips=interface_ips,
                 extra_targets=extra_targets,
+                broadcast_targets=broadcast_targets,
             )
         except OSError as err:
             _LOGGER.debug("Govee LAN rescan could not bind/scan: %s", err)
@@ -1060,7 +1129,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             if info.ip and info.ip in claimed_ips:
                 # Old IP now belongs to a different device — drop the stale map.
                 self._lan_read_misses.pop(device_id, None)
-                self._lan_confirm_misses.pop(device_id, None)
+                self._lan_write_misses.pop(device_id, None)
+                self._lan_write_suppressed_until.pop(device_id, None)
                 continue
             rebuilt[device_id] = info
         for device_id, info in matched.items():
@@ -2311,11 +2381,20 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         method confirms it by reading the device's reported state back within
         ``LAN_WRITE_CONFIRM_TIMEOUT`` and requiring an exact (power) /
         within-tolerance (brightness) match. Anything that cannot be confirmed —
-        LAN disabled, a group / numeric id, an uncorrelated device, stale LAN
-        write-health, a non-LAN command, a failed send, no reply, or a value
-        mismatch — returns ``False`` so the caller falls through to MQTT/REST,
-        which re-applies the optimistic state and actually delivers the write.
-        A device is therefore never stranded on a LAN write the firmware ignored.
+        LAN disabled, a group / numeric id, an uncorrelated device, an
+        unavailable LAN read-health, a write-suppression cooldown, a non-LAN
+        command, a failed send, no reply, or a value mismatch — returns ``False``
+        so the caller falls through to MQTT/REST, which re-applies the optimistic
+        state and actually delivers the write. A device is therefore never
+        stranded on a LAN write the firmware ignored.
+
+        Transport health vs. write viability are kept separate (issue #57): a
+        confirm miss (no reply / value mismatch) NEVER marks the ``lan`` transport
+        unavailable — that produced a flap synced to control activity. Health is
+        read-driven (the poll read + unsolicited pushes); a run of confirm misses
+        only suppresses LAN *write attempts* (:meth:`_note_lan_write_miss`) so the
+        device's writes route to MQTT/REST without paying the confirm timeout,
+        while its LAN reads — and the connectivity sensor — keep working.
 
         On a confirmed write the LAN send + success are recorded and the
         device's real reported values are locked in via :meth:`_apply_lan_read`;
@@ -2352,6 +2431,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if health is None or not health.is_available:
             return False
 
+        # [4.5] Write-suppression cooldown (issue #57): this device's recent LAN
+        #     writes did not confirm, so skip the LAN write attempt AND its
+        #     confirm-read wait and fall straight to MQTT/REST. LAN READS keep
+        #     running and the lan_connectivity sensor stays Connected — only the
+        #     futile (and latency-adding) write attempt is paused. The cooldown
+        #     re-arms itself so a device that starts confirming again is retried.
+        if self._lan_writes_suppressed(device_id):
+            return False
+
         # [5] Only power + brightness map to LAN; colour / colour-temp / scenes /
         #     segments / music / DIY / work-modes / toggles (and the H5080/H5083
         #     power quirk) return None so they keep using REST, where the write
@@ -2379,22 +2467,38 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         #     require the reported value to match what we sent.
         reply = await self._lan_client.async_read_one(ip, LAN_WRITE_CONFIRM_TIMEOUT)
         if reply is None:
-            # No confirmation in the window — fall through to MQTT/REST, which
-            # re-applies the optimistic update and actually delivers the write.
-            # Hysteresis: a transient power-on miss must not flap LAN off (#57).
-            self._record_lan_confirm_miss(device_id, "unconfirmed")
+            # No reply in the confirm window — ambiguous. Count it toward write
+            # suppression (so we stop paying the confirm timeout on a device that
+            # won't confirm) but DO NOT mark LAN down: the periodic poll read is
+            # the authority on transport liveness. The write already fell through
+            # to MQTT/REST, which re-applies the optimistic update and delivers
+            # it. A transient power-on miss must never flap LAN off (#57).
+            self._note_lan_write_miss(device_id)
             return False
 
         if not self._lan_write_confirmed(device, command, reply):
-            # The device answered but does not report the value we sent (it
-            # ignored / delayed the write, or a plug lacks onOff). Fall through.
-            self._record_lan_confirm_miss(device_id, "value_mismatch")
+            # The device ANSWERED — so LAN is alive — but reports a value other
+            # than the one we sent. This is almost always power-on reporting lag
+            # (the controller briefly echoes its pre-command state), NOT a
+            # transport fault. Record only LAN read SUCCESS — keeps the transport
+            # available and the sensor Connected and refreshes the staleness
+            # clock — but DO NOT overlay this reply onto state: it is by
+            # definition stale (a mismatch), and we are inside the optimistic
+            # grace window, so overlaying its color/color-temp would briefly
+            # revert an in-flight optimistic colour write. Count a write-miss
+            # toward suppression and fall through so the write still lands via
+            # MQTT/REST. Transport health is NEVER flipped on a content mismatch —
+            # that flap, synced to control activity, was the reported bug (#57).
+            self._record_transport_success(device_id, "lan")
+            self._note_lan_write_miss(device_id)
             return False
 
         # Confirmed: stamp the LAN write (send + success — the verify-by-read
-        # recording asymmetry) and lock in the real device-reported values.
+        # recording asymmetry), re-arm LAN writes (reset the miss streak), and
+        # lock in the real device-reported values.
         self._record_transport_send(device_id, "lan")
         self._record_transport_success(device_id, "lan")
+        self._clear_lan_write_misses(device_id)
         self._apply_lan_read(device_id, reply)
         return True
 

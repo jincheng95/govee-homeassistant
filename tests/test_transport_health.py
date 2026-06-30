@@ -30,9 +30,11 @@ def _bare_coordinator() -> GoveeCoordinator:
     # bypassed __init__ must still provide it so async_control_device can fall
     # through LAN -> MQTT -> REST as these tests expect.
     coord._lan_client = None
-    # _apply_lan_read clears the write-confirm streak; provide it on the bypassed
-    # __init__ so a read can record LAN success without an AttributeError (#57).
-    coord._lan_confirm_misses = {}
+    # The LAN write tier tracks write-confirm misses / suppression separately
+    # from read-driven transport health (#57); provide them on the bypassed
+    # __init__ so the control path can run without an AttributeError.
+    coord._lan_write_misses = {}
+    coord._lan_write_suppressed_until = {}
     return coord
 
 

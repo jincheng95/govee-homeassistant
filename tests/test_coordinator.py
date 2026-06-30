@@ -2494,20 +2494,27 @@ class TestLanLifecycle:
         ]
 
     @staticmethod
-    def _patch_lan(monkeypatch, coord_mod, *, scan, client, probe=None):
+    def _patch_lan(monkeypatch, coord_mod, *, scan, client, probe=None, broadcasts=None):
         """Patch the LAN module helpers the coordinator imported.
 
         ``probe`` (optional dict) records whether the scan ran and how many
         clients were constructed, so the "off" escape hatch can be verified.
+        ``broadcasts`` is the list ``async_get_lan_broadcast_addresses`` returns,
+        so a test can assert the coordinator forwards it to the scanner (#57).
         """
+        derived_broadcasts = list(broadcasts or [])
 
         async def _ifaces(hass):
             return []
 
-        async def _scan(*, interface_ips, extra_targets):
+        async def _broadcasts(hass):
+            return derived_broadcasts
+
+        async def _scan(*, interface_ips, extra_targets, broadcast_targets=None):
             if probe is not None:
                 probe["scanned"] = True
                 probe["extra_targets"] = extra_targets
+                probe["broadcast_targets"] = broadcast_targets
             return scan
 
         def _factory(callback):
@@ -2516,6 +2523,7 @@ class TestLanLifecycle:
             return client
 
         monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_get_lan_broadcast_addresses", _broadcasts)
         monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
         monkeypatch.setattr(coord_mod, "GoveeLanClient", _factory)
 
@@ -2569,6 +2577,27 @@ class TestLanLifecycle:
         assert client.started_with == []  # interface ips passed through
 
     @pytest.mark.asyncio
+    async def test_setup_forwards_derived_broadcasts_to_scan(self, monkeypatch):
+        """Setup forwards auto-derived subnet broadcasts to the scanner (#57)."""
+        coord, coord_mod = self._coord()
+        probe: dict[str, Any] = {}
+        client = _FakeLanClient(available=True)
+        self._patch_lan(
+            monkeypatch,
+            coord_mod,
+            scan=self._matching_scan(),
+            client=client,
+            probe=probe,
+            broadcasts=["192.168.0.255"],
+        )
+
+        await coord._async_setup_lan()
+
+        # The derived broadcast reached async_scan_lan_devices — newer devices
+        # that ignore multicast are scanned via the directed broadcast (#57).
+        assert probe["broadcast_targets"] == ["192.168.0.255"]
+
+    @pytest.mark.asyncio
     async def test_no_correlation_stops_client(self, monkeypatch):
         """Scan answered but nothing correlated -> stop+None (no held sockets)."""
         coord, coord_mod = self._coord()
@@ -2593,7 +2622,10 @@ class TestLanLifecycle:
         async def _ifaces(hass):
             return []
 
-        async def _scan(*, interface_ips, extra_targets):
+        async def _broadcasts(hass):
+            return []
+
+        async def _scan(*, interface_ips, extra_targets, broadcast_targets=None):
             raise OSError("port 4002 in use")
 
         def _factory(callback):
@@ -2601,6 +2633,7 @@ class TestLanLifecycle:
             return _FakeLanClient()
 
         monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_get_lan_broadcast_addresses", _broadcasts)
         monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
         monkeypatch.setattr(coord_mod, "GoveeLanClient", _factory)
 
@@ -3064,13 +3097,18 @@ class TestLanReadPath:
         async def _ifaces(hass):
             return []
 
-        scans = {"count": 0}
+        scans = {"count": 0, "broadcast_targets": None}
 
-        async def _scan(*, interface_ips, extra_targets):
+        async def _broadcasts(hass):
+            return ["192.168.0.255"]
+
+        async def _scan(*, interface_ips, extra_targets, broadcast_targets=None):
             scans["count"] += 1
+            scans["broadcast_targets"] = broadcast_targets
             return self._scan_record()
 
         monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_get_lan_broadcast_addresses", _broadcasts)
         monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
 
         # Throttled: a recent rescan blocks a new one.
@@ -3083,6 +3121,9 @@ class TestLanReadPath:
         await coord._async_maybe_rescan_lan()
         assert scans["count"] == 1
         assert self.DEVICE_ID in coord._lan_devices  # re-promoted from scan
+        # The rescan also forwards the derived subnet broadcast(s) to the scan,
+        # re-priming newer broadcast-only devices each cycle (#57).
+        assert scans["broadcast_targets"] == ["192.168.0.255"]
 
     async def test_forced_rescan_runs_on_low_monotonic_clock(self, monkeypatch):
         """Regression: a forced rescan must run even just after host boot.
@@ -3101,13 +3142,17 @@ class TestLanReadPath:
         async def _ifaces(hass):
             return []
 
-        async def _scan(*, interface_ips, extra_targets):
+        async def _broadcasts(hass):
+            return []
+
+        async def _scan(*, interface_ips, extra_targets, broadcast_targets=None):
             scans["count"] += 1
             return self._scan_record()
 
         # Simulate a host only 5s past boot — well inside LAN_RESCAN_INTERVAL.
         monkeypatch.setattr(coord_mod.time, "monotonic", lambda: 5.0)
         monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_get_lan_broadcast_addresses", _broadcasts)
         monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
 
         coord._request_lan_rescan()
@@ -3344,12 +3389,12 @@ class TestTryLanCommand:
         assert client.send_calls
         assert client.read_calls
         assert coord._states[self.DEVICE_ID].power_state is True
-        # Hysteresis (#57): a SINGLE confirm miss must NOT flip LAN unavailable
-        # (that would flap the lan_connectivity sensor on every power-on); it only
-        # counts toward the threshold. The command still fell through.
+        # A confirm miss must NEVER flip LAN unavailable (#57): that flapped the
+        # lan_connectivity sensor on every power-on. It only counts toward WRITE
+        # suppression. The command still fell through to MQTT/REST.
         health = coord._transport.get(self.DEVICE_ID, "lan")
         assert health is not None and health.is_available is True
-        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
+        assert coord._lan_write_misses[self.DEVICE_ID] == 1
 
     @pytest.mark.asyncio
     async def test_send_failure_returns_false_without_reading(self):
@@ -3382,10 +3427,15 @@ class TestTryLanCommand:
         )
 
         assert result is False
-        # Single miss -> fall through but no flip (hysteresis, #57).
+        # The device ANSWERED -> LAN is alive. A content mismatch must NOT flip
+        # LAN unavailable (#57 — the value_mismatch flap). The reply is applied as
+        # a confirmed read (records LAN success); it only counts a write-miss.
         health = coord._transport.get(self.DEVICE_ID, "lan")
         assert health is not None and health.is_available is True
-        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
+        assert health.last_failure_reason is None  # never marked a transport failure
+        assert coord._lan_write_misses[self.DEVICE_ID] == 1
+        # Optimistic power survives (grace window) despite the stale onOff=0 read.
+        assert coord._states[self.DEVICE_ID].power_state is True
 
     @pytest.mark.asyncio
     async def test_power_reply_on_none_is_mismatch(self):
@@ -3399,10 +3449,10 @@ class TestTryLanCommand:
         )
 
         assert result is False
-        # Single miss -> fall through but no flip (hysteresis, #57).
+        # Mismatch -> fall through, LAN stays available, only a write-miss (#57).
         health = coord._transport.get(self.DEVICE_ID, "lan")
         assert health is not None and health.is_available is True
-        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
+        assert coord._lan_write_misses[self.DEVICE_ID] == 1
 
     @pytest.mark.asyncio
     async def test_brightness_out_of_tolerance_returns_false(self):
@@ -3418,52 +3468,131 @@ class TestTryLanCommand:
         )
 
         assert result is False
-        # Single miss -> fall through but no flip (hysteresis, #57).
+        # Mismatch -> fall through, LAN stays available, only a write-miss (#57).
         health = coord._transport.get(self.DEVICE_ID, "lan")
         assert health is not None and health.is_available is True
-        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
+        assert coord._lan_write_misses[self.DEVICE_ID] == 1
 
-    # ---- confirm-miss hysteresis (#57) -------------------------------------
+    # ---- write suppression vs. read-driven health (#57) --------------------
 
     @pytest.mark.asyncio
-    async def test_confirm_misses_flip_lan_only_after_threshold(self):
-        """N consecutive confirm misses flip LAN down; fewer do not (#57)."""
-        from custom_components.govee.const import LAN_CONFIRM_MISS_THRESHOLD
+    async def test_confirm_misses_never_flip_lan_health(self):
+        """Confirm misses must NEVER mark LAN unavailable — the reported flap (#57)."""
+        from custom_components.govee.const import LAN_WRITE_SUPPRESS_THRESHOLD
 
         coord, _ = self._ready_coord()
         coord._lan_client = _FakeWriteClient(read_reply=None)  # never confirms
         dev = coord._devices[self.DEVICE_ID]
 
-        # First THRESHOLD-1 misses: LAN stays available (sensor must not flap).
-        for _ in range(LAN_CONFIRM_MISS_THRESHOLD - 1):
+        # Many consecutive misses (well past the suppress threshold): the lan
+        # transport stays available the whole time — health is read-driven.
+        for _ in range(LAN_WRITE_SUPPRESS_THRESHOLD + 2):
             assert await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True)) is False
-            assert coord._transport.get(self.DEVICE_ID, "lan").is_available is True
-
-        # The Nth consecutive miss flips it unavailable + records the reason.
-        assert await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True)) is False
-        health = coord._transport.get(self.DEVICE_ID, "lan")
-        assert health.is_available is False
-        assert health.last_failure_reason == "unconfirmed"
+            health = coord._transport.get(self.DEVICE_ID, "lan")
+            assert health.is_available is True
+            assert health.last_failure_reason is None
 
     @pytest.mark.asyncio
-    async def test_successful_read_resets_confirm_miss_streak(self):
-        """A confirmed inbound read clears the confirm-miss streak (#57)."""
-        from custom_components.govee.const import LAN_CONFIRM_MISS_THRESHOLD
+    async def test_misses_suppress_writes_after_threshold(self):
+        """After the threshold, LAN write attempts are skipped (no wire) (#57)."""
+        from custom_components.govee.const import LAN_WRITE_SUPPRESS_THRESHOLD
+
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=None)  # never confirms
+        coord._lan_client = client
+        dev = coord._devices[self.DEVICE_ID]
+
+        # Reach the threshold; each attempt sends + reads (paying the timeout).
+        for _ in range(LAN_WRITE_SUPPRESS_THRESHOLD):
+            await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True))
+        sends_at_threshold = len(client.send_calls)
+        assert coord._lan_writes_suppressed(self.DEVICE_ID) is True
+
+        # Next command is suppressed: no further send/read, immediate fall-through.
+        assert await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True)) is False
+        assert len(client.send_calls) == sends_at_threshold  # no new wire traffic
+        # LAN reads remain available (sensor stays Connected).
+        assert coord._transport.get(self.DEVICE_ID, "lan").is_available is True
+
+    @pytest.mark.asyncio
+    async def test_poll_read_does_not_rearm_suppressed_writes(self):
+        """A poll READ proves the link but not writes — suppression persists (#57)."""
+        from custom_components.govee.const import LAN_WRITE_SUPPRESS_THRESHOLD
 
         coord, _ = self._ready_coord()
         coord._lan_client = _FakeWriteClient(read_reply=None)
         dev = coord._devices[self.DEVICE_ID]
 
-        for _ in range(LAN_CONFIRM_MISS_THRESHOLD - 1):
+        for _ in range(LAN_WRITE_SUPPRESS_THRESHOLD):
             await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True))
-        assert coord._lan_confirm_misses[self.DEVICE_ID] == LAN_CONFIRM_MISS_THRESHOLD - 1
+        assert coord._lan_writes_suppressed(self.DEVICE_ID) is True
 
-        # A poll read lands -> streak reset -> next miss starts from 1, no flip.
+        # An inbound read lands: LAN available, but writes stay suppressed.
         coord._apply_lan_read(self.DEVICE_ID, self._status())
-        assert self.DEVICE_ID not in coord._lan_confirm_misses
-        await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True))
-        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
         assert coord._transport.get(self.DEVICE_ID, "lan").is_available is True
+        assert coord._lan_writes_suppressed(self.DEVICE_ID) is True
+        assert coord._lan_write_misses.get(self.DEVICE_ID) == LAN_WRITE_SUPPRESS_THRESHOLD
+
+    @pytest.mark.asyncio
+    async def test_confirmed_write_rearms_suppressed_writes(self):
+        """A confirmed write clears the miss streak + cooldown (#57)."""
+        from custom_components.govee.const import LAN_WRITE_SUPPRESS_THRESHOLD
+
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=None)
+        coord._lan_client = client
+        dev = coord._devices[self.DEVICE_ID]
+
+        for _ in range(LAN_WRITE_SUPPRESS_THRESHOLD):
+            await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True))
+        assert coord._lan_writes_suppressed(self.DEVICE_ID) is True
+
+        # Manually clear the cooldown so the next write probes LAN; this time the
+        # device confirms (reports ON) -> streak + cooldown cleared, returns True.
+        coord._lan_write_suppressed_until.clear()
+        client.read_reply = self._status(on=True)
+        assert await coord._try_lan_command(self.DEVICE_ID, dev, PowerCommand(power_on=True)) is True
+        assert self.DEVICE_ID not in coord._lan_write_misses
+        assert self.DEVICE_ID not in coord._lan_write_suppressed_until
+
+    @pytest.mark.asyncio
+    async def test_suppression_cooldown_expiry_rearms(self):
+        """Once the cooldown elapses, the next command probes LAN again (#57)."""
+        coord, _ = self._ready_coord()
+        coord._lan_client = _FakeWriteClient(read_reply=None)
+        # Force an already-expired cooldown deadline.
+        coord._lan_write_misses[self.DEVICE_ID] = 5
+        coord._lan_write_suppressed_until[self.DEVICE_ID] = 0.0  # monotonic past
+
+        assert coord._lan_writes_suppressed(self.DEVICE_ID) is False
+        # Re-armed: streak + deadline cleared so the next write is a fresh probe.
+        assert self.DEVICE_ID not in coord._lan_write_misses
+        assert self.DEVICE_ID not in coord._lan_write_suppressed_until
+
+    @pytest.mark.asyncio
+    async def test_lan_write_suppressed_diag_accessor_is_read_only(self):
+        """The diagnostics accessor reports state without re-arming it (#57).
+
+        Unlike ``_lan_writes_suppressed`` (which clears an expired cooldown),
+        ``lan_write_suppressed`` must never mutate runtime state — a diagnostics
+        download is read-only.
+        """
+        coord, _ = self._ready_coord()
+        coord._lan_write_misses[self.DEVICE_ID] = 5
+
+        # Active cooldown -> True.
+        coord._lan_write_suppressed_until[self.DEVICE_ID] = float("inf")
+        assert coord.lan_write_suppressed(self.DEVICE_ID) is True
+
+        # Already-expired deadline -> False, but the entry is NOT cleared.
+        coord._lan_write_suppressed_until[self.DEVICE_ID] = 0.0
+        assert coord.lan_write_suppressed(self.DEVICE_ID) is False
+        assert self.DEVICE_ID in coord._lan_write_suppressed_until  # not mutated
+        assert self.DEVICE_ID in coord._lan_write_misses  # not mutated
+
+        # No deadline at all -> False.
+        coord._lan_write_suppressed_until.pop(self.DEVICE_ID, None)
+        assert coord.lan_write_suppressed(self.DEVICE_ID) is False
 
     # ---- early-return guards (never touch the wire) ------------------------
 
@@ -3630,7 +3759,7 @@ class TestTryLanCommand:
         coord._api_client.control_device.assert_awaited_once()  # MQTT -> REST
         lan_health = coord._transport.get(self.DEVICE_ID, "lan")
         assert lan_health is not None
-        # The command still falls through LAN -> MQTT -> REST on a single miss,
-        # but LAN stays available (no flap on one miss — hysteresis, #57).
+        # The command still falls through LAN -> MQTT -> REST on a confirm miss,
+        # but LAN stays available (a content miss never flips health — #57).
         assert lan_health.is_available is True
-        assert coord._lan_confirm_misses[self.DEVICE_ID] == 1
+        assert coord._lan_write_misses[self.DEVICE_ID] == 1

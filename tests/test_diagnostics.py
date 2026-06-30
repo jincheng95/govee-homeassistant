@@ -382,6 +382,33 @@ class TestLeakAndTransportDump:
         assert hub_mac not in rendered
         assert _MAC_RE.search(rendered) is None
 
+    @pytest.mark.asyncio
+    async def test_lan_health_surfaces_write_suppressed(self) -> None:
+        # The per-device lan health block surfaces write_suppressed so a user can
+        # tell "LAN reads up, writes via cloud" apart from "LAN down" (#57).
+        dev_mac = "AA:BB:CC:DD:EE:FF:00:11"
+        lan_health = TransportHealth(transport="lan", is_available=True)
+        coordinator = _coordinator_stub(
+            get_transport_health=lambda did, kind: (lan_health if kind == "lan" else None),
+            lan_write_suppressed=lambda did: did == dev_mac,
+            devices={
+                dev_mac: MagicMock(
+                    sku="H6072",
+                    name="Strip",
+                    device_type="devices.types.light",
+                    is_group=False,
+                    capabilities=[],
+                )
+            },
+            get_state=lambda _did: None,
+        )
+
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
+
+        lan = next(iter(out["devices"].values()))["transport_health"]["lan"]
+        assert lan["is_available"] is True
+        assert lan["write_suppressed"] is True
+
 
 class TestDeviceDiagnostics:
     """Per-device diagnostics (the ⋮ menu → Download diagnostics path)."""
@@ -529,6 +556,10 @@ class TestLanDiscoveryDiag:
         )
         scan = AsyncMock(return_value=[])
         monkeypatch.setattr("custom_components.govee.diagnostics.async_scan_lan_devices", scan)
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_get_lan_broadcast_addresses",
+            AsyncMock(return_value=[]),
+        )
         coordinator = _coordinator_stub()
         out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
 
@@ -539,7 +570,9 @@ class TestLanDiscoveryDiag:
             "private-172 (often container bridge)",
         ]
         # Real interface IPs are passed to the scanner but never rendered.
-        scan.assert_awaited_once_with(interface_ips=["192.168.1.50", "172.17.0.2"], extra_targets=[])
+        scan.assert_awaited_once_with(
+            interface_ips=["192.168.1.50", "172.17.0.2"], extra_targets=[], broadcast_targets=[]
+        )
         rendered = json.dumps(out, default=str)
         assert "192.168.1.50" not in rendered
         assert "172.17.0.2" not in rendered
@@ -553,12 +586,34 @@ class TestLanDiscoveryDiag:
         )
         scan = AsyncMock(return_value=[])
         monkeypatch.setattr("custom_components.govee.diagnostics.async_scan_lan_devices", scan)
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_get_lan_broadcast_addresses",
+            AsyncMock(return_value=[]),
+        )
         out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
 
         lan = out["lan_discovery"]
         assert lan["interface_count"] == 0
         assert lan["interface_classes"] == []
-        scan.assert_awaited_once_with(interface_ips=[], extra_targets=[])
+        scan.assert_awaited_once_with(interface_ips=[], extra_targets=[], broadcast_targets=[])
+
+    @pytest.mark.asyncio
+    async def test_broadcast_targets_derived_passed_and_counted(self, monkeypatch) -> None:
+        # Auto-derived subnet broadcasts reach newer devices that ignore the
+        # multicast scan (#57): they are passed to the scanner and counted (not
+        # rendered verbatim, but a broadcast x.x.x.255 is not PII).
+        scan = AsyncMock(return_value=[])
+        monkeypatch.setattr("custom_components.govee.diagnostics.async_scan_lan_devices", scan)
+        monkeypatch.setattr(
+            "custom_components.govee.diagnostics.async_get_lan_broadcast_addresses",
+            AsyncMock(return_value=["192.168.0.255"]),
+        )
+        out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
+
+        lan = out["lan_discovery"]
+        assert lan["broadcast_target_count"] == 1
+        _args, kwargs = scan.call_args
+        assert kwargs["broadcast_targets"] == ["192.168.0.255"]
 
     @pytest.mark.asyncio
     async def test_configured_lan_targets_expanded_and_redacted(self, monkeypatch) -> None:

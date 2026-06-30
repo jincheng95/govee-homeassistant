@@ -28,6 +28,7 @@ from homeassistant.helpers.device_registry import DeviceEntry
 
 from .api.lan import (
     LanTargetError,
+    async_get_lan_broadcast_addresses,
     async_get_lan_interface_ips,
     async_probe_lan_raw,
     async_scan_lan_devices,
@@ -157,7 +158,7 @@ def _transport_health(coordinator: GoveeCoordinator, device_id: str) -> dict[str
         health = coordinator.get_transport_health(device_id, kind)
         if health is None:
             continue
-        out[kind] = {
+        entry = {
             "is_available": health.is_available,
             "last_received": _iso(health.last_success_ts),
             "last_sent": _iso(health.last_send_ts),
@@ -166,6 +167,13 @@ def _transport_health(coordinator: GoveeCoordinator, device_id: str) -> dict[str
             "last_failure": _iso(health.last_failure_ts),
             "last_failure_reason": health.last_failure_reason,
         }
+        if kind == "lan":
+            # When True, LAN reads are healthy (is_available stays True) but the
+            # device's WRITES are currently routed to MQTT/REST because recent LAN
+            # writes did not confirm (issue #57). Distinguishes "LAN down" from
+            # "LAN reads up, writes via cloud".
+            entry["write_suppressed"] = coordinator.lan_write_suppressed(device_id)
+        out[kind] = entry
     return out
 
 
@@ -314,6 +322,7 @@ async def _lan_discovery_diag(hass: HomeAssistant, lan_targets_raw: str = "") ->
     addresses.
     """
     interface_ips, interface_classes = await _lan_source_interfaces(hass)
+    broadcast_targets = await async_get_lan_broadcast_addresses(hass)
     extra_targets: list[str] = []
     try:
         extra_targets = expand_lan_targets(lan_targets_raw)
@@ -327,6 +336,10 @@ async def _lan_discovery_diag(hass: HomeAssistant, lan_targets_raw: str = "") ->
         "interface_count": len(interface_ips),
         "interface_classes": interface_classes,
         "extra_target_count": len(extra_targets),
+        # Auto-derived per-subnet broadcast targets the scan also hit (#57): a
+        # newer device that ignores multicast but answers a broadcast should now
+        # appear in device_count. Only the count is reported (no addresses).
+        "broadcast_target_count": len(broadcast_targets),
         "error": None,
         "probe_attempted": False,
         "probe_response_count": 0,
@@ -336,7 +349,11 @@ async def _lan_discovery_diag(hass: HomeAssistant, lan_targets_raw: str = "") ->
         "commands_answered": [],
     }
     try:
-        devices = await async_scan_lan_devices(interface_ips=interface_ips, extra_targets=extra_targets)
+        devices = await async_scan_lan_devices(
+            interface_ips=interface_ips,
+            extra_targets=extra_targets,
+            broadcast_targets=broadcast_targets,
+        )
         result["device_count"] = len(devices)
         result["devices"] = devices
     except Exception as err:  # never break the diagnostics download

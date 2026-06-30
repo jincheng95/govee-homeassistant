@@ -596,7 +596,12 @@ class TestDhcpReassignment:
         async def _ifaces(_hass: Any) -> list[str]:
             return []
 
-        async def _scan(*, interface_ips: Any, extra_targets: Any) -> list[dict[str, Any]]:
+        async def _broadcasts(_hass: Any) -> list[str]:
+            return []
+
+        async def _scan(
+            *, interface_ips: Any, extra_targets: Any, broadcast_targets: Any = None
+        ) -> list[dict[str, Any]]:
             return [
                 {
                     "device": self.DEVICE_B,
@@ -607,6 +612,7 @@ class TestDhcpReassignment:
             ]
 
         monkeypatch.setattr(coord_mod, "async_get_lan_interface_ips", _ifaces)
+        monkeypatch.setattr(coord_mod, "async_get_lan_broadcast_addresses", _broadcasts)
         monkeypatch.setattr(coord_mod, "async_scan_lan_devices", _scan)
 
         coord._request_lan_rescan()  # force the throttled rescan to run

@@ -109,14 +109,23 @@ LAN_RESCAN_INTERVAL: Final = 300
 # Consecutive solicited-read misses before a device is demoted out of the LAN
 # device map so both reads and writes fall back to MQTT/REST.
 LAN_READ_MISS_DEMOTE_THRESHOLD: Final = 3
-# Consecutive LAN write-confirm misses (verify-by-read timeout / value mismatch)
-# before the 'lan' transport is marked unavailable. Hysteresis (issue #57): a
-# freshly powered Govee controller routinely can't unicast a devStatus reply
-# within LAN_WRITE_CONFIRM_TIMEOUT, so a SINGLE miss must not flip the LAN
-# connectivity sensor off and gate writes to MQTT — a flap synced to control
-# activity. The command still falls through to MQTT/REST on every miss; only the
-# availability flip is deferred. A successful read resets the streak.
-LAN_CONFIRM_MISS_THRESHOLD: Final = 3
+# Consecutive LAN write-confirm failures (verify-by-read timeout OR value
+# mismatch) before LAN write *attempts* are suppressed for a device. Issue #57:
+# LAN transport health is READ-driven — a write whose readback does not confirm
+# (a freshly-powered controller reporting its pre-command state late, or simply
+# answering the confirm read after LAN_WRITE_CONFIRM_TIMEOUT) must NOT flip the
+# lan_connectivity sensor off, which produced a flap synced to control activity
+# (the reported symptom). Instead, after this many consecutive unconfirmed
+# writes the device's writes skip the LAN attempt (and its confirm-read wait)
+# and go straight to MQTT/REST for LAN_WRITE_SUPPRESS_SECONDS, while LAN reads
+# keep working and the sensor stays Connected. A confirmed write or the cooldown
+# expiry re-arms LAN writes.
+LAN_WRITE_SUPPRESS_THRESHOLD: Final = 3
+# Cooldown (seconds) after LAN writes are suppressed for a device before the next
+# command probes the LAN write path again. Aligned with LAN_RESCAN_INTERVAL so a
+# device that started confirming after a rescan/firmware change is re-tried at
+# roughly the same cadence it would be re-correlated.
+LAN_WRITE_SUPPRESS_SECONDS: Final = 300
 # Age (seconds) past which a device's last successful LAN exchange is treated as
 # stale, marking its 'lan' transport health unavailable. Set just above the 60s
 # default poll so a single missed poll is tolerated.

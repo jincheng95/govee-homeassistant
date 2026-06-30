@@ -1171,6 +1171,18 @@ Local network control without cloud dependency. Must be enabled in Govee app dev
 > Docker bridge container, the multicast never crosses the namespace, so host
 > networking is required.
 
+> 🆕 **Broadcast fallback (newer devices).** Some newer models (e.g. H707B)
+> silently ignore the multicast scan but DO answer a scan sent to the subnet's
+> directed-broadcast address (`x.x.x.255:4001`) — reported on issue #57. The
+> integration now derives each enabled adapter's broadcast address from Home
+> Assistant's network adapter list (`async_get_lan_broadcast_addresses`) and
+> emits the scan there **in addition to** the multicast, so these devices are
+> discovered without any manual configuration. Cross-VLAN devices the broadcast
+> can't reach still need an explicit address in the **LAN device addresses**
+> option. The periodic rescan (every `LAN_RESCAN_INTERVAL` = 300 s) re-emits the
+> broadcast scan, which also re-primes devices whose firmware requires a recent
+> scan before accepting local control on `:4003`.
+
 ```json
 {
   "msg": {

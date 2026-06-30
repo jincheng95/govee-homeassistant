@@ -253,6 +253,20 @@ async def test_sends_scan_to_extra_targets(monkeypatch):
     assert len(addrs) == 3
 
 
+@pytest.mark.asyncio
+async def test_sends_scan_to_broadcast_targets(monkeypatch):
+    # Newer devices ignore multicast but answer a directed broadcast (#57): the
+    # scan must also be emitted to each auto-derived subnet broadcast address.
+    transport, _ = _install_fake_endpoint(monkeypatch, [])
+
+    await lan.async_scan_lan_devices(timeout=0.01, broadcast_targets=["192.168.0.255"])
+
+    addrs = [call.args[1] for call in transport.sendto.call_args_list]
+    assert (lan.LAN_MULTICAST_GROUP, lan.LAN_DISCOVERY_PORT) in addrs
+    assert ("192.168.0.255", lan.LAN_DISCOVERY_PORT) in addrs
+    assert len(addrs) == 2
+
+
 # --- reality probe: _RawProbeProtocol capture ------------------------------
 
 
@@ -513,3 +527,102 @@ async def test_interface_ips_degrades_to_empty_on_error(monkeypatch):
     )
 
     assert await lan.async_get_lan_interface_ips(MagicMock()) == []
+
+
+# --- async_get_lan_broadcast_addresses (#57) -------------------------------
+#
+# Derives each enabled adapter's directed-broadcast (x.x.x.255) so the scan can
+# reach newer devices that ignore multicast. Patched on the shared ``network``
+# module object, mirroring the interface-IP tests above.
+
+
+def _adapter(*, enabled=True, ipv4):
+    """Minimal HA network Adapter dict with the fields the helper reads."""
+    return {"name": "eth0", "enabled": enabled, "ipv4": ipv4}
+
+
+@pytest.mark.asyncio
+async def test_broadcast_addresses_derived_from_prefix(monkeypatch):
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_adapters",
+        AsyncMock(
+            return_value=[
+                _adapter(ipv4=[{"address": "192.168.0.42", "network_prefix": 24}]),
+                _adapter(ipv4=[{"address": "10.0.5.7", "network_prefix": 16}]),
+            ]
+        ),
+    )
+
+    bcasts = await lan.async_get_lan_broadcast_addresses(MagicMock())
+
+    assert bcasts == ["192.168.0.255", "10.0.255.255"]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_addresses_skip_disabled_loopback_linklocal_and_p2p(monkeypatch):
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_adapters",
+        AsyncMock(
+            return_value=[
+                _adapter(enabled=False, ipv4=[{"address": "192.168.9.1", "network_prefix": 24}]),  # disabled
+                _adapter(ipv4=[{"address": "127.0.0.1", "network_prefix": 8}]),  # loopback
+                _adapter(ipv4=[{"address": "169.254.1.1", "network_prefix": 16}]),  # link-local
+                _adapter(ipv4=[{"address": "10.0.0.2", "network_prefix": 31}]),  # /31 p2p, no bcast
+                _adapter(ipv4=[{"address": "172.16.4.9", "network_prefix": 24}]),  # kept
+            ]
+        ),
+    )
+
+    assert await lan.async_get_lan_broadcast_addresses(MagicMock()) == ["172.16.4.255"]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_addresses_dedupe_multi_ip_adapter(monkeypatch):
+    # Two addresses on the same subnet collapse to one broadcast.
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_adapters",
+        AsyncMock(
+            return_value=[
+                _adapter(
+                    ipv4=[
+                        {"address": "192.168.0.10", "network_prefix": 24},
+                        {"address": "192.168.0.11", "network_prefix": 24},
+                    ]
+                )
+            ]
+        ),
+    )
+
+    assert await lan.async_get_lan_broadcast_addresses(MagicMock()) == ["192.168.0.255"]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_addresses_tolerate_malformed_entries(monkeypatch):
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_adapters",
+        AsyncMock(
+            return_value=[
+                _adapter(ipv4=[{"address": None, "network_prefix": 24}]),  # no address
+                _adapter(ipv4=[{"address": "192.168.1.5"}]),  # no prefix
+                _adapter(ipv4=[{"address": "not-an-ip", "network_prefix": 24}]),  # unparseable
+                _adapter(ipv4=[{"address": "192.168.1.5", "network_prefix": 24}]),  # valid
+            ]
+        ),
+    )
+
+    assert await lan.async_get_lan_broadcast_addresses(MagicMock()) == ["192.168.1.255"]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_addresses_degrade_to_empty_on_error(monkeypatch):
+    monkeypatch.setattr(
+        lan.network,
+        "async_get_adapters",
+        AsyncMock(side_effect=RuntimeError("network not set up")),
+    )
+
+    assert await lan.async_get_lan_broadcast_addresses(MagicMock()) == []
