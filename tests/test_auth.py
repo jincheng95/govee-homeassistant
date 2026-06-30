@@ -2055,7 +2055,9 @@ class TestBffThermoReadings:
 
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
-        assert thermo == {did: {"tem": 2800, "hum": 393, "battery": None}}
+        assert thermo == {
+            did: {"tem": 2800, "hum": 393, "battery": None, "water_full": None}
+        }
 
     @pytest.mark.asyncio
     async def test_thermo_battery_extracted_from_device_settings(self):
@@ -2079,7 +2081,9 @@ class TestBffThermoReadings:
 
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
-        assert thermo == {did: {"tem": 2200, "hum": 500, "battery": 87}}
+        assert thermo == {
+            did: {"tem": 2200, "hum": 500, "battery": 87, "water_full": None}
+        }
 
     @pytest.mark.asyncio
     async def test_thermo_reading_included_when_only_battery(self):
@@ -2099,7 +2103,33 @@ class TestBffThermoReadings:
 
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
-        assert thermo == {did: {"tem": None, "hum": None, "battery": 42}}
+        assert thermo == {
+            did: {"tem": None, "hum": None, "battery": 42, "water_full": None}
+        }
+
+    @pytest.mark.asyncio
+    async def test_water_full_extracted_from_device_settings(self):
+        # Dehumidifier (H7152) water-tank-full lives in deviceSettings; the
+        # developer poll never carries it, so the BFF is the only source (#118).
+        did = "AA:BB:CC:DD:EE:FF:71:52"
+        devices = [
+            {
+                "sku": "H7152",
+                "device": did,
+                "deviceName": "Dehumidifier",
+                "deviceExt": json.dumps(
+                    {"deviceSettings": json.dumps({"waterFull": 1})}
+                ),
+            },
+        ]
+        session = make_session_get(make_mock_response(200, _bff_response(devices)))
+        client = GoveeAuthClient(session=session)
+
+        _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
+
+        assert thermo == {
+            did: {"tem": None, "hum": None, "battery": None, "water_full": 1}
+        }
 
     @pytest.mark.asyncio
     async def test_leak_and_hub_and_bffonly_thermo_skus_excluded(self):
