@@ -56,6 +56,28 @@ DEVICE_TYPE_FAN = "devices.types.fan"
 DEVICE_TYPE_PURIFIER = "devices.types.air_purifier"
 DEVICE_TYPE_KETTLE = "devices.types.kettle"
 DEVICE_TYPE_AROMA_DIFFUSER = "devices.types.aroma_diffuser"
+DEVICE_TYPE_SENSOR = "devices.types.sensor"
+DEVICE_TYPE_AIR_QUALITY_MONITOR = "devices.types.air_quality_monitor"
+
+# Device types that are always mains-powered. Some of them still report a
+# bogus, constant ``battery`` in the BFF ``deviceSettings`` (e.g. the H5106
+# air-quality monitor reports ``battery: 100`` while plugged in), which would
+# otherwise surface a misleading 100% battery sensor. BFF battery is only
+# applied for devices NOT in this set (issues #125, #114).
+MAINS_POWERED_DEVICE_TYPES = frozenset(
+    {
+        DEVICE_TYPE_LIGHT,
+        DEVICE_TYPE_PLUG,
+        DEVICE_TYPE_HEATER,
+        DEVICE_TYPE_HUMIDIFIER,
+        DEVICE_TYPE_DEHUMIDIFIER,
+        DEVICE_TYPE_FAN,
+        DEVICE_TYPE_PURIFIER,
+        DEVICE_TYPE_KETTLE,
+        DEVICE_TYPE_AROMA_DIFFUSER,
+        DEVICE_TYPE_AIR_QUALITY_MONITOR,
+    }
+)
 
 # Instance constants
 INSTANCE_POWER = "powerSwitch"
@@ -120,6 +142,10 @@ INSTANCE_SENSOR_HUMIDITY = "sensorHumidity"
 # air-quality monitors (H5106) and air purifiers (H7124/H7126) — issue #114.
 INSTANCE_AIR_QUALITY = "airQuality"
 INSTANCE_FILTER_LIFE = "filterLifeTime"
+
+# CO2 concentration (ppm) on the H5140 Smart CO₂ Monitor — a read-only
+# devices.capabilities.property surfaced as an HA sensor (issue #117).
+INSTANCE_CO2 = "carbonDioxideConcentration"
 
 # Separate main/background light toggles on ceiling-fan lights (H1310/H1370).
 # Distinct from the numeric ``light{N}Toggle`` zone toggles — issue #114.
@@ -195,6 +221,13 @@ class GoveeCapability:
     type: str
     instance: str
     parameters: dict[str, Any] = field(default_factory=dict)
+    # Govee carries an ``eventState`` block (and ``alarmType``) at the top
+    # level of an event capability — a sibling of ``parameters``, not inside
+    # it. The H5054 leak detector and the H5127 mmWave presence sensor share
+    # the generic ``bodyAppearedEvent`` instance and are told apart only by
+    # their ``eventState.options`` names (Presence/Absence) — issue #124. Kept
+    # here so that discrimination survives parsing.
+    event_state: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_power(self) -> bool:
@@ -503,14 +536,50 @@ class GoveeDevice:
         )
 
     @property
+    def supports_presence_event(self) -> bool:
+        """Check if device is an mmWave presence/occupancy sensor (H5127).
+
+        The H5127 reports presence through the SAME generic
+        ``bodyAppearedEvent`` event instance the H5054 water detector uses, so
+        capability *instance* alone can't tell them apart (issue #124). Govee
+        distinguishes them in the capability's ``eventState.options``: a
+        presence sensor advertises a binary Presence(1)/Absence(2) pair, a
+        water detector does not.
+
+        Detection keys on the option ``value`` set ``{1, 2}`` rather than the
+        option ``name``, because Govee *localizes* the name (e.g. German
+        "Anwesenheit"/"Abwesenheit"), so name matching would mis-classify the
+        H5127 back to a moisture sensor on a non-English account. The stable
+        integer values are locale-proof — the same reason the state parser keys
+        on them (issue #124). English names are kept as a secondary signal for
+        any firmware that omits the values. Defaults to "not presence" for any
+        other shape, so the H5054 keeps its existing moisture behavior.
+        """
+        for cap in self.capabilities:
+            if cap.type != CAPABILITY_EVENT or cap.instance != INSTANCE_BODY_APPEARED_EVENT:
+                continue
+            options = cap.event_state.get("options", [])
+            values = {opt.get("value") for opt in options}
+            if {1, 2} <= values:
+                return True
+            names = {str(opt.get("name", "")).strip().lower() for opt in options}
+            if names & {"presence", "absence"} or any("occup" in n for n in names):
+                return True
+        return False
+
+    @property
     def supports_water_leak_event(self) -> bool:
         """Check if device exposes a standalone water-leak event capability.
 
         H5054 water detectors (issue #62) report their trip through the
         generic ``bodyAppearedEvent`` event instance rather than a
         water-specific one. Detection is capability-based, not SKU-locked, so
-        any sensor exposing this instance gets a moisture binary sensor.
+        any sensor exposing this instance gets a moisture binary sensor —
+        EXCEPT mmWave presence sensors (H5127), which share the same instance
+        but are an occupancy sensor, not a leak detector (issue #124).
         """
+        if self.supports_presence_event:
+            return False
         return any(
             cap.type == CAPABILITY_EVENT
             and cap.instance == INSTANCE_BODY_APPEARED_EVENT
@@ -554,6 +623,17 @@ class GoveeDevice:
         """
         return any(
             cap.type == CAPABILITY_PROPERTY and cap.instance == INSTANCE_FILTER_LIFE
+            for cap in self.capabilities
+        )
+
+    @property
+    def supports_co2(self) -> bool:
+        """Check if device exposes a carbonDioxideConcentration property (H5140).
+
+        Read-only CO₂ concentration in ppm, surfaced as an HA sensor — #117.
+        """
+        return any(
+            cap.type == CAPABILITY_PROPERTY and cap.instance == INSTANCE_CO2
             for cap in self.capabilities
         )
 
@@ -1077,6 +1157,7 @@ class GoveeDevice:
                 type=raw_cap.get("type", ""),
                 instance=raw_cap.get("instance", ""),
                 parameters=raw_cap.get("parameters", {}),
+                event_state=raw_cap.get("eventState", {}) or {},
             )
             capabilities.append(cap)
 

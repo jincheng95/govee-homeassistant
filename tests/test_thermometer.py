@@ -498,6 +498,53 @@ class TestDeveloperThermometerBattery:
         )
         assert state.battery is None
 
+    def test_apply_bff_thermo_battery_skips_mains_powered(self):
+        # #125/#114: a mains-powered device (e.g. H5106 air-quality monitor)
+        # reports a bogus constant battery in the BFF — don't surface it.
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+        from custom_components.govee.models.device import (
+            DEVICE_TYPE_AIR_QUALITY_MONITOR,
+        )
+
+        did = "AA:BB:CC:DD:EE:FF:51:06"
+        state = GoveeDeviceState(device_id=did)
+        device = GoveeDevice(
+            device_id=did,
+            sku="H5106",
+            name="AQI Monitor",
+            device_type=DEVICE_TYPE_AIR_QUALITY_MONITOR,
+            capabilities=(),
+        )
+        fake = SimpleNamespace(_states={did: state}, _devices={did: device})
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 100}})
+        assert state.battery is None
+
+    def test_apply_bff_water_full_from_bff(self):
+        # #118: dehumidifier water-tank-full is sourced from BFF deviceSettings.
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+        from custom_components.govee.models.device import DEVICE_TYPE_DEHUMIDIFIER
+
+        did = "AA:BB:CC:DD:EE:FF:71:52"
+        state = GoveeDeviceState(device_id=did)
+        device = GoveeDevice(
+            device_id=did,
+            sku="H7152",
+            name="Dehumidifier",
+            device_type=DEVICE_TYPE_DEHUMIDIFIER,
+            capabilities=(),
+        )
+        fake = SimpleNamespace(_states={did: state}, _devices={did: device})
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"water_full": 1}})
+        assert state.water_full is True
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"water_full": 0}})
+        assert state.water_full is False
+
     async def test_battery_sensor_created_when_battery_present(self):
         from unittest.mock import MagicMock
 

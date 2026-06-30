@@ -106,6 +106,7 @@ from .models.device import (
     INSTANCE_DREAMVIEW,
     INSTANCE_HDMI_SOURCE,
     INSTANCE_THERMOSTAT_TOGGLE,
+    MAINS_POWERED_DEVICE_TYPES,
 )
 from .models.device import GoveeLeakSensor, GoveeLeakSensorState
 from .scene_cache import SceneCacheManager
@@ -282,6 +283,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # BFF device list (e.g. H5110/H5075 via H5151, H5179). The BFF call
         # tickles Govee's cloud into refreshing + carries the live value (#83).
         self._thermo_bff_devices: set[str] = set()
+        # Set once a reload has been scheduled to pick up newly-added BFF leak
+        # sensors, so the periodic poll doesn't queue a reload every tick while
+        # the reload is pending (issue #101).
+        self._bff_reload_scheduled = False
         # Leak sensor subsystem
         self._leak_sensors: dict[str, GoveeLeakSensor] = {}
         self._leak_states: dict[str, GoveeLeakSensorState] = {}
@@ -1398,26 +1403,44 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def _apply_bff_thermo_battery(
         self, thermo_readings: dict[str, dict[str, Any]]
     ) -> None:
-        """Apply BFF-reported battery to BLE-bridged Developer-API thermometers.
+        """Apply BFF-reported scalars (battery, water-tank-full) to devices.
 
-        The Developer API doesn't expose battery for these sensors (e.g. H5110
-        via an H5151/H5044 gateway), but the BFF ``deviceSettings`` carries it.
-        Unlike the BFF ``tem``/``hum`` (scale varies by gateway — used only as a
-        tickle, #102), battery is a plain 0-100 int, so it's safe to store.
-        Devices whose BFF entry has no battery are left untouched, so no battery
-        entity is created for them (issue #83).
+        The Developer API doesn't expose battery for BLE-bridged sensors (e.g.
+        H5110 via an H5151/H5044 gateway), nor the dehumidifier water-tank-full
+        value, but the BFF ``deviceSettings`` carries both. Unlike the BFF
+        ``tem``/``hum`` (scale varies by gateway — used only as a tickle, #102),
+        battery is a plain 0-100 int and waterFull a plain 0/1 flag, so they're
+        safe to store. Devices whose BFF entry omits a value are left untouched,
+        so no entity shows a stale reading (issues #83, #118).
+
+        Battery is skipped for mains-powered device types (e.g. the H5106
+        air-quality monitor reports a bogus ``battery: 100`` while plugged in),
+        so they don't surface a misleading 100% battery sensor (issues #125,
+        #114).
         """
         for dev_id in set(thermo_readings) & set(self._devices):
-            battery = thermo_readings[dev_id].get("battery")
-            if battery is None:
-                continue
             state = self._states.get(dev_id)
             if state is None:
                 continue
-            try:
-                state.battery = int(battery)
-            except (TypeError, ValueError):
-                continue
+            device = self._devices.get(dev_id)
+            reading = thermo_readings[dev_id]
+
+            battery = reading.get("battery")
+            if battery is not None and (
+                device is None
+                or device.device_type not in MAINS_POWERED_DEVICE_TYPES
+            ):
+                try:
+                    state.battery = int(battery)
+                except (TypeError, ValueError):
+                    pass
+
+            water_full = reading.get("water_full")
+            if water_full is not None:
+                try:
+                    state.water_full = bool(int(water_full))
+                except (TypeError, ValueError):
+                    pass
 
     async def _discover_bff_thermometers(self) -> None:
         """Discover thermo-hygrometers (H5301) via the BFF device list (issue #86).
@@ -1648,6 +1671,29 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         except Exception as err:
             _LOGGER.debug("BFF poll failed: %s", err)
             return
+
+        # Pick up leak sensors added to a hub after startup (issue #101). These
+        # are BFF-only sub-devices, so they never appear in the Developer-API
+        # /user/devices list that _async_maybe_rediscover_devices watches — the
+        # only way to notice them is here, in the BFF poll. A genuinely new
+        # sensor id schedules a reload, which re-runs the tested discovery +
+        # platform setup so its entities are created without a manual reload.
+        if not self._bff_reload_scheduled:
+            new_leak_ids = {
+                s["device_id"] for s in sensor_data if s.get("device_id")
+            } - set(self._leak_sensors)
+            if new_leak_ids:
+                self._bff_reload_scheduled = True
+                _LOGGER.info(
+                    "Detected %d new leak sensor(s) on a hub since startup (%s) "
+                    "— reloading the integration to add them (#101)",
+                    len(new_leak_ids),
+                    ", ".join(sorted(new_leak_ids)),
+                )
+                self.hass.config_entries.async_schedule_reload(
+                    self._config_entry.entry_id
+                )
+                return
 
         # Refresh BLE-bridged thermometer battery from the BFF data (#83). The
         # tem/hum are still discarded (scale varies, #102) — battery only.
@@ -2155,6 +2201,23 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     and state.sensor_humidity is None
                 ):
                     state.sensor_humidity = existing_state.sensor_humidity
+
+                # Battery and water-tank-full are owned by the BFF poll — the
+                # Developer /device/state response carries neither, so the fresh
+                # state has them as None. Preserve the BFF-applied values across
+                # the developer poll that runs ~5x between BFF cycles, or they
+                # would flicker to "unknown" each poll (issues #83, #118).
+                if existing_state.battery is not None and state.battery is None:
+                    state.battery = existing_state.battery
+                if existing_state.water_full is not None and state.water_full is None:
+                    state.water_full = existing_state.water_full
+                # Occupancy (H5127) is a momentary push event; the developer
+                # /device/state poll returns only `online` for it (never the
+                # bodyAppearedEvent value), so the fresh state has presence=None.
+                # Preserve the last pushed value or the occupancy sensor would
+                # reset to "unknown" on every poll (issue #124).
+                if existing_state.presence is not None and state.presence is None:
+                    state.presence = existing_state.presence
 
                 # Stamp when the reading last changed (after preservation, so a
                 # preserved-unchanged value does not count as a change).

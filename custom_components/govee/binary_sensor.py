@@ -71,15 +71,16 @@ async def async_setup_entry(
         if device.supports_water_full_event:
             entities.append(GoveeWaterFullBinarySensor(coordinator, device))
         # Standalone water-leak detectors (H5054) that surface in the developer
-        # device list with a bodyAppearedEvent capability — issue #62.
+        # device list with a bodyAppearedEvent capability — issue #62. Presence
+        # sensors (H5127) share that instance but are excluded here (they get an
+        # occupancy sensor below instead of a moisture one) — issue #124.
         if device.supports_water_leak_event:
             entities.append(GoveeWaterLeakBinarySensor(coordinator, device))
-        # Air-quality sensor presence (H5106 monitor, H7124/H7126 purifiers).
-        # Govee's Developer API returns only a constant index (always 1 on the
-        # H5106), never a real PM2.5 measurement, so this is a diagnostic
-        # presence flag rather than a numeric AQI sensor — issue #114.
-        if device.supports_air_quality:
-            entities.append(GoveeAirQualityBinarySensor(coordinator, device))
+        # mmWave presence/occupancy sensors (H5127) — issue #124. They expose
+        # the generic bodyAppearedEvent capability with Presence/Absence
+        # options, so they were previously mis-created as moisture sensors.
+        if device.supports_presence_event:
+            entities.append(GoveeOccupancyBinarySensor(coordinator, device))
         # Overall per-device connectivity (one entity, always exposed) — carries
         # the full per-transport last-received / last-sent breakdown as
         # attributes. The granular per-transport entities below stay opt-in.
@@ -190,34 +191,47 @@ class GoveeWaterLeakBinarySensor(GoveeEntity, BinarySensorEntity):
         return state.water_leak if state else None
 
 
-class GoveeAirQualityBinarySensor(GoveeEntity, BinarySensorEntity):
-    """Air-quality sensor presence flag (H5106, H7124/H7126) — issue #114.
+class GoveeOccupancyBinarySensor(GoveeEntity, BinarySensorEntity):
+    """Occupancy sensor for mmWave presence detectors (H5127) — issue #124.
 
-    The Developer API's ``airQuality`` property returns a single index integer
-    with no PM2.5 µg/m³ field, and in practice it never moves off a constant
-    value (always ``1`` on the H5106) — it reports that an air-quality sensor is
-    *present*, not a usable reading. So this is a diagnostic on/off entity
-    (``on`` = the device reports a non-zero air-quality value) rather than the
-    earlier numeric AQI sensor, which read as a real measurement it never was.
+    The H5127 reports presence via the generic ``bodyAppearedEvent`` capability
+    (the same instance the H5054 water detector uses), distinguished by its
+    ``eventState`` Presence(1)/Absence(2) option values. It was previously
+    mis-classified as a moisture/water-leak sensor that could false-alarm; this
+    surfaces it correctly as an OCCUPANCY entity and stops the pointless
+    warnMessage leak polling.
+
+    Presence/absence is a momentary push event: the developer ``/device/state``
+    poll returns only ``online`` for it, so ``state.presence`` is populated from
+    the bodyAppearedEvent value whenever a poll or MQTT push carries it and is
+    preserved across polls that don't. Until a value arrives the entity reads
+    ``unknown`` (its correct state), rather than the false "dry" a moisture
+    sensor showed before.
     """
 
-    _attr_device_class = BinarySensorDeviceClass.PRESENCE
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_translation_key = "air_quality_sensor"
-    _attr_icon = "mdi:air-filter"
+    _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
+    _attr_translation_key = "govee_occupancy"
+    _attr_icon = "mdi:motion-sensor"
 
     def __init__(self, coordinator: GoveeCoordinator, device: Any) -> None:
-        """Initialize the air-quality presence binary sensor."""
+        """Initialize the occupancy binary sensor."""
         super().__init__(coordinator, device)
-        self._attr_unique_id = f"{device.device_id}_air_quality"
+        self._attr_unique_id = f"{device.device_id}_occupancy"
+
+    @property
+    def available(self) -> bool:
+        """Available whenever the coordinator is — not gated on device online.
+
+        Like the H5054 leak sensor, the H5127 is a sleepy device that reports
+        ``online: false`` between pushes, which would otherwise hide it.
+        """
+        return self.coordinator.last_update_success
 
     @property
     def is_on(self) -> bool | None:
-        """Return True when the device reports a non-zero air-quality value."""
+        """Return True when a body is present."""
         state = self.device_state
-        if state is None or state.air_quality is None:
-            return None
-        return state.air_quality > 0
+        return state.presence if state else None
 
 
 class GoveeDeviceConnectivity(GoveeEntity, BinarySensorEntity):

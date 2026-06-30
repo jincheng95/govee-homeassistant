@@ -996,13 +996,26 @@ class GoveeAuthClient:
                         except (json.JSONDecodeError, TypeError):
                             settings = {}
                     battery = settings.get("battery") if isinstance(settings, dict) else None
+                    # Dehumidifier (H7150/H7152) water-tank-full flag (0/1). The
+                    # developer /device/state poll never carries the
+                    # waterFullEvent value, so the BFF deviceSettings is the only
+                    # readable source (issue #118).
+                    water_full = (
+                        settings.get("waterFull") if isinstance(settings, dict) else None
+                    )
                     tem = ld.get("tem")
                     hum = ld.get("hum")
-                    if tem is not None or hum is not None or battery is not None:
+                    if (
+                        tem is not None
+                        or hum is not None
+                        or battery is not None
+                        or water_full is not None
+                    ):
                         thermo_readings[device_id] = {
                             "tem": tem,
                             "hum": hum,
                             "battery": battery,
+                            "water_full": water_full,
                         }
 
                 _LOGGER.info(

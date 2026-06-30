@@ -235,6 +235,12 @@ class GoveeDeviceState:
     # normally lands via MQTT push.
     water_leak: bool | None = None
 
+    # mmWave presence/occupancy detection (H5127, issue #124). True when a
+    # body is present. Shares the bodyAppearedEvent capability with the H5054
+    # leak detector but is reported with option value 1=Presence / 2=Absence,
+    # so it is mapped to a dedicated occupancy field rather than water_leak.
+    presence: bool | None = None
+
     # Read-only sensor properties (devices.capabilities.property) for
     # stand-alone sensors like H5109/H5179. None until first poll lands.
     sensor_temperature: float | None = (
@@ -247,6 +253,9 @@ class GoveeDeviceState:
     # monitors and air purifiers (H5106/H7124/H7126, issue #114).
     air_quality: int | None = None
     filter_life: int | None = None
+
+    # Read-only CO₂ concentration in ppm (H5140 Smart CO₂ Monitor, issue #117).
+    carbon_dioxide: int | None = None
 
     # Live state of generic toggle capabilities keyed by instance (e.g.
     # ``socketToggle1`` on the H5089). Only populated when the API returns a
@@ -380,6 +389,11 @@ class GoveeDeviceState:
                     parsed_fl = _coerce_int(value)
                     if parsed_fl is not None:
                         self.filter_life = parsed_fl
+                elif instance == "carbonDioxideConcentration":
+                    # Read-only CO₂ concentration in ppm (H5140, #117).
+                    parsed_co2 = _coerce_int(value)
+                    if parsed_co2 is not None:
+                        self.carbon_dioxide = parsed_co2
 
             elif cap_type == "devices.capabilities.dynamic_scene":
                 if instance == "snapshot":
@@ -404,6 +418,19 @@ class GoveeDeviceState:
                         self.water_leak = bool(value.get("state") or value.get("value"))
                     elif value is not None:
                         self.water_leak = bool(value)
+                    # H5127 mmWave presence sensor rides the SAME instance but
+                    # encodes option value 1=Presence / 2=Absence (issue #124).
+                    # A device is only ever a leak OR a presence sensor, so
+                    # populating both fields never conflicts — the right entity
+                    # reads the right field.
+                    raw_ev = (
+                        value.get("value", value.get("state"))
+                        if isinstance(value, dict)
+                        else value
+                    )
+                    num_ev = _coerce_int(raw_ev)
+                    if num_ev in (1, 2):
+                        self.presence = num_ev == 1
 
             elif cap_type == "devices.capabilities.temperature_setting":
                 # Heaters report target temperature + autoStop in a STRUCT.
