@@ -522,6 +522,27 @@ class TestDeveloperThermometerBattery:
         GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 100}})
         assert state.battery is None
 
+    def test_apply_bff_thermo_battery_skips_mains_powered_sku(self):
+        # #114: the H5106 reports a bogus battery but its device_type is NOT one
+        # of the mains types, so it's suppressed by SKU instead (@k-perri).
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:06"
+        state = GoveeDeviceState(device_id=did)
+        device = GoveeDevice(
+            device_id=did,
+            sku="H5106",
+            name="AQI Monitor",
+            device_type=DEVICE_TYPE_THERMOMETER,  # not a mains device_type
+            capabilities=(),
+        )
+        fake = SimpleNamespace(_states={did: state}, _devices={did: device})
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 100}})
+        assert state.battery is None
+
     def test_apply_bff_water_full_from_bff(self):
         # #118: dehumidifier water-tank-full is sourced from BFF deviceSettings.
         from types import SimpleNamespace

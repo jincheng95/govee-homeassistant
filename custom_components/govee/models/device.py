@@ -18,6 +18,14 @@ _LOGGER = logging.getLogger(__name__)
 LEAK_SENSOR_SKUS = frozenset({"H5058", "H5054", "H5055", "H5059"})
 LEAK_HUB_SKUS = frozenset({"H5043", "H5044"})
 
+# mmWave presence/occupancy sensor SKUs (issue #124). These share the generic
+# ``bodyAppearedEvent`` event capability with the H5054 water detector — and,
+# crucially, the H5054's ``eventState`` ALSO advertises a two-option value set,
+# so capability-shape heuristics mis-classify the H5054 as presence and drop its
+# leak sensor (observed regression in v2026.6.24). Detection is therefore
+# SKU-locked here, consistent with LEAK_SENSOR_SKUS. Add new presence SKUs here.
+PRESENCE_SENSOR_SKUS = frozenset({"H5127"})
+
 # Thermo-hygrometer SKUs that the Govee *Developer* API (/user/devices) does
 # NOT return, so they never reach capability-based discovery and "don't show
 # up" (issue #86). These battery WiFi sensors are present in the account-login
@@ -78,6 +86,13 @@ MAINS_POWERED_DEVICE_TYPES = frozenset(
         DEVICE_TYPE_AIR_QUALITY_MONITOR,
     }
 )
+
+# Mains-powered SKUs that report a bogus constant ``battery`` in the BFF but do
+# NOT carry one of the mains ``device_type``s above — so the type-based guard
+# misses them. The H5106 air-quality monitor reports ``device_type`` sensor/
+# thermometer yet is plugged in and shows a phantom 100% battery (issue #114,
+# confirmed by @k-perri). Suppress battery by SKU too. Extend as more surface.
+MAINS_POWERED_BATTERY_SKUS = frozenset({"H5106"})
 
 # Instance constants
 INSTANCE_POWER = "powerSwitch"
@@ -221,13 +236,6 @@ class GoveeCapability:
     type: str
     instance: str
     parameters: dict[str, Any] = field(default_factory=dict)
-    # Govee carries an ``eventState`` block (and ``alarmType``) at the top
-    # level of an event capability — a sibling of ``parameters``, not inside
-    # it. The H5054 leak detector and the H5127 mmWave presence sensor share
-    # the generic ``bodyAppearedEvent`` instance and are told apart only by
-    # their ``eventState.options`` names (Presence/Absence) — issue #124. Kept
-    # here so that discrimination survives parsing.
-    event_state: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_power(self) -> bool:
@@ -541,31 +549,14 @@ class GoveeDevice:
 
         The H5127 reports presence through the SAME generic
         ``bodyAppearedEvent`` event instance the H5054 water detector uses, so
-        capability *instance* alone can't tell them apart (issue #124). Govee
-        distinguishes them in the capability's ``eventState.options``: a
-        presence sensor advertises a binary Presence(1)/Absence(2) pair, a
-        water detector does not.
-
-        Detection keys on the option ``value`` set ``{1, 2}`` rather than the
-        option ``name``, because Govee *localizes* the name (e.g. German
-        "Anwesenheit"/"Abwesenheit"), so name matching would mis-classify the
-        H5127 back to a moisture sensor on a non-English account. The stable
-        integer values are locale-proof — the same reason the state parser keys
-        on them (issue #124). English names are kept as a secondary signal for
-        any firmware that omits the values. Defaults to "not presence" for any
-        other shape, so the H5054 keeps its existing moisture behavior.
+        capability shape alone can't tell them apart (issue #124). An earlier
+        attempt keyed on the ``eventState`` option values, but the real H5054
+        advertises the same two-option value set and got mis-classified as
+        presence — dropping its leak sensor (regression in v2026.6.24).
+        Detection is therefore SKU-locked (``PRESENCE_SENSOR_SKUS``), like the
+        leak sensors; add new presence SKUs there.
         """
-        for cap in self.capabilities:
-            if cap.type != CAPABILITY_EVENT or cap.instance != INSTANCE_BODY_APPEARED_EVENT:
-                continue
-            options = cap.event_state.get("options", [])
-            values = {opt.get("value") for opt in options}
-            if {1, 2} <= values:
-                return True
-            names = {str(opt.get("name", "")).strip().lower() for opt in options}
-            if names & {"presence", "absence"} or any("occup" in n for n in names):
-                return True
-        return False
+        return self.sku.upper() in PRESENCE_SENSOR_SKUS
 
     @property
     def supports_water_leak_event(self) -> bool:
@@ -1157,7 +1148,6 @@ class GoveeDevice:
                 type=raw_cap.get("type", ""),
                 instance=raw_cap.get("instance", ""),
                 parameters=raw_cap.get("parameters", {}),
-                event_state=raw_cap.get("eventState", {}) or {},
             )
             capabilities.append(cap)
 

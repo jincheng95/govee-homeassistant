@@ -195,18 +195,17 @@ class GoveeOccupancyBinarySensor(GoveeEntity, BinarySensorEntity):
     """Occupancy sensor for mmWave presence detectors (H5127) — issue #124.
 
     The H5127 reports presence via the generic ``bodyAppearedEvent`` capability
-    (the same instance the H5054 water detector uses), distinguished by its
-    ``eventState`` Presence(1)/Absence(2) option values. It was previously
-    mis-classified as a moisture/water-leak sensor that could false-alarm; this
-    surfaces it correctly as an OCCUPANCY entity and stops the pointless
-    warnMessage leak polling.
+    (the same instance the H5054 water detector uses); the two are told apart by
+    SKU (``PRESENCE_SENSOR_SKUS``). It was previously mis-classified as a
+    moisture/water-leak sensor that could false-alarm; this surfaces it
+    correctly as an OCCUPANCY entity and stops the pointless warnMessage leak
+    polling.
 
-    Presence/absence is a momentary push event: the developer ``/device/state``
-    poll returns only ``online`` for it, so ``state.presence`` is populated from
-    the bodyAppearedEvent value whenever a poll or MQTT push carries it and is
-    preserved across polls that don't. Until a value arrives the entity reads
-    ``unknown`` (its correct state), rather than the false "dry" a moisture
-    sensor showed before.
+    Live presence arrives via an MQTT ``status`` push carrying ``triSta``
+    (1=present, 0=absent), parsed in ``update_from_mqtt`` and preserved across
+    developer polls (which return only ``online`` for this SKU). Until the first
+    push the entity reads ``unknown`` — its correct state — rather than the false
+    "dry" a moisture sensor showed before.
     """
 
     _attr_device_class = BinarySensorDeviceClass.OCCUPANCY

@@ -106,6 +106,7 @@ from .models.device import (
     INSTANCE_DREAMVIEW,
     INSTANCE_HDMI_SOURCE,
     INSTANCE_THERMOSTAT_TOGGLE,
+    MAINS_POWERED_BATTERY_SKUS,
     MAINS_POWERED_DEVICE_TYPES,
 )
 from .models.device import GoveeLeakSensor, GoveeLeakSensorState
@@ -1413,9 +1414,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         safe to store. Devices whose BFF entry omits a value are left untouched,
         so no entity shows a stale reading (issues #83, #118).
 
-        Battery is skipped for mains-powered device types (e.g. the H5106
-        air-quality monitor reports a bogus ``battery: 100`` while plugged in),
-        so they don't surface a misleading 100% battery sensor (issues #125,
+        Battery is skipped for mains-powered devices — both by device_type and
+        by an explicit SKU list (the H5106 air-quality monitor reports a bogus
+        ``battery: 100`` while plugged in but doesn't carry a mains device_type)
+        — so they don't surface a misleading 100% battery sensor (issues #125,
         #114).
         """
         for dev_id in set(thermo_readings) & set(self._devices):
@@ -1428,7 +1430,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             battery = reading.get("battery")
             if battery is not None and (
                 device is None
-                or device.device_type not in MAINS_POWERED_DEVICE_TYPES
+                or (
+                    device.device_type not in MAINS_POWERED_DEVICE_TYPES
+                    and device.sku.upper() not in MAINS_POWERED_BATTERY_SKUS
+                )
             ):
                 try:
                     state.battery = int(battery)

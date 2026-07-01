@@ -506,6 +506,15 @@ class GoveeDeviceState:
                     self.sensor_humidity = parsed
                     break
 
+        # mmWave presence (H5127) pushes a ``status`` message carrying
+        # ``triSta`` in the state object: 1 = present, 0 = absent (confirmed
+        # against the Govee app journal, issue #124). This is the only channel
+        # that delivers occupancy — the developer poll returns only ``online``.
+        if "triSta" in data:
+            parsed_tri = _coerce_int(data["triSta"])
+            if parsed_tri is not None:
+                self.presence = parsed_tri == 1
+
         # A confirmed push ends the optimistic grace window — from this point
         # on API polls are authoritative again for power/brightness.
         self.clear_optimistic_window()

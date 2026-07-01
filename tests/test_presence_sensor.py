@@ -2,10 +2,11 @@
 
 The H5127 surfaces in the developer device list with a single
 ``bodyAppearedEvent`` event capability — the SAME instance the H5054 water
-detector uses. They are told apart only by the capability's ``eventState``
-options (Presence/Absence), so the H5127 must become an OCCUPANCY sensor, not a
-moisture/water-leak one, and must NOT be polled against the leak warnMessage
-endpoint.
+detector uses (and the H5054's ``eventState`` advertises the same two-option
+shape). They are told apart by SKU (``PRESENCE_SENSOR_SKUS``), so the H5127
+becomes an OCCUPANCY sensor — not a moisture/water-leak one — without dropping
+the H5054's leak sensor. Live presence arrives via an MQTT ``status`` push
+carrying ``triSta`` (1=present, 0=absent).
 """
 
 from __future__ import annotations
@@ -25,17 +26,9 @@ from custom_components.govee.models.device import (
     INSTANCE_BODY_APPEARED_EVENT,
 )
 
-# eventState block as Govee returns it for the H5127 (issue #124 diagnostics).
-_PRESENCE_EVENT_STATE = {
-    "options": [
-        {"name": "Presence", "value": 1},
-        {"name": "Absence", "value": 2},
-    ]
-}
-
 
 def _h5127_raw() -> dict:
-    """Raw /user/devices payload for an H5127, incl. the top-level eventState."""
+    """Raw /user/devices payload for an H5127."""
     return {
         "device": "AA:BB:CC:DD:EE:FF:41:02",
         "sku": "H5127",
@@ -46,7 +39,12 @@ def _h5127_raw() -> dict:
                 "type": CAPABILITY_EVENT,
                 "instance": INSTANCE_BODY_APPEARED_EVENT,
                 "alarmType": 50,
-                "eventState": _PRESENCE_EVENT_STATE,
+                "eventState": {
+                    "options": [
+                        {"name": "Presence", "value": 1},
+                        {"name": "Absence", "value": 2},
+                    ]
+                },
             }
         ],
     }
@@ -59,8 +57,8 @@ def h5127_device() -> GoveeDevice:
 
 @pytest.fixture
 def h5054_device() -> GoveeDevice:
-    # Same device_type and instance as the H5127, but no Presence/Absence
-    # options — must stay a water-leak detector.
+    # Same device_type and bodyAppearedEvent instance as the H5127 — only the
+    # SKU differs, which is exactly how they're told apart.
     return GoveeDevice(
         device_id="DABFC0D6A5FE0008E8",
         sku="H5054",
@@ -77,10 +75,6 @@ def h5054_device() -> GoveeDevice:
 
 
 class TestClassification:
-    def test_from_api_preserves_event_state(self, h5127_device):
-        cap = h5127_device.capabilities[0]
-        assert cap.event_state == _PRESENCE_EVENT_STATE
-
     def test_presence_detected(self, h5127_device):
         assert h5127_device.supports_presence_event is True
 
@@ -92,25 +86,49 @@ class TestClassification:
         assert h5054_device.supports_water_leak_event is True
         assert h5054_device.supports_presence_event is False
 
-    def test_presence_detected_for_localized_names(self):
-        # #124 follow-up: Govee localizes the option NAMEs (German account
-        # returns Anwesenheit/Abwesenheit), so detection must key on the stable
-        # integer values, not the English names — else it falls back to a
-        # moisture sensor (with a permanent false leak alarm) abroad.
-        raw = _h5127_raw()
-        raw["capabilities"][0]["eventState"] = {
-            "options": [
-                {"name": "Anwesenheit", "value": 1},
-                {"name": "Abwesenheit", "value": 2},
-            ]
-        }
-        device = GoveeDevice.from_api_response(raw)
-        assert device.supports_presence_event is True
-        assert device.supports_water_leak_event is False
+    def test_h5054_with_two_option_eventstate_stays_leak(self):
+        # Regression guard (v2026.6.24): the real H5054's bodyAppearedEvent
+        # carries a two-option eventState too, so shape-based detection
+        # mis-classified it as presence and dropped its leak sensor. SKU-locked
+        # detection keeps the H5054 a water-leak sensor regardless of eventState.
+        device = GoveeDevice.from_api_response(
+            {
+                "device": "H5054X",
+                "sku": "H5054",
+                "deviceName": "Leak",
+                "type": "devices.types.sensor",
+                "capabilities": [
+                    {
+                        "type": CAPABILITY_EVENT,
+                        "instance": INSTANCE_BODY_APPEARED_EVENT,
+                        "eventState": {
+                            "options": [
+                                {"name": "Leak", "value": 1},
+                                {"name": "Dry", "value": 2},
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+        assert device.supports_presence_event is False
+        assert device.supports_water_leak_event is True
 
 
 class TestStateParsing:
-    def test_presence_present(self):
+    def test_presence_from_mqtt_tristate_present(self):
+        # H5127 live push: cmd="status", state.triSta=1 -> present (#124).
+        state = GoveeDeviceState(device_id="x")
+        state.update_from_mqtt({"triSta": 1, "sta": {"stc": "x"}, "result": 1})
+        assert state.presence is True
+
+    def test_presence_from_mqtt_tristate_absent(self):
+        state = GoveeDeviceState(device_id="x")
+        state.presence = True
+        state.update_from_mqtt({"triSta": 0})
+        assert state.presence is False
+
+    def test_presence_from_api_body_appeared(self):
         state = GoveeDeviceState(device_id="x")
         state.update_from_api(
             {
@@ -124,21 +142,6 @@ class TestStateParsing:
             }
         )
         assert state.presence is True
-
-    def test_presence_absent(self):
-        state = GoveeDeviceState(device_id="x")
-        state.update_from_api(
-            {
-                "capabilities": [
-                    {
-                        "type": CAPABILITY_EVENT,
-                        "instance": INSTANCE_BODY_APPEARED_EVENT,
-                        "state": {"value": 2},
-                    }
-                ]
-            }
-        )
-        assert state.presence is False
 
     def test_presence_defaults_none(self):
         assert GoveeDeviceState(device_id="x").presence is None
