@@ -2,7 +2,7 @@
 
 # Govee Cloud Integration for Home Assistant
 
-**Control Govee lights, plugs, fans, humidifiers, heaters, thermometers & leak sensors — with optional real‑time push over Govee's AWS IoT MQTT.**
+**Control Govee lights, plugs, fans, humidifiers, heaters, thermometers, air‑quality & CO₂ monitors, presence & leak sensors — with optional real‑time push over Govee's AWS IoT MQTT.**
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5?style=flat-square)](https://github.com/hacs/integration)
 [![Release](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/lasswellt/govee-homeassistant/badges/release.json)](https://github.com/lasswellt/govee-homeassistant/releases)
@@ -73,17 +73,20 @@ Govee in Home Assistant has several integrations, and it's easy to pick one that
 
 | Category | Examples | Entities you get |
 |---|---|---|
-| **Lights** (strips, bulbs, bars, TV backlights, sync boxes) | H619x, H61xx, H6099, H66A0, H6604 | Light (on/off, brightness, RGB, color temp), scene & DIY selectors, music‑mode switch, DreamView switch |
-| **RGBIC lights** | H619C, H6198, H60A6 | Everything above **plus** per‑segment color control (see [Segments](#rgbic-segment-control)) |
-| **Smart plugs / sockets** | H5080, H5083 | Switch; outlet extenders with an RGB nightlight (H5089) also get a color light |
-| **Ceiling fan + light combos** | H1310 | Light **and** a Fan entity (on/off, speed, reverse direction) |
-| **Tower / pedestal fans** | H7101, H7102, H7107 | Fan (speed, oscillation, preset modes) |
-| **Air purifiers** | H7120–H7127 | Fan / work modes, filter‑life sensor, optional nightlight |
-| **Humidifiers & dehumidifiers** | H7140, H7141, H7151 | Humidifier entity with modes |
+| **Lights** (strips, bulbs, bars, TV backlights, sync boxes) | H619x, H61xx, H6099, H66A0, H6604 | Light (on/off, brightness, RGB, color temp), scene & DIY selectors, music‑mode switch, DreamView switch; sync boxes return to their HDMI/Video source when you clear the scene |
+| **RGBIC lights** | H619C, H6198, H60A6 | Everything above **plus** per‑segment color control (see [Segments](#rgbic-segment-control)); Ceiling Light Pro (H60A6) adds an ambient/backlight‑ring switch |
+| **Multi‑zone lamps** | H60B2 | Per‑zone on/off switches (Light Zone 1/2/3) |
+| **Smart plugs / sockets** | H5080, H5083, H5089 | Switch; outlet extenders (H5089) expose each outlet separately **plus** an RGB Night Light |
+| **Ceiling fan + light combos** | H1310, H1370 | Separate Main Light & Background Light **and** a Fan entity (on/off, speed, reverse, oscillation) |
+| **Tower / pedestal fans** | H7101, H7102, H7106, H7107 | Fan (speed, oscillation, preset modes) |
+| **Air purifiers** | H7120–H7127 | Fan / work modes, filter‑life sensor, air‑quality (AQI) sensor, optional nightlight |
+| **Humidifiers & dehumidifiers** | H7140, H7141, H7150, H7151, H7152 | Modes + target‑humidity setpoint; dehumidifiers add a **Water Tank Full** sensor (needs account login) |
+| **Aroma diffusers** | H7161 | Power switch + light/mist scene selector |
 | **Space heaters** | H7130, H7131, H721C | Power switch, target‑temperature number, auto‑stop switch |
-| **Thermometers / hygrometers** | H5103, H5107, H5109, H5179 | Temperature & humidity sensors + a "Last Changed" timestamp |
-| **Air‑quality monitors** | H5140 | CO₂ / temperature / humidity sensors |
-| **Leak sensors** | H5058, H5059 (also H5054/H5055) via an H5043/H5044 hub | Moisture binary sensor, battery, sensor/gateway connectivity, last‑wet timestamp, button‑press event |
+| **Thermometers / hygrometers** | H5103, H5107, H5109, H5179, H5301, H5310 | Temperature & humidity sensors, **Battery** (account login) + a "Last Changed" timestamp; gateway‑bridged models (H5301/H5310 via an H5044) nest under the hub |
+| **Air‑quality & CO₂ monitors** | H5106, H5140 | CO₂ (ppm), air‑quality (AQI), temperature & humidity sensors |
+| **Presence sensors** | H5127 | Occupancy binary sensor, updated in real time over MQTT |
+| **Leak sensors** | H5058, H5059, H5054 via an H5040/H5043/H5044 hub | Moisture binary sensor, battery, sensor/gateway connectivity, last‑wet timestamp, button‑press event |
 
 Don't see your device, or a capability is missing? [Open an issue](https://github.com/lasswellt/govee-homeassistant/issues) with a diagnostics download (see [Diagnostics](#diagnostics--debug-logging)).
 
@@ -137,7 +140,7 @@ After setup, open **Settings → Devices & Services → Govee Cloud Integration 
 | Option | Default | What it does |
 |---|---|---|
 | **Polling interval (seconds)** | `60` | How often to poll the cloud for state (30–600). MQTT updates arrive between polls. |
-| **Temperature unit from Govee API (thermometers)** | `Celsius` | Set to **Fahrenheit** if thermometer readings look ~1.8× too high (e.g. 74 instead of 23). Govee returns the value in the device's app unit with no unit metadata, so it can't be auto‑detected. |
+| **Temperature unit from Govee API (thermometers)** | `Auto` | Govee returns thermometer values in the device's app unit with **no** unit metadata. **Auto** (default) converts the models known to report Fahrenheit and trusts the rest; pick **Fahrenheit** if a reading still looks ~1.8× too high (e.g. 74 instead of 23), or **Celsius** to never convert. |
 | **Enable group devices** | `off` | Surface the device groups you created in the Govee app as single light entities (power/brightness/color; state is best‑effort). |
 | **Enable scene selector** | `on` | Create a per‑device dropdown to activate Govee scenes. |
 | **Enable DIY scene selector** | `on` | Create a per‑device dropdown for your DIY scenes. |
@@ -200,6 +203,12 @@ Thermometer/hygrometer readings (H5103, H5107, H5109, H5179, …) come from Gove
 - **Bluetooth sensors behind a gateway** (e.g. H5075/H5110 through an **H5151** WiFi gateway): the gateway batch‑uploads infrequently — often many minutes (observed ~15–60 min; the exact interval is Govee's, not guaranteed).
 
 So a reading can look "frozen" while polling is perfectly healthy — it's the latest value Govee has. This is a Govee cloud limitation, not an integration bug (govee2mqtt and homebridge‑govee hit the same wall, and AWS IoT MQTT carries no thermometer data at all). Each thermometer exposes a **"Last Changed"** diagnostic timestamp so you can see how old the value is.
+
+**Battery & gateway‑bridged sensors.** Battery level for battery‑powered sensors (thermometers, leak detectors) comes from your Govee **account** data, so it needs account login (email/password) — an API key alone can't see it. Sensors that reach the cloud through a hub (e.g. H5301/H5310 via an **H5044** gateway) are discovered from the account device list and nested under the hub.
+
+**Temperature unit.** Govee reports thermometer values with no unit field, so the integration defaults to an **Auto** mode that converts the models known to report Fahrenheit and trusts the rest. If a reading is still ~1.8× off, set the unit explicitly in ⚙️ Configure — see [Configuration options](#configuration-options).
+
+**Other sensors.** Air‑quality/CO₂ monitors (H5106, H5140) expose CO₂ (ppm), AQI, temperature and humidity from the cloud poll (not MQTT). The H5127 presence sensor reports **occupancy** in real time over MQTT. Dehumidifiers surface a **Water Tank Full** sensor from account data. None of these expose a live PM2.5 or room temp/humidity beyond what's listed — those are Bluetooth‑only in the Govee app.
 
 **Want real‑time (~2 s) readings?** Govee thermometers broadcast over Bluetooth:
 

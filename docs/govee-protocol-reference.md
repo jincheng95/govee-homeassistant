@@ -801,6 +801,21 @@ Two topic types are used:
 | `colorTemInKelvin` | Color temperature |
 | `sta.stc` | Status code string |
 | `result` | Command result (1=success) |
+| `triSta` | **Presence sensors (H5127)**: `1` = present, `0` = absent — see below |
+
+**Sensor `state` fields (non-light devices).** Some sensor SKUs push their reading inside the same `cmd: "status"` envelope, in fields the generic light parser ignores. The **H5127 mmWave presence sensor** pushes presence over MQTT — the Developer `/device/state` poll only returns `online` for it — as:
+
+```json
+{
+  "sku": "H5127",
+  "device": "[MAC]",
+  "cmd": "status",
+  "state": { "triSta": 1, "sta": { "stc": "19_0_35_150940" }, "result": 1 },
+  "op": { "command": ["..."] }
+}
+```
+
+`state.triSta` (`1` present / `0` absent) maps to the Occupancy `binary_sensor` (device_class `occupancy`). Confirmed against the Govee app journal in issue #124 (fixed v2026.6.25). Note thermometers/CO2/AQI monitors (H5140, H5106, …) do **not** push their reading over MQTT at all — their `status` push carries only `onOff` + a `sta` block — so those values come from the REST poll only.
 
 **op.command BLE Packets:**
 
@@ -1085,6 +1100,45 @@ User-Agent: GoveeHome/7.4.10 (com.ihoment.GoVeeSensor; build:2; iOS 18.4.0) Alam
 | `/appsku/v2/devices/scenes/attributes` | GET | Get scene attributes |
 | `/appsku/v1/diys/groups-diys` | GET | Get DIY scenes |
 | `/bff-app/v1/exec-plat/home` | GET | Get One-Click/Tap-to-Run |
+| `/bff-app/v1/device/list` | POST | **Account device list (BFF)** — richest per-device state; see §4.3b |
+
+### 4.3b Account Device List (BFF) — `deviceExt` scalar catalog
+
+`POST https://app2.govee.com/bff-app/v1/device/list` (constant `GOVEE_BFF_DEVICE_LIST_URL`) returns the account's full device list with a `deviceExt` block per device. This is the **only** source for several values the Developer (API-key) API never exposes, so it requires **email/password** login, not just an API key. Each `deviceExt` sub-object is a JSON **string** under a `_json_str` key that must be re-parsed.
+
+```
+data.devices[].deviceExt
+  ├── deviceSettings._json_str   → static/config scalars (battery, thresholds, gatewayInfo)
+  ├── lastDeviceData._json_str   → last cached reading (online, tem/hum, or logType/logTime)
+  └── extResources._json_str     → skuUrl, ic
+```
+
+**`deviceSettings` scalars the integration reads:**
+
+| Field | Type | Meaning / use |
+|-------|------|---------------|
+| `battery` | int % | Battery level for battery-powered sensors (thermo-hygrometers, leak sensors, buttons, motion). **Only present here, never in the Developer API.** |
+| `wifiLevel` | int | WiFi signal bars (0–4) |
+| `waterFull` | int | Dehumidifier water-tank-full flag (`1` = full) — see H7150/H7152, only reliable source |
+| `fahOpen` | bool | Device's Fahrenheit display toggle (informational — API still returns the value unit-less) |
+| `temCali` / `humCali` | int | Calibration offsets |
+| `temMin`/`temMax`, `humMin`/`humMax`, `pm25Min`/`pm25Max`, `co2Min`/`co2Max` | int | Warning thresholds (centi-scaled where applicable) |
+| `comfortTemMin`/`Max`, `comfortHumMin`/`Max` | int | Comfort range |
+| `gatewayId`, `gatewayInfo{sku,versions,...}` | — | Present on gateway-bridged sub-sensors (hub = H5044 etc.) |
+| `sno` | int | Sensor slot on the hub — keys the `(hub, slot) → sensor` map |
+
+**`lastDeviceData` shapes (varies by device class):**
+
+- **Thermo-hygrometer** (e.g. H5110, H5310): `{online, tem, hum, lastTime, avgDayTem, avgDayHum}` — `tem`/`hum` are the last cached reading (scale is centi/tenths and **varies by gateway firmware**, see #102).
+- **Accessory event devices**: `{online, bind, logType, logTime}` — a "last event" pointer, **not** a live state. H5126 button: `logType 7` = button 1, `8` = button 2. H5129 motion: `logType 1` = last motion.
+- **Appliances / most others**: `{online}` only.
+
+**Quirks (confirmed 2026-06):**
+
+- **Phantom battery on mains-powered devices.** Mains devices (e.g. **H5106** air-quality monitor, H7152) report a constant `battery: 100` in `deviceSettings`. The integration suppresses battery for these (by device_type **and** by SKU allow-list, since some mains SKUs aren't a mains device_type) — see #114/#125.
+- **Battery flicker.** The account list refreshes on Govee's own cadence and can momentarily omit `battery`, so the value is preserved (last-known) across cloud polls rather than flipping to `unknown` (#125).
+- **No live sensor readings.** The BFF does **not** carry current temp/humidity for dehumidifiers (H7150/H7152) or a real PM2.5 for the H5106 — those are BLE-only in the Govee app (#114, #118).
+- Full field catalog and per-SKU examples: `docs/_research/2026-06-30_30day-issue-sweep.md`.
 
 ### 4.4 Scene Library Request
 
@@ -2372,6 +2426,80 @@ The H5054 water detector is **not returned by the Developer API** (the API-key `
 
 - Account-API device IDs use a colon-less hex form: `DABFC0D6A5FE000DB6`.
 - Supporting it requires a dedicated account-API discovery branch, not an entity/capability change.
+
+#### H5127 — mmWave WiFi Presence Sensor (`devices.types.sensor`)
+
+The H5127 presence sensor **reuses the same `bodyAppearedEvent` event capability** the H5054/H5059 water detectors use — `bodyAppearedEvent` is a generic "body appeared in range" event, not leak-specific. Its Developer-API capability carries `alarmType: 50` with `eventState.options` of Presence(1)/Absence(2):
+
+```json
+{
+  "sku": "H5127",
+  "type": "devices.types.sensor",
+  "capabilities": [
+    {
+      "type": "devices.capabilities.event",
+      "instance": "bodyAppearedEvent",
+      "alarmType": 50,
+      "eventState": { "options": [ {"name": "Presence", "value": 1}, {"name": "Absence", "value": 2} ] }
+    }
+  ]
+}
+```
+
+- **Detection must be SKU-locked**, not shape-based. The H5054/H5059 leak sensors advertise the *same* `{1, 2}` option values (leak uses `alarmType: 1` with LEAKED(1)/UN_LEAKED(2), see H5059 above). Keying presence-vs-leak on the option shape mis-classified real H5054s as presence sensors and stripped their Water Leak entity (regression in v2026.6.24 → fixed v2026.6.25 by locking to `PRESENCE_SENSOR_SKUS = {"H5127"}`). `alarmType` (50 vs 1) is a secondary discriminator but not every leak SKU's `alarmType` is catalogued, so SKU is authoritative.
+- **Live presence is MQTT-only.** The `/device/state` poll returns only `online`; present/absent arrives as `state.triSta` (`1`/`0`) in the `cmd: "status"` push — see §3.5. Maps to a `binary_sensor` device_class `occupancy`.
+- BFF census: direct-WiFi device (`in_leak_sensor_skus=false`, `in_leak_hub_skus=false`, `has_sno=false`, `has_gateway_info=false`) — no hub, no LoRa.
+
+#### H5106 — Air Quality Monitor (`devices.types.thermometer`)
+
+Reports `devices.types.thermometer` (not `air_quality_monitor` like the H5140). Three read-only property capabilities:
+
+```json
+[
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature", "parameters": {}},
+  {"type": "devices.capabilities.property", "instance": "sensorHumidity", "parameters": {}},
+  {"type": "devices.capabilities.property", "instance": "airQuality", "parameters": {}}
+]
+```
+
+- `sensorTemperature` is a **plain Fahrenheit float** (e.g. `73.76` = ~23 °C), *not* centi-encoded; `sensorHumidity` is a plain percent. The SKU must be on the Fahrenheit auto-convert list (#116, same class as #115). Readings come from the **REST poll only** — the MQTT push carries no temp/humidity.
+- `airQuality` is a **coarse air-quality index** (AQI-style, observed values 1–2), **not** a PM2.5 µg/m³ measurement — surfaced as a numeric AQI-device-class sensor. Govee's cloud exposes no real PM2.5 for this model (BLE-only).
+- BFF `deviceSettings` reports a **phantom `battery: 100`** (mains-powered) → battery suppressed by SKU (#114).
+
+#### H7150 / H7152 — Smart Dehumidifier (`devices.types.dehumidifier`)
+
+```json
+{
+  "sku": "H7150",
+  "capabilities": [
+    {"type": "devices.capabilities.on_off", "instance": "powerSwitch"},
+    {"type": "devices.capabilities.range", "instance": "humidity", "parameters": {"unit": "unit.percent", "dataType": "INTEGER", "range": {"min": 30, "max": 80, "precision": 1}}},
+    {"type": "devices.capabilities.work_mode", "instance": "workMode", "parameters": {"dataType": "STRUCT", "fields": [
+      {"fieldName": "workMode", "dataType": "ENUM", "options": [{"name": "gearMode", "value": 1}, {"name": "Auto", "value": 3}, {"name": "Dryer", "value": 8}]},
+      {"fieldName": "modeValue", "options": [{"name": "gearMode", "options": [{"name": "Low", "value": 1}, {"name": "Medium", "value": 2}, {"name": "High", "value": 3}]}, {"name": "Auto", "range": {"min": 30, "max": 80}}, {"name": "Dryer", "value": 0}]}
+    ]}},
+    {"type": "devices.capabilities.event", "instance": "waterFullEvent", "alarmType": 58,
+     "eventState": {"options": [{"name": "waterFull", "value": 1, "message": "Water bucket is full or has been pulled out"}]}}
+  ]
+}
+```
+
+- **Target humidity lives in the Auto-mode `modeValue`.** `workMode` is a STRUCT `{workMode ENUM, modeValue}`. gearMode `modeValue` is the fan gear (Low 1 / Medium 2 / High 3 — the **H7150 omits Medium**). The humidity setpoint is the Auto `modeValue`, but its advertised range is **model-dependent**: the **H7150** allows a settable `30–80`, while the **H7151/H7152 pin Auto to a fixed `80` (range `min:80, max:80`)**. Either way the `/device/state` poll returns `modeValue: 0` for Auto — Govee doesn't populate the current Auto setpoint — so `configured_humidity` reads null/0 (reporter #118 on an H7150 saw `workMode 3 / modeValue 0`). This exact "Auto → modeValue 0, HA number expects 80" mismatch is independently reproduced in govee2mqtt #413.
+- **`waterFullEvent` is a push-only event** (`alarmType 58`, `eventState.options[].value 1` = "Water bucket is full or has been pulled out"). It is absent from the `/device/state` poll and not pushed over MQTT, so tank-full state is read from **BFF `deviceSettings.waterFull`** (`1` = full) → `binary_sensor` device_class `problem`. Requires email/password (#118).
+- The `range`/`humidity` `state.value` comes back as an **empty string `""`** in the poll. There is **no `sensorTemperature` / `sensorHumidity` capability at all** on these dehumidifiers — live room temp/humidity is BLE-only in the Govee app and unavailable to any cloud integration (confirmed in govee2mqtt #413: `"instance":"humidity","state":{"value":""}`, "reports humidity only via Bluetooth").
+- Cross-validated 2026-06-30 against the **goveelife** real-device fixtures (`h7150_2024-08-12.json`, `h7151_2025-06-01.json`) and **govee2mqtt** issues #413 / #145 — see `docs/_research/2026-06-30_30day-issue-sweep.md`.
+
+#### H5310 — Smart Thermometer P2 / Pool Thermometer (`devices.types.thermometer`, gateway-bridged)
+
+Battery thermo-hygrometer that reaches the cloud through an **H5044 gateway**; not returned by the Developer API for some accounts (surfaces via BFF). Only `sensorTemperature` + `sensorHumidity` property capabilities.
+
+- **Extended 16-octet device id** (`03:55:01:25:00:00:00:0B:FF:FF:00:41:FF:FF:00:33`), not the standard 8-octet Govee MAC — relevant to id parsing.
+- The pool probe is **temperature-only**: `sensorHumidity` comes back as `655.35` (= `0xFFFF / 100`, a "no-data" sentinel). Treat the sentinel as unavailable rather than a real 655% reading (#100).
+- Rides the gateway with **no direct MQTT topic** (`device_topic_count=0`); the H5044 pushes 20-byte `ee34…` multi-sync frames. Richer cached state (`tem`/`hum`/`avgDay…`) is in BFF `lastDeviceData`.
+
+#### H616C — LED Strip (NOT yet in Developer API backend)
+
+Confirmed via Govee support (#122): the **H616C is not wired into Govee's Developer API backend** as of mid-2026 — it returns no device entry, so the integration cannot discover or control it regardless of code. Govee indicated backend support arrives with app **v7.5.3**. No integration change is possible until Govee enables the SKU server-side.
 
 Key observations for sensor devices:
 - **Sensor-only pattern**: only `property` capabilities (thermometers, CO2) or `event` capabilities (leak), no controllable capabilities
