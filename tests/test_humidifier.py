@@ -216,6 +216,27 @@ class TestEntityProperties:
         coordinator.get_state.return_value = h7150_state
         assert entity.target_humidity is None
 
+    def test_target_humidity_none_when_auto_modevalue_unreported(
+        self, entity, coordinator, h7150_state
+    ):
+        # Govee's /device/state poll returns modeValue 0 for Auto — it never
+        # populates the live setpoint — so the target must read unknown, not a
+        # bogus 0% (issue #118, cross-validated against govee2mqtt #413).
+        h7150_state.work_mode = 3  # Auto
+        h7150_state.mode_value = 0
+        coordinator.get_state.return_value = h7150_state
+        assert entity.target_humidity is None
+
+    def test_target_humidity_none_when_auto_modevalue_below_min(
+        self, entity, coordinator, h7150_state
+    ):
+        # Any value outside the advertised [min, max] Auto range is treated as
+        # "not reported" rather than a literal setpoint (issue #118).
+        h7150_state.work_mode = 3  # Auto
+        h7150_state.mode_value = 10  # below min_humidity (30)
+        coordinator.get_state.return_value = h7150_state
+        assert entity.target_humidity is None
+
 
 # --------------------------------------------------------------------------- #
 # Commands

@@ -206,8 +206,15 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
                 auto_work_mode is not None
                 and state.work_mode == auto_work_mode
                 and state.mode_value is not None
+                and self._attr_min_humidity <= state.mode_value <= self._attr_max_humidity
             ):
                 return int(state.mode_value)
+            # Govee's /device/state poll returns ``modeValue: 0`` for Auto — it
+            # never populates the live Auto setpoint — so a value of 0 (or any
+            # value outside the valid range) means "not reported". Surface it as
+            # unknown rather than a bogus 0% (issue #118; same gap seen in
+            # govee2mqtt #413). A real target reappears from optimistic state
+            # after the user sets one.
             return None
         return state.configured_humidity
 
