@@ -169,6 +169,66 @@ class TestLeakWetDecode:
         assert event["is_wet"] is True
 
 
+class TestPresenceReportDecode:
+    """0xAA 0x01 mmWave presence report frames (H5127, issue #124).
+
+    Byte layout per ultimate-govee's presence.state.ts and the real captures
+    in homebridge-govee #840: byte 2 = mmWave detected, byte 5 = biological
+    detected, byte 16 = overall occupancy flag (tracks the status push's
+    ``triSta`` exactly). Absence arrives ONLY via this multiSync frame.
+    """
+
+    @staticmethod
+    def _frame(body: list[int]) -> bytes:
+        """Pad to 19 bytes and append the XOR checksum (Govee BLE framing)."""
+        padded = bytes(body) + bytes(19 - len(body))
+        checksum = 0
+        for b in padded:
+            checksum ^= b
+        return padded + bytes([checksum])
+
+    def _emit_one(self, packet: bytes):
+        cb = MagicMock()
+        client = _make_client()
+        client._on_state_update = cb
+        client._handle_multisync(HUB_ID, _multisync([packet]))
+        return cb
+
+    def test_presence_frame_emits_trista_1(self):
+        # Modeled on the #840 capture: detected=1, distance 162cm, overall=1.
+        frame = self._frame(
+            [0xAA, 0x01, 0x01, 0x00, 0xA2, 0x01, 0x00, 0x9E]
+            + [0x00] * 8
+            + [0x01, 0x00, 0x00]
+        )
+        cb = self._emit_one(frame)
+        cb.assert_called_once_with(HUB_ID, {"triSta": 1})
+
+    def test_absence_frame_emits_trista_0(self):
+        # Absence: detected flags cleared, distances persist (last known).
+        frame = self._frame(
+            [0xAA, 0x01, 0x00, 0x00, 0x99, 0x01, 0x00, 0x99]
+            + [0x00] * 8
+            + [0x00, 0x00, 0x00]
+        )
+        cb = self._emit_one(frame)
+        cb.assert_called_once_with(HUB_ID, {"triSta": 0})
+
+    def test_short_presence_frame_falls_back_to_byte2(self):
+        cb = self._emit_one(bytes([0xAA, 0x01, 0x01, 0x00, 0xA2, 0x01]))
+        cb.assert_called_once_with(HUB_ID, {"triSta": 1})
+
+    def test_config_report_recorded_but_not_emitted(self):
+        # 0xAA 0x05 detection-settings report: diagnostics-only, no state.
+        cb = MagicMock()
+        client = _make_client()
+        client._on_state_update = cb
+        frame = self._frame([0xAA, 0x05, 0x01, 0x03, 0x20, 0x00, 0x05])
+        client._handle_multisync(HUB_ID, _multisync([frame]))
+        cb.assert_not_called()
+        assert client.recent_multisync[0]["header"] == "aa05"
+
+
 class TestPerDeviceReceiveTimestamp:
     """_handle_message stamps a per-device inbound MQTT receive timestamp."""
 

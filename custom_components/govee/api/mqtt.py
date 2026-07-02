@@ -530,6 +530,41 @@ class GoveeAwsIotClient:
             if len(raw) < 6:
                 continue
 
+            # mmWave presence report (H5127, issue #124): 0xAA 0x01 frames.
+            # Byte layout (ultimate-govee presence.state.ts + real captures in
+            # homebridge-govee #840): byte 2 = mmWave detected, bytes 3-4 =
+            # distance cm, byte 5 = biological detected, bytes 8-11 = duration,
+            # byte 16 = overall occupancy flag — tracks the ``status`` push's
+            # ``triSta`` exactly. Absence arrives ONLY as this multiSync frame
+            # (with the flags cleared); it never gets a triSta status push.
+            if raw[0] == 0xAA:
+                if raw[1] == 0x01:
+                    if len(raw) >= 17:
+                        presence_val = 1 if raw[16] == 0x01 else 0
+                    else:
+                        presence_val = 1 if raw[2] == 0x01 else 0
+                    _LOGGER.debug(
+                        "Presence report from %s: presence=%d (frame=%s)",
+                        hub_device_id,
+                        presence_val,
+                        raw[:4].hex(),
+                    )
+                    # Route through the normal state-update path so
+                    # update_from_mqtt's triSta parse applies it (same field
+                    # the status push carries).
+                    try:
+                        self._on_state_update(hub_device_id, {"triSta": presence_val})
+                    except Exception as err:
+                        _LOGGER.error(
+                            "presence callback failed for %s: %s",
+                            hub_device_id,
+                            err,
+                        )
+                # Other 0xAA opcodes (0x1F enable flags, 0x05 detection
+                # settings, 0x1A sensitivity, ...) are config reports — already
+                # captured in the diagnostics ring buffer above.
+                continue
+
             if raw[0] != 0xEE:
                 continue
 

@@ -180,6 +180,71 @@ class TestCoordinatorWaterFullEvent:
         coord.async_set_updated_data.assert_not_called()
 
 
+class TestCoordinatorBodyAppearedEvent:
+    """bodyAppearedEvent fires for BOTH transitions on presence sensors:
+    value 1 = Presence, 2 = Absence (issue #124)."""
+
+    def _coordinator(self, device: GoveeDevice):
+        import custom_components.govee.coordinator as coord_mod
+
+        coord = object.__new__(coord_mod.GoveeCoordinator)
+        coord._devices = {device.device_id: device}
+        coord._states = {
+            device.device_id: GoveeDeviceState.create_empty(device.device_id)
+        }
+        coord.async_set_updated_data = MagicMock()
+        return coord
+
+    @staticmethod
+    def _h5127() -> GoveeDevice:
+        return GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:51:27",
+            sku="H5127",
+            name="Office Presence Sensor",
+            device_type="devices.types.sensor",
+            capabilities=(
+                GoveeCapability(type=CAPABILITY_EVENT, instance="bodyAppearedEvent"),
+            ),
+        )
+
+    def test_presence_value_1_sets_present(self):
+        device = self._h5127()
+        coord = self._coordinator(device)
+        coord._on_openapi_event(
+            device.device_id, "H5127", "bodyAppearedEvent", [{"name": "Presence", "value": 1}]
+        )
+        assert coord._states[device.device_id].presence is True
+        coord.async_set_updated_data.assert_called_once()
+
+    def test_absence_value_2_sets_absent(self):
+        device = self._h5127()
+        coord = self._coordinator(device)
+        coord._states[device.device_id].presence = True
+        coord._on_openapi_event(
+            device.device_id, "H5127", "bodyAppearedEvent", [{"name": "Absence", "value": 2}]
+        )
+        assert coord._states[device.device_id].presence is False
+
+    def test_non_presence_sku_ignored(self):
+        # The H5054 water detector shares the bodyAppearedEvent instance but
+        # means "leak" — its state is owned by the warnMessage poll.
+        device = GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:50:54",
+            sku="H5054",
+            name="Water Detector",
+            device_type="devices.types.sensor",
+            capabilities=(
+                GoveeCapability(type=CAPABILITY_EVENT, instance="bodyAppearedEvent"),
+            ),
+        )
+        coord = self._coordinator(device)
+        coord._on_openapi_event(
+            device.device_id, "H5054", "bodyAppearedEvent", [{"value": 1}]
+        )
+        assert coord._states[device.device_id].presence is None
+        coord.async_set_updated_data.assert_not_called()
+
+
 class TestBffWaterFullNoLongerApplied:
     """deviceSettings.waterFull is the Full Bucket Alert setting, not tank
     state — it must never populate water_full again (issue #118)."""

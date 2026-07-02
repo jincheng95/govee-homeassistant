@@ -1340,11 +1340,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         ``waterFull`` field, which turned out to be the app's "Full Bucket
         Alert" notification *setting*, not live tank state (issue #118).
         """
-        if device_id not in self._devices:
+        device = self._devices.get(device_id)
+        if device is None:
             _LOGGER.debug("OpenAPI event for unknown device %s (%s)", device_id, sku)
-            return
-
-        if instance != "waterFullEvent":
             return
 
         value: int | None = None
@@ -1358,15 +1356,38 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if value is None:
             return
 
+        if instance == "waterFullEvent":
+            state = self._get_or_create_state(device_id)
+            state.water_full = bool(value)
+            _LOGGER.info(
+                "Water tank full event for %s (%s): %s", device_id, sku, bool(value)
+            )
+            self.async_set_updated_data(self._states)
+            return
+
+        # bodyAppearedEvent fires for BOTH transitions on presence sensors:
+        # value 1 = Presence, 2 = Absence (Govee Subscribe Device Event docs,
+        # issue #124). SKU-locked to presence sensors — the H5054 water
+        # detector shares this instance but means "leak", and its state is
+        # owned by the warnMessage poll.
+        if instance == "bodyAppearedEvent" and device.supports_presence_event:
+            state = self._get_or_create_state(device_id)
+            state.presence = value == 1
+            _LOGGER.info(
+                "Presence event for %s (%s): %s",
+                device_id,
+                sku,
+                "present" if value == 1 else "absent",
+            )
+            self.async_set_updated_data(self._states)
+
+    def _get_or_create_state(self, device_id: str) -> GoveeDeviceState:
+        """Return the device's state object, creating an empty one if needed."""
         state = self._states.get(device_id)
         if state is None:
             state = GoveeDeviceState.create_empty(device_id)
             self._states[device_id] = state
-        state.water_full = bool(value)
-        _LOGGER.info(
-            "Water tank full event for %s (%s): %s", device_id, sku, bool(value)
-        )
-        self.async_set_updated_data(self._states)
+        return state
 
     async def _fetch_device_topics(self) -> None:
         """Fetch device-specific MQTT topics from undocumented Govee API.
