@@ -2704,10 +2704,16 @@ class TestLanLifecycle:
         async def _setup_lan():
             order.append("lan")
 
+        async def _openapi_events():
+            order.append("openapi_events")
+
         monkeypatch.setattr(coord, "_discover_devices", _discover)
         monkeypatch.setattr(coord, "_discover_leak_sensors", _leaks)
         monkeypatch.setattr(coord, "_discover_bff_thermometers", _thermo)
         monkeypatch.setattr(coord, "_async_setup_lan", _setup_lan)
+        # Mocked so the test never spawns the real OpenAPI MQTT connection
+        # loop (would trip the lingering-task guard).
+        monkeypatch.setattr(coord, "_start_openapi_events", _openapi_events)
 
         await coord._async_setup()
 
