@@ -416,6 +416,27 @@ class GoveeDevice:
         return [instance for _, instance in sorted(matches)]
 
     @property
+    def named_light_toggle_instances(self) -> list[str]:
+        """Named per-part light toggles (issues #114, #126).
+
+        Multi-part fixtures expose each physical light as a
+        ``<name>LightToggle`` ``devices.capabilities.toggle`` — e.g.
+        ``mainLightToggle``/``backgroundLightToggle`` on ceiling-fan lights
+        (H1310/H1370) and ``nebulaLightToggle``/``sideLightToggle``/
+        ``bottomLightToggle`` on the H60B3 uplighter floor lamp. The
+        lowercase-prefix pattern deliberately excludes ``nightlightToggle``
+        (lowercase l — a mode, not a light part) and the numeric
+        ``light{N}Toggle`` zones, which have their own property. Returns
+        instance names in capability order.
+        """
+        pattern = re.compile(r"[a-z]+LightToggle")
+        return [
+            cap.instance
+            for cap in self.capabilities
+            if cap.type == CAPABILITY_TOGGLE and pattern.fullmatch(cap.instance)
+        ]
+
+    @property
     def supports_main_light_toggle(self) -> bool:
         """Check if device exposes a separate main-light toggle (H1310/H1370)."""
         return any(

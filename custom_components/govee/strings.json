@@ -189,6 +189,15 @@
       },
       "govee_background_light": {
         "name": "Background Light"
+      },
+      "govee_nebula_light": {
+        "name": "Nebula Light"
+      },
+      "govee_side_light": {
+        "name": "Side Light"
+      },
+      "govee_bottom_light": {
+        "name": "Bottom Light"
       }
     },
     "sensor": {

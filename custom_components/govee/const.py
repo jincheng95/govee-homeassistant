@@ -45,8 +45,23 @@ CONF_API_TEMPERATURE_UNIT: Final = "api_temperature_unit"
 #     (e.g. 73.9°F ≈ 23.3°C), surfaced under the °C unit as a "wrong large
 #     value". Confirmed by reporter diagnostics (issue #116) — they are NOT
 #     centi-encoded, just Fahrenheit; same class as #72/#78/#96.
+#   H5075 / H5100 (thermo-hygrometers): report °F as a plain float under the
+#     °C-tagged unit (screenshots show 80.8°C / 70.7°C at normal room
+#     temperature — i.e. the raw °F reading). Same class as #72/#78/#96
+#     (issue #128).
 FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
-    {"H5179", "H5109", "H5110", "HS5108", "HS5106", "H717A", "H5106", "H5140"}
+    {
+        "H5179",
+        "H5109",
+        "H5110",
+        "HS5108",
+        "HS5106",
+        "H717A",
+        "H5106",
+        "H5140",
+        "H5075",
+        "H5100",
+    }
 )
 
 
@@ -182,6 +197,9 @@ SUFFIX_LIGHT_ZONE: Final = "_light_zone_"
 SUFFIX_SOCKET: Final = "_socket_"
 SUFFIX_MAIN_LIGHT: Final = "_main_light"
 SUFFIX_BACKGROUND_LIGHT: Final = "_background_light"
+SUFFIX_NEBULA_LIGHT: Final = "_nebula_light"
+SUFFIX_SIDE_LIGHT: Final = "_side_light"
+SUFFIX_BOTTOM_LIGHT: Final = "_bottom_light"
 SUFFIX_MUSIC_MODE: Final = "_music_mode"
 SUFFIX_MUSIC_SENSITIVITY: Final = "_music_sensitivity"
 SUFFIX_DREAMVIEW: Final = "_dreamview"

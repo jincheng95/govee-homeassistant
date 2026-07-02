@@ -18,12 +18,15 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
     SUFFIX_BACKGROUND_LIGHT,
+    SUFFIX_BOTTOM_LIGHT,
     SUFFIX_DREAMVIEW,
     SUFFIX_HEATER_AUTO_STOP,
     SUFFIX_LIGHT_ZONE,
     SUFFIX_MAIN_LIGHT,
     SUFFIX_MUSIC_MODE,
+    SUFFIX_NEBULA_LIGHT,
     SUFFIX_NIGHT_LIGHT,
+    SUFFIX_SIDE_LIGHT,
     SUFFIX_SOCKET,
 )
 from .coordinator import GoveeCoordinator
@@ -45,6 +48,39 @@ from .models.device import (
 _LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
+
+# Named per-part light toggles (issues #114, #126): capability instance ->
+# (translation_key, unique_id suffix, icon). Devices covered so far: ceiling-fan
+# lights (H1310/H1370: main/background) and the H60B3 uplighter floor lamp
+# (nebula/side/bottom). Unknown ``<name>LightToggle`` instances are logged and
+# skipped so a new SKU surfaces in debug logs instead of silently missing.
+NAMED_LIGHT_TOGGLE_SPECS: dict[str, tuple[str, str, str]] = {
+    INSTANCE_MAIN_LIGHT_TOGGLE: (
+        "govee_main_light",
+        SUFFIX_MAIN_LIGHT,
+        "mdi:ceiling-light",
+    ),
+    INSTANCE_BACKGROUND_LIGHT_TOGGLE: (
+        "govee_background_light",
+        SUFFIX_BACKGROUND_LIGHT,
+        "mdi:wall-sconce-flat",
+    ),
+    "nebulaLightToggle": (
+        "govee_nebula_light",
+        SUFFIX_NEBULA_LIGHT,
+        "mdi:shimmer",
+    ),
+    "sideLightToggle": (
+        "govee_side_light",
+        SUFFIX_SIDE_LIGHT,
+        "mdi:wall-sconce",
+    ),
+    "bottomLightToggle": (
+        "govee_bottom_light",
+        SUFFIX_BOTTOM_LIGHT,
+        "mdi:floor-lamp",
+    ),
+}
 
 
 async def async_setup_entry(
@@ -159,30 +195,28 @@ async def async_setup_entry(
                     device.name,
                 )
 
-            # Separate main / background light toggles on ceiling-fan lights
-            # (H1310/H1370). Govee returns "" for these on poll, so they are
-            # optimistic + RestoreEntity like the light zones (issue #114).
-            if device.supports_main_light_toggle:
+            # Named per-part light toggles — main/background on ceiling-fan
+            # lights (H1310/H1370, issue #114), nebula/side/bottom on the
+            # H60B3 uplighter (issue #126). Govee returns "" for these on
+            # poll, so they are optimistic + RestoreEntity like the zones.
+            for instance in device.named_light_toggle_instances:
+                spec = NAMED_LIGHT_TOGGLE_SPECS.get(instance)
+                if spec is None:
+                    _LOGGER.debug(
+                        "Unknown named light toggle %s on %s (%s) — skipping",
+                        instance,
+                        device.name,
+                        device.sku,
+                    )
+                    continue
+                translation_key, suffix, icon = spec
                 entities.append(
                     GoveeNamedLightSwitchEntity(
-                        coordinator,
-                        device,
-                        INSTANCE_MAIN_LIGHT_TOGGLE,
-                        "govee_main_light",
-                        SUFFIX_MAIN_LIGHT,
-                        "mdi:ceiling-light",
+                        coordinator, device, instance, translation_key, suffix, icon
                     )
                 )
-            if device.supports_background_light_toggle:
-                entities.append(
-                    GoveeNamedLightSwitchEntity(
-                        coordinator,
-                        device,
-                        INSTANCE_BACKGROUND_LIGHT_TOGGLE,
-                        "govee_background_light",
-                        SUFFIX_BACKGROUND_LIGHT,
-                        "mdi:wall-sconce-flat",
-                    )
+                _LOGGER.debug(
+                    "Created named light switch %s for %s", instance, device.name
                 )
 
     async_add_entities(entities)
@@ -418,8 +452,9 @@ class GoveeSocketSwitchEntity(GoveeEntity, SwitchEntity):
 
 
 class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
-    """On/off switch for a named light zone — main or background — on ceiling-fan
-    lights (H1310/H1370, issue #114).
+    """On/off switch for a named light part — main/background on ceiling-fan
+    lights (H1310/H1370, issue #114), nebula/side/bottom on the H60B3
+    uplighter floor lamp (issue #126).
 
     Govee returns "" for these toggles on poll, so state is optimistic and
     restored across restarts via RestoreEntity (the same approach as the

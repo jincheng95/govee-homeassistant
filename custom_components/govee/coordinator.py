@@ -1962,9 +1962,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self.async_set_updated_data(self._states)
 
         _LOGGER.debug(
-            "MQTT state applied for %s: power=%s",
+            "MQTT state applied for %s: power=%s, presence=%s (triSta=%s)",
             device_id,
             state.power_state,
+            state.presence,
+            state_data.get("triSta"),
         )
 
     def _on_mqtt_give_up(self, attempts: int, last_error: str) -> None:
