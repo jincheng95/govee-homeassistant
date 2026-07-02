@@ -248,8 +248,21 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
         # Recent hub multiSync packets (hex) — lets undecoded leak-sensor
         # packet subtypes be reverse-engineered from a download alone (#87).
         recent_multisync = mqtt_client.recent_multisync
+    openapi_client = coordinator.openapi_events_client
+    openapi_info: dict[str, Any] | None = None
+    if openapi_client:
+        openapi_info = {
+            "available": openapi_client.available,
+            "connected": openapi_client.connected,
+            # Recent devices.capabilities.event pushes (waterFullEvent,
+            # lackWaterEvent, bodyAppearedEvent, ...) — lets event shapes for
+            # new SKUs be captured from a download alone (#114, #118). MACs
+            # inside payloads are value-redacted like everything else.
+            "recent_events": openapi_client.recent_events,
+        }
     return {
         "mqtt": mqtt_info,
+        "openapi_events": openapi_info,
         "recent_multisync": recent_multisync,
         # PII-free census of the BFF device list — shows whether the BFF API
         # returns a given leak SKU and if it carries discovery fields (#87).

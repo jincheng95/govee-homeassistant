@@ -100,6 +100,11 @@ class GoveeApiClient:
         self._last_raw_devices: list[dict[str, Any]] | None = None
         self._last_raw_state: dict[str, dict[str, Any]] = {}
 
+    @property
+    def api_key(self) -> str:
+        """The Developer API key (also used by the OpenAPI event channel)."""
+        return self._api_key
+
     async def __aenter__(self) -> GoveeApiClient:
         """Async context manager entry."""
         await self._ensure_client()

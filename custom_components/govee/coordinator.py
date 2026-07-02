@@ -33,6 +33,7 @@ from .api import (
 )
 from .api.auth import GoveeAuthClient
 from .api.ble_packet import DIY_STYLE_NAMES
+from .api.openapi_events import GoveeOpenApiEventClient
 from .ble_passthrough import BlePassthroughManager
 
 from homeassistant.helpers.event import async_call_later
@@ -247,6 +248,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # MQTT client for real-time updates
         self._mqtt_client: GoveeAwsIotClient | None = None
+
+        # Official OpenAPI event-subscription channel (API-key-only MQTT).
+        # Carries edge-triggered devices.capabilities.event pushes
+        # (waterFullEvent, lackWaterEvent, bodyAppearedEvent, ...) and feeds
+        # the diagnostics event ring buffer (issues #114, #118).
+        self._openapi_events_client: GoveeOpenApiEventClient | None = None
 
         # Device-specific MQTT topics from undocumented API
         # Maps device_id -> MQTT topic for publishing commands
@@ -655,6 +662,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         return self._iot_credentials is not None
 
     @property
+    def openapi_events_client(self) -> GoveeOpenApiEventClient | None:
+        """The OpenAPI event-subscription client, for diagnostics."""
+        return self._openapi_events_client
+
+    @property
     def device_topic_count(self) -> int:
         """Number of devices with a resolved MQTT publish topic."""
         return len(self._device_topics)
@@ -724,6 +736,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             await self._start_mqtt()
             # Fetch device-specific MQTT topics for publishing commands
             await self._fetch_device_topics()
+
+        # OpenAPI event subscription — needs only the API key (no account
+        # login), so it runs regardless of IoT credentials. Failure-isolated:
+        # a broker hiccup must never fail setup (the client retries forever).
+        await self._start_openapi_events()
 
         # Discover leak sensors via BFF API (requires email/password)
         await self._discover_leak_sensors()
@@ -1285,6 +1302,72 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         else:
             _LOGGER.warning("MQTT library not available")
 
+    async def _start_openapi_events(self) -> None:
+        """Start the OpenAPI event-subscription client (issues #114, #118).
+
+        Subscribes to Govee's official event push channel with just the API
+        key. Every push lands in a diagnostics ring buffer (to capture event
+        shapes for new SKUs); known events are applied to device state.
+        """
+        try:
+            self._openapi_events_client = GoveeOpenApiEventClient(
+                api_key=self._api_client.api_key,
+                on_event=self._on_openapi_event,
+            )
+            await self._openapi_events_client.async_start()
+        except Exception as err:  # noqa: BLE001 — never fail setup for this
+            _LOGGER.warning("OpenAPI event channel failed to start: %s", err)
+            self._openapi_events_client = None
+
+    @callback
+    def _on_openapi_event(
+        self,
+        device_id: str,
+        sku: str,
+        instance: str,
+        state_list: list[dict[str, Any]],
+    ) -> None:
+        """Apply a devices.capabilities.event push from the OpenAPI channel.
+
+        Only well-understood events mutate state; everything else is already
+        captured in the client's diagnostics ring buffer for later decoding.
+
+        waterFullEvent semantics (Govee docs / govee2mqtt #145): fires with
+        value=1 when the bucket is full OR pulled out. Edge-triggered with no
+        documented "cleared" counterpart, so a value of 0 (if ever sent) is
+        applied too, and the developer-poll preserve block keeps the last
+        event value across polls. This replaces the BFF deviceSettings
+        ``waterFull`` field, which turned out to be the app's "Full Bucket
+        Alert" notification *setting*, not live tank state (issue #118).
+        """
+        if device_id not in self._devices:
+            _LOGGER.debug("OpenAPI event for unknown device %s (%s)", device_id, sku)
+            return
+
+        if instance != "waterFullEvent":
+            return
+
+        value: int | None = None
+        for entry in state_list:
+            if isinstance(entry, dict) and entry.get("value") is not None:
+                try:
+                    value = int(entry["value"])
+                except (TypeError, ValueError):
+                    continue
+                break
+        if value is None:
+            return
+
+        state = self._states.get(device_id)
+        if state is None:
+            state = GoveeDeviceState.create_empty(device_id)
+            self._states[device_id] = state
+        state.water_full = bool(value)
+        _LOGGER.info(
+            "Water tank full event for %s (%s): %s", device_id, sku, bool(value)
+        )
+        self.async_set_updated_data(self._states)
+
     async def _fetch_device_topics(self) -> None:
         """Fetch device-specific MQTT topics from undocumented Govee API.
 
@@ -1404,15 +1487,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def _apply_bff_thermo_battery(
         self, thermo_readings: dict[str, dict[str, Any]]
     ) -> None:
-        """Apply BFF-reported scalars (battery, water-tank-full) to devices.
+        """Apply BFF-reported battery to devices.
 
         The Developer API doesn't expose battery for BLE-bridged sensors (e.g.
-        H5110 via an H5151/H5044 gateway), nor the dehumidifier water-tank-full
-        value, but the BFF ``deviceSettings`` carries both. Unlike the BFF
-        ``tem``/``hum`` (scale varies by gateway — used only as a tickle, #102),
-        battery is a plain 0-100 int and waterFull a plain 0/1 flag, so they're
-        safe to store. Devices whose BFF entry omits a value are left untouched,
-        so no entity shows a stale reading (issues #83, #118).
+        H5110 via an H5151/H5044 gateway), but the BFF ``deviceSettings``
+        carries it. Unlike the BFF ``tem``/``hum`` (scale varies by gateway —
+        used only as a tickle, #102), battery is a plain 0-100 int, so it's
+        safe to store. Devices whose BFF entry omits a value are left
+        untouched, so no entity shows a stale reading (issues #83, #118).
 
         Battery is skipped for mains-powered devices — both by device_type and
         by an explicit SKU list (the H5106 air-quality monitor reports a bogus
@@ -1440,12 +1522,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 except (TypeError, ValueError):
                     pass
 
-            water_full = reading.get("water_full")
-            if water_full is not None:
-                try:
-                    state.water_full = bool(int(water_full))
-                except (TypeError, ValueError):
-                    pass
+            # NOTE: the BFF ``deviceSettings.waterFull`` field is deliberately
+            # NOT applied here anymore. It is the app's "Full Bucket Alert"
+            # notification *setting* (0/1 toggle), not live tank state —
+            # applying it produced a permanent false "Problem" for users with
+            # the alert enabled (issues #118, #114; confirmed against the
+            # H7150 manual and govee2mqtt's DeviceSettings schema). Live tank
+            # state now comes from the OpenAPI waterFullEvent push
+            # (_on_openapi_event).
 
     async def _discover_bff_thermometers(self) -> None:
         """Discover thermo-hygrometers (H5301) via the BFF device list (issue #86).
@@ -3262,6 +3346,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if self._mqtt_client:
             await self._mqtt_client.async_stop()
             self._mqtt_client = None
+
+        if self._openapi_events_client:
+            await self._openapi_events_client.async_stop()
+            self._openapi_events_client = None
 
         # Drop the multicast group and release the :4002 bind so a reload /
         # unload never leaks the LAN socket (issue #57, blocking #5).
