@@ -543,8 +543,11 @@ class TestDeveloperThermometerBattery:
         GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 100}})
         assert state.battery is None
 
-    def test_apply_bff_water_full_from_bff(self):
-        # #118: dehumidifier water-tank-full is sourced from BFF deviceSettings.
+    def test_bff_water_full_not_applied(self):
+        # #118 follow-up: BFF deviceSettings.waterFull is the app's "Full
+        # Bucket Alert" notification SETTING, not live tank state — it must
+        # never populate water_full (live state comes from the OpenAPI
+        # waterFullEvent push instead; see test_openapi_events.py).
         from types import SimpleNamespace
 
         from custom_components.govee.coordinator import GoveeCoordinator
@@ -562,9 +565,7 @@ class TestDeveloperThermometerBattery:
         )
         fake = SimpleNamespace(_states={did: state}, _devices={did: device})
         GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"water_full": 1}})
-        assert state.water_full is True
-        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"water_full": 0}})
-        assert state.water_full is False
+        assert state.water_full is None
 
     async def test_battery_sensor_created_when_battery_present(self):
         from unittest.mock import MagicMock
