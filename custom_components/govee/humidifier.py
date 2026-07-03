@@ -242,7 +242,7 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity, RestoreEntity):
             # dragging it sends a real setpoint and self-corrects.
             if self._optimistic_target is not None:
                 return self._optimistic_target
-            return self._attr_min_humidity
+            return int(self._attr_min_humidity)
         return state.configured_humidity
 
     # --------------------------------------------------------------------- #
