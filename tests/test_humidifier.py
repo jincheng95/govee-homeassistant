@@ -132,7 +132,11 @@ def coordinator(h7150_device, h7150_state):
 
 @pytest.fixture
 def entity(coordinator, h7150_device) -> GoveeHumidifierEntity:
-    return GoveeHumidifierEntity(coordinator, h7150_device)
+    ent = GoveeHumidifierEntity(coordinator, h7150_device)
+    # Entity is not added to hass in unit tests — stub the state write that
+    # async_set_humidity performs on success.
+    ent.async_write_ha_state = MagicMock()
+    return ent
 
 
 # --------------------------------------------------------------------------- #
@@ -210,24 +214,29 @@ class TestEntityProperties:
     def test_target_humidity_in_auto(self, entity):
         assert entity.target_humidity == 55
 
-    def test_target_humidity_none_outside_auto(self, entity, coordinator, h7150_state):
+    def test_target_falls_back_outside_auto(self, entity, coordinator, h7150_state):
+        # Outside Auto there is no live setpoint; the entity falls back to the
+        # last user-set target (none here) then the range minimum, so HA's
+        # humidity dial never disappears (#118 follow-up).
         h7150_state.work_mode = 1  # gearMode
         h7150_state.mode_value = 1
         coordinator.get_state.return_value = h7150_state
-        assert entity.target_humidity is None
+        assert entity.target_humidity == 30
 
-    def test_target_humidity_none_when_auto_modevalue_unreported(
+    def test_target_falls_back_when_auto_modevalue_unreported(
         self, entity, coordinator, h7150_state
     ):
         # Govee's /device/state poll returns modeValue 0 for Auto — it never
-        # populates the live setpoint — so the target must read unknown, not a
-        # bogus 0% (issue #118, cross-validated against govee2mqtt #413).
+        # populates the live setpoint (issue #118, cross-validated against
+        # govee2mqtt #413). The bogus 0 must never surface; with no user-set
+        # target the entity falls back to the range minimum instead of None
+        # (None hides HA's humidity dial, making the target unsettable).
         h7150_state.work_mode = 3  # Auto
         h7150_state.mode_value = 0
         coordinator.get_state.return_value = h7150_state
-        assert entity.target_humidity is None
+        assert entity.target_humidity == 30
 
-    def test_target_humidity_none_when_auto_modevalue_below_min(
+    def test_target_falls_back_when_auto_modevalue_below_min(
         self, entity, coordinator, h7150_state
     ):
         # Any value outside the advertised [min, max] Auto range is treated as
@@ -235,7 +244,18 @@ class TestEntityProperties:
         h7150_state.work_mode = 3  # Auto
         h7150_state.mode_value = 10  # below min_humidity (30)
         coordinator.get_state.return_value = h7150_state
-        assert entity.target_humidity is None
+        assert entity.target_humidity == 30
+
+    def test_optimistic_target_beats_min_fallback(
+        self, entity, coordinator, h7150_state
+    ):
+        # After the user sets a target, it is remembered (and restored across
+        # restarts) even though the poll never reports it back (#118).
+        entity._optimistic_target = 55
+        h7150_state.work_mode = 3  # Auto
+        h7150_state.mode_value = 0  # unreported
+        coordinator.get_state.return_value = h7150_state
+        assert entity.target_humidity == 55
 
 
 # --------------------------------------------------------------------------- #

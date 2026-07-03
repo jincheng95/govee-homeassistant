@@ -25,6 +25,7 @@ from homeassistant.components.humidifier.const import HumidifierEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
@@ -81,7 +82,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
+class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity, RestoreEntity):
     """Govee humidifier / dehumidifier entity."""
 
     _attr_translation_key = "govee_humidifier"
@@ -111,6 +112,12 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
         # capability instead. Pick the right read/write path per device (#114).
         self._auto_modevalue_is_setpoint = device.auto_mode_value_is_setpoint()
         self._has_humidity_range = device.supports_humidity_range
+
+        # Last user-set target for Auto-setpoint devices (H7150). Govee's poll
+        # never reports the live Auto setpoint, and a None target_humidity
+        # hides HA's humidity dial entirely — making the target UNSETTABLE
+        # from the UI (issue #118 follow-up). Restored across restarts.
+        self._optimistic_target: int | None = None
 
         # Build per-device maps from the capability so the entity honours
         # whatever the device actually advertises (values may vary by SKU).
@@ -162,6 +169,22 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
             m for m in ordered if m in self._mode_to_work_mode
         ]
 
+    async def async_added_to_hass(self) -> None:
+        """Restore the last user-set target humidity on startup."""
+        await super().async_added_to_hass()
+        if not self._auto_modevalue_is_setpoint:
+            return
+        last_state = await self.async_get_last_state()
+        if last_state is None:
+            return
+        restored = last_state.attributes.get("humidity")
+        try:
+            restored_int = int(restored)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        if self._attr_min_humidity <= restored_int <= self._attr_max_humidity:
+            self._optimistic_target = restored_int
+
     # --------------------------------------------------------------------- #
     # State
     # --------------------------------------------------------------------- #
@@ -210,12 +233,16 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
             ):
                 return int(state.mode_value)
             # Govee's /device/state poll returns ``modeValue: 0`` for Auto — it
-            # never populates the live Auto setpoint — so a value of 0 (or any
-            # value outside the valid range) means "not reported". Surface it as
-            # unknown rather than a bogus 0% (issue #118; same gap seen in
-            # govee2mqtt #413). A real target reappears from optimistic state
-            # after the user sets one.
-            return None
+            # never populates the live Auto setpoint — so an out-of-range value
+            # means "not reported" (issue #118; same gap in govee2mqtt #413).
+            # Fall back to the last user-set target (optimistic + restored):
+            # returning None here hides HA's humidity dial entirely, making the
+            # target unsettable from the UI (#118 follow-up). A never-set
+            # entity falls back to the range minimum so the dial stays usable —
+            # dragging it sends a real setpoint and self-corrects.
+            if self._optimistic_target is not None:
+                return self._optimistic_target
+            return self._attr_min_humidity
         return state.configured_humidity
 
     # --------------------------------------------------------------------- #
@@ -242,13 +269,13 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
 
         if mode == MODE_AUTO:
             # Preserve the current target humidity if one was set; fall back
-            # to the device's minimum otherwise so the unit has a sensible
-            # setpoint to aim at.
+            # to the last user-set target, then the device's minimum, so the
+            # unit has a sensible setpoint to aim at.
             state = self.device_state
             mode_value = (
                 state.mode_value
                 if state and state.work_mode == work_mode and state.mode_value
-                else self._attr_min_humidity
+                else (self._optimistic_target or self._attr_min_humidity)
             )
         else:
             mode_value = self._mode_to_mode_value.get(mode, 0)
@@ -280,7 +307,11 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity):
                 f"{self._device.sku} does not support target-humidity (Auto) mode"
             )
 
-        await self.coordinator.async_control_device(
+        success = await self.coordinator.async_control_device(
             self._device_id,
             WorkModeCommand(work_mode=auto_work_mode, mode_value=int(clamped)),
         )
+        if success:
+            # Remember the setpoint — the poll never reports it back (#118).
+            self._optimistic_target = int(clamped)
+            self.async_write_ha_state()
