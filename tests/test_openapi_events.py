@@ -142,6 +142,7 @@ class TestCoordinatorWaterFullEvent:
         coord._states = {
             device.device_id: GoveeDeviceState.create_empty(device.device_id)
         }
+        coord._water_full_changed_at = {}
         coord.async_set_updated_data = MagicMock()
         return coord, device
 
@@ -154,6 +155,7 @@ class TestCoordinatorWaterFullEvent:
             [{"name": "waterFull", "value": 1, "message": "..."}],
         )
         assert coord._states[device.device_id].water_full is True
+        assert coord.water_full_changed_at(device.device_id) is not None
         coord.async_set_updated_data.assert_called_once()
 
     def test_water_full_cleared_value_applied(self):
@@ -192,6 +194,7 @@ class TestCoordinatorBodyAppearedEvent:
         coord._states = {
             device.device_id: GoveeDeviceState.create_empty(device.device_id)
         }
+        coord._water_full_changed_at = {}
         coord.async_set_updated_data = MagicMock()
         return coord
 

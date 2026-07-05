@@ -10,6 +10,16 @@ Mode mapping (H7150 dehumidifier reference device):
 
 The API does not expose a current-humidity reading for H7150, so this
 platform reports target humidity only.
+
+Target-humidity writes (issue #118):
+- H7150-style devices (Auto modeValue is a real 30-80 setpoint range) receive
+  BOTH the ``work_mode`` Auto+setpoint write — which switches the unit into
+  Auto, required for the target to take effect, matching the Govee app — and
+  the canonical ``range::humidity`` setpoint write (govee2mqtt's field-proven
+  platform-API path), carrying the same clamped value.
+- H7152-style devices (Auto modeValue pinned, e.g. 80..80) receive only
+  ``range::humidity`` — an arbitrary modeValue would be rejected with
+  "Parameter value out of range" (issue #114; govee2mqtt #145).
 """
 
 from __future__ import annotations
@@ -288,9 +298,18 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity, RestoreEntity):
     async def async_set_humidity(self, humidity: int) -> None:
         """Set the target humidity.
 
-        H7150-style devices set it via the Auto-mode modeValue (WorkModeCommand);
-        H7152-style devices set it via the dedicated ``range::humidity``
-        capability (RangeCommand) — issue #114.
+        H7152-style devices (Auto modeValue pinned, e.g. 80..80) set it via the
+        dedicated ``range::humidity`` capability only (RangeCommand) — sending
+        an arbitrary Auto modeValue would be rejected with "Parameter value out
+        of range" (issue #114; govee2mqtt #145).
+
+        H7150-style devices (Auto modeValue is the setpoint) receive BOTH the
+        ``work_mode`` Auto+setpoint write — which switches the unit into Auto,
+        required for the target to take effect, matching the Govee app — and,
+        when the device also advertises ``range::humidity``, the canonical
+        range setpoint write (cross-validated against govee2mqtt's platform-API
+        path). Both writes carry the same clamped value so either firmware
+        interpretation converges (issue #118).
         """
         clamped = max(self._attr_min_humidity, min(self._attr_max_humidity, humidity))
 
@@ -307,11 +326,25 @@ class GoveeHumidifierEntity(GoveeEntity, HumidifierEntity, RestoreEntity):
                 f"{self._device.sku} does not support target-humidity (Auto) mode"
             )
 
-        success = await self.coordinator.async_control_device(
+        mode_ok = await self.coordinator.async_control_device(
             self._device_id,
             WorkModeCommand(work_mode=auto_work_mode, mode_value=int(clamped)),
         )
-        if success:
+        range_ok = False
+        if self._has_humidity_range:
+            range_ok = await self.coordinator.async_control_device(
+                self._device_id,
+                RangeCommand(range_instance=INSTANCE_HUMIDITY, value=int(clamped)),
+            )
+        _LOGGER.debug(
+            "Set target humidity %s%% on %s (%s): work_mode write %s, range write %s",
+            int(clamped),
+            self._device.name,
+            self._device.sku,
+            "ok" if mode_ok else "failed",
+            ("ok" if range_ok else "failed") if self._has_humidity_range else "skipped",
+        )
+        if mode_ok or range_ok:
             # Remember the setpoint — the poll never reports it back (#118).
             self._optimistic_target = int(clamped)
             self.async_write_ha_state()

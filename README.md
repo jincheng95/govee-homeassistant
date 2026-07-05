@@ -80,7 +80,7 @@ Govee in Home Assistant has several integrations, and it's easy to pick one that
 | **Ceiling fan + light combos** | H1310, H1370 | Separate Main Light & Background Light **and** a Fan entity (on/off, speed, reverse, oscillation) |
 | **Tower / pedestal fans** | H7101, H7102, H7106, H7107 | Fan (speed, oscillation, preset modes) |
 | **Air purifiers** | H7120–H7127 | Fan / work modes, filter‑life sensor, air‑quality (AQI) sensor, optional nightlight |
-| **Humidifiers & dehumidifiers** | H7140, H7141, H7150, H7151, H7152 | Modes + target‑humidity setpoint; dehumidifiers add a **Water Tank Full** sensor (needs account login) |
+| **Humidifiers & dehumidifiers** | H7140, H7141, H7150, H7151, H7152 | Modes + target‑humidity setpoint; dehumidifiers add a **Water Tank Full** sensor (real‑time event push, API key only) with a paired **Clear Water Alert** button |
 | **Aroma diffusers** | H7161 | Power switch + light/mist scene selector |
 | **Space heaters** | H7130, H7131, H721C | Power switch, target‑temperature number, auto‑stop switch |
 | **Thermometers / hygrometers** | H5103, H5107, H5109, H5179, H5301, H5310 | Temperature & humidity sensors, **Battery** (account login) + a "Last Changed" timestamp; gateway‑bridged models (H5301/H5310 via an H5044) nest under the hub |
@@ -208,7 +208,7 @@ So a reading can look "frozen" while polling is perfectly healthy — it's the l
 
 **Temperature unit.** Govee reports thermometer values with no unit field, so the integration defaults to an **Auto** mode that converts the models known to report Fahrenheit and trusts the rest. If a reading is still ~1.8× off, set the unit explicitly in ⚙️ Configure — see [Configuration options](#configuration-options).
 
-**Other sensors.** Air‑quality/CO₂ monitors (H5106, H5140) expose CO₂ (ppm), AQI, temperature and humidity from the cloud poll (not MQTT). The H5127 presence sensor reports **occupancy** in real time over MQTT. Dehumidifiers surface a **Water Tank Full** sensor from account data. None of these expose a live PM2.5 or room temp/humidity beyond what's listed — those are Bluetooth‑only in the Govee app.
+**Other sensors.** Air‑quality/CO₂ monitors (H5106, H5140) expose CO₂ (ppm), AQI, temperature and humidity from the cloud poll (not MQTT). The H5127 presence sensor reports **occupancy** in real time over MQTT. Dehumidifiers surface a **Water Tank Full** sensor driven by Govee's official event push (API key only — no account login needed); it fires when the tank is full **or** the bucket is pulled out. Govee never sends a "cleared" event, so the alert latches — surviving HA restarts — until you press the paired **Clear Water Alert** button after emptying/re‑inserting the tank; the sensor's `changed_at` attribute carries the last event/clear time for custom automations. None of these expose a live PM2.5 or room temp/humidity beyond what's listed — those are Bluetooth‑only in the Govee app.
 
 **Want real‑time (~2 s) readings?** Govee thermometers broadcast over Bluetooth:
 

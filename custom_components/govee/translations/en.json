@@ -301,6 +301,9 @@
     "button": {
       "refresh_scenes": {
         "name": "Refresh Scenes"
+      },
+      "clear_water_full": {
+        "name": "Clear Water Alert"
       }
     },
     "event": {

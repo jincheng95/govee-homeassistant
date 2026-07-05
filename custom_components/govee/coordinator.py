@@ -96,6 +96,7 @@ from .models.commands import (
     ModeCommand,
     MusicModeCommand,
     PowerCommand,
+    RangeCommand,
     SceneCommand,
     SegmentColorCommand,
     TemperatureSettingCommand,
@@ -106,6 +107,7 @@ from .models.commands import (
 from .models.device import (
     INSTANCE_DREAMVIEW,
     INSTANCE_HDMI_SOURCE,
+    INSTANCE_HUMIDITY,
     INSTANCE_THERMOSTAT_TOGGLE,
     MAINS_POWERED_BATTERY_SKUS,
     MAINS_POWERED_DEVICE_TYPES,
@@ -312,6 +314,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # BLE-bridged sensors every 15-60 min; this exposes when a new value
         # actually landed.
         self._sensor_reading_changed_at: dict[str, datetime] = {}
+        # When the water-tank-full alert last changed (event push or manual
+        # clear) — backs the sensor's changed_at attribute and restart
+        # restore (#118).
+        self._water_full_changed_at: dict[str, datetime] = {}
         self._leak_hubs: dict[str, dict[str, Any]] = {}
         self._sno_to_sensor_id: dict[tuple[str, int], str] = {}
         # Last time the account device list was re-checked for newly added
@@ -1334,11 +1340,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         waterFullEvent semantics (Govee docs / govee2mqtt #145): fires with
         value=1 when the bucket is full OR pulled out. Edge-triggered with no
-        documented "cleared" counterpart, so a value of 0 (if ever sent) is
-        applied too, and the developer-poll preserve block keeps the last
-        event value across polls. This replaces the BFF deviceSettings
-        ``waterFull`` field, which turned out to be the app's "Full Bucket
-        Alert" notification *setting*, not live tank state (issue #118).
+        documented "cleared" counterpart — confirmed live in #118 across two
+        pull→re-insert cycles: Govee never sends a cleared event, so the
+        latch is ended by the Clear Water Alert button (``clear_water_full``)
+        and survives restarts via the sensor's RestoreEntity plumbing
+        (``restore_water_full``). A value of 0 (if ever sent) is applied too,
+        and the developer-poll preserve block keeps the last event value
+        across polls. This replaces the BFF deviceSettings ``waterFull``
+        field, which turned out to be the app's "Full Bucket Alert"
+        notification *setting*, not live tank state (issue #118).
         """
         device = self._devices.get(device_id)
         if device is None:
@@ -1359,6 +1369,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if instance == "waterFullEvent":
             state = self._get_or_create_state(device_id)
             state.water_full = bool(value)
+            self._water_full_changed_at[device_id] = dt_util.utcnow()
             _LOGGER.info(
                 "Water tank full event for %s (%s): %s", device_id, sku, bool(value)
             )
@@ -1388,6 +1399,61 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             state = GoveeDeviceState.create_empty(device_id)
             self._states[device_id] = state
         return state
+
+    def water_full_changed_at(self, device_id: str) -> datetime | None:
+        """When the water-tank-full alert last changed (#118).
+
+        Stamped on every ``waterFullEvent`` push and on every manual clear —
+        exposed as the sensor's ``changed_at`` attribute so users can build
+        their own time-based automations. Returns None until an event or
+        clear has been seen.
+
+        Args:
+            device_id: Device identifier.
+
+        Returns:
+            UTC timestamp of the last event/clear, or None.
+        """
+        return self._water_full_changed_at.get(device_id)
+
+    @callback
+    def clear_water_full(self, device_id: str) -> None:
+        """Clear the latched water-tank-full alert (user action, #118).
+
+        Govee never pushes a "cleared" waterFullEvent (confirmed live across
+        two pull→re-insert cycles), so the user acknowledges the alert via
+        the Clear Water Alert button after emptying/re-inserting the tank.
+        A later value=1 event re-latches the sensor.
+
+        Args:
+            device_id: Device identifier.
+        """
+        state = self._get_or_create_state(device_id)
+        state.water_full = False
+        self._water_full_changed_at[device_id] = dt_util.utcnow()
+        _LOGGER.info("Water-tank-full alert cleared for %s (user action, #118)", device_id)
+        self.async_set_updated_data(self._states)
+
+    @callback
+    def restore_water_full(self, device_id: str, is_full: bool, changed_at: datetime | None) -> None:
+        """Restore the water-tank-full latch across HA restarts (#118).
+
+        Applied only when the live value is still None — a live event that
+        landed before entity-add must win over the restored snapshot. Does
+        NOT notify listeners: this runs during entity add and the entity
+        writes its own first state.
+
+        Args:
+            device_id: Device identifier.
+            is_full: Restored alert state (True = tank full/pulled).
+            changed_at: Restored ``changed_at`` timestamp, if it survived.
+        """
+        state = self._get_or_create_state(device_id)
+        if state.water_full is not None:
+            return
+        state.water_full = is_full
+        if changed_at is not None:
+            self._water_full_changed_at.setdefault(device_id, changed_at)
 
     async def _fetch_device_topics(self) -> None:
         """Fetch device-specific MQTT topics from undocumented Govee API.
@@ -3162,6 +3228,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             state.apply_optimistic_power(command.power_on)
         elif isinstance(command, BrightnessCommand):
             state.apply_optimistic_brightness(command.brightness)
+        elif isinstance(command, RangeCommand) and command.range_instance == INSTANCE_HUMIDITY:
+            # Dehumidifier setpoint (H7152 dial, H7150 reinforcement write) —
+            # the poll returns "" for range::humidity, so keep it optimistically
+            # (issues #114/#118).
+            state.configured_humidity = command.value
         elif isinstance(command, ColorCommand):
             state.apply_optimistic_color(command.color)
         elif isinstance(command, ColorTempCommand):

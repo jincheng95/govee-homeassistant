@@ -22,6 +22,7 @@ from custom_components.govee.models import (
     BrightnessCommand,
     ColorCommand,
     ColorTempCommand,
+    RangeCommand,
     SceneCommand,
     RGBColor,
 )
@@ -491,6 +492,31 @@ class TestOptimisticUpdates:
 
         assert sample_state.color_temp_kelvin == 5000
         assert sample_state.color is None
+
+    def test_apply_optimistic_range_humidity(self, sample_state):
+        """RangeCommand(humidity) updates the configured setpoint (#114/#118).
+
+        The poll returns "" for range::humidity, so the coordinator keeps the
+        dehumidifier setpoint optimistically after a successful write.
+        """
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models.device import INSTANCE_HUMIDITY
+
+        coord = object.__new__(GoveeCoordinator)
+        coord._states = {sample_state.device_id: sample_state}
+
+        coord._apply_optimistic_update(
+            sample_state.device_id,
+            RangeCommand(range_instance=INSTANCE_HUMIDITY, value=55),
+        )
+        assert sample_state.configured_humidity == 55
+
+        # Non-humidity range instances must not touch the setpoint.
+        coord._apply_optimistic_update(
+            sample_state.device_id,
+            RangeCommand(range_instance="fanSpeed", value=3),
+        )
+        assert sample_state.configured_humidity == 55
 
 
 class TestDeviceStateCreation:

@@ -22,6 +22,7 @@ from custom_components.govee.models import (
     GoveeDevice,
     GoveeDeviceState,
     PowerCommand,
+    RangeCommand,
     WorkModeCommand,
 )
 from custom_components.govee.models.device import (
@@ -135,6 +136,96 @@ def entity(coordinator, h7150_device) -> GoveeHumidifierEntity:
     ent = GoveeHumidifierEntity(coordinator, h7150_device)
     # Entity is not added to hass in unit tests — stub the state write that
     # async_set_humidity performs on success.
+    ent.async_write_ha_state = MagicMock()
+    return ent
+
+
+# --------------------------------------------------------------------------- #
+# Fixtures — H7152-style shape (issue #114 regression)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def h7152_capabilities() -> tuple[GoveeCapability, ...]:
+    """H7152-style shape: Auto modeValue pinned (80..80), setpoint lives in
+    the separate ``range::humidity`` capability instead (issue #114)."""
+    return (
+        GoveeCapability(
+            type=CAPABILITY_ON_OFF,
+            instance=INSTANCE_POWER,
+            parameters={},
+        ),
+        GoveeCapability(
+            type=CAPABILITY_RANGE,
+            instance=INSTANCE_HUMIDITY,
+            parameters={
+                "unit": "unit.percent",
+                "dataType": "INTEGER",
+                "range": {"min": 30, "max": 80, "precision": 1},
+            },
+        ),
+        GoveeCapability(
+            type=CAPABILITY_WORK_MODE,
+            instance=INSTANCE_WORK_MODE,
+            parameters={
+                "dataType": "STRUCT",
+                "fields": [
+                    {
+                        "fieldName": "workMode",
+                        "dataType": "ENUM",
+                        "options": [
+                            {"name": "gearMode", "value": 1},
+                            {"name": "Auto", "value": 3},
+                            {"name": "Dryer", "value": 8},
+                        ],
+                    },
+                    {
+                        "fieldName": "modeValue",
+                        "dataType": "ENUM",
+                        "options": [
+                            {
+                                "name": "gearMode",
+                                "options": [
+                                    {"name": "Low", "value": 1},
+                                    {"name": "High", "value": 3},
+                                ],
+                            },
+                            {"name": "Auto", "range": {"min": 80, "max": 80}},
+                            {"name": "Dryer", "value": 0},
+                        ],
+                    },
+                ],
+            },
+        ),
+    )
+
+
+@pytest.fixture
+def h7152_device(h7152_capabilities) -> GoveeDevice:
+    return GoveeDevice(
+        device_id="1B:F9:E5:BE:0D:8B:16:3B",
+        sku="H7152",
+        name="Dehumidifier Pro",
+        device_type=DEVICE_TYPE_DEHUMIDIFIER,
+        capabilities=h7152_capabilities,
+        is_group=False,
+    )
+
+
+@pytest.fixture
+def h7152_coordinator(h7152_device):
+    c = MagicMock()
+    c.devices = {h7152_device.device_id: h7152_device}
+    state = GoveeDeviceState(device_id=h7152_device.device_id, online=True)
+    state.power_state = True
+    c.get_state = MagicMock(return_value=state)
+    c.async_control_device = AsyncMock(return_value=True)
+    return c
+
+
+@pytest.fixture
+def h7152_entity(h7152_coordinator, h7152_device) -> GoveeHumidifierEntity:
+    ent = GoveeHumidifierEntity(h7152_coordinator, h7152_device)
     ent.async_write_ha_state = MagicMock()
     return ent
 
@@ -318,23 +409,127 @@ class TestEntityCommands:
     @pytest.mark.asyncio
     async def test_set_humidity(self, entity, coordinator):
         await entity.async_set_humidity(45)
-        cmd = coordinator.async_control_device.call_args[0][1]
+        # Dual write (#118): WorkModeCommand first, RangeCommand second.
+        cmd = coordinator.async_control_device.call_args_list[0][0][1]
         assert isinstance(cmd, WorkModeCommand)
         assert cmd.work_mode == 3 and cmd.mode_value == 45
 
     @pytest.mark.asyncio
+    async def test_set_humidity_sends_workmode_and_range(self, entity, coordinator):
+        # H7150 hardening (#118): the Auto+setpoint work_mode write is
+        # reinforced by the canonical range::humidity write (govee2mqtt's
+        # field-proven path), both carrying the SAME clamped value.
+        await entity.async_set_humidity(45)
+        calls = coordinator.async_control_device.call_args_list
+        assert len(calls) == 2
+        work_cmd = calls[0][0][1]
+        assert isinstance(work_cmd, WorkModeCommand)
+        assert work_cmd.work_mode == 3 and work_cmd.mode_value == 45
+        range_cmd = calls[1][0][1]
+        assert isinstance(range_cmd, RangeCommand)
+        assert range_cmd.range_instance == INSTANCE_HUMIDITY
+        assert range_cmd.value == 45
+
+    @pytest.mark.asyncio
     async def test_set_humidity_clamps_to_range(self, entity, coordinator):
         await entity.async_set_humidity(10)
-        cmd = coordinator.async_control_device.call_args[0][1]
-        assert cmd.mode_value == 30  # clamped up
+        calls = coordinator.async_control_device.call_args_list
+        assert calls[0][0][1].mode_value == 30  # clamped up
+        assert calls[1][0][1].value == 30  # range write carries same value
         await entity.async_set_humidity(99)
-        cmd = coordinator.async_control_device.call_args[0][1]
-        assert cmd.mode_value == 80  # clamped down
+        calls = coordinator.async_control_device.call_args_list
+        assert calls[2][0][1].mode_value == 80  # clamped down
+        assert calls[3][0][1].value == 80  # range write carries same value
+
+    @pytest.mark.asyncio
+    async def test_set_humidity_commits_optimistic_on_partial_success(
+        self, entity, coordinator
+    ):
+        # If EITHER write is accepted, the setpoint reached the device —
+        # commit the optimistic target and write state (#118).
+        coordinator.async_control_device = AsyncMock(side_effect=[False, True])
+        await entity.async_set_humidity(45)
+        assert entity._optimistic_target == 45
+        entity.async_write_ha_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_set_humidity_no_commit_when_both_fail(self, entity, coordinator):
+        coordinator.async_control_device = AsyncMock(side_effect=[False, False])
+        await entity.async_set_humidity(45)
+        assert entity._optimistic_target is None
+        entity.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_set_humidity_skips_range_when_capability_absent(
+        self, h7150_capabilities
+    ):
+        # A device whose Auto modeValue is the setpoint but which does NOT
+        # advertise range::humidity must receive only the work_mode write.
+        caps = tuple(
+            c
+            for c in h7150_capabilities
+            if not (c.type == CAPABILITY_RANGE and c.instance == INSTANCE_HUMIDITY)
+        )
+        device = GoveeDevice(
+            device_id="0A:E8:D4:AD:FC:7A:05:2A",
+            sku="H7150",
+            name="Dehumidifier",
+            device_type=DEVICE_TYPE_DEHUMIDIFIER,
+            capabilities=caps,
+            is_group=False,
+        )
+        c = MagicMock()
+        c.devices = {device.device_id: device}
+        c.get_state = MagicMock(return_value=None)
+        c.async_control_device = AsyncMock(return_value=True)
+        ent = GoveeHumidifierEntity(c, device)
+        ent.async_write_ha_state = MagicMock()
+
+        await ent.async_set_humidity(45)
+
+        calls = c.async_control_device.call_args_list
+        assert len(calls) == 1
+        cmd = calls[0][0][1]
+        assert isinstance(cmd, WorkModeCommand)
+        assert cmd.work_mode == 3 and cmd.mode_value == 45
+        assert ent._optimistic_target == 45
 
     @pytest.mark.asyncio
     async def test_set_mode_rejects_unknown(self, entity):
         with pytest.raises(ValueError):
             await entity.async_set_mode("bogus")
+
+
+# --------------------------------------------------------------------------- #
+# H7152-style pinned-Auto regression (issue #114 discrimination)
+# --------------------------------------------------------------------------- #
+
+
+class TestH7152PinnedAuto:
+    """Pinned-Auto SKUs (H7151/H7152) must NEVER receive the dual write.
+
+    Their Auto modeValue is pinned (80..80); sending an arbitrary modeValue is
+    rejected by Govee with "Parameter value out of range" (govee2mqtt #145).
+    Locks in the #114 discrimination so the #118 H7150 reinforcement write can
+    never leak to these devices.
+    """
+
+    def test_auto_modevalue_is_not_setpoint(self, h7152_device):
+        assert h7152_device.auto_mode_value_is_setpoint() is False
+        assert h7152_device.supports_humidity_range is True
+
+    @pytest.mark.asyncio
+    async def test_set_humidity_sends_only_range_command(
+        self, h7152_entity, h7152_coordinator
+    ):
+        await h7152_entity.async_set_humidity(55)
+        calls = h7152_coordinator.async_control_device.call_args_list
+        assert len(calls) == 1
+        cmd = calls[0][0][1]
+        assert isinstance(cmd, RangeCommand)
+        assert cmd.range_instance == INSTANCE_HUMIDITY
+        assert cmd.value == 55
+        assert not any(isinstance(call[0][1], WorkModeCommand) for call in calls)
 
 
 # --------------------------------------------------------------------------- #

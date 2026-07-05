@@ -28,6 +28,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_EXPOSE_TRANSPORT_ENTITIES,
@@ -125,8 +127,18 @@ async def async_setup_entry(
         _LOGGER.debug("Set up %d binary sensor entities", len(entities))
 
 
-class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity):
-    """Binary sensor reporting the water-tank-full event for dehumidifiers."""
+class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity, RestoreEntity):
+    """Binary sensor reporting the water-tank-full event for dehumidifiers.
+
+    Latch semantics (issue #118): a ``waterFullEvent`` value=1 push latches
+    the sensor to Problem — it fires when the tank is full OR the bucket is
+    pulled out. Govee sends no "cleared" counterpart (confirmed live across
+    two pull→re-insert cycles), so the latch persists until the paired
+    Clear Water Alert button is pressed. RestoreEntity keeps an active alert
+    across HA restarts instead of silently clearing it to unknown. The
+    ``changed_at`` attribute carries the time of the last event or manual
+    clear for custom automations.
+    """
 
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_translation_key = "govee_water_full"
@@ -141,11 +153,35 @@ class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity):
         super().__init__(coordinator, device)
         self._attr_unique_id = f"{device.device_id}_water_full"
 
+    async def async_added_to_hass(self) -> None:
+        """Restore the latched alert across HA restarts (#118).
+
+        Previously a restart silently cleared an active alert to unknown —
+        a false "OK" while the tank was still full. The coordinator only
+        applies the restored snapshot when no live event has landed first.
+        """
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is None or last_state.state not in ("on", "off"):
+            return
+        raw_ts = last_state.attributes.get("changed_at")
+        changed_at = dt_util.parse_datetime(raw_ts) if isinstance(raw_ts, str) else None
+        self.coordinator.restore_water_full(self._device_id, last_state.state == "on", changed_at)
+
     @property
     def is_on(self) -> bool | None:
         """Return True when the water tank is full."""
         state = self.device_state
         return state.water_full if state else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Merge ``changed_at`` (last event or manual clear) into base attrs."""
+        attrs = dict(super().extra_state_attributes)
+        changed = self.coordinator.water_full_changed_at(self._device_id)
+        if changed is not None:
+            attrs["changed_at"] = changed.isoformat()
+        return attrs
 
 
 class GoveeWaterLeakBinarySensor(GoveeEntity, BinarySensorEntity):
