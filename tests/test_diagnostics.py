@@ -311,6 +311,73 @@ class TestDiagnosticsOutput:
         assert mac_id not in rendered
         assert _MAC_RE.search(rendered) is None
 
+    @pytest.mark.asyncio
+    async def test_recent_commands_present_and_redacted(self) -> None:
+        """Control-command history appears in the dump with the MAC redacted (#127).
+
+        The record must keep the exact capability payload and Govee's HTTP
+        status + response body so 'command accepted but device does nothing'
+        reports are debuggable from a download alone.
+        """
+        mac_id = "0A:B0:5C:E7:53:67:D4:6C"
+
+        device = MagicMock()
+        device.sku = "H60A6"
+        device.name = "Ceiling Light"
+        device.device_type = "devices.types.light"
+        device.is_group = False
+        device.capabilities = []
+
+        api_client = MagicMock()
+        api_client.last_raw_state = {}
+        api_client.last_raw_devices = []
+        api_client.recent_commands = [
+            {
+                "sent_at": "2026-07-04T17:33:06+00:00",
+                "device": mac_id,
+                "sku": "H60A6",
+                "capability": {
+                    "type": "devices.capabilities.toggle",
+                    "instance": "backgroundLightSwitch",
+                    "value": 1,
+                },
+                "http_status": 200,
+                "response": {"code": 200, "message": "Success"},
+                "error": None,
+            }
+        ]
+
+        coordinator = MagicMock()
+        coordinator.devices = {mac_id: device}
+        coordinator.get_state = lambda _did: None
+        coordinator.mqtt_connected = False
+        coordinator.is_ble_available = lambda _did: False
+        coordinator.mqtt_client = None
+        coordinator.api_client = api_client
+        coordinator.api_rate_limit_remaining = 100
+        coordinator.api_rate_limit_total = 100
+        coordinator.api_rate_limit_reset = 0
+        coordinator.scene_cache_count = 0
+
+        entry = MagicMock()
+        entry.entry_id = "e"
+        entry.version = 1
+        entry.data = {}
+        entry.options = {}
+        entry.runtime_data = coordinator
+
+        out = await async_get_config_entry_diagnostics(MagicMock(), entry)
+
+        record = out["recent_commands"][0]
+        # The debugging signal survives...
+        assert record["capability"]["instance"] == "backgroundLightSwitch"
+        assert record["http_status"] == 200
+        assert record["response"] == {"code": 200, "message": "Success"}
+        # ...but the MAC does not.
+        rendered = json.dumps(out, default=str)
+        assert mac_id not in rendered
+        assert _MAC_RE.search(rendered) is None
+
 
 class TestLeakAndTransportDump:
     """Entry diagnostics include leak sensors + transport health, redacted."""

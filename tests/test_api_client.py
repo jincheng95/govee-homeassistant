@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -15,7 +16,7 @@ from custom_components.govee.api.exceptions import (
     GoveeDeviceNotFoundError,
     GoveeRateLimitError,
 )
-from custom_components.govee.models import PowerCommand
+from custom_components.govee.models import PowerCommand, ToggleCommand
 
 # ==============================================================================
 # Exception Tests
@@ -332,3 +333,177 @@ class TestErrorResponses:
 
         err = GoveeApiError("Server error", code=response_code)
         assert err.code == 500
+
+
+# ==============================================================================
+# Command History Tests (#127)
+# ==============================================================================
+
+
+def _make_response(status: int = 200, body: dict | None = None) -> MagicMock:
+    """Build a mock aiohttp response with a cached JSON body."""
+    response = MagicMock()
+    response.status = status
+    response.headers = {}
+    response.json = AsyncMock(return_value=body if body is not None else {"code": 200, "message": "Success"})
+    response.text = AsyncMock(return_value=str(body or {}))
+    return response
+
+
+def _client_with_response(response: MagicMock | None, enter_error: Exception | None = None) -> GoveeApiClient:
+    """Build a GoveeApiClient whose retry client returns the given response."""
+    client = GoveeApiClient("test_key", session=MagicMock(spec=aiohttp.ClientSession))
+    ctx = MagicMock()
+    if enter_error is not None:
+        ctx.__aenter__ = AsyncMock(side_effect=enter_error)
+    else:
+        ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    retry_client = MagicMock()
+    retry_client.post = MagicMock(return_value=ctx)
+    client._retry_client = retry_client
+    return client
+
+
+class TestCommandHistory:
+    """control_device keeps a ring buffer of sends for diagnostics (#127)."""
+
+    @pytest.mark.asyncio
+    async def test_success_recorded(self):
+        """A successful send records payload, HTTP status, and response body."""
+        body = {"requestId": "r1", "code": 200, "message": "Success"}
+        client = _client_with_response(_make_response(200, body))
+
+        result = await client.control_device("AA:BB:CC:DD:EE:FF:00:11", "H60A6", PowerCommand(power_on=True))
+
+        assert result is True
+        assert len(client.recent_commands) == 1
+        record = client.recent_commands[0]
+        assert record["device"] == "AA:BB:CC:DD:EE:FF:00:11"
+        assert record["sku"] == "H60A6"
+        assert record["capability"]["type"] == "devices.capabilities.on_off"
+        assert record["capability"]["value"] == 1
+        assert record["http_status"] == 200
+        assert record["response"] == body
+        assert record["error"] is None
+        assert "sent_at" in record
+
+    @pytest.mark.asyncio
+    async def test_api_rejection_recorded(self):
+        """A Govee rejection records the response body AND the raised error."""
+        body = {"code": 400, "message": "device offline"}
+        client = _client_with_response(_make_response(400, body))
+
+        with pytest.raises(GoveeApiError):
+            await client.control_device("AA:BB:CC:DD:EE:FF:00:11", "H60A6", PowerCommand(power_on=True))
+
+        record = client.recent_commands[0]
+        assert record["http_status"] == 400
+        assert record["response"] == body
+        assert record["error"] == "device offline"
+
+    @pytest.mark.asyncio
+    async def test_connection_error_recorded(self):
+        """A transport failure records the error with no HTTP status."""
+        client = _client_with_response(None, enter_error=aiohttp.ClientError("boom"))
+
+        with pytest.raises(GoveeConnectionError):
+            await client.control_device("AA:BB:CC:DD:EE:FF:00:11", "H60A6", PowerCommand(power_on=True))
+
+        record = client.recent_commands[0]
+        assert record["http_status"] is None
+        assert record["response"] is None
+        assert record["error"] == "connection: boom"
+
+    @pytest.mark.asyncio
+    async def test_non_json_body_captured_as_text(self):
+        """A non-JSON response body is captured as truncated text."""
+        response = _make_response(502)
+        response.json = AsyncMock(side_effect=aiohttp.ContentTypeError(MagicMock(), ()))
+        response.text = AsyncMock(return_value="<html>Bad Gateway</html>")
+        client = _client_with_response(response)
+
+        with pytest.raises(GoveeApiError):
+            await client.control_device("AA:BB:CC:DD:EE:FF:00:11", "H60A6", PowerCommand(power_on=True))
+
+        record = client.recent_commands[0]
+        assert record["http_status"] == 502
+        assert record["response"] == "<html>Bad Gateway</html>"
+        assert record["error"] is not None
+
+    @pytest.mark.asyncio
+    async def test_ring_buffer_trims_oldest(self):
+        """The history is bounded and keeps the newest sends."""
+        from custom_components.govee.api.client import COMMAND_BUFFER_SIZE
+
+        client = _client_with_response(_make_response())
+        for i in range(COMMAND_BUFFER_SIZE + 5):
+            await client.control_device("AA:BB:CC:DD:EE:FF:00:11", f"SKU{i}", PowerCommand(power_on=True))
+
+        assert len(client.recent_commands) == COMMAND_BUFFER_SIZE
+        assert client.recent_commands[-1]["sku"] == f"SKU{COMMAND_BUFFER_SIZE + 4}"
+        assert client.recent_commands[0]["sku"] == "SKU5"
+
+
+# ==============================================================================
+# Control-Command Logging Tests (#127)
+# ==============================================================================
+
+
+class TestControlDeviceLogging:
+    """control_device emits payload-level debug/warning log lines (#127)."""
+
+    @pytest.mark.asyncio
+    async def test_debug_logs_on_success(self, caplog):
+        """A successful send emits Control send/response lines at DEBUG."""
+        client = _client_with_response(_make_response(200))
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.govee.api.client"):
+            await client.control_device("AA:BB:CC:DD:EE:FF:00:11", "H60A6", PowerCommand(power_on=True))
+
+        send_lines = [r for r in caplog.records if r.getMessage().startswith("Control send:")]
+        assert len(send_lines) == 1
+        assert send_lines[0].levelno == logging.DEBUG
+        assert "type=devices.capabilities.on_off" in send_lines[0].getMessage()
+        assert "instance=powerSwitch" in send_lines[0].getMessage()
+        assert "value=1" in send_lines[0].getMessage()
+
+        response_lines = [r for r in caplog.records if r.getMessage().startswith("Control response:")]
+        assert len(response_lines) == 1
+        assert response_lines[0].levelno == logging.DEBUG
+        assert "HTTP 200" in response_lines[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_warning_on_rejection(self, caplog):
+        """A Govee rejection emits a WARNING with payload context and still raises."""
+        body = {"code": 400, "message": "device offline"}
+        client = _client_with_response(_make_response(400, body))
+
+        with caplog.at_level(logging.DEBUG, logger="custom_components.govee.api.client"):
+            with pytest.raises(GoveeApiError):
+                await client.control_device("AA:BB:CC:DD:EE:FF:00:11", "H60A6", PowerCommand(power_on=True))
+
+        warning_lines = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and r.getMessage().startswith("Control rejected by Govee:")
+        ]
+        assert len(warning_lines) == 1
+        message = warning_lines[0].getMessage()
+        assert "device offline" in message
+        assert "HTTP 400" in message
+        assert "instance=powerSwitch" in message
+
+    @pytest.mark.asyncio
+    async def test_toggle_command_payload_shape(self):
+        """ToggleCommand serializes to the documented devices.capabilities.toggle wire shape."""
+        client = _client_with_response(_make_response(200))
+        command = ToggleCommand(toggle_instance="backgroundLightToggle", enabled=True)
+
+        await client.control_device("AA:BB:CC:DD:EE:FF:00:11", "H60A6", command)
+
+        assert client.recent_commands[0]["capability"] == {
+            "type": "devices.capabilities.toggle",
+            "instance": "backgroundLightToggle",
+            "value": 1,
+        }

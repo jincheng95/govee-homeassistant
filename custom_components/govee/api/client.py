@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import deque
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -46,6 +48,9 @@ RETRY_FACTOR = 2.0  # Exponential factor
 
 # Retryable server error status codes
 RETRY_STATUSES = {500, 502, 503, 504}
+
+# Ring-buffer size for the control-command history kept for diagnostics.
+COMMAND_BUFFER_SIZE = 30
 
 
 class GoveeApiClient:
@@ -99,6 +104,12 @@ class GoveeApiClient:
         # state-shape issues the parsed model hides (e.g. thermometers, #83).
         self._last_raw_devices: list[dict[str, Any]] | None = None
         self._last_raw_state: dict[str, dict[str, Any]] = {}
+
+        # Recent /device/control sends, retained for diagnostics (redacted at
+        # dump time). Each record carries the exact capability payload sent
+        # plus Govee's HTTP status and response body — the data debug logging
+        # would show, available from a diagnostics download alone (#127).
+        self._recent_commands: deque[dict[str, Any]] = deque(maxlen=COMMAND_BUFFER_SIZE)
 
     @property
     def api_key(self) -> str:
@@ -353,6 +364,11 @@ class GoveeApiClient:
         return self._last_raw_devices
 
     @property
+    def recent_commands(self) -> list[dict[str, Any]]:
+        """Recent control-command sends for the diagnostics download (oldest first)."""
+        return list(self._recent_commands)
+
+    @property
     def last_raw_state(self) -> dict[str, dict[str, Any]]:
         """Raw /device/state payloads keyed by device_id (latest per device)."""
         return self._last_raw_state
@@ -389,17 +405,67 @@ class GoveeApiClient:
             },
         }
 
+        _LOGGER.debug(
+            "Control send: device=%s sku=%s type=%s instance=%s value=%s",
+            device_id,
+            sku,
+            cmd_payload["type"],
+            cmd_payload["instance"],
+            cmd_payload["value"],
+        )
+
+        # Command-history record for diagnostics: what was sent and exactly how
+        # Govee answered (aiohttp caches the body, so reading it here does not
+        # consume it from _handle_response).
+        record: dict[str, Any] = {
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "device": device_id,
+            "sku": sku,
+            "capability": cmd_payload,
+            "http_status": None,
+            "response": None,
+            "error": None,
+        }
+
         try:
             async with client.post(
                 ENDPOINT_CONTROL,
                 headers=self._get_headers(),
                 json=payload,
             ) as response:
+                record["http_status"] = response.status
+                try:
+                    record["response"] = await response.json(content_type=None)
+                except Exception:
+                    record["response"] = (await response.text())[:500]
+                _LOGGER.debug(
+                    "Control response: device=%s instance=%s HTTP %s body=%s",
+                    device_id,
+                    cmd_payload["instance"],
+                    response.status,
+                    str(record["response"])[:300],
+                )
                 await self._handle_response(response)
                 return True
 
         except aiohttp.ClientError as err:
+            record["error"] = f"connection: {err}"
             raise GoveeConnectionError(f"Connection error: {err}") from err
+        except GoveeApiError as err:
+            record["error"] = str(err)
+            _LOGGER.warning(
+                "Control rejected by Govee: device=%s sku=%s instance=%s value=%s HTTP %s body=%s (%s)",
+                device_id,
+                sku,
+                cmd_payload["instance"],
+                cmd_payload["value"],
+                record["http_status"],
+                str(record["response"])[:300],
+                err,
+            )
+            raise
+        finally:
+            self._recent_commands.append(record)
 
     async def get_dynamic_scenes(
         self,

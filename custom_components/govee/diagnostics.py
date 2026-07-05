@@ -264,6 +264,12 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
         "mqtt": mqtt_info,
         "openapi_events": openapi_info,
         "recent_multisync": recent_multisync,
+        # Recent /device/control sends with the exact capability payload and
+        # Govee's HTTP status + response body — lets "command accepted but
+        # device does nothing" reports (#127) be debugged from a download
+        # alone, without asking the user to enable debug logging. The
+        # "device" key in each record is redacted like everything else.
+        "recent_commands": coordinator.api_client.recent_commands,
         # PII-free census of the BFF device list — shows whether the BFF API
         # returns a given leak SKU and if it carries discovery fields (#87).
         "bff_device_census": coordinator.bff_device_census,
