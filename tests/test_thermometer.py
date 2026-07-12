@@ -269,6 +269,18 @@ class TestTemperatureSensorFahrenheitConversion:
         # An account whose Govee app is set to °C can opt out via the option.
         assert self._make_sensor_stub(23.2, "celsius", sku="H5106") == 23.2
 
+    def test_h5220_gateway_thermometer_auto_converts_fahrenheit(self):
+        # Issue #128 follow-up: H5220 reports ~75°F under the °C-tagged unit
+        # (reporter's actual room temp ~75-77°F / ~24°C). A captured BFF
+        # sample independently confirms the device itself is °F-configured
+        # ("fahOpen": true).
+        result = self._make_sensor_stub(75.0, "auto", sku="H5220")
+        assert abs(result - 23.888889) < 1e-4
+
+    def test_h5220_celsius_override_passthrough(self):
+        # An account whose Govee app is set to °C can opt out via the option.
+        assert self._make_sensor_stub(23.9, "celsius", sku="H5220") == 23.9
+
 
 class TestSyntheticThermometer:
     """GoveeDevice.synthetic_thermometer backs BFF-only H5301 discovery (#86)."""
@@ -521,6 +533,107 @@ class TestDeveloperThermometerBattery:
         fake = SimpleNamespace(_states={did: state}, _devices={did: device})
         GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 100}})
         assert state.battery is None
+
+    def test_apply_bff_thermo_battery_no_reload_by_default(self):
+        # allow_reload defaults to False (the initial-discovery call site) —
+        # a fake `self` missing hass/_config_entry/_battery_reload_scheduled
+        # must not be touched.
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        state = GoveeDeviceState(device_id=did)
+        fake = SimpleNamespace(
+            _states={did: state}, _devices={did: self._thermo_device(did)}
+        )
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 87}})
+        assert state.battery == 87
+
+    def test_apply_bff_thermo_battery_reloads_on_first_battery_seen(self):
+        # Issue #132: a device with no battery at startup (sensor.py's
+        # one-shot gate skipped it) later gets one from the periodic BFF poll
+        # -> schedule a reload so sensor.py gets a fresh chance to create it.
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        state = GoveeDeviceState(device_id=did)  # battery=None, as at startup
+        config_entries = MagicMock()
+        fake = SimpleNamespace(
+            _states={did: state},
+            _devices={did: self._thermo_device(did)},
+            _battery_reload_scheduled=False,
+            hass=SimpleNamespace(config_entries=config_entries),
+            _config_entry=SimpleNamespace(entry_id="test_entry"),
+        )
+
+        GoveeCoordinator._apply_bff_thermo_battery(
+            fake, {did: {"battery": 87}}, allow_reload=True
+        )
+
+        assert state.battery == 87
+        assert fake._battery_reload_scheduled is True
+        config_entries.async_schedule_reload.assert_called_once_with("test_entry")
+
+    def test_apply_bff_thermo_battery_no_reload_when_battery_already_known(self):
+        # A device that already has a battery reading updating to a new value
+        # is a routine refresh, not a "missed at startup" case -> no reload.
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        state = GoveeDeviceState(device_id=did, battery=90)
+        config_entries = MagicMock()
+        fake = SimpleNamespace(
+            _states={did: state},
+            _devices={did: self._thermo_device(did)},
+            _battery_reload_scheduled=False,
+            hass=SimpleNamespace(config_entries=config_entries),
+            _config_entry=SimpleNamespace(entry_id="test_entry"),
+        )
+
+        GoveeCoordinator._apply_bff_thermo_battery(
+            fake, {did: {"battery": 88}}, allow_reload=True
+        )
+
+        assert state.battery == 88
+        assert fake._battery_reload_scheduled is False
+        config_entries.async_schedule_reload.assert_not_called()
+
+    def test_apply_bff_thermo_battery_reload_scheduled_only_once(self):
+        # A guard flag already set (a reload is pending) must not queue a
+        # second one, mirroring the leak-sensor _bff_reload_scheduled pattern.
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.models import GoveeDeviceState
+
+        did = "AA:BB:CC:DD:EE:FF:51:10"
+        state = GoveeDeviceState(device_id=did)
+        config_entries = MagicMock()
+        fake = SimpleNamespace(
+            _states={did: state},
+            _devices={did: self._thermo_device(did)},
+            _battery_reload_scheduled=True,  # already pending
+            hass=SimpleNamespace(config_entries=config_entries),
+            _config_entry=SimpleNamespace(entry_id="test_entry"),
+        )
+
+        GoveeCoordinator._apply_bff_thermo_battery(
+            fake, {did: {"battery": 87}}, allow_reload=True
+        )
+
+        assert state.battery == 87
+        config_entries.async_schedule_reload.assert_not_called()
 
     def test_apply_bff_thermo_battery_skips_mains_powered_sku(self):
         # #114: the H5106 reports a bogus battery but its device_type is NOT one

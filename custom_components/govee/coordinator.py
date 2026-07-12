@@ -304,6 +304,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # sensors, so the periodic poll doesn't queue a reload every tick while
         # the reload is pending (issue #101).
         self._bff_reload_scheduled = False
+        # Set once a reload has been scheduled to pick up a thermometer battery
+        # sensor missed at startup (issue #132), so a slow tick doesn't queue a
+        # reload every 5 minutes while the reload is pending.
+        self._battery_reload_scheduled = False
         # Leak sensor subsystem
         self._leak_sensors: dict[str, GoveeLeakSensor] = {}
         self._leak_states: dict[str, GoveeLeakSensorState] = {}
@@ -1579,7 +1583,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # Non-fatal: integration continues without leak sensors
 
     def _apply_bff_thermo_battery(
-        self, thermo_readings: dict[str, dict[str, Any]]
+        self,
+        thermo_readings: dict[str, dict[str, Any]],
+        *,
+        allow_reload: bool = False,
     ) -> None:
         """Apply BFF-reported battery to devices.
 
@@ -1595,7 +1602,20 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         ``battery: 100`` while plugged in but doesn't carry a mains device_type)
         — so they don't surface a misleading 100% battery sensor (issues #125,
         #114).
+
+        ``sensor.py`` only creates ``GoveeThermoBatterySensor`` once, at
+        platform setup, when ``state.battery is not None`` at that instant. If
+        the BFF call this method's data came from failed or was still in
+        flight at startup (issue #132 — a transient hiccup coincident with the
+        restart an update triggers), the entity is silently skipped forever;
+        the periodic BFF poll would keep refreshing ``state.battery`` with
+        nothing to show it. When ``allow_reload`` is set (the periodic-poll
+        call site, never the initial-discovery one — entities don't exist yet
+        during discovery, so there's nothing to have missed), a device that
+        gains its first-ever battery reading after startup schedules one
+        reload, mirroring the newly-added-leak-sensor handling above.
         """
+        newly_battery_capable: list[str] = []
         for dev_id in set(thermo_readings) & set(self._devices):
             state = self._states.get(dev_id)
             if state is None:
@@ -1611,10 +1631,29 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     and device.sku.upper() not in MAINS_POWERED_BATTERY_SKUS
                 )
             ):
+                if state.battery is None:
+                    newly_battery_capable.append(dev_id)
                 try:
                     state.battery = int(battery)
                 except (TypeError, ValueError):
                     pass
+
+        if (
+            allow_reload
+            and newly_battery_capable
+            and not self._battery_reload_scheduled
+        ):
+            self._battery_reload_scheduled = True
+            _LOGGER.info(
+                "Battery reading now available for %d thermometer(s) that had "
+                "none at startup (%s) — reloading the integration to add the "
+                "sensor (#132)",
+                len(newly_battery_capable),
+                ", ".join(sorted(newly_battery_capable)),
+            )
+            self.hass.config_entries.async_schedule_reload(
+                self._config_entry.entry_id
+            )
 
             # NOTE: the BFF ``deviceSettings.waterFull`` field is deliberately
             # NOT applied here anymore. It is the app's "Full Bucket Alert"
@@ -1880,7 +1919,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # Refresh BLE-bridged thermometer battery from the BFF data (#83). The
         # tem/hum are still discarded (scale varies, #102) — battery only.
-        self._apply_bff_thermo_battery(thermo_readings)
+        # allow_reload=True: this is the periodic poll, after platform setup
+        # has already run, so a device gaining its first battery reading here
+        # needs a reload to get its sensor entity created (#132).
+        self._apply_bff_thermo_battery(thermo_readings, allow_reload=True)
 
         # Update state for each known sensor
         now_s = time.time()
