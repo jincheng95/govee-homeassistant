@@ -25,12 +25,14 @@ from custom_components.govee.models import (
     RangeCommand,
     SceneCommand,
     RGBColor,
+    WorkModeCommand,
 )
 from custom_components.govee.models.device import (
     CAPABILITY_ON_OFF,
     CAPABILITY_RANGE,
     INSTANCE_POWER,
     INSTANCE_BRIGHTNESS,
+    INSTANCE_HUMIDITY,
 )
 from custom_components.govee.transport_health import TransportHealthTracker
 
@@ -3795,3 +3797,157 @@ class TestTryLanCommand:
         # but LAN stays available (a content miss never flips health — #57).
         assert lan_health.is_available is True
         assert coord._lan_write_misses[self.DEVICE_ID] == 1
+
+
+class TestHumidityVerificationPoll:
+    """A successful humidifier work_mode/humidity REST write schedules a
+    delayed re-poll, attached to the same recent_commands entry, so a
+    diagnostics download shows a timestamped before/after pair instead of
+    relying on the next unrelated coordinator poll cycle (issue #118)."""
+
+    DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:99"
+
+    def _coord(self, *, device_type: str = "devices.types.dehumidifier"):
+        import custom_components.govee.coordinator as coord_mod
+
+        hass = MagicMock()
+        config_entry = MagicMock()
+        config_entry.entry_id = "test_entry"
+        config_entry.async_create_background_task = MagicMock()
+        coord = coord_mod.GoveeCoordinator(
+            hass=hass,
+            config_entry=config_entry,
+            api_client=MagicMock(),
+            iot_credentials=None,
+            poll_interval=60,
+        )
+        coord._devices[self.DEVICE_ID] = GoveeDevice(
+            device_id=self.DEVICE_ID,
+            sku="H7150",
+            name="Test Dehumidifier",
+            device_type=device_type,
+            capabilities=(),
+            is_group=False,
+        )
+        coord._states[self.DEVICE_ID] = GoveeDeviceState.create_empty(self.DEVICE_ID)
+        coord._api_client.control_device = AsyncMock(return_value=True)
+        coord.async_set_updated_data = MagicMock()
+        return coord
+
+    def _scheduled_coro(self, coord):
+        """Return the coroutine handed to async_create_background_task, if any."""
+        calls = coord._config_entry.async_create_background_task.call_args_list
+        if not calls:
+            return None
+        # Signature mirrors the existing rate-limit-issue call site:
+        # (hass, coro, name=...).
+        return calls[-1].args[1]
+
+    @pytest.mark.asyncio
+    async def test_work_mode_on_humidifier_schedules_verification(self, monkeypatch):
+        import custom_components.govee.coordinator as coord_mod
+
+        monkeypatch.setattr(coord_mod, "HUMIDITY_VERIFICATION_DELAY_SECONDS", 0)
+        coord = self._coord()
+        record = {"capability": {"instance": "workMode"}}
+        coord._api_client.peek_last_command_record = MagicMock(return_value=record)
+        coord._api_client.get_device_state = AsyncMock(
+            return_value=GoveeDeviceState(
+                device_id=self.DEVICE_ID,
+                online=True,
+                power_state=True,
+                work_mode=3,
+                mode_value=45,
+                configured_humidity=45,
+            )
+        )
+
+        await coord.async_control_device(
+            self.DEVICE_ID, WorkModeCommand(work_mode=3, mode_value=45)
+        )
+
+        coro = self._scheduled_coro(coord)
+        assert coro is not None
+        await coro  # run the scheduled verification inline
+
+        assert record["verification_poll"]["work_mode"] == 3
+        assert record["verification_poll"]["mode_value"] == 45
+        assert record["verification_poll"]["configured_humidity"] == 45
+        assert record["verification_poll"]["delay_seconds"] == 0
+        assert "polled_at" in record["verification_poll"]
+        coord._api_client.get_device_state.assert_awaited_once_with(
+            self.DEVICE_ID, "H7150"
+        )
+
+    @pytest.mark.asyncio
+    async def test_range_humidity_schedules_verification(self):
+        coord = self._coord()
+        record = {"capability": {"instance": "humidity"}}
+        coord._api_client.peek_last_command_record = MagicMock(return_value=record)
+        coord._api_client.get_device_state = AsyncMock(
+            return_value=GoveeDeviceState.create_empty(self.DEVICE_ID)
+        )
+
+        await coord.async_control_device(
+            self.DEVICE_ID,
+            RangeCommand(range_instance=INSTANCE_HUMIDITY, value=60),
+        )
+
+        coro = self._scheduled_coro(coord)
+        assert coro is not None
+        coro.close()  # never run here — just confirm scheduling, not the result
+
+    @pytest.mark.asyncio
+    async def test_work_mode_on_non_humidifier_does_not_schedule(self):
+        """WorkModeCommand also drives fan speed (#54) — must not verify those."""
+        coord = self._coord(device_type="devices.types.fan")
+        coord._api_client.peek_last_command_record = MagicMock()
+
+        await coord.async_control_device(
+            self.DEVICE_ID, WorkModeCommand(work_mode=1, mode_value=2)
+        )
+
+        assert self._scheduled_coro(coord) is None
+        coord._api_client.peek_last_command_record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unrelated_command_does_not_schedule(self):
+        coord = self._coord()
+        coord._api_client.peek_last_command_record = MagicMock()
+
+        await coord.async_control_device(self.DEVICE_ID, PowerCommand(power_on=True))
+
+        assert self._scheduled_coro(coord) is None
+        coord._api_client.peek_last_command_record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_record_to_attach_to_skips_scheduling(self):
+        """A defensive no-op if there's somehow no command record to attach to."""
+        coord = self._coord()
+        coord._api_client.peek_last_command_record = MagicMock(return_value=None)
+
+        await coord.async_control_device(
+            self.DEVICE_ID, WorkModeCommand(work_mode=3, mode_value=45)
+        )
+
+        assert self._scheduled_coro(coord) is None
+
+    @pytest.mark.asyncio
+    async def test_verification_poll_records_error(self, monkeypatch):
+        """A failed re-poll records the error instead of raising into the caller."""
+        import custom_components.govee.coordinator as coord_mod
+
+        monkeypatch.setattr(coord_mod, "HUMIDITY_VERIFICATION_DELAY_SECONDS", 0)
+        coord = self._coord()
+        record = {"capability": {"instance": "workMode"}}
+        coord._api_client.peek_last_command_record = MagicMock(return_value=record)
+        coord._api_client.get_device_state = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        await coord.async_control_device(
+            self.DEVICE_ID, WorkModeCommand(work_mode=3, mode_value=45)
+        )
+        await self._scheduled_coro(coord)
+
+        assert record["verification_poll"] == {"error": "boom"}

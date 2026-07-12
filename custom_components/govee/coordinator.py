@@ -150,6 +150,13 @@ BFF_POLL_INTERVAL = 300  # 5 minutes
 # the account API's rate limit is unverified (homebridge issue #543).
 WATER_DETECTOR_POLL_INTERVAL = 120  # 2 minutes
 
+# Delay before re-polling device state after a humidifier work_mode/humidity
+# write, to attach a timestamped "what Govee reports N seconds later" snapshot
+# to that same recent_commands entry (issue #118: these writes return HTTP 200
+# but the H7150's physical setpoint may not move, and the regular coordinator
+# poll cycle isn't correlated in time with the write under test).
+HUMIDITY_VERIFICATION_DELAY_SECONDS = 8
+
 
 @dataclasses.dataclass
 class _LanReadOverlay:
@@ -2560,6 +2567,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 # Apply optimistic update
                 self._apply_optimistic_update(device_id, command)
                 self.async_set_updated_data(self._states)
+                self._maybe_schedule_humidity_verification(device_id, device, command)
             else:
                 self._record_transport_failure(
                     device_id, "cloud_api", "control_returned_false"
@@ -2577,6 +2585,52 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         finally:
             if is_power_off:
                 self._pending_power_off.discard(device_id)
+
+    def _maybe_schedule_humidity_verification(
+        self, device_id: str, device: GoveeDevice, command: DeviceCommand
+    ) -> None:
+        """After a humidifier work_mode/humidity REST write, schedule a re-poll.
+
+        Issue #118: these writes return HTTP 200 but the physical H7150
+        setpoint may not move. The result is attached to the same
+        recent_commands entry so a diagnostics download shows a timestamped
+        "sent X -> Govee reports Y, N seconds later" pair, instead of relying
+        on whatever the next unrelated coordinator poll cycle happens to see.
+        """
+        is_humidity_write = (
+            isinstance(command, WorkModeCommand) and device.is_humidifier
+        ) or (
+            isinstance(command, RangeCommand)
+            and command.range_instance == INSTANCE_HUMIDITY
+        )
+        if not is_humidity_write:
+            return
+        record = self._api_client.peek_last_command_record()
+        if record is None:
+            return
+        self._config_entry.async_create_background_task(
+            self.hass,
+            self._verify_humidity_command(device_id, device.sku, record),
+            name="govee_verify_humidity_command",
+        )
+
+    async def _verify_humidity_command(
+        self, device_id: str, sku: str, record: dict[str, Any]
+    ) -> None:
+        """Re-poll device state and attach it to a recent_commands record."""
+        await asyncio.sleep(HUMIDITY_VERIFICATION_DELAY_SECONDS)
+        try:
+            state = await self._api_client.get_device_state(device_id, sku)
+        except Exception as err:  # noqa: BLE001 - best-effort diagnostics only
+            record["verification_poll"] = {"error": str(err)}
+            return
+        record["verification_poll"] = {
+            "polled_at": dt_util.utcnow().isoformat(),
+            "delay_seconds": HUMIDITY_VERIFICATION_DELAY_SECONDS,
+            "work_mode": state.work_mode,
+            "mode_value": state.mode_value,
+            "configured_humidity": state.configured_humidity,
+        }
 
     async def _dispatch_segment_command(
         self,
