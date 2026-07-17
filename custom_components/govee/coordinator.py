@@ -95,6 +95,7 @@ from .models.commands import (
     DIYSceneCommand,
     ModeCommand,
     MusicModeCommand,
+    OscillationCommand,
     PowerCommand,
     RangeCommand,
     SceneCommand,
@@ -3361,6 +3362,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             state.heater_auto_stop = command.auto_stop
         elif isinstance(command, WorkModeCommand):
             state.apply_optimistic_work_mode(command.work_mode, command.mode_value)
+        elif isinstance(command, OscillationCommand):
+            state.apply_optimistic_oscillation(command.oscillating)
         elif isinstance(command, MusicModeCommand):
             # Look up mode name from device capabilities for display
             device = self._devices.get(device_id)

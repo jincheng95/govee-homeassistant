@@ -574,6 +574,19 @@ class TestH7124FanPresets:
         assert cmd.work_mode == 7
         assert cmd.mode_value == 0
 
+    @pytest.mark.asyncio
+    async def test_set_percentage_from_turbo_uses_manual_mode(self, fan):
+        state = fan.coordinator.get_state.return_value
+        state.work_mode = 7
+        state.mode_value = 0
+
+        await fan.async_set_percentage(100)
+
+        cmd = fan.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, WorkModeCommand)
+        assert cmd.work_mode == 1
+        assert cmd.mode_value == 3
+
 
 # --------------------------------------------------------------------------- #
 # Dehumidifier setpoint + Medium (H7152)

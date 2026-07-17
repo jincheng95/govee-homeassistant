@@ -18,13 +18,14 @@ from custom_components.govee.models import (
     GoveeCapability,
     GoveeDevice,
     GoveeDeviceState,
-    PowerCommand,
     BrightnessCommand,
     ColorCommand,
     ColorTempCommand,
+    OscillationCommand,
+    PowerCommand,
+    RGBColor,
     RangeCommand,
     SceneCommand,
-    RGBColor,
     WorkModeCommand,
 )
 from custom_components.govee.models.device import (
@@ -519,6 +520,22 @@ class TestOptimisticUpdates:
             RangeCommand(range_instance="fanSpeed", value=3),
         )
         assert sample_state.configured_humidity == 55
+
+    def test_apply_optimistic_oscillation_command(self, sample_state):
+        """OscillationCommand updates fan oscillation state optimistically."""
+        from custom_components.govee.coordinator import GoveeCoordinator
+
+        sample_state.oscillating = False
+
+        coord = object.__new__(GoveeCoordinator)
+        coord._states = {sample_state.device_id: sample_state}
+
+        coord._apply_optimistic_update(
+            sample_state.device_id,
+            OscillationCommand(oscillating=True),
+        )
+        assert sample_state.oscillating is True
+        assert sample_state.source == "optimistic"
 
 
 class TestDeviceStateCreation:
