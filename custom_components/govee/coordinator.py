@@ -1390,8 +1390,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # bodyAppearedEvent fires for BOTH transitions on presence sensors:
         # value 1 = Presence, 2 = Absence (Govee Subscribe Device Event docs,
         # issue #124). SKU-locked to presence sensors — the H5054 water
-        # detector shares this instance but means "leak", and its state is
-        # owned by the warnMessage poll.
+        # detector shares this instance but means "leak" (see below).
         if instance == "bodyAppearedEvent" and device.supports_presence_event:
             state = self._get_or_create_state(device_id)
             state.presence = value == 1
@@ -1400,6 +1399,23 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 device_id,
                 sku,
                 "present" if value == 1 else "absent",
+            )
+            self.async_set_updated_data(self._states)
+            return
+
+        # H5054 water detectors reuse the same bodyAppearedEvent instance to
+        # report a leak trip: value 1 = LEAKED (wet), 2 = UN_LEAKED (dry),
+        # mirroring the presence 1/2 encoding (issue #138). This is the
+        # real-time path; the warnMessage BFF poll remains the fallback that
+        # backstops missed pushes and covers the initial state.
+        if instance == "bodyAppearedEvent" and device.supports_water_leak_event:
+            state = self._get_or_create_state(device_id)
+            state.water_leak = value == 1
+            _LOGGER.info(
+                "Water-leak event for %s (%s): %s",
+                device_id,
+                sku,
+                "wet" if value == 1 else "dry",
             )
             self.async_set_updated_data(self._states)
 

@@ -228,10 +228,9 @@ class TestCoordinatorBodyAppearedEvent:
         )
         assert coord._states[device.device_id].presence is False
 
-    def test_non_presence_sku_ignored(self):
-        # The H5054 water detector shares the bodyAppearedEvent instance but
-        # means "leak" — its state is owned by the warnMessage poll.
-        device = GoveeDevice(
+    @staticmethod
+    def _h5054() -> GoveeDevice:
+        return GoveeDevice(
             device_id="AA:BB:CC:DD:EE:FF:50:54",
             sku="H5054",
             name="Water Detector",
@@ -240,12 +239,48 @@ class TestCoordinatorBodyAppearedEvent:
                 GoveeCapability(type=CAPABILITY_EVENT, instance="bodyAppearedEvent"),
             ),
         )
+
+    def test_h5054_leaked_value_1_sets_wet(self):
+        # The H5054 water detector shares the bodyAppearedEvent instance but
+        # means "leak": value 1 = LEAKED (issue #138). Real-time path; the
+        # warnMessage poll remains the fallback.
+        device = self._h5054()
         coord = self._coordinator(device)
         coord._on_openapi_event(
-            device.device_id, "H5054", "bodyAppearedEvent", [{"value": 1}]
+            device.device_id,
+            "H5054",
+            "bodyAppearedEvent",
+            [{"name": "LEAKED", "value": 1, "message": "Leaked"}],
         )
+        assert coord._states[device.device_id].water_leak is True
         assert coord._states[device.device_id].presence is None
-        coord.async_set_updated_data.assert_not_called()
+        coord.async_set_updated_data.assert_called_once()
+
+    def test_h5054_un_leaked_value_2_sets_dry(self):
+        # value 2 = UN_LEAKED, mirroring the diagnostics in issue #138.
+        device = self._h5054()
+        coord = self._coordinator(device)
+        coord._states[device.device_id].water_leak = True
+        coord._on_openapi_event(
+            device.device_id,
+            "H5054",
+            "bodyAppearedEvent",
+            [{"name": "UN_LEAKED", "value": 2, "message": "Un_Leaked"}],
+        )
+        assert coord._states[device.device_id].water_leak is False
+        assert coord._states[device.device_id].presence is None
+        coord.async_set_updated_data.assert_called_once()
+
+    def test_h5127_presence_not_treated_as_leak(self):
+        # Guard the inverse: a presence sensor's event must never touch
+        # water_leak (issue #124 / #138 must not cross-contaminate).
+        device = self._h5127()
+        coord = self._coordinator(device)
+        coord._on_openapi_event(
+            device.device_id, "H5127", "bodyAppearedEvent", [{"value": 1}]
+        )
+        assert coord._states[device.device_id].water_leak is None
+        assert coord._states[device.device_id].presence is True
 
 
 class TestBffWaterFullNoLongerApplied:
