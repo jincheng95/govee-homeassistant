@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -759,17 +760,17 @@ class TestFanDuplicatePreset:
         # Presets come directly from capabilities with no duplicates.
         assert modes.count(PRESET_MODE_AUTO) == 1
         assert PRESET_MODE_NORMAL in modes
-        assert "Sleep" in modes
-        assert "Nature" in modes
-        assert "Custom" in modes
+        assert "sleep" in modes
+        assert "nature" in modes
+        assert "custom" in modes
         assert len(modes) == len(set(modes))
 
     def test_preset_modes_map_to_discovered_work_modes(self, h7106_entity):
         assert h7106_entity._auto_work_mode == 2
-        assert h7106_entity._preset_work_modes.get("Auto") == 2
+        assert h7106_entity._preset_work_modes.get("auto") == 2
         assert h7106_entity._manual_work_mode == 1
         assert h7106_entity._manual_preset_name == PRESET_MODE_NORMAL
-        assert h7106_entity._preset_work_modes.get("Sleep") == 5
+        assert h7106_entity._preset_work_modes.get("sleep") == 5
 
     def test_speed_count_and_percentage_step_from_fanspeed_modevalue(self, h7106_entity):
         assert h7106_entity.speed_count == 8
@@ -961,10 +962,10 @@ class TestFanSpeedManualModeDiscovery:
         assert h7107_entity.percentage_step == pytest.approx(100 / 12)
         assert h7107_entity.preset_modes == [
             PRESET_MODE_NORMAL,
-            "Auto",
-            "Sleep",
-            "Nature",
-            "Custom",
+            "auto",
+            "sleep",
+            "nature",
+            "custom",
         ]
 
     @pytest.mark.asyncio
@@ -1162,3 +1163,47 @@ class TestFanModeNameWhitespaceHandling:
         assert entity._fan_speeds == [1, 2, 3, 5]
         assert entity._fan_speeds.count(3) == 1
         assert entity.speed_count == 4
+
+    def test_normalize_preset_mode_handles_case_whitespace_alias_and_empty(self):
+        assert GoveeFanEntity._normalize_mode_name("FanSpeed") == "fanspeed"
+        assert GoveeFanEntity._normalize_preset_mode(" Auto ") == PRESET_MODE_AUTO
+        assert GoveeFanEntity._normalize_preset_mode("FanSpeed") == PRESET_MODE_NORMAL
+        assert GoveeFanEntity._normalize_preset_mode("  Turbo  ") == "turbo"
+        assert GoveeFanEntity._normalize_preset_mode("  Breezy  ") == "breezy"
+        assert GoveeFanEntity._normalize_preset_mode("   ") is None
+        assert GoveeFanEntity._normalize_preset_mode(0) is None
+        assert GoveeFanEntity._normalize_preset_mode(False) is None
+
+    @pytest.mark.asyncio
+    async def test_set_empty_preset_mode_falls_back_to_manual(self):
+        device = _h7107_whitespace_device()
+        state = MagicMock(work_mode=2, mode_value=0)
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        entity = GoveeFanEntity(coordinator, device)
+
+        await entity.async_set_preset_mode("   ")
+
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, WorkModeCommand)
+        assert cmd.work_mode == entity._manual_work_mode
+
+    @pytest.mark.asyncio
+    async def test_set_unknown_preset_mode_warns_and_falls_back_to_manual(self, caplog):
+        device = _h7107_whitespace_device()
+        state = MagicMock(work_mode=2, mode_value=0)
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        entity = GoveeFanEntity(coordinator, device)
+
+        with caplog.at_level(logging.WARNING):
+            await entity.async_set_preset_mode("UnknownPreset")
+
+        cmd = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, WorkModeCommand)
+        assert cmd.work_mode == entity._manual_work_mode
+        assert "Unknown preset mode" in caplog.text

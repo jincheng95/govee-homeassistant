@@ -282,6 +282,23 @@
         "name": "Internet"
       }
     },
+    "fan": {
+      "govee_fan": {
+        "name": "{device_name}",
+        "state_attributes": {
+          "preset_mode": {
+            "state": {
+              "normal": "Normal",
+              "nature": "Nature",
+              "sleep": "Sleep",
+              "auto": "Auto",
+              "custom": "Custom",
+              "turbo": "Turbo"
+            }
+          }
+        }
+      }
+    },
     "humidifier": {
       "govee_humidifier": {
         "name": "{device_name}",
