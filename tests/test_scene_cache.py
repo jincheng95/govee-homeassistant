@@ -249,6 +249,21 @@ class TestErrorHandling:
         assert mock_api.get_dynamic_scenes.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_timeout_returns_fallback_not_raises(
+        self, mock_api: AsyncMock, device: GoveeDevice
+    ) -> None:
+        """A raw read TimeoutError degrades to empty, not an exception (#146).
+
+        Scenes are fetched from light/select ``async_added_to_hass``; a
+        propagating timeout there would abort adding the entity entirely.
+        """
+        mock_api.get_dynamic_scenes = AsyncMock(side_effect=TimeoutError())
+        manager = SceneCacheManager(mock_api)
+
+        result = await manager.async_get_scenes(device.device_id, device)
+        assert result == []
+
+    @pytest.mark.asyncio
     async def test_api_error_falls_back_to_cached_data(
         self, mock_api: AsyncMock, device: GoveeDevice
     ) -> None:
