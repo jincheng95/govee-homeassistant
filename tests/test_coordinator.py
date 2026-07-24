@@ -2218,6 +2218,76 @@ class TestBffThermometerDiscovery:
         coord._schedule_bff_poll.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_dev_api_thermometer_supplemented_from_bff(self, monkeypatch):
+        """H5179 exists from Developer-API discovery but reads via BFF (#141).
+
+        It must NOT be re-synthesized; instead the existing device gets its
+        reading from the BFF and is routed through the BFF path
+        (``_bff_thermometer_ids``) so the futile Developer poll is skipped.
+        """
+        from custom_components.govee.models.device import (
+            CAPABILITY_PROPERTY,
+            INSTANCE_SENSOR_HUMIDITY,
+            INSTANCE_SENSOR_TEMPERATURE,
+        )
+
+        coord, coord_mod = self._coord()
+        did = "AA:BB:CC:DD:EE:FF:00:11"
+        # Pre-existing Developer-API H5179 with empty reading.
+        existing = GoveeDevice(
+            device_id=did,
+            sku="H5179",
+            name="Garage Fridge",
+            device_type="devices.types.thermometer",
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_PROPERTY,
+                    instance=INSTANCE_SENSOR_TEMPERATURE,
+                    parameters={},
+                ),
+                GoveeCapability(
+                    type=CAPABILITY_PROPERTY,
+                    instance=INSTANCE_SENSOR_HUMIDITY,
+                    parameters={},
+                ),
+            ),
+            is_group=False,
+        )
+        coord._devices[did] = existing
+        coord._states[did] = GoveeDeviceState.create_empty(did)
+
+        inner = MagicMock()
+        inner.fetch_bff_thermo_hygrometers = _make_async(
+            [
+                {
+                    "device_id": did,
+                    "name": "Garage Fridge",
+                    "sku": "H5179",
+                    "battery": 17,
+                    "online": False,
+                    "temperature": 4.9,
+                    "humidity": 53.1,
+                    "hub_device_id": "",
+                    "hub_sku": "",
+                }
+            ]
+        )
+        inner.bff_device_census = MagicMock(return_value=[])
+        inner.bff_response_skeleton = MagicMock(return_value=None)
+        inner.bff_device_values = MagicMock(return_value=[])
+        monkeypatch.setattr(coord_mod, "GoveeAuthClient", lambda **kw: _AsyncCM(inner))
+
+        await coord._discover_bff_thermometers()
+
+        # Same device object — not synthesized/replaced.
+        assert coord._devices[did] is existing
+        assert did in coord._bff_thermometer_ids
+        state = coord._states[did]
+        assert state.sensor_temperature == 4.9
+        assert state.sensor_humidity == 53.1
+        assert state.battery == 17
+
+    @pytest.mark.asyncio
     async def test_fetch_device_state_skips_developer_poll(self, monkeypatch):
         coord, coord_mod = self._coord()
         did = "AA:BB:CC:DD:EE:FF:00:11"
