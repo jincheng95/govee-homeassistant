@@ -281,6 +281,17 @@ class TestTemperatureSensorFahrenheitConversion:
         # An account whose Govee app is set to °C can opt out via the option.
         assert self._make_sensor_stub(23.9, "celsius", sku="H5220") == 23.9
 
+    def test_h5111_freezer_thermometer_auto_converts_fahrenheit(self):
+        # H5111 fridge/freezer thermometer reports °F under the °C-tagged
+        # unit: app shows ~6.1°F, HA surfaced 43.3°F (6.28°C→°F). Auto mode
+        # converts the raw 6.28°F back to ~-14.3°C so HA renders 6.3°F.
+        result = self._make_sensor_stub(6.28, "auto", sku="H5111")
+        assert abs(result - (-14.288889)) < 1e-4
+
+    def test_h5111_celsius_override_passthrough(self):
+        # An account whose Govee app is set to °C can opt out via the option.
+        assert self._make_sensor_stub(-14.3, "celsius", sku="H5111") == -14.3
+
 
 class TestSyntheticThermometer:
     """GoveeDevice.synthetic_thermometer backs BFF-only H5301 discovery (#86)."""
