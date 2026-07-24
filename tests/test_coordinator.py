@@ -1997,7 +1997,25 @@ class TestWaterDetectorPoll:
         state = coord._states[did]
         assert state.water_leak is True
         assert state.online is True
+        assert state.battery == 80  # surfaced for the battery sensor (#145)
         coord.async_update_listeners.assert_called()
+
+    def test_is_water_detector_predicate(self):
+        coord, did = self._coord_with_detector()
+        assert coord.is_water_detector(did) is True
+        assert coord.is_water_detector("not-a-detector") is False
+
+    def test_battery_sensor_available_despite_offline(self):
+        """H5054 battery sensor stays available though the device is offline (#145)."""
+        from custom_components.govee.sensor import GoveeThermoBatterySensor
+
+        coord, did = self._coord_with_detector()
+        state = coord._states[did]
+        state.online = False
+        state.battery = 80
+        entity = GoveeThermoBatterySensor(coord, coord._devices[did])
+        assert entity.available is True
+        assert entity.native_value == 80
 
     @pytest.mark.asyncio
     async def test_warnmessage_skipped_when_no_new_report(self, monkeypatch):
@@ -2082,6 +2100,56 @@ def _make_async(return_value):
         return return_value
 
     return _inner
+
+
+class TestStartupStepResilience:
+    """A hung/failing account-BFF discovery step must not cancel setup (#146)."""
+
+    def _bare_coord(self):
+        import custom_components.govee.coordinator as coord_mod
+
+        config_entry = MagicMock()
+        config_entry.entry_id = "test_entry"
+        return coord_mod.GoveeCoordinator(
+            hass=MagicMock(),
+            config_entry=config_entry,
+            api_client=MagicMock(),
+            iot_credentials=MagicMock(token="tok"),
+            poll_interval=60,
+        )
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_swallowed(self, monkeypatch):
+        import custom_components.govee.coordinator as coord_mod
+
+        monkeypatch.setattr(coord_mod, "STARTUP_STEP_TIMEOUT", 0.01)
+        coord = self._bare_coord()
+
+        async def _hangs():
+            await asyncio.sleep(1)
+
+        # Returns normally (does not raise) even though the step never finishes.
+        await coord._run_startup_step(_hangs(), "hanging step")
+
+    @pytest.mark.asyncio
+    async def test_error_is_swallowed(self):
+        coord = self._bare_coord()
+
+        async def _boom():
+            raise RuntimeError("BFF exploded")
+
+        await coord._run_startup_step(_boom(), "failing step")
+
+    @pytest.mark.asyncio
+    async def test_success_runs_to_completion(self):
+        coord = self._bare_coord()
+        ran = {"ok": False}
+
+        async def _ok():
+            ran["ok"] = True
+
+        await coord._run_startup_step(_ok(), "good step")
+        assert ran["ok"] is True
 
 
 class TestBffThermometerDiscovery:

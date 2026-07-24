@@ -163,8 +163,9 @@ class TestBinarySensor:
     def test_is_on_dry(self, h5054_device):
         assert self._entity(h5054_device, False).is_on is False
 
-    def test_is_on_unknown(self, h5054_device):
-        assert self._entity(h5054_device, None).is_on is None
+    def test_is_on_defaults_dry_before_first_poll(self, h5054_device):
+        """water_leak=None (pre-poll) reads as dry, not Unknown (issue #145)."""
+        assert self._entity(h5054_device, None).is_on is False
 
     def test_available_despite_offline_device(self, h5054_device):
         """Entity stays available even though the detector reports online=False."""
