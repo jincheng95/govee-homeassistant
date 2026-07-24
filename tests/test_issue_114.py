@@ -548,7 +548,7 @@ class TestH7124FanPresets:
     def test_preset_modes_include_sleep_turbo(self, fan):
         from custom_components.govee.fan import PRESET_MODE_AUTO, PRESET_MODE_NORMAL
 
-        assert fan.preset_modes == [PRESET_MODE_NORMAL, PRESET_MODE_AUTO, "Sleep", "Turbo"]
+        assert fan.preset_modes == [PRESET_MODE_NORMAL, PRESET_MODE_AUTO, "sleep", "turbo"]
 
     def test_preset_mode_maps_sleep(self, device):
         from custom_components.govee.fan import GoveeFanEntity
@@ -556,7 +556,7 @@ class TestH7124FanPresets:
         state = GoveeDeviceState(device_id=device.device_id, online=True)
         state.work_mode = 5  # Sleep
         fan = GoveeFanEntity(_coordinator_with_state(device, state), device)
-        assert fan.preset_mode == "Sleep"
+        assert fan.preset_mode == "sleep"
 
     def test_preset_mode_maps_turbo(self, device):
         from custom_components.govee.fan import GoveeFanEntity
@@ -564,7 +564,7 @@ class TestH7124FanPresets:
         state = GoveeDeviceState(device_id=device.device_id, online=True)
         state.work_mode = 7  # Turbo
         fan = GoveeFanEntity(_coordinator_with_state(device, state), device)
-        assert fan.preset_mode == "Turbo"
+        assert fan.preset_mode == "turbo"
 
     @pytest.mark.asyncio
     async def test_set_preset_turbo_sends_work_mode(self, fan):
@@ -573,6 +573,14 @@ class TestH7124FanPresets:
         assert isinstance(cmd, WorkModeCommand)
         assert cmd.work_mode == 7
         assert cmd.mode_value == 0
+
+    @pytest.mark.asyncio
+    async def test_set_preset_normal_alias_still_works(self, fan):
+        """Regression test for #140."""
+        await fan.async_set_preset_mode("Normal")
+        cmd = fan.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, WorkModeCommand)
+        assert cmd.work_mode == fan._manual_work_mode
 
     @pytest.mark.asyncio
     async def test_set_percentage_from_turbo_uses_manual_mode(self, fan):
