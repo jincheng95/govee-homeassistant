@@ -835,6 +835,9 @@ class TestFetchDeviceTopicsHeaders:
             return _async_cm(device_resp)
 
         session.post = _post
+        session.get = lambda *a, **kw: _async_cm(
+            make_mock_response(200, {"data": {"devices": []}})
+        )
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -852,9 +855,11 @@ class TestFetchDeviceTopicsHeaders:
         """should return a dict mapping device_id strings to MQTT topic strings."""
         # Arrange
         device_resp = make_mock_response(200, create_device_list_response())
+        bff_resp = make_mock_response(200, {"data": {"devices": []}})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
         session.post = lambda *a, **kw: _async_cm(device_resp)
+        session.get = lambda *a, **kw: _async_cm(bff_resp)
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -872,9 +877,11 @@ class TestFetchDeviceTopicsHeaders:
         )
         devices = [{"device": "CC:DD:EE:FF:00:11", "deviceExt": device_ext_str}]
         device_resp = make_mock_response(200, create_device_list_response(devices))
+        bff_resp = make_mock_response(200, {"data": {"devices": []}})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
         session.post = lambda *a, **kw: _async_cm(device_resp)
+        session.get = lambda *a, **kw: _async_cm(bff_resp)
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -894,9 +901,11 @@ class TestFetchDeviceTopicsHeaders:
             },
         ]
         device_resp = make_mock_response(200, create_device_list_response(devices))
+        bff_resp = make_mock_response(200, {"data": {"devices": []}})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
         session.post = lambda *a, **kw: _async_cm(device_resp)
+        session.get = lambda *a, **kw: _async_cm(bff_resp)
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -934,6 +943,151 @@ class TestFetchDeviceTopicsHeaders:
         # Assert
         with pytest.raises(GoveeApiError):
             await client.fetch_device_topics(token="tok")
+
+    async def test_fetch_device_topics_merges_bff_only_topics(self):
+        """should add topics from the BFF list for devices the legacy list omits.
+
+        Gateway-attached devices (e.g. the H5901 behind an H5044) carry a topic
+        in the BFF ``/bff-app/v1/device/list`` response but not the legacy one.
+        """
+        legacy_resp = make_mock_response(
+            200,
+            create_device_list_response(
+                [
+                    {
+                        "device": "WIFI:AA",
+                        "deviceExt": {"deviceSettings": {"topic": "GD/wifi-aa"}},
+                    }
+                ]
+            ),
+        )
+        # BFF shape is {"data": {"devices": [...]}} and includes a gateway-attached
+        # device that is absent from the legacy list.
+        bff_resp = make_mock_response(
+            200,
+            {
+                "data": {
+                    "devices": [
+                        {
+                            "device": "WIFI:AA",
+                            "deviceExt": {"deviceSettings": {"topic": "GD/wifi-aa"}},
+                        },
+                        {
+                            "sku": "H5901",
+                            "device": "HUB:H5901",
+                            "deviceExt": {
+                                "deviceSettings": json.dumps({"topic": "GD/hub-h5901"})
+                            },
+                        },
+                    ]
+                }
+            },
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+        session.post = lambda *a, **kw: _async_cm(legacy_resp)
+        session.get = lambda *a, **kw: _async_cm(bff_resp)
+        client = GoveeAuthClient(session=session)
+
+        # Act
+        topics = await client.fetch_device_topics(token="tok")
+
+        # Assert
+        assert topics["WIFI:AA"] == "GD/wifi-aa"
+        assert topics["HUB:H5901"] == "GD/hub-h5901"
+
+    async def test_fetch_device_topics_legacy_topic_wins_over_bff(self):
+        """should not let a BFF topic override one already known from the legacy list."""
+        legacy_resp = make_mock_response(
+            200,
+            create_device_list_response(
+                [
+                    {
+                        "device": "DEV:1",
+                        "deviceExt": {"deviceSettings": {"topic": "GD/legacy"}},
+                    }
+                ]
+            ),
+        )
+        bff_resp = make_mock_response(
+            200,
+            {
+                "data": {
+                    "devices": [
+                        {
+                            "device": "DEV:1",
+                            "deviceExt": {"deviceSettings": {"topic": "GD/bff"}},
+                        }
+                    ]
+                }
+            },
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+        session.post = lambda *a, **kw: _async_cm(legacy_resp)
+        session.get = lambda *a, **kw: _async_cm(bff_resp)
+        client = GoveeAuthClient(session=session)
+
+        # Act
+        topics = await client.fetch_device_topics(token="tok")
+
+        # Assert
+        assert topics["DEV:1"] == "GD/legacy"
+
+    async def test_fetch_device_topics_bff_failure_is_non_fatal(self):
+        """should return legacy topics even if the BFF supplement call fails."""
+        legacy_resp = make_mock_response(
+            200,
+            create_device_list_response(
+                [
+                    {
+                        "device": "DEV:1",
+                        "deviceExt": {"deviceSettings": {"topic": "GD/legacy"}},
+                    }
+                ]
+            ),
+        )
+        session = MagicMock(spec=aiohttp.ClientSession)
+        session.close = AsyncMock()
+        session.post = lambda *a, **kw: _async_cm(legacy_resp)
+
+        def _get_raises(*_a: Any, **_kw: Any):
+            raise aiohttp.ClientConnectionError("BFF down")
+
+        session.get = _get_raises
+        client = GoveeAuthClient(session=session)
+
+        # Act
+        topics = await client.fetch_device_topics(token="tok")
+
+        # Assert
+        assert topics["DEV:1"] == "GD/legacy"
+
+
+class TestExtractTopicsFromDevices:
+    """Test the shared device-list topic-extraction helper."""
+
+    def test_parses_dict_and_json_string_forms(self):
+        """should parse deviceExt/deviceSettings whether dicts or JSON strings."""
+        devices = [
+            {"device": "A", "deviceExt": {"deviceSettings": {"topic": "GD/a"}}},
+            {
+                "device": "B",
+                "deviceExt": json.dumps(
+                    {"deviceSettings": json.dumps({"topic": "GD/b"})}
+                ),
+            },
+        ]
+        topics = GoveeAuthClient._extract_topics_from_devices(devices)
+        assert topics == {"A": "GD/a", "B": "GD/b"}
+
+    def test_skips_devices_without_topic_or_id(self):
+        """should skip devices missing a topic or a device id."""
+        devices = [
+            {"device": "A", "deviceExt": {"deviceSettings": {}}},
+            {"deviceExt": {"deviceSettings": {"topic": "GD/x"}}},
+        ]
+        assert GoveeAuthClient._extract_topics_from_devices(devices) == {}
 
 
 # ==============================================================================
@@ -1420,6 +1574,9 @@ class TestDeterministicClientId:
             return _async_cm(topics_resp)
 
         session.post = _post
+        session.get = lambda *a, **kw: _async_cm(
+            make_mock_response(200, {"data": {"devices": []}})
+        )
         client = GoveeAuthClient(session=session)
         client._client_id = "login-cid-xyz"
 
@@ -2137,16 +2294,12 @@ class TestBffThermoReadings:
             {
                 "sku": "H5058",  # leak sensor — excluded
                 "device": "L1",
-                "deviceExt": json.dumps(
-                    {"lastDeviceData": json.dumps({"tem": 2000})}
-                ),
+                "deviceExt": json.dumps({"lastDeviceData": json.dumps({"tem": 2000})}),
             },
             {
                 "sku": "H5310",  # BFF-only thermo — owned by dedicated path
                 "device": "T1",
-                "deviceExt": json.dumps(
-                    {"lastDeviceData": json.dumps({"tem": 2640})}
-                ),
+                "deviceExt": json.dumps({"lastDeviceData": json.dumps({"tem": 2640})}),
             },
         ]
         session = make_session_get(make_mock_response(200, _bff_response(devices)))
