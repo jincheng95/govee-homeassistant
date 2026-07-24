@@ -184,12 +184,15 @@ class TestTemperatureSensorFahrenheitConversion:
 
         state = SimpleNamespace(sensor_temperature=raw_value)
         coordinator = SimpleNamespace(
-            config_entry=SimpleNamespace(options={"api_temperature_unit": api_unit})
+            config_entry=SimpleNamespace(options={"api_temperature_unit": api_unit}),
+            # Developer-API thermometer, not a BFF-sourced one (#141).
+            is_bff_thermometer=lambda _device_id: False,
         )
         stub = SimpleNamespace(
             device_state=state,
             coordinator=coordinator,
             _device=SimpleNamespace(sku=sku),
+            _device_id="AA:BB:CC:DD:EE:FF:00:11",
         )
         return GoveeTemperatureSensor.native_value.fget(stub)
 
@@ -232,15 +235,40 @@ class TestTemperatureSensorFahrenheitConversion:
         from custom_components.govee.sensor import GoveeTemperatureSensor
 
         state = SimpleNamespace(sensor_temperature=100.83)
-        coordinator = SimpleNamespace(config_entry=SimpleNamespace(options={}))
+        coordinator = SimpleNamespace(
+            config_entry=SimpleNamespace(options={}),
+            is_bff_thermometer=lambda _device_id: False,
+        )
         stub = SimpleNamespace(
             device_state=state,
             coordinator=coordinator,
             _device=SimpleNamespace(sku="H5109"),
+            _device_id="AA:BB:CC:DD:EE:FF:00:11",
         )
         # Default is auto -> known °F SKU converts.
         result = GoveeTemperatureSensor.native_value.fget(stub)
         assert abs(result - 38.238889) < 1e-4
+
+    def test_bff_sourced_h5179_skips_fahrenheit_conversion(self):
+        # H5179 is in FAHRENHEIT_REPORTING_SKUS for its Developer-API path, but
+        # when its reading comes via BFF (already canonical °C from _bff_reading)
+        # the conversion must NOT apply — else 4.9°C would be mangled (#141).
+        from types import SimpleNamespace
+
+        from custom_components.govee.sensor import GoveeTemperatureSensor
+
+        state = SimpleNamespace(sensor_temperature=4.9)
+        coordinator = SimpleNamespace(
+            config_entry=SimpleNamespace(options={"api_temperature_unit": "auto"}),
+            is_bff_thermometer=lambda _device_id: True,
+        )
+        stub = SimpleNamespace(
+            device_state=state,
+            coordinator=coordinator,
+            _device=SimpleNamespace(sku="H5179"),
+            _device_id="AA:BB:CC:DD:EE:FF:00:11",
+        )
+        assert GoveeTemperatureSensor.native_value.fget(stub) == 4.9
 
     def test_h717a_kettle_auto_converts_fahrenheit(self):
         # Issue #115: H717A kettle reports 187°F under the °C-tagged unit
