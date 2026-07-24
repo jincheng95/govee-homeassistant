@@ -835,6 +835,9 @@ class TestFetchDeviceTopicsHeaders:
             return _async_cm(device_resp)
 
         session.post = _post
+        session.get = lambda *a, **kw: _async_cm(
+            make_mock_response(200, {"data": {"devices": []}})
+        )
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -852,9 +855,11 @@ class TestFetchDeviceTopicsHeaders:
         """should return a dict mapping device_id strings to MQTT topic strings."""
         # Arrange
         device_resp = make_mock_response(200, create_device_list_response())
+        bff_resp = make_mock_response(200, {"data": {"devices": []}})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
         session.post = lambda *a, **kw: _async_cm(device_resp)
+        session.get = lambda *a, **kw: _async_cm(bff_resp)
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -872,9 +877,11 @@ class TestFetchDeviceTopicsHeaders:
         )
         devices = [{"device": "CC:DD:EE:FF:00:11", "deviceExt": device_ext_str}]
         device_resp = make_mock_response(200, create_device_list_response(devices))
+        bff_resp = make_mock_response(200, {"data": {"devices": []}})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
         session.post = lambda *a, **kw: _async_cm(device_resp)
+        session.get = lambda *a, **kw: _async_cm(bff_resp)
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -894,9 +901,11 @@ class TestFetchDeviceTopicsHeaders:
             },
         ]
         device_resp = make_mock_response(200, create_device_list_response(devices))
+        bff_resp = make_mock_response(200, {"data": {"devices": []}})
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
         session.post = lambda *a, **kw: _async_cm(device_resp)
+        session.get = lambda *a, **kw: _async_cm(bff_resp)
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -1565,6 +1574,9 @@ class TestDeterministicClientId:
             return _async_cm(topics_resp)
 
         session.post = _post
+        session.get = lambda *a, **kw: _async_cm(
+            make_mock_response(200, {"data": {"devices": []}})
+        )
         client = GoveeAuthClient(session=session)
         client._client_id = "login-cid-xyz"
 
