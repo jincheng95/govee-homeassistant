@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
+import voluptuous as vol
 
 from custom_components.govee.api.exceptions import (
     Govee2FACodeInvalidError,
@@ -21,11 +22,15 @@ from custom_components.govee.const import (
     CONF_LAN_TARGETS,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
+    CONF_WATER_DETECTOR_POLL_INTERVAL,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_WATER_DETECTOR_POLL_INTERVAL,
     DOMAIN,
+    MAX_WATER_DETECTOR_POLL_INTERVAL,
+    MIN_WATER_DETECTOR_POLL_INTERVAL,
 )
 
 # ==============================================================================
@@ -288,6 +293,57 @@ class TestLanTargetsOption:
         )
         assert result["type"] == "form"
         assert result["errors"] == {CONF_LAN_TARGETS: "invalid_lan_targets"}
+
+
+class TestWaterDetectorPollIntervalOption:
+    """The leak-poll interval is exposed and bounded in the options flow."""
+
+    @pytest.mark.asyncio
+    async def test_field_defaults_to_constant(self):
+        flow, entry = _options_flow()
+        result = await _run_init(flow, entry, None)
+        key = next(
+            k
+            for k in result["data_schema"].schema
+            if k == CONF_WATER_DETECTOR_POLL_INTERVAL
+        )
+        assert key.default() == DEFAULT_WATER_DETECTOR_POLL_INTERVAL
+
+    @pytest.mark.asyncio
+    async def test_field_seeded_from_saved_option(self):
+        flow, entry = _options_flow()
+        entry.options = {CONF_WATER_DETECTOR_POLL_INTERVAL: 900}
+        result = await _run_init(flow, entry, None)
+        key = next(
+            k
+            for k in result["data_schema"].schema
+            if k == CONF_WATER_DETECTOR_POLL_INTERVAL
+        )
+        assert key.default() == 900
+
+    @pytest.mark.asyncio
+    async def test_value_is_saved(self):
+        flow, entry = _options_flow()
+        result = await _run_init(
+            flow,
+            entry,
+            {CONF_POLL_INTERVAL: 60, CONF_WATER_DETECTOR_POLL_INTERVAL: 600},
+        )
+        assert result["type"] == "create_entry"
+        assert result["data"][CONF_WATER_DETECTOR_POLL_INTERVAL] == 600
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value",
+        [MIN_WATER_DETECTOR_POLL_INTERVAL - 1, MAX_WATER_DETECTOR_POLL_INTERVAL + 1],
+    )
+    async def test_out_of_range_rejected_by_schema(self, value):
+        flow, entry = _options_flow()
+        result = await _run_init(flow, entry, None)
+        with pytest.raises(vol.Invalid):
+            result["data_schema"](
+                {CONF_POLL_INTERVAL: 60, CONF_WATER_DETECTOR_POLL_INTERVAL: value}
+            )
 
 
 class TestConfigFlowSteps:

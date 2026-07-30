@@ -1248,9 +1248,7 @@ class GoveeAuthClient:
                 return any(
                     isinstance(m, dict)
                     and not m.get("read", True)
-                    and str(m.get("message", ""))
-                    .lower()
-                    .replace(" ", "")
+                    and re.sub(r"\s+", "", str(m.get("message", "")).lower())
                     .startswith("leakagealert")
                     for m in messages
                 )

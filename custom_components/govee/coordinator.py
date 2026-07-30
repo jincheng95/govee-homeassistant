@@ -67,7 +67,9 @@ from .api.lan_control import command_to_lan, lan_brightness_to_device
 from .const import (
     CONF_ENABLE_MQTT_CONTROL,
     CONF_LAN_TARGETS,
+    CONF_WATER_DETECTOR_POLL_INTERVAL,
     DEFAULT_ENABLE_MQTT_CONTROL,
+    DEFAULT_WATER_DETECTOR_POLL_INTERVAL,
     DEVICE_REDISCOVERY_INTERVAL,
     DOMAIN,
     LAN_CORRELATION_TTL_SECONDS,
@@ -76,6 +78,8 @@ from .const import (
     LAN_WRITE_CONFIRM_TIMEOUT,
     LAN_WRITE_SUPPRESS_SECONDS,
     LAN_WRITE_SUPPRESS_THRESHOLD,
+    MAX_WATER_DETECTOR_POLL_INTERVAL,
+    MIN_WATER_DETECTOR_POLL_INTERVAL,
     OPTIMISTIC_GRACE_CAP_SECONDS,
     SIGNAL_SEGMENT_READBACK,
 )
@@ -158,12 +162,6 @@ LAN_BRIGHTNESS_CONFIRM_TOLERANCE = 2
 
 # BFF polling interval for leak sensor state (seconds)
 BFF_POLL_INTERVAL = 300  # 5 minutes
-
-# Standalone water-detector (H5054) leak-poll interval (seconds). These RF-only
-# sensors deliver their trip only via the account warnMessage history (issue
-# #62); a leak surfaces with up to this much latency. Kept conservative because
-# the account API's rate limit is unverified (homebridge issue #543).
-WATER_DETECTOR_POLL_INTERVAL = 120  # 2 minutes
 
 # Delay before re-polling device state after a humidifier work_mode/humidity
 # write, to attach a timestamped "what Govee reports N seconds later" snapshot
@@ -2128,13 +2126,36 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             if not d.is_group and d.supports_water_leak_event
         ]
 
+    @property
+    def _water_detector_poll_interval(self) -> int:
+        """Configured leak-poll interval (seconds) for standalone detectors.
+
+        Read per tick so the value is picked up on the reload that follows an
+        options change. Out-of-range or non-numeric values (e.g. hand-edited
+        options) fall back to the default rather than arming a bad timer.
+        """
+        raw = self._config_entry.options.get(
+            CONF_WATER_DETECTOR_POLL_INTERVAL, DEFAULT_WATER_DETECTOR_POLL_INTERVAL
+        )
+        try:
+            interval = int(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_WATER_DETECTOR_POLL_INTERVAL
+        if not (
+            MIN_WATER_DETECTOR_POLL_INTERVAL
+            <= interval
+            <= MAX_WATER_DETECTOR_POLL_INTERVAL
+        ):
+            return DEFAULT_WATER_DETECTOR_POLL_INTERVAL
+        return interval
+
     def _schedule_water_detector_poll(self) -> None:
         """Schedule the next standalone water-detector leak poll."""
         if self._wd_poll_unsub:
             self._wd_poll_unsub()
         self._wd_poll_unsub = async_call_later(
             self.hass,
-            WATER_DETECTOR_POLL_INTERVAL,
+            self._water_detector_poll_interval,
             self._water_detector_poll_callback,
         )
 

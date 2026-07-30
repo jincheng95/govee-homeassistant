@@ -35,6 +35,7 @@ from custom_components.govee.models.device import (
     INSTANCE_BRIGHTNESS,
     INSTANCE_HUMIDITY,
 )
+from custom_components.govee import const
 from custom_components.govee.transport_health import TransportHealthTracker
 
 # ==============================================================================
@@ -2083,6 +2084,67 @@ class TestWaterDetectorPoll:
         coord._iot_credentials = None
         await coord._poll_water_detectors()
         assert coord._states[did].water_leak is None
+
+
+class TestWaterDetectorPollInterval:
+    """The leak-poll interval is a user-configurable option."""
+
+    def _coord_with_options(self, options):
+        import custom_components.govee.coordinator as coord_mod
+
+        config_entry = MagicMock()
+        config_entry.entry_id = "test_entry"
+        config_entry.options = options
+        return coord_mod.GoveeCoordinator(
+            hass=MagicMock(),
+            config_entry=config_entry,
+            api_client=MagicMock(),
+            iot_credentials=MagicMock(token="tok"),
+            poll_interval=60,
+        )
+
+    def test_default_when_option_unset(self):
+        coord = self._coord_with_options({})
+        assert coord._water_detector_poll_interval == (
+            const.DEFAULT_WATER_DETECTOR_POLL_INTERVAL
+        )
+
+    def test_configured_value_is_used(self):
+        coord = self._coord_with_options({const.CONF_WATER_DETECTOR_POLL_INTERVAL: 600})
+        assert coord._water_detector_poll_interval == 600
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            const.MIN_WATER_DETECTOR_POLL_INTERVAL - 1,
+            const.MAX_WATER_DETECTOR_POLL_INTERVAL + 1,
+            "not-a-number",
+            None,
+        ],
+    )
+    def test_out_of_range_or_bad_value_falls_back(self, value):
+        """Hand-edited options must not arm a bad timer."""
+        coord = self._coord_with_options(
+            {const.CONF_WATER_DETECTOR_POLL_INTERVAL: value}
+        )
+        assert coord._water_detector_poll_interval == (
+            const.DEFAULT_WATER_DETECTOR_POLL_INTERVAL
+        )
+
+    def test_schedule_uses_configured_interval(self, monkeypatch):
+        import custom_components.govee.coordinator as coord_mod
+
+        coord = self._coord_with_options({const.CONF_WATER_DETECTOR_POLL_INTERVAL: 300})
+        seen = {}
+
+        def _capture(hass, delay, callback):
+            seen["delay"] = delay
+            return lambda: None
+
+        monkeypatch.setattr(coord_mod, "async_call_later", _capture)
+        coord._schedule_water_detector_poll()
+
+        assert seen["delay"] == 300
 
 
 class _AsyncCM:
