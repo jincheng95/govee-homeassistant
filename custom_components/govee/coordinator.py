@@ -163,6 +163,11 @@ LAN_BRIGHTNESS_CONFIRM_TOLERANCE = 2
 # BFF polling interval for leak sensor state (seconds)
 BFF_POLL_INTERVAL = 300  # 5 minutes
 
+def normalize_device_id(device_id: str) -> str:
+    """Canonical form for comparing device IDs across Govee's APIs."""
+    return device_id.replace(":", "").upper()
+
+
 # Delay before re-polling device state after a humidifier work_mode/humidity
 # write, to attach a timestamped "what Govee reports N seconds later" snapshot
 # to that same recent_commands entry (issue #118: these writes return HTTP 200
@@ -765,6 +770,22 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         gate on ``online`` (issues #62, #145).
         """
         return any(d.device_id == device_id for d in self._water_detectors)
+
+    def is_bff_leak_sensor(self, device_id: str) -> bool:
+        """Return True if BFF/hub discovery owns this device's moisture entity.
+
+        Compared on the colon-stripped form because Govee is not consistent
+        about device-ID formatting between the Developer API and the BFF list
+        (see ``fetch_water_detector_states``).
+
+        Reflects the live roster only. Persisting the answer would make it
+        monotone-true, and a device that leaves the hub would then end up with
+        no moisture entity at all.
+        """
+        target = normalize_device_id(device_id)
+        return any(
+            normalize_device_id(sensor_id) == target for sensor_id in self._leak_sensors
+        )
 
     def is_power_off_pending(self, device_id: str) -> bool:
         """Return True if a power-off command is in flight for this device.
