@@ -85,7 +85,7 @@ Govee in Home Assistant has several integrations, and it's easy to pick one that
 
 | Category | Examples | Entities you get |
 |---|---|---|
-| **Lights** (strips, bulbs, bars, TV backlights, sync boxes) | H619x, H61xx, H6099, H66A0, H6604 | Light (on/off, brightness, RGB, color temp), scene & DIY selectors, music‑mode switch, DreamView switch; sync boxes return to their HDMI/Video source when you clear the scene |
+| **Lights** (strips, bulbs, bars, TV backlights, sync boxes) | H619x, H61xx, H6058, H6099, H66A0, H6604 | Light (on/off, brightness, RGB, color temp), scene & DIY selectors, music‑mode switch, DreamView switch; sync boxes return to their HDMI/Video source when you clear the scene |
 | **RGBIC lights** | H619C, H6198, H60A6 | Everything above **plus** per‑segment color control (see [Segments](#rgbic-segment-control)); Ceiling Light Pro (H60A6) adds an ambient/backlight‑ring switch |
 | **Multi‑zone lamps** | H60B2, H60B3, H60B0 | Per‑zone on/off switches (Light Zone 1/2/3); the H60B3 uplighter adds Nebula/Side/Bottom light switches, and the H60B0 (same lamp, ripple diffuser) adds Ripple/Side/Bottom |
 | **Smart plugs / sockets** | H5080, H5083, H5089 | Switch; outlet extenders (H5089) expose each outlet separately **plus** an RGB Night Light |
