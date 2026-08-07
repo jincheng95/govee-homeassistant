@@ -11,11 +11,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.const import CONCENTRATION_PARTS_PER_MILLION
+from homeassistant.const import UnitOfRatio
 
-from custom_components.govee.sensor import GoveeCO2Sensor
 from custom_components.govee.models import GoveeDevice, GoveeDeviceState
 from custom_components.govee.models.device import CAPABILITY_PROPERTY, INSTANCE_CO2
+from custom_components.govee.sensor import GoveeCO2Sensor
 
 
 def _h5140() -> GoveeDevice:
@@ -63,5 +63,5 @@ def test_co2_entity():
     entity = GoveeCO2Sensor(coordinator, dev)
     assert entity.native_value == 609
     assert entity.device_class == SensorDeviceClass.CO2
-    assert entity.native_unit_of_measurement == CONCENTRATION_PARTS_PER_MILLION
+    assert entity.native_unit_of_measurement == UnitOfRatio.PARTS_PER_MILLION
     assert entity.unique_id == f"{dev.device_id}_co2"

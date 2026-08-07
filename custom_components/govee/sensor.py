@@ -20,9 +20,9 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    CONCENTRATION_PARTS_PER_MILLION,
-    EntityCategory,
     PERCENTAGE,
+    EntityCategory,
+    UnitOfRatio,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
@@ -387,7 +387,7 @@ class GoveeCO2Sensor(GoveeEntity, SensorEntity):
     _attr_translation_key = "sensor_co2"
     _attr_device_class = SensorDeviceClass.CO2
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = CONCENTRATION_PARTS_PER_MILLION
+    _attr_native_unit_of_measurement = UnitOfRatio.PARTS_PER_MILLION
 
     def __init__(
         self,
