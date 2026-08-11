@@ -17,7 +17,7 @@ three identical on/off switches. They are not remotely symmetric:
 
 So this module does not force one entity class onto all three. Every zone's
 supported colour modes, its kelvin range and its very existence are read out of
-the profile table in :mod:`.api.protocol.profiles`; there is not one SKU name,
+the profile table in :mod:`..api.protocol.profiles`; there is not one SKU name,
 zone byte or kelvin constant in this file.
 
 The design question: what does the whole-device light mean now?
@@ -75,13 +75,13 @@ The remaining coherence rules, all implemented here:
   path — deliberately not a raw LAN power frame, because that path is the one
   the master's own state is derived from, so its state stays correct.
 * **The hardware's two-of-three limit is applied below the transport**, in
-  :mod:`.zone_state`, so a zone displaced by another — over LAN *or* over the
+  :mod:`..zone_state`, so a zone displaced by another — over LAN *or* over the
   cloud — has its entity corrected either way.
 
 What the zone lights still cannot do, and say so honestly: their colour and
 brightness attributes are "what this zone was last told", never a readback; and
 while the lamp is in music mode a zone colour write is accepted, echoed, and
-visibly ignored (see :mod:`.lan_write`).
+visibly ignored (see :mod:`..api.lan_raw_write`).
 
 Transport and fallback
 ----------------------
@@ -123,12 +123,12 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from . import lan_write
-from .api.protocol import Capability, DeviceProfile, GoveeCodec, GoveeProtocolError, ZoneSpec
-from .const import SUFFIX_ZONE, SUFFIX_ZONE_FLOW_RATE
-from .entity import GoveeEntity
-from .models import GoveeDevice, PowerCommand, ToggleCommand
-from .zone_state import (
+from ..api import lan_raw_write
+from ..api.protocol import Capability, DeviceProfile, GoveeCodec, GoveeProtocolError, ZoneSpec
+from ..const import SUFFIX_ZONE, SUFFIX_ZONE_FLOW_RATE
+from ..entity import GoveeEntity
+from ..models import GoveeDevice, PowerCommand, ToggleCommand
+from ..zone_state import (
     ZONE_KEY_BY_TOGGLE,
     modelled_zone_keys,
     profile_for,
@@ -139,7 +139,7 @@ from .zone_state import (
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
-    from .coordinator import GoveeCoordinator
+    from ..coordinator import GoveeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -256,7 +256,7 @@ class _GoveeZoneEntityBase(GoveeEntity):
 
     def _lan_target(self) -> tuple[str, DeviceProfile] | None:
         """``(ip, profile)`` for a raw write, or None when LAN is not usable."""
-        return lan_write.lan_target(self.coordinator, self._device_id, self._device.sku)
+        return lan_raw_write.lan_target(self.coordinator, self._device_id, self._device.sku)
 
     async def _async_send(self, frames: list[bytes], *, what: str) -> bool:
         """Send frames to this device's LAN address. False when not sent."""
@@ -264,7 +264,7 @@ class _GoveeZoneEntityBase(GoveeEntity):
         if target is None:
             return False
         ip, _profile = target
-        return await lan_write.async_send_frames(self.coordinator, self._device_id, ip, frames, what=what)
+        return await lan_raw_write.async_send_frames(self.coordinator, self._device_id, ip, frames, what=what)
 
 
 class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):

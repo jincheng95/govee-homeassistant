@@ -10,7 +10,7 @@ what its zones are doing. Every zone control in this integration is therefore
 That truth has to live somewhere both zone platforms can see. The H60B0's zones
 are driven from two different entity platforms (the on/off switches in
 ``switch.py`` and, when the zone-lights option is on, the light entities in
-``zone_light.py``), and the hardware constraint below couples them. An earlier
+``platforms/zone_light.py``), and the hardware constraint below couples them. An earlier
 attempt kept the state on the entities and walked ``entity.platform.entities``
 to find siblings, which silently only ever saw the *same* platform — a light
 could never correct a switch. This registry is the fix: one per coordinator,
@@ -41,7 +41,7 @@ without the registry having to know about HA's state machine.
 
 Fork-maintenance note: the coordinator/entity internals reached into here are
 read in ONE place each (the accessor block at the bottom), the same discipline
-:mod:`.lan_nudge` and :mod:`.lan_write` established.
+:mod:`.api.lan_nudge` and :mod:`.api.lan_raw_write` established.
 """
 
 from __future__ import annotations

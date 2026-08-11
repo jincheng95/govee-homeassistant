@@ -30,14 +30,14 @@ CONF_LAN_TARGETS: Final = "lan_targets"
 # answer it with a LAN devStatus read, which stays authoritative for the fields
 # LAN can report. Only affects LAN-correlated devices; everything else keeps the
 # cloud payload alone. Scheduling, debounce, echo suppression and the per-device
-# cooldown live in lan_nudge.py.
+# cooldown live in api/lan_nudge.py.
 CONF_ENABLE_LAN_NUDGE: Final = "enable_lan_nudge"
 
 # Send zone on/off (the H60B0 uplighter's ripple / side / bottom switches) as a
 # raw LAN frame instead of a cloud command, when the device is LAN-reachable and
 # its SKU profile declares the zone. Cuts a 1-3 s cloud round trip to a single
 # UDP datagram; everything the LAN path cannot express still goes via the cloud.
-# Off by default — see lan_write.py for the gates and the optimistic state.
+# Off by default — see api/lan_raw_write.py for the gates and the optimistic state.
 CONF_ENABLE_LAN_RAW_WRITE: Final = "enable_lan_raw_write"
 
 # Replace a multi-zone lamp's zone on/off SWITCHES with full light entities that
@@ -45,7 +45,7 @@ CONF_ENABLE_LAN_RAW_WRITE: Final = "enable_lan_raw_write"
 # plus a number entity for the ripple flow rate. Separate from
 # CONF_ENABLE_LAN_RAW_WRITE on purpose: that one picks a transport, this one
 # changes the entity model, which is a bigger commitment. Off by default — see
-# zone_light.py.
+# platforms/zone_light.py.
 CONF_ENABLE_ZONE_LIGHTS: Final = "enable_zone_lights"
 
 # Some Govee thermometer/hygrometer SKUs report temperatures in Fahrenheit via

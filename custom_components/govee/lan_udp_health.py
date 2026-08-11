@@ -3,7 +3,7 @@
 The integration already tracks four transports per device — ``cloud_api``,
 ``mqtt``, ``ble`` and ``lan`` — and surfaces them on the ``*_connectivity``
 binary sensor (as attributes, always) and as one opt-in entity per transport.
-The raw UDP write path added by :mod:`.lan_write` is a fifth, and this module
+The raw UDP write path added by :mod:`.api.lan_raw_write` is a fifth, and this module
 is the only place that knows how to score it.
 
 What "available" honestly means here

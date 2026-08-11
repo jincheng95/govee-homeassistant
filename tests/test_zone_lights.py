@@ -35,7 +35,8 @@ from homeassistant.components.light import (  # type: ignore[attr-defined]
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from custom_components.govee import lan_write, zone_light
+from custom_components.govee.api import lan_raw_write
+from custom_components.govee.platforms import zone_light
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import Capability, get_profile
 from custom_components.govee.const import (
@@ -61,7 +62,7 @@ from custom_components.govee.models.device import (
 )
 from custom_components.govee.light import GoveeLightEntity
 from custom_components.govee.switch import GoveeNamedLightSwitchEntity
-from custom_components.govee.zone_light import (
+from custom_components.govee.platforms.zone_light import (
     MASTER_NAME,
     GoveeZoneFlowRateNumber,
     GoveeZoneLightEntity,
@@ -126,8 +127,8 @@ class _FakeRawClient:
 def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
     """Recording client with the inter-repeat gap taken off the wall clock."""
     client = _FakeRawClient()
-    monkeypatch.setattr(lan_write, "_CLIENT", client)
-    monkeypatch.setattr(lan_write, "LAN_WRITE_GAP_SECONDS", 0)
+    monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
+    monkeypatch.setattr(lan_raw_write, "LAN_WRITE_GAP_SECONDS", 0)
     return client
 
 
@@ -155,7 +156,7 @@ def _device(sku: str = "H60B0") -> GoveeDevice:
 def _coordinator(
     device: GoveeDevice | None = None,
     *,
-    lan_write_on: bool = True,
+    lan_raw_write_on: bool = True,
     on_lan: bool = True,
     power_state: bool = True,
 ) -> Any:
@@ -165,7 +166,7 @@ def _coordinator(
     # one; MagicMock would otherwise auto-create a Mock and swallow the lookup.
     coordinator._govee_zone_state_registry = None
     coordinator.devices = {device.device_id: device}
-    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: lan_write_on}
+    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: lan_raw_write_on}
     coordinator.async_control_device = AsyncMock(return_value=True)
     coordinator.last_update_success = True
     state = GoveeDeviceState.create_empty(device.device_id)
@@ -420,7 +421,7 @@ class TestFrames:
 
         await lights["ripple"].async_turn_on(rgb_color=(255, 0, 0))
 
-        assert len(raw_client.envelopes) == lan_write.LAN_WRITE_REPEATS
+        assert len(raw_client.envelopes) == lan_raw_write.LAN_WRITE_REPEATS
         assert {tuple(f.hex() for f in frames) for _host, frames in raw_client.envelopes} == {
             (GOLDEN["ripple_on"], GOLDEN["ripple_red"])
         }
@@ -470,7 +471,7 @@ class TestDisplacement:
     async def test_a_cloud_toggle_also_displaces(self, raw_client):
         """The asymmetry that used to exist: displacement on the LAN path only."""
         device = _device()
-        coordinator = _coordinator(device, lan_write_on=False)
+        coordinator = _coordinator(device, lan_raw_write_on=False)
         ripple_switch = _switch(coordinator, "rippleLightToggle", device)
         side_switch = _switch(coordinator, "sideLightToggle", device)
         bottom_switch = _switch(coordinator, "bottomLightToggle", device)
@@ -548,7 +549,7 @@ class TestFallback:
         assert raw_client.envelopes == []
 
     async def test_zone_attributes_fail_loudly_when_the_option_is_off(self, raw_client):
-        coordinator = _coordinator(lan_write_on=False)
+        coordinator = _coordinator(lan_raw_write_on=False)
         lights = _lights(coordinator, _entry(coordinator))
 
         with pytest.raises(HomeAssistantError):

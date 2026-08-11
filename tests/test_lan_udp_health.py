@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from custom_components.govee import lan_health
+from custom_components.govee import lan_udp_health
 from custom_components.govee.binary_sensor import (
     GoveeDeviceConnectivity,
     GoveeTransportConnectivity,
@@ -88,7 +88,7 @@ def _aggregate(coordinator: MagicMock, device: GoveeDevice) -> GoveeDeviceConnec
 class TestTransportRegistration:
     def test_lan_udp_is_a_tracked_transport(self):
         assert "lan_udp" in TRANSPORT_KINDS
-        assert lan_health.TRANSPORT_LAN_UDP == "lan_udp"
+        assert lan_udp_health.TRANSPORT_LAN_UDP == "lan_udp"
 
     def test_tracker_provisions_it_for_every_device(self):
         tracker = TransportHealthTracker()
@@ -132,7 +132,7 @@ class TestEntities:
     def test_aggregate_sensor_carries_lan_udp_attributes(self):
         device = _device()
         coordinator = _coordinator(device)
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
         entity = _aggregate(coordinator, device)
 
         attrs = entity.extra_state_attributes
@@ -144,7 +144,7 @@ class TestEntities:
     def test_aggregate_sensor_reports_the_failure_reason(self):
         device = _device()
         coordinator = _coordinator(device, on_lan=False)
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
         entity = _aggregate(coordinator, device)
 
         attrs = entity.extra_state_attributes
@@ -160,7 +160,7 @@ class TestEntities:
 class TestSemantics:
     def test_reachable_and_profiled_is_available(self):
         coordinator = _coordinator()
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is True
@@ -168,26 +168,26 @@ class TestSemantics:
 
     def test_absent_from_the_lan_map_is_unavailable(self):
         coordinator = _coordinator(on_lan=False)
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is False
-        assert health.last_failure_reason == lan_health.REASON_NO_LAN_PRESENCE
+        assert health.last_failure_reason == lan_udp_health.REASON_NO_LAN_PRESENCE
 
     def test_reachable_but_unprofiled_sku_is_unavailable(self):
         coordinator = _coordinator(_device(sku="H6199"))
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is False
-        assert health.last_failure_reason == lan_health.REASON_NO_RAW_PROFILE
+        assert health.last_failure_reason == lan_udp_health.REASON_NO_RAW_PROFILE
 
     def test_a_send_stamps_a_time_but_never_availability(self):
         """A UDP datagram into the void proves nothing about the device."""
         coordinator = _coordinator(on_lan=False)
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
-        lan_health.note_send(coordinator, DEVICE_ID)
+        lan_udp_health.note_send(coordinator, DEVICE_ID)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.last_send_ts is not None
@@ -195,34 +195,34 @@ class TestSemantics:
 
     def test_no_receive_direction_is_ever_claimed(self):
         coordinator = _coordinator()
-        lan_health.refresh(coordinator)
-        lan_health.note_send(coordinator, DEVICE_ID)
+        lan_udp_health.refresh(coordinator)
+        lan_udp_health.note_send(coordinator, DEVICE_ID)
 
         # Raw frames get no reply of any kind, so there is nothing to stamp.
         assert coordinator.get_transport_health(DEVICE_ID, "lan_udp").last_success_ts is None
 
     def test_a_hard_send_failure_is_recorded(self):
         coordinator = _coordinator()
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
-        lan_health.note_failure(coordinator, DEVICE_ID)
+        lan_udp_health.note_failure(coordinator, DEVICE_ID)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is False
-        assert health.last_failure_reason == lan_health.REASON_SEND_FAILED
+        assert health.last_failure_reason == lan_udp_health.REASON_SEND_FAILED
 
     def test_refresh_clears_a_stale_gate_reason_but_not_a_send_failure(self):
         coordinator = _coordinator()
-        lan_health.refresh(coordinator)
-        lan_health.note_failure(coordinator, DEVICE_ID)
+        lan_udp_health.refresh(coordinator)
+        lan_udp_health.note_failure(coordinator, DEVICE_ID)
 
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         # Reachability is restored (that is what refresh scores), but the last
         # hard failure stays on the record.
         assert health.is_available is True
-        assert health.last_failure_reason == lan_health.REASON_SEND_FAILED
+        assert health.last_failure_reason == lan_udp_health.REASON_SEND_FAILED
 
 
 # ==============================================================================

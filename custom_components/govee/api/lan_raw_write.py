@@ -9,15 +9,15 @@ intent is one 20-byte UDP frame on the LAN — ``33 30 <zone> <00|01>`` — and 
 lamp acts on it as fast as the packet arrives.
 
 This module is the transport half of that feature. It sits between the entities
-and the codec in :mod:`.api.protocol`, decides whether a LAN write is *safe* for
+and the codec in :mod:`.protocol`, decides whether a LAN write is *safe* for
 a given device, sends it, and reports the result. Callers keep their own
-optimistic state; shared zone state lives in :mod:`.zone_state`.
+optimistic state; shared zone state lives in :mod:`..zone_state`.
 
 Scope, in the order it grew:
 
 * **zone power** — the switches in ``switch.py`` (:func:`async_zone_power`).
 * **zone colour / brightness / colour temperature / flow rate** — the zone
-  light and number entities in ``zone_light.py``, via :func:`async_send_frames`.
+  light and number entities in ``platforms/zone_light.py``, via :func:`async_send_frames`.
   These have no cloud equivalent at zone granularity, so there is nothing to
   fall back to; see that module for what the entities do instead.
 * **per-segment colour** — the segment light entities in
@@ -45,7 +45,7 @@ Write-only, therefore optimistic and repeated
 ---------------------------------------------
 The raw LAN channel is fire-and-forget by measurement, not by choice: devices
 answer no ``ptReal`` query and a LAN command produces no cloud status push
-either (see :mod:`.api.protocol.client`). Two consequences are baked in here:
+either (see :mod:`.protocol.client`). Two consequences are baked in here:
 
 * **Optimistic state.** There is no echo to wait for, so entity state is set
   the moment the datagrams are away.
@@ -83,19 +83,19 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
 
-from . import lan_health
-from .api.protocol import (
+from .. import lan_udp_health
+from ..const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
+from ..zone_state import ZONE_KEY_BY_TOGGLE, displaced_zone_keys, profile_for, registry
+from .protocol import (
     Capability,
     DeviceProfile,
     GoveeCodec,
     GoveeProtocolError,
     LanUdpClient,
 )
-from .const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
-from .zone_state import ZONE_KEY_BY_TOGGLE, displaced_zone_keys, profile_for, registry
 
 if TYPE_CHECKING:
-    from .coordinator import GoveeCoordinator
+    from ..coordinator import GoveeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -178,10 +178,10 @@ async def async_send_frames(
             ip,
             err,
         )
-        lan_health.note_failure(coordinator, device_id)
+        lan_udp_health.note_failure(coordinator, device_id)
         return False
 
-    lan_health.note_send(coordinator, device_id)
+    lan_udp_health.note_send(coordinator, device_id)
     _LOGGER.debug(
         "Govee LAN write: %s %s via LAN transport %s in %.1f ms (%d x %s)",
         device_id,
@@ -378,7 +378,7 @@ def _option_enabled(coordinator: GoveeCoordinator) -> bool:
     return bool(coordinator.config_entry.options.get(CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE))
 
 
-# ``_profile`` predates :mod:`.zone_state`; kept as the module's one-line
+# ``_profile`` predates :mod:`..zone_state`; kept as the module's one-line
 # accessor so existing callers and tests keep working.
 _profile = profile_for
 _zone_power_supported = zone_power_supported

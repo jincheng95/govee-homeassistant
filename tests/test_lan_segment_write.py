@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.govee import lan_write
+from custom_components.govee.api import lan_raw_write
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import (
     Capability,
@@ -60,8 +60,8 @@ class _FakeRawClient:
 @pytest.fixture(autouse=True)
 def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
     client = _FakeRawClient()
-    monkeypatch.setattr(lan_write, "_CLIENT", client)
-    monkeypatch.setattr(lan_write, "LAN_WRITE_GAP_SECONDS", 0)
+    monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
+    monkeypatch.setattr(lan_raw_write, "LAN_WRITE_GAP_SECONDS", 0)
     return client
 
 
@@ -165,7 +165,7 @@ class TestFrames:
 
         await entity.async_turn_on(rgb_color=(255, 0, 0))
 
-        assert len(raw_client.envelopes) == lan_write.LAN_WRITE_REPEATS
+        assert len(raw_client.envelopes) == lan_raw_write.LAN_WRITE_REPEATS
 
     def test_mask_bit_matches_the_segment_index(self):
         profile = get_profile("H6046")

@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from custom_components.govee import lan_nudge
+from custom_components.govee.api import lan_nudge
 from custom_components.govee.api.lan_client import LanDevStatus, LanDeviceInfo
 from custom_components.govee.const import (
     CONF_ENABLE_LAN_NUDGE,

@@ -50,7 +50,7 @@ from .models import (
 from .models.device import INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
 from .platforms.segment import GoveeSegmentEntity
-from .zone_light import as_master_light, async_zone_light_entities  # fork: zone lights
+from .platforms.zone_light import as_master_light, async_zone_light_entities  # fork: zone lights
 
 _LOGGER = logging.getLogger(__name__)
 
