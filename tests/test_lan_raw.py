@@ -373,10 +373,20 @@ class TestKelvin:
     def test_color_temp_frame_is_clamped(self) -> None:
         assert H60B0.color_temp("downlight", 9000) == H60B0.color_temp("downlight", 6500)
 
-    def test_h6046_ceiling_is_the_unverified_manufacturer_claim(self) -> None:
+    def test_h6046_really_does_reach_9000k(self) -> None:
+        """The H60B0's 6500 K ceiling does NOT generalise across SKUs.
+
+        Confirmed on hardware: a sweep from 2700 K to 9000 K was accepted at
+        every step, with the device echoing back each requested value and
+        staying lit. Kelvin bounds are therefore per-profile data, never a
+        shared constant.
+        """
         profile = get_profile("H6046")
         assert (profile.kelvin.minimum, profile.kelvin.maximum) == (2000, 9000)
-        assert profile.kelvin.verified is False
+        assert profile.kelvin.verified is True
+        assert profile.kelvin.clamp(9000) == 9000
+        # ...while the H60B0 still clamps hard at its measured ceiling.
+        assert get_profile("H60B0").kelvin.clamp(9000) == 6500
 
 
 # ==============================================================================
