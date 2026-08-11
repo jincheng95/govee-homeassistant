@@ -256,7 +256,11 @@ def displaced_zone_keys(profile: DeviceProfile, zone_key: str, lit: Iterable[str
     lit_set = set(lit)
     displaced: list[str] = []
     for constraint in _constraints_for(profile, zone_key):
-        on_now = [key for key in constraint.displacement_order if key == zone_key or (key in lit_set and key not in displaced)]
+        on_now = [
+            key
+            for key in constraint.displacement_order
+            if key == zone_key or (key in lit_set and key not in displaced)
+        ]
         for key in constraint.displacement_order:
             if len(on_now) <= constraint.limit:
                 break
