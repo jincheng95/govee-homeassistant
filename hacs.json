@@ -1,5 +1,5 @@
 {
-    "name": "Govee Cloud Integration",
+    "name": "Govee Cloud Integration (jincheng95 fork)",
     "homeassistant": "2024.11.0",
     "render_readme": true
 }
