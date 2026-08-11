@@ -284,7 +284,11 @@ H6046: Final = DeviceProfile(
     # UNVERIFIED: manufacturer claim only. The H60B0's 6500 K ceiling is a
     # per-firmware behaviour and must not be assumed to carry across SKUs.
     # govee-lab/probe_h6046_kelvin.py resolves this without human eyes.
-    kelvin=KelvinRange(2000, 9000, verified=False, note="manufacturer claim; ceiling UNVERIFIED"),
+    # Verified on hardware 2026-08-11: unlike the H60B0, this SKU really does
+    # reach 9000 K. A colorwc sweep 2700->9000 K was accepted at every step,
+    # devStatus echoing the requested value with the lamp still on. The H60B0's
+    # zone-drop behaviour above ~6500 K does NOT generalise across SKUs.
+    kelvin=KelvinRange(2000, 9000, verified=True, note="9000 K confirmed by colorwc sweep + devStatus readback"),
     zones=(
         ZoneSpec(
             key="segments",
@@ -308,9 +312,17 @@ H6046: Final = DeviceProfile(
             # Sources disagree on the attribute byte (LAN notes say 0x02,
             # decompiled SubModeColorV2 numbers brightness 0x03) and therefore
             # on the mask offset. Refuse until one of them is confirmed.
+            #
+            # Probed 2026-08-11 and still unresolved: sending
+            # `33 05 15 02 <Khi Klo>` nine times across 2700-9000 K produced NO
+            # observable change at all — colorTemInKelvin and brightness both
+            # held their prior values. So attribute 0x02 in this form is neither
+            # colour temp nor brightness; the frame appears to be discarded.
+            # (The same sweep via the documented `colorwc` command worked
+            # perfectly, which is how the kelvin ceiling above was confirmed.)
             {"sub_mode": 0x15, "attribute": UNKNOWN, "mask_offset": UNKNOWN},
             verified=False,
-            note="attribute byte disputed between the LAN notes and SubModeColorV2",
+            note="attribute byte disputed; raw 0x02 form probed 2026-08-11 and had no effect",
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
