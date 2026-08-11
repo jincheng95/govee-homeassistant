@@ -1042,8 +1042,9 @@ class TestSegmentNaming:
 
     The cloud's ``segmentedColorRgb`` capability is a bare index range with no
     zone linkage, so "which light are these segments on?" is answered by the
-    profile table — on the H60B0 every addressable segment is on the ring, the
-    light the Govee app calls SIDE.
+    profile table — on the H60B0 every addressable segment is on the ring, so
+    they are named after the ring zone light rather than after the vendor
+    app's word for the part.
     """
 
     def _segment(self, index: int = 0):
@@ -1051,11 +1052,11 @@ class TestSegmentNaming:
 
         return GoveeSegmentEntity(coordinator=_coordinator(), device=_device(), segment_index=index)
 
-    def test_segments_are_named_after_the_side_light(self):
+    def test_segments_are_named_after_their_zone(self):
         coordinator = _coordinator()
         seg = as_zone_named_segment(self._segment(2), _entry(coordinator))
 
-        assert seg._attr_name == "Side light segment 3"
+        assert seg._attr_name == "Ring segment 3"
 
     def test_the_grouped_entity_is_named_too(self):
         from custom_components.govee.platforms.grouped_segment import GoveeGroupedSegmentEntity
@@ -1064,7 +1065,7 @@ class TestSegmentNaming:
         grouped = GoveeGroupedSegmentEntity(coordinator=coordinator, device=_device())
         as_zone_named_segment(grouped, _entry(coordinator))
 
-        assert grouped._attr_name == "Side light segments"
+        assert grouped._attr_name == "Ring segments"
 
     def test_option_off_keeps_upstreams_name(self):
         coordinator = _coordinator()

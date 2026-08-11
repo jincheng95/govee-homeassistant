@@ -261,10 +261,16 @@ def as_zone_named_segment(entity: LightEntity, entry: ConfigEntry) -> LightEntit
 
     Upstream names RGBIC segments "Segment N", which is fine when the segments
     span the whole device — but on a multi-zone lamp it hides which light they
-    address. On the H60B0 every addressable segment is on the ring, the light
-    the Govee app calls SIDE, so "Segment 3" becomes "Side light segment 3"
-    (and the grouped entity "Side light segments"), using the app's own word
-    for the zone.
+    address. On the H60B0 every addressable segment is on the ring, so
+    "Segment 3" becomes "Ring segment 3" and the grouped entity "Ring
+    segments".
+
+    The label comes from :func:`zone_display_name`, the same function the zone
+    light and flow-rate entities use, so a segment is always named after the
+    entity it belongs to. An earlier revision derived it from ``zone.name``
+    (the vendor app's word for the part, "SIDE") and produced "Side light
+    segment 3" sitting under a zone light called "Ring" — two names for one
+    piece of hardware. One source, one name.
 
     The zone membership cannot be discovered at runtime: the cloud's
     ``segmentedColorRgb`` capability is a bare index range with no zone
@@ -283,9 +289,9 @@ def as_zone_named_segment(entity: LightEntity, entry: ConfigEntry) -> LightEntit
     zone = _segmented_zone(device)
     if zone is None:
         return entity
-    label = zone.name.replace("_", " ").capitalize()  # app name: "SIDE" -> "Side"
+    label = zone_display_name(zone)
     index = getattr(entity, "_segment_index", None)
-    entity._attr_name = f"{label} light segments" if index is None else f"{label} light segment {index + 1}"
+    entity._attr_name = f"{label} segments" if index is None else f"{label} segment {index + 1}"
     return entity
 
 
