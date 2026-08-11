@@ -63,10 +63,10 @@ from custom_components.govee.models.device import (
 from custom_components.govee.light import GoveeLightEntity
 from custom_components.govee.switch import GoveeNamedLightSwitchEntity
 from custom_components.govee.platforms.zone_light import (
-    MASTER_NAME,
     GoveeZoneFlowRateNumber,
     GoveeZoneLightEntity,
     as_master_light,
+    as_zone_named_segment,
     async_zone_light_entities,
     async_zone_number_entities,
 )
@@ -606,7 +606,7 @@ class TestFallback:
         coordinator = _coordinator(lan_raw_write_on=False)
         master = _master(coordinator, _entry(coordinator))
 
-        assert master._attr_name != zone_light.MASTER_NAME
+        assert master._attr_name is None
         assert ColorMode.RGB in (master.supported_color_modes or set())
 
     def test_the_zone_switches_survive_without_the_raw_transport(self):
@@ -923,11 +923,18 @@ class TestMasterDemotion:
         assert master.effect_list is None
         assert master._enable_scenes is False
 
-    def test_master_is_renamed(self):
+    def test_master_keeps_the_nameless_primary_marker(self):
+        """``name = None`` is what the device page's divider keys off.
+
+        The frontend lists nameless entities first and draws a divider between
+        them and the named ones. Renaming the master (an earlier revision said
+        "Master") silently erased that divider, lumping it in with every other
+        control — so the demotion must not touch the name.
+        """
         coordinator = _coordinator()
         master = _master(coordinator, _entry(coordinator))
 
-        assert master.name == MASTER_NAME
+        assert master._attr_name is None
 
     def test_option_off_leaves_the_whole_device_entity_untouched(self):
         coordinator = _coordinator()
@@ -960,7 +967,7 @@ class TestMasterDemotion:
         whole = [e for e in added if isinstance(e, GoveeLightEntity)]
         zones = [e for e in added if isinstance(e, GoveeZoneLightEntity)]
         assert len(whole) == 1
-        assert whole[0].name == MASTER_NAME
+        assert whole[0]._attr_name is None
         assert sorted(z._zone_key for z in zones) == ["downlight", "ring", "ripple"]
 
     def test_master_transport_is_upstreams_lan_control_tier(self):
@@ -974,3 +981,51 @@ class TestMasterDemotion:
         from custom_components.govee.api.lan_control import command_to_lan
 
         assert command_to_lan(PowerCommand(power_on=True), "H60B0", (1, 100)) is not None
+
+
+class TestSegmentNaming:
+    """Zone-derived names for the RGBIC segment entities.
+
+    The cloud's ``segmentedColorRgb`` capability is a bare index range with no
+    zone linkage, so "which light are these segments on?" is answered by the
+    profile table — on the H60B0 every addressable segment is on the ring, the
+    light the Govee app calls SIDE.
+    """
+
+    def _segment(self, index: int = 0):
+        from custom_components.govee.platforms.segment import GoveeSegmentEntity
+
+        return GoveeSegmentEntity(coordinator=_coordinator(), device=_device(), segment_index=index)
+
+    def test_segments_are_named_after_the_side_light(self):
+        coordinator = _coordinator()
+        seg = as_zone_named_segment(self._segment(2), _entry(coordinator))
+
+        assert seg._attr_name == "Side light segment 3"
+
+    def test_the_grouped_entity_is_named_too(self):
+        from custom_components.govee.platforms.grouped_segment import GoveeGroupedSegmentEntity
+
+        coordinator = _coordinator()
+        grouped = GoveeGroupedSegmentEntity(coordinator=coordinator, device=_device())
+        as_zone_named_segment(grouped, _entry(coordinator))
+
+        assert grouped._attr_name == "Side light segments"
+
+    def test_option_off_keeps_upstreams_name(self):
+        coordinator = _coordinator()
+        seg = as_zone_named_segment(self._segment(0), _entry(coordinator, zone_lights=False))
+
+        assert seg._attr_name == "Segment 1"
+
+    def test_a_device_without_profile_zones_keeps_upstreams_name(self):
+        """No profile (or a single-zone profile) -> "Segment N" is not ambiguous."""
+        device = _device(sku="H60B3")
+        coordinator = _coordinator(device)
+        seg_entity = None
+        from custom_components.govee.platforms.segment import GoveeSegmentEntity
+
+        seg_entity = GoveeSegmentEntity(coordinator=coordinator, device=device, segment_index=0)
+        as_zone_named_segment(seg_entity, _entry(coordinator))
+
+        assert seg_entity._attr_name == "Segment 1"
