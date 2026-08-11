@@ -28,17 +28,16 @@ class UnsupportedCapabilityError(LanRawError):
 class UnknownEncodingError(LanRawError):
     """The profile declares the capability but a required constant is UNKNOWN.
 
-    This is the "we do not know the bytes yet" case. The table is allowed to
-    say so, and the codec REFUSES to guess. The segment sub-mode byte differs
-    by SKU (``0x2c`` on the H60B0, ``0x15`` on the H6046) and must never be
-    assumed to carry across models: a wrong sub-mode byte is accepted and then
-    silently ignored by the firmware, which looks exactly like a dead network.
+    This is the "we do not know the bytes yet" case: the table is allowed to
+    say so, and the codec refuses to guess, because a wrong byte is accepted
+    and then silently ignored by the firmware — which looks exactly like a
+    dead network.
     """
 
 
 class SegmentMaskError(LanRawError):
     """The requested segment mask is empty or out of range.
 
-    An all-zero mask is accepted by the firmware and silently does nothing —
-    the original "stuck red" bug. We refuse to send one.
+    An all-zero mask is accepted by the firmware and silently does nothing,
+    so we refuse to send one.
     """

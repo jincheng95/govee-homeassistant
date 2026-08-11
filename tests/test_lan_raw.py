@@ -421,7 +421,7 @@ class TestProfiles:
         assert constraint.zone_keys == ("ripple", "ring", "downlight")
 
     def test_segment_sub_mode_is_data_not_branching(self) -> None:
-        """The sub-mode byte differs per SKU — the trap that cost a session."""
+        """The sub-mode byte differs per SKU and must stay table data."""
         h60b0 = get_profile("H60B0").capabilities[Capability.ZONE_COLOR]
         h6046 = get_profile("H6046").capabilities[Capability.SEGMENT_COLOR]
         h6076 = get_profile("H6076").capabilities[Capability.SEGMENT_COLOR]

@@ -1,27 +1,22 @@
 """Write-only UDP sender for raw ``ptReal`` frames (port 4003).
 
-**This client is deliberately write-only. Do not add reads to it.**
+**This client is deliberately write-only. Do not add reads to it.** Two
+measured facts make reads pointless here:
 
-Two things were settled empirically during the reverse-engineering session, and
-both are counter-intuitive enough that they get re-litigated every few weeks:
+1. **Devices ignore the source port** and always reply to ``:4002``. Binding
+   4002 would collide with the integration's existing :class:`GoveeLanClient`
+   for no gain, so this client binds nothing and never listens.
 
-1. **The device ignores the source port.** It always replies to ``:4002``,
-   whatever port the request came from. Binding 4002 here would therefore
-   collide with the integration's existing :class:`GoveeLanClient` (and with
-   any other Govee LAN tool on the host) for no gain — so this client binds
-   nothing and never listens.
+2. **Raw ``ptReal`` queries get no reply at all.** Every ``0xAA`` query type
+   tried against all three profiled lamps produced zero datagrams on any
+   port; the LAN firmware accepts ``aa`` frames and drops them.
 
-2. **Raw ``ptReal`` queries get no reply at all.** Eleven different ``0xAA``
-   query command types were sent to all three lamps (H60B0, H6046, H6076);
-   zero produced a datagram on any port. The ``aa`` frames are a BLE-era
-   facility that the LAN firmware accepts and drops.
-
-Consequently the raw path is fire-and-forget, and **reads stay with upstream's
-``devStatus`` code** (``api/lan.py`` / ``api/lan_client.py``), which returns the
-only four fields the LAN transport exposes: ``onOff``, ``brightness``,
-``color`` and ``colorTemInKelvin``. Zone power, per-segment colour and the
-active effect are readable by nothing, cloud included — consumers of this
-module must track intent client-side and behave optimistically.
+The raw path is therefore fire-and-forget. Reads stay with upstream's
+``devStatus`` code (``api/lan.py`` / ``api/lan_client.py``), which returns the
+only four fields LAN exposes: ``onOff``, ``brightness``, ``color``,
+``colorTemInKelvin``. Zone power, per-segment colour and the active effect are
+readable by nothing, cloud included — consumers must track intent client-side
+and behave optimistically.
 """
 
 from __future__ import annotations

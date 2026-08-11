@@ -9,24 +9,22 @@ separate commit frame::
     last      a3 ff                              | remaining data      | xor
     commit    33 05 <submode> <idxLo> <idxHi> [marker]   submode 0x0a for DIY
 
-Packet 0 spends 3 of its 17 body bytes on a header, so effect data starts at
-the 4th byte of packet 0 — an early reassembly bug treated those 3 header bytes
-as effect data and shifted every subsequent offset label by 3.
+Packet 0 spends 3 of its 17 data bytes on that header, so effect data starts
+at the 4th data byte of packet 0.
 
-**UNTESTED AGAINST HARDWARE ON THIS BRANCH.** The chunking mechanism is
-transcribed from a captured DIY effect upload and from a replay of it that was
-seen to work, but effect *payload* encoders (the ripple record and the RGBIC
-ring block) are deliberately out of scope here, so nothing in this module has
-been round-tripped against a lamp as part of this layer. Treat it as a
-mechanism, not a verified behaviour.
+**UNTESTED AGAINST HARDWARE.** The chunking mechanism is transcribed from a
+captured DIY effect upload (and a working replay of it), but no effect
+*payload* encoder exists yet, so nothing here has been round-tripped against a
+lamp. Treat it as a mechanism, not a verified behaviour.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from .encoders import mode_select
 from .errors import FrameError
-from .frames import BODY_LENGTH, PRO_TYPE_MULTIPACKET, PRO_TYPE_WRITE, build_frame
+from .frames import BODY_LENGTH, PRO_TYPE_MULTIPACKET, build_frame
 
 CHUNK_DATA_BYTES = BODY_LENGTH - 2
 """Data bytes per continuation packet: 19 body bytes minus proType and sequence."""
@@ -92,11 +90,12 @@ def commit_frame(
     index: int = 0,
     marker: int | None = None,
 ) -> bytes:
-    """The ``33 05 <submode> <idxLo> <idxHi> [marker]`` activation frame."""
-    body = bytearray([PRO_TYPE_WRITE, 0x05, sub_mode & 0xFF, index & 0xFF, (index >> 8) & 0xFF])
-    if marker is not None:
-        body.append(marker & 0xFF)
-    return build_frame(body)
+    """The ``33 05 <submode> <idxLo> <idxHi> [marker]`` activation frame.
+
+    Same layout as a mode select — a commit *is* a mode select naming the
+    just-uploaded effect — so it delegates to :func:`~.encoders.mode_select`.
+    """
+    return mode_select({}, sub_mode=sub_mode & 0xFF, index=index, marker=marker)
 
 
 def upload_effect(
