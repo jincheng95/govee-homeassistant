@@ -236,6 +236,8 @@ class TestGoldenFrames:
 
 
 class TestFramePrimitives:
+    """The 20-byte frame, its padding and its XOR checksum."""
+
     def test_xor_checksum(self) -> None:
         assert xor_checksum(b"") == 0
         assert xor_checksum(b"\x33\x01\x01") == 0x33
@@ -312,6 +314,8 @@ class TestFramePrimitives:
 
 
 class TestSegmentMask:
+    """Segment selections resolved into little-endian mask bytes."""
+
     def test_mask0_holds_segments_zero_to_seven(self) -> None:
         assert segment_mask([0], segment_count=8) == b"\x01\x00"
         assert segment_mask([7], segment_count=8) == b"\x80\x00"
@@ -366,6 +370,8 @@ class TestSegmentMask:
 
 
 class TestKelvin:
+    """Per-SKU colour-temperature ranges and their clamping."""
+
     def test_h60b0_clamps_to_the_verified_ceiling(self) -> None:
         """Above ~6500 K the firmware drops the zone entirely."""
         assert H60B0.clamp_kelvin(9000) == 6500
@@ -397,6 +403,8 @@ class TestKelvin:
 
 
 class TestProfiles:
+    """The declarative table: lookups, transports, capabilities, self-checks."""
+
     def test_table_is_internally_consistent(self) -> None:
         validate_table()
 
@@ -597,6 +605,8 @@ class TestProfiles:
 
 
 class TestMultipacket:
+    """The 0xA3 chunker's arithmetic (mechanism only, hardware-untested)."""
+
     def test_packet_count_math(self) -> None:
         assert packets.packet_count(0) == 1
         assert packets.packet_count(14) == 1
@@ -666,6 +676,8 @@ class _FakeSender:
 
 
 class TestClient:
+    """The write-only UDP sender, driven through an injected endpoint."""
+
     def _client(self) -> tuple[LanUdpClient, list[tuple[str, int]], _FakeSender]:
         sender = _FakeSender()
         opened: list[tuple[str, int]] = []
@@ -676,6 +688,7 @@ class TestClient:
 
         return LanUdpClient(endpoint_factory=factory), opened, sender
 
+    @pytest.mark.asyncio
     async def test_sends_ptreal_to_port_4003(self) -> None:
         client, opened, sender = self._client()
         await client.async_send_frame("192.0.2.205", H60B0.power(True))
@@ -683,12 +696,14 @@ class TestClient:
         payload = json.loads(sender.sent[0])
         assert payload == {"msg": {"cmd": "ptReal", "data": {"command": ["MwEBAAAAAAAAAAAAAAAAAAAAADM="]}}}
 
+    @pytest.mark.asyncio
     async def test_multiple_frames_ride_in_one_datagram(self) -> None:
         client, _opened, sender = self._client()
         await client.async_send_frames("192.0.2.205", [H60B0.power(True), H60B0.brightness(50)])
         assert len(sender.sent) == 1
         assert len(json.loads(sender.sent[0])["msg"]["data"]["command"]) == 2
 
+    @pytest.mark.asyncio
     async def test_endpoint_is_closed_even_on_failure(self) -> None:
         sender = _FakeSender()
 
@@ -705,6 +720,7 @@ class TestClient:
             await client.async_send_frame("192.0.2.205", H60B0.power(True))
         assert sender.closed is True
 
+    @pytest.mark.asyncio
     async def test_client_never_reads(self) -> None:
         """The raw path is write-only by design — see the module docstring."""
         client, _opened, _sender = self._client()
@@ -722,6 +738,8 @@ class TestClient:
 
 
 class TestLayering:
+    """The package's structural promises, asserted rather than assumed."""
+
     def test_package_imports_nothing_from_home_assistant(self) -> None:
         """This layer must stay a plain library: no HA, no integration coupling."""
         import pathlib

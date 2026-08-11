@@ -198,8 +198,19 @@ async def async_send_frames(
         return False
     started = time.monotonic()
     try:
-        await _async_send_repeated(ip, frames)
-    except (GoveeProtocolError, OSError) as err:
+        sent = await _async_send_repeated(ip, frames)
+    except GoveeProtocolError as err:
+        # The frames were built successfully and then could not be wrapped for
+        # the wire. That is a bug in this integration, not evidence about the
+        # network — so it must NOT mark the device's transport unavailable,
+        # which would stick (refresh() never clears a hard send failure).
+        _LOGGER.debug(
+            "Govee LAN write: cannot build an envelope for %s (%s) — falling back",
+            device_id,
+            err,
+        )
+        return False
+    except OSError as err:
         _LOGGER.debug(
             "Govee LAN write: raw send to %s (%s) failed (%s) — falling back",
             device_id,
@@ -211,24 +222,53 @@ async def async_send_frames(
 
     lan_udp_health.note_send(coordinator, device_id)
     _LOGGER.debug(
-        "Govee LAN write: %s %s via LAN transport %s in %.1f ms (%d x %s)",
+        "Govee LAN write: %s %s via LAN transport %s in %.1f ms (%d/%d x %s)",
         device_id,
         what,
         ip,
         (time.monotonic() - started) * 1000,
+        sent,
         LAN_WRITE_REPEATS,
         " | ".join(frame.hex(" ") for frame in frames),
     )
     return True
 
 
-async def _async_send_repeated(ip: str, frames: Sequence[bytes]) -> None:
-    """Send the same envelope :data:`LAN_WRITE_REPEATS` times, spaced out."""
+async def _async_send_repeated(ip: str, frames: Sequence[bytes]) -> int:
+    """Send the same envelope :data:`LAN_WRITE_REPEATS` times, spaced out.
+
+    The repeats are redundancy, not a sequence: the frames are absolute, so one
+    copy reaching the socket says exactly what three do. A copy that fails
+    therefore does not fail the write — reporting failure would send the caller
+    to the cloud with a second, contradictory command for something the device
+    has already been told.
+
+    Args:
+        ip: The device's LAN address.
+        frames: The frames to put in each envelope.
+
+    Returns:
+        How many copies were handed to the socket (at least one).
+
+    Raises:
+        OSError: If every copy failed.
+        GoveeProtocolError: If the envelope could not be built at all.
+    """
     client = _client()
+    sent = 0
+    last_error: OSError | None = None
     for attempt in range(LAN_WRITE_REPEATS):
         if attempt:
             await asyncio.sleep(LAN_WRITE_GAP_SECONDS)
-        await client.async_send_frames(ip, list(frames))
+        try:
+            await client.async_send_frames(ip, list(frames))
+        except OSError as err:
+            last_error = err
+            continue
+        sent += 1
+    if sent == 0:
+        raise last_error if last_error is not None else OSError("no copies were sent")
+    return sent
 
 
 # ----------------------------------------------------------------------

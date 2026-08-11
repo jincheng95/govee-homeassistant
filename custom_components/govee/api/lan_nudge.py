@@ -58,8 +58,8 @@ from homeassistant.util import dt as dt_util
 from ..const import CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE
 
 if TYPE_CHECKING:
-    from .api.lan_client import GoveeLanClient, LanDevStatus
     from ..coordinator import GoveeCoordinator
+    from .lan_client import GoveeLanClient, LanDevStatus
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -102,9 +102,7 @@ class LanNudgeManager:
             coordinator: The owning :class:`GoveeCoordinator`.
         """
         self._coordinator = coordinator
-        self._enabled: bool = coordinator.config_entry.options.get(
-            CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE
-        )
+        self._enabled: bool = coordinator.config_entry.options.get(CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE)
         # Scheduled-but-not-yet-fired reads, keyed by device_id.
         self._pending: dict[str, CALLBACK_TYPE] = {}
         # Monotonic deadline until which further pushes coalesce into the nudge
@@ -217,9 +215,7 @@ class LanNudgeManager:
 
         status = await client.async_read_one(ip)
         if status is None:
-            _LOGGER.debug(
-                "Govee LAN nudge: no devStatus reply from %s (%s)", device_id, ip
-            )
+            _LOGGER.debug("Govee LAN nudge: no devStatus reply from %s (%s)", device_id, ip)
             return False
 
         self._apply_lan_read(device_id, status)

@@ -147,6 +147,9 @@ def _grouped_entity(coordinator: Any, *, segment_count: int = LAN_SEGMENTS) -> A
 
 
 class TestFrames:
+    """The exact bytes a segment paint puts on the wire."""
+
+    @pytest.mark.asyncio
     async def test_single_segment_colour_goes_over_lan(self, raw_client):
         coordinator = _coordinator()
         entity = _segment_entity(coordinator)
@@ -156,6 +159,7 @@ class TestFrames:
         assert raw_client.hexes == [GOLDEN_SEG0_RED]
         coordinator.async_control_device.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_turn_off_paints_black_over_lan(self, raw_client):
         coordinator = _coordinator()
         entity = _segment_entity(coordinator)
@@ -165,6 +169,7 @@ class TestFrames:
         assert raw_client.hexes == [GOLDEN_SEG0_BLACK]
         coordinator.async_control_device.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_grouped_entity_paints_every_segment(self, raw_client):
         coordinator = _coordinator()
         entity = _grouped_entity(coordinator)
@@ -173,6 +178,7 @@ class TestFrames:
 
         assert raw_client.hexes == [GOLDEN_ALL_BLACK]
 
+    @pytest.mark.asyncio
     async def test_frame_is_repeated(self, raw_client):
         coordinator = _coordinator()
         entity = _segment_entity(coordinator)
@@ -197,6 +203,9 @@ class TestFrames:
 
 
 class TestFallback:
+    """Every reason to leave the cloud command alone."""
+
+    @pytest.mark.asyncio
     async def test_option_off_uses_the_cloud(self, raw_client):
         coordinator = _coordinator(enabled=False)
         entity = _segment_entity(coordinator)
@@ -207,6 +216,7 @@ class TestFallback:
         command = coordinator.async_control_device.await_args_list[-1].args[1]
         assert isinstance(command, SegmentColorCommand)
 
+    @pytest.mark.asyncio
     async def test_device_not_on_lan_uses_the_cloud(self, raw_client):
         coordinator = _coordinator(on_lan=False)
         entity = _segment_entity(coordinator)
@@ -216,6 +226,7 @@ class TestFallback:
         assert raw_client.envelopes == []
         coordinator.async_control_device.assert_awaited()
 
+    @pytest.mark.asyncio
     async def test_unprofiled_sku_uses_the_cloud(self, raw_client):
         coordinator = _coordinator()
         entity = _segment_entity(coordinator, sku="H6199")
@@ -225,6 +236,7 @@ class TestFallback:
         assert raw_client.envelopes == []
         coordinator.async_control_device.assert_awaited()
 
+    @pytest.mark.asyncio
     async def test_a_ble_only_sku_never_gets_a_lan_frame(self, raw_client):
         """The H6046 has a full SEGMENT_COLOR profile and ignores LAN raw frames.
 
@@ -279,6 +291,7 @@ class TestFallback:
         assert frame[4] == 25  # level
         assert frame[5] == 0b0000_0010  # mask, immediately after
 
+    @pytest.mark.asyncio
     async def test_segment_count_mismatch_uses_the_cloud(self, raw_client):
         """The table's mask width and the entity's indices must agree.
 
@@ -293,6 +306,7 @@ class TestFallback:
         assert raw_client.envelopes == []
         coordinator.async_control_device.assert_awaited()
 
+    @pytest.mark.asyncio
     async def test_turn_off_still_skips_everything_when_the_device_is_off(self, raw_client):
         """The upstream race guard (issue #16) must survive the LAN routing."""
         coordinator = _coordinator()

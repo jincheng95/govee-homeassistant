@@ -49,9 +49,7 @@ class _FakeNudgeClient:
         self.replies = replies or {}
         self.read_calls: list[str] = []
 
-    async def async_read_one(
-        self, ip: str, timeout: float = 0.5
-    ) -> LanDevStatus | None:
+    async def async_read_one(self, ip: str, timeout: float = 0.5) -> LanDevStatus | None:
         self.read_calls.append(ip)
         return self.replies.get(ip)
 
@@ -157,9 +155,7 @@ class TestNudgeGates:
     """Every reason a push must NOT produce a LAN read."""
 
     def test_disabled_by_option_is_noop(self, monkeypatch):
-        coord, _client, scheduler = _ready(
-            monkeypatch, options={CONF_ENABLE_LAN_NUDGE: False}
-        )
+        coord, _client, scheduler = _ready(monkeypatch, options={CONF_ENABLE_LAN_NUDGE: False})
 
         lan_nudge.async_note_cloud_push(coord, DEVICE_ID)
 
@@ -210,9 +206,7 @@ class TestNudgeGates:
         coord, _client, scheduler = _ready(monkeypatch)
         coord._record_transport_send(DEVICE_ID, "mqtt")
         health = coord.get_transport_health(DEVICE_ID, "mqtt")
-        health.last_send_ts -= timedelta(
-            seconds=lan_nudge.NUDGE_ECHO_SUPPRESS_SECONDS + 1
-        )
+        health.last_send_ts -= timedelta(seconds=lan_nudge.NUDGE_ECHO_SUPPRESS_SECONDS + 1)
 
         lan_nudge.async_note_cloud_push(coord, DEVICE_ID)
 
@@ -270,9 +264,7 @@ class TestNudgeDebounce:
 
     @pytest.mark.asyncio
     async def test_debounce_is_per_device_not_global(self, monkeypatch):
-        coord, client, scheduler = _ready(
-            monkeypatch, replies={IP: _status(), OTHER_IP: _status()}
-        )
+        coord, client, scheduler = _ready(monkeypatch, replies={IP: _status(), OTHER_IP: _status()})
 
         lan_nudge.async_note_cloud_push(coord, DEVICE_ID)
         lan_nudge.async_note_cloud_push(coord, OTHER_ID)
@@ -307,9 +299,7 @@ class TestNudgeReadCycle:
 
     @pytest.mark.asyncio
     async def test_reply_is_overlaid_onto_state(self, monkeypatch):
-        coord, _client, scheduler = _ready(
-            monkeypatch, replies={IP: _status(on=True, brightness_0_100=40)}
-        )
+        coord, _client, scheduler = _ready(monkeypatch, replies={IP: _status(on=True, brightness_0_100=40)})
         state = coord._states[DEVICE_ID]
         state.power_state = False
 

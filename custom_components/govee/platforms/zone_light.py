@@ -145,6 +145,9 @@ _LOGGER = logging.getLogger(__name__)
 
 HA_BRIGHTNESS_MAX: Final = 255
 
+ATTR_ZONE_ON: Final = "zone_on"
+"""Unmasked zone state, published so ``RestoreEntity`` can round-trip it."""
+
 MASTER_NAME: Final = "Master"
 """Entity name suffix for a demoted whole-device light (``has_entity_name``)."""
 
@@ -290,7 +293,9 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
         self._attr_icon = "mdi:lightbulb-multiple"
 
         # Optimistic attributes: "what this zone was last told", never a read.
-        self._brightness: int = HA_BRIGHTNESS_MAX
+        # None until something IS told, so a zone that has never been commanded
+        # reports nothing rather than inventing full brightness.
+        self._brightness: int | None = None
         self._rgb_color: tuple[int, int, int] | None = None
         self._color_temp_kelvin: int | None = None
         self._unsub_zone: Any = None
@@ -341,8 +346,13 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
 
     @property
     def brightness(self) -> int | None:
-        """Last brightness commanded to this zone (0-255)."""
-        if ColorMode.ONOFF in (self.supported_color_modes or set()):
+        """Last brightness commanded to this zone (0-255), or None.
+
+        Gated on the zone's *capability*, not on its colour mode: a zone can
+        have colour without a brightness channel, and reporting a level it
+        cannot set would be the same lie in a less obvious place.
+        """
+        if Capability.ZONE_BRIGHTNESS not in self._zone.capabilities:
             return None
         return self._brightness
 
@@ -364,6 +374,12 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
         attrs["zone_segments"] = self._zone.segments
         attrs["optimistic"] = True
         attrs["lan_transport"] = self._lan_target() is not None
+        # The zone's own state, NOT masked by whole-device power. `is_on` is
+        # masked (reported power outranks optimism), so the entity's state
+        # cannot be used to restore the zone: a restart while the lamp happened
+        # to be off would read every zone as off and erase the picture. This is
+        # the value `async_added_to_hass` restores from.
+        attrs[ATTR_ZONE_ON] = registry(self.coordinator).is_on(self._device_id, self._zone_key)
         return attrs
 
     # -- commands -----------------------------------------------------------
@@ -380,6 +396,15 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
                 "(check the 'Send advanced commands over LAN' option and the LAN UDP connectivity sensor)"
             )
 
+        # Everything that can fail without touching the lamp is resolved BEFORE
+        # the power command goes out. Powering the whole lamp on and then
+        # raising would leave the user with a lit lamp, an unlit zone and an
+        # error — a worse state than the one they started in.
+        if target is None:
+            self._require_cloud_toggle_instance()
+        else:
+            frames = self._build_frames_or_raise(on=True, **kwargs)
+
         # A zone cannot be lit while the lamp has no power, and only the
         # whole-device command has real state behind it — so power goes out on
         # the normal path first.
@@ -389,7 +414,6 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
             await self._async_cloud_power(True)
             return
 
-        frames = self._build_frames(on=True, **kwargs)
         if not await self._async_send(frames, what=f"zone {self._zone_key} on"):
             if wants_attributes:
                 raise HomeAssistantError(
@@ -406,14 +430,37 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
         if self._lan_target() is None:
             await self._async_cloud_power(False)
             return
-        try:
-            frame = self._codec.zone_power(self._zone_key, False)
-        except GoveeProtocolError as err:  # pragma: no cover - table self-check covers this
-            raise HomeAssistantError(f"{self._device.name}: cannot encode zone power ({err})") from err
+        frame = self._build_frames_or_raise(on=False)[0]
         if not await self._async_send([frame], what=f"zone {self._zone_key} off"):
             await self._async_cloud_power(False)
             return
         self._apply_optimistic(False)
+
+    def _build_frames_or_raise(self, *, on: bool, **kwargs: Any) -> list[bytes]:
+        """:meth:`_build_frames`, with codec refusals turned into HA errors.
+
+        The codec raises rather than guess a byte it does not know, and those
+        exceptions are not :class:`HomeAssistantError` subclasses — unwrapped,
+        they surface as a traceback in the log instead of a message on the
+        service call. Every codec call site goes through here.
+
+        Args:
+            on: Target state for the zone.
+            **kwargs: The ``turn_on`` attributes to encode alongside it.
+
+        Returns:
+            The frames to send, power first.
+
+        Raises:
+            HomeAssistantError: If any frame could not be built.
+        """
+        try:
+            return self._build_frames(on=on, **kwargs)
+        except GoveeProtocolError as err:
+            raise HomeAssistantError(
+                f"{self._device.name}: cannot build a local-network frame for the "
+                f"{zone_display_name(self._zone)} zone ({err})"
+            ) from err
 
     def _build_frames(self, *, on: bool, **kwargs: Any) -> list[bytes]:
         """Frames for one turn_on: power first, then the attributes.
@@ -459,14 +506,26 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
             return
         await self.coordinator.async_control_device(self._device_id, PowerCommand(power_on=True))
 
-    async def _async_cloud_power(self, on: bool) -> None:
-        """Zone on/off over the cloud — the one zone capability that has an equivalent."""
+    def _require_cloud_toggle_instance(self) -> str:
+        """The cloud toggle backing this zone, or raise before anything is sent.
+
+        Returns:
+            The cloud capability instance name for this zone.
+
+        Raises:
+            HomeAssistantError: If this zone has no cloud equivalent.
+        """
         instance = TOGGLE_BY_ZONE_KEY.get(self._zone_key)
         if instance is None or instance not in self._device.named_light_toggle_instances:
             raise HomeAssistantError(
                 f"{self._device.name}: the {zone_display_name(self._zone)} zone cannot be switched "
                 "without the local network, and this device is not currently reachable there"
             )
+        return instance
+
+    async def _async_cloud_power(self, on: bool) -> None:
+        """Zone on/off over the cloud — the one zone capability that has an equivalent."""
+        instance = self._require_cloud_toggle_instance()
         success = await self.coordinator.async_control_device(
             self._device_id, ToggleCommand(toggle_instance=instance, enabled=on)
         )
@@ -482,12 +541,17 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
         last_state = await self.async_get_last_state()
         restored_on = False
         if last_state is not None:
-            restored_on = last_state.state == "on"
-            if last_state.attributes.get("brightness"):
+            # Prefer the unmasked zone attribute; fall back to the entity state
+            # only for entries written before that attribute existed.
+            zone_on = last_state.attributes.get(ATTR_ZONE_ON)
+            restored_on = bool(zone_on) if zone_on is not None else last_state.state == "on"
+            # `is not None`, never truthiness: brightness 0 and rgb (0, 0, 0)
+            # are states HA writes, and both are falsy.
+            if last_state.attributes.get("brightness") is not None:
                 self._brightness = int(last_state.attributes["brightness"])
-            if last_state.attributes.get("rgb_color"):
+            if last_state.attributes.get("rgb_color") is not None:
                 self._rgb_color = tuple(last_state.attributes["rgb_color"])
-            if last_state.attributes.get("color_temp_kelvin"):
+            if last_state.attributes.get("color_temp_kelvin") is not None:
                 self._color_temp_kelvin = int(last_state.attributes["color_temp_kelvin"])
 
         store = registry(self.coordinator)

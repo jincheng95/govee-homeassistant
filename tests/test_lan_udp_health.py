@@ -23,6 +23,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from custom_components.govee import lan_udp_health
 from custom_components.govee.binary_sensor import (
     GoveeDeviceConnectivity,
@@ -54,9 +56,7 @@ def _device(sku: str = "H60B0") -> GoveeDevice:
     )
 
 
-def _coordinator(
-    device: GoveeDevice | None = None, *, on_lan: bool = True, raw_write: bool = True
-) -> MagicMock:
+def _coordinator(device: GoveeDevice | None = None, *, on_lan: bool = True, raw_write: bool = True) -> MagicMock:
     device = device or _device()
     tracker = TransportHealthTracker()
     coordinator = MagicMock()
@@ -96,6 +96,8 @@ def _aggregate(coordinator: MagicMock, device: GoveeDevice) -> GoveeDeviceConnec
 
 
 class TestTransportRegistration:
+    """The fifth transport registered exactly like the four before it."""
+
     def test_lan_udp_is_a_tracked_transport(self):
         assert "lan_udp" in TRANSPORT_KINDS
         assert lan_udp_health.TRANSPORT_LAN_UDP == "lan_udp"
@@ -119,6 +121,9 @@ class TestTransportRegistration:
 
 
 class TestEntities:
+    """The opt-in per-transport entity and the always-on attributes."""
+
+    @pytest.mark.asyncio
     async def test_entity_created_when_exposed(self):
         device = _device()
         coordinator = _coordinator(device)
@@ -132,6 +137,7 @@ class TestEntities:
         assert entity.unique_id == f"{DEVICE_ID}_lan_udp_connectivity"
         assert entity.icon == "mdi:lan-pending"
 
+    @pytest.mark.asyncio
     async def test_entity_absent_when_not_exposed(self):
         coordinator = _coordinator()
         added: list = []
@@ -168,6 +174,8 @@ class TestEntities:
 
 
 class TestSemantics:
+    """What availability is allowed to claim on an unconfirmable path."""
+
     def test_reachable_and_profiled_is_available(self):
         coordinator = _coordinator()
         lan_udp_health.refresh(coordinator)
@@ -287,6 +295,8 @@ class TestSemantics:
 
 
 class TestTranslations:
+    """The two-file translation rule, applied to the new key."""
+
     @staticmethod
     def _block(name: str) -> dict:
         data = json.loads((ROOT / name).read_text(encoding="utf-8"))

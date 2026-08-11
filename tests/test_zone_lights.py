@@ -38,7 +38,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from custom_components.govee.api import lan_raw_write
 from custom_components.govee.platforms import zone_light
 from custom_components.govee.api.lan_client import LanDeviceInfo
-from custom_components.govee.api.protocol import Capability, get_profile
+from custom_components.govee.api.protocol import Capability, UnknownEncodingError, get_profile
 from custom_components.govee.const import (
     CONF_ENABLE_LAN_RAW_WRITE,
     CONF_ENABLE_ZONE_LIGHTS,
@@ -70,7 +70,7 @@ from custom_components.govee.platforms.zone_light import (
     async_zone_light_entities,
     async_zone_number_entities,
 )
-from custom_components.govee.zone_state import register_zone_switch, registry
+from custom_components.govee.zone_state import register_zone_switch, registry, zone_switch_suppressed
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
 IP = "10.20.0.51"
@@ -186,10 +186,18 @@ def _coordinator(
     return coordinator
 
 
-def _entry(coordinator: Any, *, zone_lights: bool = True) -> Any:
+def _entry(coordinator: Any, *, zone_lights: bool = True, lan_raw_write: bool | None = None) -> Any:
+    """A config entry whose options match the coordinator's, unless overridden.
+
+    The zone-light model needs BOTH options: the raw transport is the only
+    thing that can address a single zone, so the entry and the coordinator have
+    to agree or the test is describing a state the integration cannot reach.
+    """
+    if lan_raw_write is None:
+        lan_raw_write = bool(coordinator.config_entry.options.get(CONF_ENABLE_LAN_RAW_WRITE, False))
     entry = MagicMock()
     entry.runtime_data = coordinator
-    entry.options = {CONF_ENABLE_ZONE_LIGHTS: zone_lights}
+    entry.options = {CONF_ENABLE_ZONE_LIGHTS: zone_lights, CONF_ENABLE_LAN_RAW_WRITE: lan_raw_write}
     return entry
 
 
@@ -212,6 +220,8 @@ def _switch(coordinator: Any, instance: str, device: GoveeDevice) -> GoveeNamedL
 
 
 class TestWiring:
+    """Which entities the options produce, and which they suppress."""
+
     def test_option_off_creates_no_zone_entities(self):
         coordinator = _coordinator()
         entry = _entry(coordinator, zone_lights=False)
@@ -256,6 +266,7 @@ class TestWiring:
 
         assert async_zone_light_entities(coordinator, _entry(coordinator)) == []
 
+    @pytest.mark.asyncio
     async def test_zone_switches_step_aside_when_zone_lights_are_on(self):
         from custom_components.govee import switch as switch_mod
 
@@ -267,6 +278,7 @@ class TestWiring:
         named = [e for e in added if isinstance(e, GoveeNamedLightSwitchEntity)]
         assert named == []
 
+    @pytest.mark.asyncio
     async def test_zone_switches_survive_when_the_option_is_off(self):
         from custom_components.govee import switch as switch_mod
 
@@ -278,6 +290,7 @@ class TestWiring:
         named = sorted(e._toggle_instance for e in added if isinstance(e, GoveeNamedLightSwitchEntity))
         assert named == ["bottomLightToggle", "rippleLightToggle", "sideLightToggle"]
 
+    @pytest.mark.asyncio
     async def test_only_profiled_zone_switches_are_suppressed(self):
         """A named light toggle the table does not model keeps its switch."""
         from custom_components.govee import switch as switch_mod
@@ -298,6 +311,8 @@ class TestWiring:
 
 
 class TestCapabilities:
+    """Each zone's surface, derived from the profile table alone."""
+
     def test_colour_modes_differ_per_zone(self):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -348,6 +363,9 @@ class TestCapabilities:
 
 
 class TestFrames:
+    """The exact bytes a zone command puts on the wire."""
+
+    @pytest.mark.asyncio
     async def test_plain_turn_on_sends_zone_power(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -355,6 +373,7 @@ class TestFrames:
 
         assert raw_client.hexes == [GOLDEN["ripple_on"]]
 
+    @pytest.mark.asyncio
     async def test_turn_off_sends_zone_power_off(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -362,6 +381,7 @@ class TestFrames:
 
         assert raw_client.hexes == [GOLDEN["downlight_off"]]
 
+    @pytest.mark.asyncio
     async def test_colour_frame_for_an_rgb_zone(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -369,6 +389,7 @@ class TestFrames:
 
         assert raw_client.hexes == [GOLDEN["ripple_on"], GOLDEN["ripple_red"]]
 
+    @pytest.mark.asyncio
     async def test_segmented_zone_paints_every_segment(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -377,6 +398,7 @@ class TestFrames:
         # The 8-segment mask (ff 00) is in the frame; the ripple's is not.
         assert raw_client.hexes[-1] == GOLDEN["ring_blue"]
 
+    @pytest.mark.asyncio
     async def test_brightness_frame_uses_percent(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -384,6 +406,7 @@ class TestFrames:
 
         assert raw_client.hexes[-1] == GOLDEN["ring_bright_50"]
 
+    @pytest.mark.asyncio
     async def test_downlight_brightness_has_no_mask(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -391,6 +414,7 @@ class TestFrames:
 
         assert raw_client.hexes[-1] == GOLDEN["downlight_bright_50"]
 
+    @pytest.mark.asyncio
     async def test_colour_temp_frame(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -398,6 +422,7 @@ class TestFrames:
 
         assert raw_client.hexes[-1] == GOLDEN["downlight_4000k"]
 
+    @pytest.mark.asyncio
     async def test_kelvin_is_clamped_through_the_profile(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -407,6 +432,7 @@ class TestFrames:
         # ...and the optimistic state records the clamped value, not the ask.
         assert lights["downlight"].color_temp_kelvin == 6500
 
+    @pytest.mark.asyncio
     async def test_zone_without_a_capability_ignores_it(self, raw_client):
         """The white-only downlight must not emit a colour frame."""
         lights = _lights(_coordinator(), _entry(_coordinator()))
@@ -416,6 +442,7 @@ class TestFrames:
         assert raw_client.hexes == [GOLDEN["downlight_on"]]
         assert lights["downlight"].rgb_color is None
 
+    @pytest.mark.asyncio
     async def test_frames_ride_in_one_envelope_repeated(self, raw_client):
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
@@ -426,6 +453,7 @@ class TestFrames:
             (GOLDEN["ripple_on"], GOLDEN["ripple_red"])
         }
 
+    @pytest.mark.asyncio
     async def test_flow_rate_frame(self, raw_client):
         coordinator = _coordinator()
         number = async_zone_number_entities(coordinator, _entry(coordinator))[0]
@@ -451,6 +479,9 @@ class TestFrames:
 
 
 class TestDisplacement:
+    """The hardware's two-of-three limit, applied below the transport."""
+
+    @pytest.mark.asyncio
     async def test_a_zone_light_displaces_a_zone_switch(self, raw_client):
         """The cross-platform case an ``entity.platform.entities`` walk misses."""
         device = _device()
@@ -468,6 +499,7 @@ class TestDisplacement:
         assert registry(coordinator).is_on(DEVICE_ID, "ring") is True
         assert lights["downlight"].is_on is True
 
+    @pytest.mark.asyncio
     async def test_a_cloud_toggle_also_displaces(self, raw_client):
         """The asymmetry that used to exist: displacement on the LAN path only."""
         device = _device()
@@ -486,6 +518,7 @@ class TestDisplacement:
         assert ripple_switch.is_on is False
         assert side_switch.is_on is True
 
+    @pytest.mark.asyncio
     async def test_turning_a_zone_off_displaces_nothing(self, raw_client):
         device = _device()
         coordinator = _coordinator(device)
@@ -511,6 +544,9 @@ class TestDisplacement:
 
 
 class TestFallback:
+    """What happens when the local network cannot carry the intent."""
+
+    @pytest.mark.asyncio
     async def test_zone_power_falls_back_to_the_cloud(self, raw_client):
         device = _device()
         coordinator = _coordinator(device, on_lan=False)
@@ -524,6 +560,7 @@ class TestFallback:
         assert command.toggle_instance == "rippleLightToggle"
         assert command.enabled is True
 
+    @pytest.mark.asyncio
     async def test_zone_power_off_falls_back_to_the_cloud(self, raw_client):
         coordinator = _coordinator(on_lan=False)
         lights = _lights(coordinator, _entry(coordinator))
@@ -539,6 +576,7 @@ class TestFallback:
         "kwargs",
         [{"rgb_color": (1, 2, 3)}, {"brightness": 128}],
     )
+    @pytest.mark.asyncio
     async def test_zone_attributes_fail_loudly_without_lan(self, raw_client, kwargs):
         """No cloud equivalent exists at zone granularity — so say so."""
         coordinator = _coordinator(on_lan=False)
@@ -548,13 +586,93 @@ class TestFallback:
             await lights["ripple"].async_turn_on(**kwargs)
         assert raw_client.envelopes == []
 
-    async def test_zone_attributes_fail_loudly_when_the_option_is_off(self, raw_client):
+    def test_the_model_needs_the_raw_transport_option_too(self):
+        """Zone lights without the raw transport would leave no colour control.
+
+        Every zone capability past on/off is a raw frame; the cloud cannot
+        address a zone at all. So with the transport off the zone-light model
+        must not be built — otherwise the whole-device light is stripped of
+        colour, colour temperature and effects and handed to entities that can
+        only raise, and the lamp ends up with no working colour anywhere.
+        """
         coordinator = _coordinator(lan_raw_write_on=False)
-        lights = _lights(coordinator, _entry(coordinator))
+        entry = _entry(coordinator)  # zone lights ticked, transport off
+
+        assert async_zone_light_entities(coordinator, entry) == []
+        assert async_zone_number_entities(coordinator, entry) == []
+
+    def test_the_master_is_not_demoted_without_the_raw_transport(self):
+        """The demotion and the zone entities must switch on together."""
+        coordinator = _coordinator(lan_raw_write_on=False)
+        master = _master(coordinator, _entry(coordinator))
+
+        assert master._attr_name != zone_light.MASTER_NAME
+        assert ColorMode.RGB in (master.supported_color_modes or set())
+
+    def test_the_zone_switches_survive_without_the_raw_transport(self):
+        """The switches must not disappear when nothing can replace them."""
+        coordinator = _coordinator(lan_raw_write_on=False)
+        entry = _entry(coordinator)
+
+        assert zone_switch_suppressed(entry, "H60B0", "rippleLightToggle") is False
+
+    @pytest.mark.asyncio
+    async def test_an_unencodable_frame_raises_instead_of_traceback(self, raw_client):
+        """Codec refusals are not HomeAssistantError and must be translated.
+
+        The codec raises rather than guess a byte it does not know. Unwrapped,
+        that surfaces as a traceback in the log rather than a message on the
+        service call.
+        """
+        coordinator = _coordinator()
+        light = _lights(coordinator, _entry(coordinator))["ripple"]
+
+        with patch.object(
+            zone_light.GoveeCodec,
+            "zone_color",
+            side_effect=UnknownEncodingError("sub_mode UNKNOWN"),
+        ):
+            with pytest.raises(HomeAssistantError):
+                await light.async_turn_on(rgb_color=(1, 2, 3))
+
+        assert raw_client.envelopes == []
+
+    @pytest.mark.asyncio
+    async def test_an_unencodable_frame_does_not_power_the_lamp_on(self, raw_client):
+        """Nothing may touch the lamp before every failable step has passed.
+
+        Powering the whole lamp on and then raising leaves the user with a lit
+        lamp, an unlit zone and an error — worse than where they started.
+        """
+        coordinator = _coordinator(power_state=False)
+        light = _lights(coordinator, _entry(coordinator))["ripple"]
+
+        with patch.object(
+            zone_light.GoveeCodec,
+            "zone_power",
+            side_effect=UnknownEncodingError("sub_mode UNKNOWN"),
+        ):
+            with pytest.raises(HomeAssistantError):
+                await light.async_turn_on()
+
+        coordinator.async_control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_zone_with_no_cloud_toggle_raises_before_powering_the_lamp(self, raw_client):
+        """Same rule on the cloud-fallback branch."""
+        device = _device()
+        coordinator = _coordinator(device, on_lan=False, power_state=False)
+        light = _lights(coordinator, _entry(coordinator))["ripple"]
+        light._device = MagicMock(wraps=device)
+        light._device.name = device.name
+        light._device.named_light_toggle_instances = ()
 
         with pytest.raises(HomeAssistantError):
-            await lights["ripple"].async_turn_on(rgb_color=(1, 2, 3))
+            await light.async_turn_on()
 
+        coordinator.async_control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_failed_send_falls_back_for_power(self, raw_client):
         coordinator = _coordinator()
         lights = _lights(coordinator, _entry(coordinator))
@@ -565,6 +683,7 @@ class TestFallback:
         command = coordinator.async_control_device.await_args_list[-1].args[1]
         assert isinstance(command, ToggleCommand)
 
+    @pytest.mark.asyncio
     async def test_a_failed_send_raises_for_attributes(self, raw_client):
         coordinator = _coordinator()
         lights = _lights(coordinator, _entry(coordinator))
@@ -585,6 +704,7 @@ class TestFallback:
 
         assert number.available is True
 
+    @pytest.mark.asyncio
     async def test_flow_rate_raises_when_the_send_fails(self, raw_client):
         coordinator = _coordinator()
         number = async_zone_number_entities(coordinator, _entry(coordinator))[0]
@@ -601,6 +721,9 @@ class TestFallback:
 
 
 class TestWholeDeviceRelationship:
+    """How a zone light and the whole-device light stay coherent."""
+
+    @pytest.mark.asyncio
     async def test_reported_power_off_beats_optimistic_zone_state(self, raw_client):
         coordinator = _coordinator(power_state=False)
         lights = _lights(coordinator, _entry(coordinator))
@@ -610,6 +733,7 @@ class TestWholeDeviceRelationship:
         # commanded. Ground truth wins over optimism.
         assert lights["ripple"].is_on is False
 
+    @pytest.mark.asyncio
     async def test_zone_state_shows_through_when_the_lamp_is_on(self, raw_client):
         coordinator = _coordinator(power_state=True)
         lights = _lights(coordinator, _entry(coordinator))
@@ -617,6 +741,7 @@ class TestWholeDeviceRelationship:
 
         assert lights["ripple"].is_on is True
 
+    @pytest.mark.asyncio
     async def test_turning_a_zone_on_powers_the_lamp_over_the_cloud(self, raw_client):
         coordinator = _coordinator(power_state=False)
         lights = _lights(coordinator, _entry(coordinator))
@@ -630,6 +755,7 @@ class TestWholeDeviceRelationship:
         assert first.power_on is True
         assert raw_client.hexes == [GOLDEN["ripple_on"]]
 
+    @pytest.mark.asyncio
     async def test_no_power_command_when_the_lamp_is_already_on(self, raw_client):
         coordinator = _coordinator(power_state=True)
         lights = _lights(coordinator, _entry(coordinator))
@@ -645,6 +771,9 @@ class TestWholeDeviceRelationship:
 
 
 class TestRestore:
+    """Optimistic state surviving a restart without inventing anything."""
+
+    @pytest.mark.asyncio
     async def test_restored_state_seeds_the_registry(self):
         coordinator = _coordinator()
         light = _lights(coordinator, _entry(coordinator))["ripple"]
@@ -664,6 +793,70 @@ class TestRestore:
         assert light.brightness == 200
         assert light.rgb_color == (1, 2, 3)
 
+    @pytest.mark.asyncio
+    async def test_restore_survives_the_lamp_having_been_off(self):
+        """The saved entity state is masked by power; the zone attribute is not.
+
+        `is_on` reports off whenever the lamp is reported off, whatever the
+        zone was told. Restoring from that would mean any restart while the
+        lamp happened to be off erased every zone's state — so the unmasked
+        value is published as an attribute and restored from there.
+        """
+        coordinator = _coordinator(power_state=False)
+        light = _lights(coordinator, _entry(coordinator))["ripple"]
+        light.async_on_remove = MagicMock()
+        last = MagicMock()
+        last.state = "off"  # what `is_on` reported while the lamp was off
+        last.attributes = {zone_light.ATTR_ZONE_ON: True, "brightness": 200}
+        light.async_get_last_state = AsyncMock(return_value=last)
+
+        with patch(
+            "homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass",
+            AsyncMock(),
+        ):
+            await light.async_added_to_hass()
+
+        assert registry(coordinator).is_on(DEVICE_ID, "ripple") is True
+
+    @pytest.mark.asyncio
+    async def test_the_unmasked_zone_state_is_published_for_restore(self):
+        """The attribute restore reads must actually be written."""
+        coordinator = _coordinator(power_state=False)
+        light = _lights(coordinator, _entry(coordinator))["ripple"]
+        registry(coordinator).apply(DEVICE_ID, "H60B0", "ripple", True)
+
+        assert light.is_on is False  # masked by reported power
+        assert light.extra_state_attributes[zone_light.ATTR_ZONE_ON] is True
+
+    @pytest.mark.asyncio
+    async def test_a_restored_zero_brightness_is_not_discarded(self):
+        """0 and (0, 0, 0) are states HA writes, and both are falsy."""
+        coordinator = _coordinator()
+        light = _lights(coordinator, _entry(coordinator))["ripple"]
+        light.async_on_remove = MagicMock()
+        last = MagicMock()
+        last.state = "on"
+        last.attributes = {"brightness": 0, "rgb_color": [0, 0, 0]}
+        light.async_get_last_state = AsyncMock(return_value=last)
+
+        with patch(
+            "homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass",
+            AsyncMock(),
+        ):
+            await light.async_added_to_hass()
+
+        assert light.brightness == 0
+        assert light.rgb_color == (0, 0, 0)
+
+    def test_an_uncommanded_zone_reports_no_brightness(self):
+        """Optimistic means "what it was told" — not an invented 255."""
+        coordinator = _coordinator()
+        lights = _lights(coordinator, _entry(coordinator))
+
+        assert lights["ripple"].brightness is None
+        assert lights["ripple"].rgb_color is None
+
+    @pytest.mark.asyncio
     async def test_no_previous_state_restores_off(self):
         coordinator = _coordinator()
         light = _lights(coordinator, _entry(coordinator))["ripple"]
@@ -685,6 +878,8 @@ class TestRestore:
 
 
 class TestNaming:
+    """Entity names and unique ids, derived from the profile keys."""
+
     def test_zone_names_come_from_the_profile_keys(self):
         profile = get_profile("H60B0")
 
@@ -710,6 +905,8 @@ def _master(coordinator: Any, entry: Any, device: GoveeDevice | None = None) -> 
 
 
 class TestMasterDemotion:
+    """The WLED-style reduction of the whole-device light."""
+
     def test_master_keeps_power_and_brightness_only(self):
         coordinator = _coordinator()
         master = _master(coordinator, _entry(coordinator))
@@ -750,6 +947,7 @@ class TestMasterDemotion:
         assert plain.name is None
         assert ColorMode.RGB in (plain.supported_color_modes or set())
 
+    @pytest.mark.asyncio
     async def test_light_platform_wires_the_master(self):
         from custom_components.govee import light as light_mod
 
