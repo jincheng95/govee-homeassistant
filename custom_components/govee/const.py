@@ -26,6 +26,13 @@ CONF_ENABLE_MQTT_CONTROL: Final = "enable_mqtt_control"
 # usually drop directed broadcast). Empty = local multicast scan only.
 CONF_LAN_TARGETS: Final = "lan_targets"
 
+# Treat a cloud (MQTT) push as a content-free "device X changed" signal and
+# answer it with a LAN devStatus read, which stays authoritative for the fields
+# LAN can report. Only affects LAN-correlated devices; everything else keeps the
+# cloud payload alone. Scheduling, debounce, echo suppression and the per-device
+# cooldown live in lan_nudge.py.
+CONF_ENABLE_LAN_NUDGE: Final = "enable_lan_nudge"
+
 # Some Govee thermometer/hygrometer SKUs report temperatures in Fahrenheit via
 # the Cloud API without unit metadata, while the native sensor unit is tagged
 # Celsius — so a 101°F reading surfaces as 213.5°F in HA (issues #72, #78, #96).
@@ -110,6 +117,7 @@ DEFAULT_EXPOSE_TRANSPORT_ENTITIES: Final = False
 DEFAULT_ENABLE_MQTT_CONTROL: Final = False
 DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
 DEFAULT_LAN_TARGETS: Final = ""
+DEFAULT_ENABLE_LAN_NUDGE: Final = True
 
 # Optimistic state handling
 # Grace window (seconds) during which API polls do NOT overwrite optimistic
