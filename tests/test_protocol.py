@@ -428,7 +428,7 @@ class TestProfiles:
     def test_h60b0_two_of_three_zones_constraint_is_declarative(self) -> None:
         (constraint,) = get_profile("H60B0").constraints
         assert constraint.limit == 2
-        assert constraint.zone_keys == ("ripple", "ring", "downlight")
+        assert constraint.displacement_order == ("downlight", "ripple", "ring")
 
     def test_segment_sub_mode_is_data_not_branching(self) -> None:
         """The sub-mode byte differs per SKU and must stay table data.

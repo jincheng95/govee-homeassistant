@@ -2,10 +2,18 @@
 
 Why this module exists
 ----------------------
-Nothing reports per-zone state. Not the cloud, not the LAN ``devStatus`` read,
-not a raw query — the lamp accepts zone commands and never says a word about
-what its zones are doing. Every zone control in this integration is therefore
-*optimistic*: the only truth available is "what we last told it".
+No *local* channel reports per-zone state. The LAN ``devStatus`` read carries
+only whole-device fields, and a raw query is never answered at all, so a lamp
+driven locally says nothing about what its zones are doing. Zone controls are
+therefore *optimistic*: locally, the only truth available is "what we last
+told it".
+
+The cloud is the exception, and this module does not yet exploit it: the
+platform API's device-state call does return the three zone toggles, and they
+follow a local zone write within a few seconds. So these entities *can* be
+reconciled against the poll the coordinator already runs — worth doing, since
+it would let a zone corrected by the lamp itself (see the constraint below) or
+changed from the vendor app find its way back to the truth.
 
 That truth has to live somewhere both zone platforms can see. The H60B0's zones
 are driven from two different entity platforms (the on/off switches in
@@ -21,10 +29,14 @@ The hardware constraint, applied once for every transport
 ---------------------------------------------------------
 The H60B0 can light at most two of its three zones at once: switching one on
 knocks another off *inside the lamp*, silently. The limit is declared in the
-profile table as :class:`~.api.protocol.profiles.MaxSimultaneousZones` and the
-order of its ``zone_keys`` is the displacement order (first-listed yields
-first, which is why the H60B0's note reads "enabling the downlight kicks the
-ripple off"). Nothing about any specific SKU is encoded here.
+profile table as :class:`~.api.protocol.profiles.MaxSimultaneousZones`, whose
+``displacement_order`` lists zones **weakest first** — the first one still lit
+is the one the lamp drops.
+
+Which zone yields is a fixed ranking, not a recency rule: the zone just turned
+on always survives, and of the two already lit the lower-ranked one goes dark,
+whichever order they were enabled in. Nothing about any specific SKU is encoded
+here; the ranking lives in the table.
 
 Crucially the constraint is applied in :meth:`ZoneStateRegistry.apply`, which
 sits *below* the choice of transport. A zone turned on over raw LAN and the
@@ -237,14 +249,15 @@ def displaced_zone_keys(profile: DeviceProfile, zone_key: str, lit: Iterable[str
     """Zones the hardware turns off because ``zone_key`` was turned on.
 
     The limit and the zone set come from the profile's
-    :class:`MaxSimultaneousZones` entries; the *order* of ``zone_keys`` in the
-    table is the displacement order, first-listed first.
+    :class:`MaxSimultaneousZones` entries. ``displacement_order`` is weakest
+    first: the first listed zone that is currently lit is the one that goes
+    dark. ``zone_key`` itself is never displaced.
     """
     lit_set = set(lit)
     displaced: list[str] = []
     for constraint in _constraints_for(profile, zone_key):
-        on_now = [key for key in constraint.zone_keys if key == zone_key or (key in lit_set and key not in displaced)]
-        for key in constraint.zone_keys:
+        on_now = [key for key in constraint.displacement_order if key == zone_key or (key in lit_set and key not in displaced)]
+        for key in constraint.displacement_order:
             if len(on_now) <= constraint.limit:
                 break
             if key == zone_key or key not in on_now:
@@ -256,7 +269,7 @@ def displaced_zone_keys(profile: DeviceProfile, zone_key: str, lit: Iterable[str
 
 def _constraints_for(profile: DeviceProfile, zone_key: str) -> tuple[MaxSimultaneousZones, ...]:
     """The profile's simultaneity constraints that cover ``zone_key``."""
-    return tuple(constraint for constraint in profile.constraints if zone_key in constraint.zone_keys)
+    return tuple(constraint for constraint in profile.constraints if zone_key in constraint.displacement_order)
 
 
 # ----------------------------------------------------------------------
