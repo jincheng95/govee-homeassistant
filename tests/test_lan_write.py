@@ -42,6 +42,7 @@ from custom_components.govee.models.device import (
     INSTANCE_POWER,
 )
 from custom_components.govee.switch import GoveeNamedLightSwitchEntity
+from custom_components.govee.zone_state import register_zone_switch
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
 IP = "10.20.0.51"
@@ -73,10 +74,14 @@ class _FakeRawClient:
         self.sends: list[tuple[str, bytes]] = []
         self.error = error
 
-    async def async_send_frame(self, host: str, frame: bytes) -> None:
-        self.sends.append((host, frame))
+    async def async_send_frames(self, host: str, frames: list[bytes]) -> None:
+        for frame in frames:
+            self.sends.append((host, frame))
         if self.error is not None:
             raise self.error
+
+    async def async_send_frame(self, host: str, frame: bytes) -> None:
+        await self.async_send_frames(host, [frame])
 
 
 def _cap(cap_type: str, instance: str) -> GoveeCapability:
@@ -101,6 +106,9 @@ def _device(sku: str = "H60B0") -> GoveeDevice:
 
 def _coordinator(*, enabled: bool = True, on_lan: bool = True, sku: str = "H60B0") -> Any:
     coordinator = MagicMock()
+    # A real GoveeCoordinator has no registry attribute until zone_state builds
+    # one; MagicMock would otherwise auto-create a Mock and swallow the lookup.
+    coordinator._govee_zone_state_registry = None
     coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: enabled}
     coordinator.async_control_device = AsyncMock(return_value=True)
     coordinator._lan_devices = {}
@@ -262,23 +270,25 @@ class TestOptimisticState:
 
         assert entity.is_on is False
 
-    def _lamp(self) -> dict[str, GoveeNamedLightSwitchEntity]:
-        """All three zone switches of one lamp, sharing an entity platform."""
+    def _lamp(self, lit: tuple[str, ...] = ()) -> dict[str, GoveeNamedLightSwitchEntity]:
+        """All three zone switches of one lamp, joined by the zone registry.
+
+        Siblings are found through :mod:`custom_components.govee.zone_state`,
+        not through ``entity.platform.entities`` — that lookup only ever saw the
+        same platform, so it could never correct a zone light.
+        """
         coordinator = _coordinator()
         device = _device()
         entities = {instance: _entity(coordinator, instance, device) for instance in lan_write.ZONE_KEY_BY_TOGGLE}
-        platform = MagicMock()
-        platform.entities = {f"switch.zone_{index}": entity for index, entity in enumerate(entities.values())}
-        for entity in entities.values():
-            entity.platform = platform
+        for instance, entity in entities.items():
+            entity._is_on = instance in lit
+            register_zone_switch(entity)
         return entities
 
     async def test_third_zone_displaces_the_first(self, _fast_client):
         # MaxSimultaneousZones(limit=2) on the H60B0: with ripple and ring lit,
         # switching the downlight on drops the ripple inside the lamp.
-        zones = self._lamp()
-        zones["rippleLightToggle"]._is_on = True
-        zones["sideLightToggle"]._is_on = True
+        zones = self._lamp(lit=("rippleLightToggle", "sideLightToggle"))
 
         await lan_write.async_zone_power(zones["bottomLightToggle"], on=True)
 
@@ -287,8 +297,7 @@ class TestOptimisticState:
         assert zones["sideLightToggle"].is_on is True
 
     async def test_no_displacement_below_the_limit(self, _fast_client):
-        zones = self._lamp()
-        zones["rippleLightToggle"]._is_on = True
+        zones = self._lamp(lit=("rippleLightToggle",))
 
         await lan_write.async_zone_power(zones["bottomLightToggle"], on=True)
 

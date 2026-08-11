@@ -87,7 +87,8 @@
           "enable_mqtt_control": "Send power/brightness/color over MQTT (faster, experimental)",
           "lan_targets": "LAN device addresses / subnets (advanced)",
           "enable_lan_nudge": "Refresh over LAN when the cloud reports a change",
-          "enable_lan_raw_write": "Send advanced commands over LAN"
+          "enable_lan_raw_write": "Send advanced commands over LAN",
+          "enable_zone_lights": "Zone lights instead of zone switches (advanced)"
         },
         "data_description": {
           "api_temperature_unit": "Auto (default) converts known Fahrenheit-reporting thermometers (e.g. H5179, H5109, H5110, H5111, H5075, H5100) automatically. Choose Fahrenheit if another thermometer reads about 1.8× too high (e.g. 74 instead of 23), or Celsius to force no conversion. Govee's API omits unit metadata, so the value can't always be auto-detected.",
@@ -95,7 +96,8 @@
           "enable_mqtt_control": "Routes power/brightness/color commands through Govee's MQTT channel instead of the REST cloud API, reducing latency and bypassing REST rate limits. Requires email/password login (MQTT credentials). Falls back to REST automatically when MQTT is unavailable. Experimental — uses an undocumented channel; leave off if commands behave unexpectedly.",
           "lan_targets": "Only needed when LAN-enabled Govee devices are on a different subnet/VLAN than Home Assistant, so the local discovery scan can't reach them. Enter a comma-separated list of device IPs (10.20.0.51), broadcast addresses (10.20.0.255), and/or subnets in CIDR (10.20.0.0/24, /24 or smaller). Subnets are scanned device-by-device since most routers drop cross-VLAN broadcasts. Leave blank if all devices share Home Assistant's network.",
           "enable_lan_nudge": "When a cloud push reports a change made outside Home Assistant, read that device's real state over your local network rather than trusting the push payload. Applies only to devices found on the LAN.",
-          "enable_lan_raw_write": "Sends commands that would otherwise go through Govee's cloud straight to the device over your local network, so they act immediately rather than after a one to three second round trip. Currently covers multi-zone on/off; whole-device power and brightness already use the LAN. Applies only to devices found on the LAN whose model is in the local protocol table \u2014 everything else keeps using the cloud. Devices cannot report zone state back locally, so switches show the state last commanded."
+          "enable_lan_raw_write": "Sends commands that would otherwise go through Govee's cloud straight to the device over your local network, so they act immediately rather than after a one to three second round trip. Currently covers multi-zone on/off; whole-device power and brightness already use the LAN. Applies only to devices found on the LAN whose model is in the local protocol table \u2014 everything else keeps using the cloud. Devices cannot report zone state back locally, so switches show the state last commanded.",
+          "enable_zone_lights": "Replaces a multi-zone lamp's zone on/off switches with full light entities that carry each zone's real capabilities \u2014 colour and brightness for the ripple and ring zones, colour temperature for the white-only downlight \u2014 plus a slider for the ripple flow rate. This CHANGES the entity model: the zone switches disappear while it is on, and the lamp's own light entity becomes a master (power and brightness only, renamed \"Master\"), with colour, colour temperature and the effect list moving to the zones \u2014 the scenes stay available on the separate scene selector. Automations calling light.turn_on with an effect on that entity must be repointed. Turning the option off restores everything unchanged. Needs \"Send advanced commands over LAN\" as well, since only the local protocol can address a single zone. Zone colour and brightness cannot be read back from the device, so those entities show what was last commanded."
         }
       },
       "select_segment_devices": {
@@ -287,6 +289,9 @@
       },
       "leak_hub_online": {
         "name": "Internet"
+      },
+      "lan_udp_connectivity": {
+        "name": "LAN UDP"
       }
     },
     "fan": {

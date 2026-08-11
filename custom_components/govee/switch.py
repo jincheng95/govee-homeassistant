@@ -33,6 +33,7 @@ from .const import (
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .lan_write import async_zone_power
+from .zone_state import note_zone_power, register_zone_switch, zone_switch_suppressed
 from .models import (
     GoveeDevice,
     MusicModeCommand,
@@ -210,6 +211,8 @@ async def async_setup_entry(
             # #126). Govee returns "" for these on poll, so they are
             # optimistic + RestoreEntity like the zones.
             for instance in device.named_light_toggle_instances:
+                if zone_switch_suppressed(entry, device.sku, instance):  # fork: zone lights own these
+                    continue
                 spec = NAMED_LIGHT_TOGGLE_SPECS.get(instance)
                 if spec is None:
                     _LOGGER.debug(
@@ -497,6 +500,7 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
         last_state = await self.async_get_last_state()
         if last_state:
             self._is_on = last_state.state == "on"
+        self.async_on_remove(register_zone_switch(self))  # fork: zone-state registry
 
     @property
     def is_on(self) -> bool:
@@ -514,6 +518,7 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
         if success:
             self._is_on = True
             self.async_write_ha_state()
+            note_zone_power(self, True)  # fork: hardware zone-displacement limit
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light zone off."""
@@ -526,6 +531,7 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
         if success:
             self._is_on = False
             self.async_write_ha_state()
+            note_zone_power(self, False)  # fork: hardware zone-displacement limit
 
 
 class GoveeMusicModeSwitchEntity(GoveeEntity, SwitchEntity):

@@ -43,6 +43,7 @@ from .const import (
     CONF_ENABLE_MQTT_CONTROL,
     CONF_ENABLE_SCENES,
     CONF_ENABLE_SEGMENTS,
+    CONF_ENABLE_ZONE_LIGHTS,
     CONF_EXPOSE_TRANSPORT_ENTITIES,
     CONF_LAN_TARGETS,
     CONF_PASSWORD,
@@ -57,6 +58,7 @@ from .const import (
     DEFAULT_ENABLE_MQTT_CONTROL,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_ENABLE_SEGMENTS,
+    DEFAULT_ENABLE_ZONE_LIGHTS,
     DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
     DEFAULT_LAN_TARGETS,
     DEFAULT_POLL_INTERVAL,
@@ -744,6 +746,12 @@ class GoveeOptionsFlow(OptionsFlow):
                         CONF_ENABLE_LAN_RAW_WRITE,
                         default=source.get(
                             CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
+                        ),
+                    ): bool,
+                    vol.Optional(
+                        CONF_ENABLE_ZONE_LIGHTS,
+                        default=source.get(
+                            CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
                         ),
                     ): bool,
                 }

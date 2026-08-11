@@ -50,6 +50,7 @@ from .models import (
 from .models.device import INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
 from .platforms.segment import GoveeSegmentEntity
+from .zone_light import as_master_light, async_zone_light_entities  # fork: zone lights
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,7 +82,11 @@ async def async_setup_entry(
         # platforms. Without this filter, e.g. an H7150 dehumidifier would
         # appear as a light bulb (issue #54).
         if device.is_light_device and device.supports_power:
-            entities.append(GoveeLightEntity(coordinator, device, enable_scenes))
+            entities.append(
+                as_master_light(  # fork: WLED-style master when zone lights are on
+                    GoveeLightEntity(coordinator, device, enable_scenes), entry
+                )
+            )
 
         # Appliances whose only light is the nightlight (e.g. H5089 outlet
         # extender, H7124 purifier) get a dedicated nightlight light entity —
@@ -128,6 +133,8 @@ async def async_setup_entry(
                             segment_index=segment_index,
                         )
                     )
+
+    entities.extend(async_zone_light_entities(coordinator, entry))  # fork: zone lights
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee light entities", len(entities))

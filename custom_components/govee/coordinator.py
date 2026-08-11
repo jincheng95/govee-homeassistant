@@ -115,6 +115,7 @@ from .models.device import (
 )
 from .models.device import GoveeLeakSensor, GoveeLeakSensorState
 from .lan_nudge import async_cancel_nudges, async_note_cloud_push
+from . import lan_health  # fork: raw LAN UDP write path
 from .scene_cache import SceneCacheManager
 from .repairs import (
     async_create_auth_issue,
@@ -587,6 +588,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         already stamped success and the device is not falsely marked stale.
         """
         self._transport.refresh_lan_staleness(self._devices, set(self._lan_devices))
+        lan_health.refresh(self)  # fork: raw LAN UDP write path
 
     @property
     def states(self) -> dict[str, GoveeDeviceState]:
