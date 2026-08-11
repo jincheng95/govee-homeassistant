@@ -52,8 +52,14 @@ Scope of the demotion, deliberately narrow:
 * It happens **only when the zone-lights option is on** and **only for devices
   the profile table actually models with zones**. With the option off, the
   whole-device entity keeps every capability it has today, unchanged.
-* The master is renamed to read as one ("<device> Master"), so an entity picker
-  makes it obvious which entity is the level control and which are the zones.
+* The master keeps ``name = None`` — upstream's marker for "this entity *is*
+  the device". That marker is load-bearing in the frontend: the device page
+  lists nameless entities first and draws a divider between them and the named
+  ones, so the master stays visually separated from the zones and everything
+  else exactly as the whole-device light was before the demotion. (An earlier
+  revision renamed it to "<device> Master", which silently erased that divider
+  — a name is not free.) WLED draws the same line: master nameless, segments
+  named.
 * **The effect list moves off the master.** Upstream already exposes the same
   scenes on a separate ``select`` entity, so no capability is lost — but a
   ``light.turn_on`` call with ``effect:`` aimed at the master stops working and
@@ -98,9 +104,10 @@ There is nothing to fall back to, so:
 * the flow-rate ``number``, whose *only* capability is LAN-only, reports itself
   **unavailable** when the LAN path is not usable.
 
-Fork-maintenance note: this module is additive. ``light.py`` carries two
-imports and two lines (the zone lights, and the master demotion); ``number.py``
-carries one import and one line.
+Fork-maintenance note: this module is additive. ``light.py`` carries one
+import line and three call sites (the zone lights, the master demotion, and
+the zone-derived segment names); ``number.py`` carries one import and one
+line.
 """
 
 from __future__ import annotations
@@ -148,9 +155,6 @@ HA_BRIGHTNESS_MAX: Final = 255
 ATTR_ZONE_ON: Final = "zone_on"
 """Unmasked zone state, published so ``RestoreEntity`` can round-trip it."""
 
-MASTER_NAME: Final = "Master"
-"""Entity name suffix for a demoted whole-device light (``has_entity_name``)."""
-
 # Reverse of the cloud-instance -> zone-key join, for the cloud power fallback.
 TOGGLE_BY_ZONE_KEY: Final[dict[str, str]] = {zone: toggle for toggle, zone in ZONE_KEY_BY_TOGGLE.items()}
 
@@ -191,7 +195,8 @@ def as_master_light(entity: LightEntity, entry: ConfigEntry) -> LightEntity:
     # upstream's separate scene `select` entity.
     entity._attr_supported_features = LightEntityFeature(0)
     entity._enable_scenes = False
-    entity._attr_name = MASTER_NAME
+    # Deliberately NOT renamed: `name = None` is what keeps the master above
+    # the device page's divider (see the module docstring).
     _LOGGER.debug("Govee zone lights: %s demoted to a master (power + brightness)", getattr(device, "name", "?"))
     return entity
 
@@ -230,6 +235,58 @@ def async_zone_number_entities(coordinator: GoveeCoordinator, entry: ConfigEntry
 def zone_display_name(zone: ZoneSpec) -> str:
     """Human name for a zone, derived from its profile key ("ripple" -> "Ripple")."""
     return zone.key.replace("_", " ").title()
+
+
+def _segmented_zone(device: GoveeDevice) -> ZoneSpec | None:
+    """The one segmented zone of a *multi-zone* device, or None.
+
+    None on purpose in two honest cases: a device the table models with a
+    single zone (there "Segment N" is already unambiguous, a prefix would be
+    noise), and a device where more than one modelled zone declares segments
+    (the cloud capability carries no zone linkage, so the join would be a
+    guess).
+    """
+    keys = modelled_zone_keys(device.sku)
+    if len(keys) < 2:
+        return None
+    profile = profile_for(device.sku)
+    if profile is None:  # pragma: no cover - modelled_zone_keys implies a profile
+        return None
+    segmented = [profile.zone(key) for key in keys if profile.zone(key).segmented]
+    return segmented[0] if len(segmented) == 1 else None
+
+
+def as_zone_named_segment(entity: LightEntity, entry: ConfigEntry) -> LightEntity:
+    """Name a segment entity after the zone its segments live on, in place.
+
+    Upstream names RGBIC segments "Segment N", which is fine when the segments
+    span the whole device — but on a multi-zone lamp it hides which light they
+    address. On the H60B0 every addressable segment is on the ring, the light
+    the Govee app calls SIDE, so "Segment 3" becomes "Side light segment 3"
+    (and the grouped entity "Side light segments"), using the app's own word
+    for the zone.
+
+    The zone membership cannot be discovered at runtime: the cloud's
+    ``segmentedColorRgb`` capability is a bare index range with no zone
+    linkage. The join lives in the profile table — the same per-SKU source the
+    zone entities are already built from — via :func:`_segmented_zone`.
+
+    Gated exactly like every other rename in this module: a no-op unless the
+    zone-lights option is on, so with the option off upstream's names are
+    untouched. Returns the same entity, so the caller stays a one-liner.
+    """
+    if not zone_lights_enabled(entry):
+        return entity
+    device = getattr(entity, "_device", None)
+    if device is None:
+        return entity
+    zone = _segmented_zone(device)
+    if zone is None:
+        return entity
+    label = zone.name.replace("_", " ").capitalize()  # app name: "SIDE" -> "Side"
+    index = getattr(entity, "_segment_index", None)
+    entity._attr_name = f"{label} light segments" if index is None else f"{label} light segment {index + 1}"
+    return entity
 
 
 # ==========================================================================

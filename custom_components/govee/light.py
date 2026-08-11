@@ -50,7 +50,11 @@ from .models import (
 from .models.device import INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
 from .platforms.segment import GoveeSegmentEntity
-from .platforms.zone_light import as_master_light, async_zone_light_entities  # fork: zone lights
+from .platforms.zone_light import (  # fork: zone lights
+    as_master_light,
+    as_zone_named_segment,
+    async_zone_light_entities,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,9 +118,12 @@ async def async_setup_entry(
                     device.name,
                 )
                 entities.append(
-                    GoveeGroupedSegmentEntity(
-                        coordinator=coordinator,
-                        device=device,
+                    as_zone_named_segment(  # fork: zone lights name segments after their zone
+                        GoveeGroupedSegmentEntity(
+                            coordinator=coordinator,
+                            device=device,
+                        ),
+                        entry,
                     )
                 )
             elif segment_mode == SEGMENT_MODE_INDIVIDUAL:
@@ -127,10 +134,13 @@ async def async_setup_entry(
                 )
                 for segment_index in range(device.segment_count):
                     entities.append(
-                        GoveeSegmentEntity(
-                            coordinator=coordinator,
-                            device=device,
-                            segment_index=segment_index,
+                        as_zone_named_segment(  # fork: zone lights name segments after their zone
+                            GoveeSegmentEntity(
+                                coordinator=coordinator,
+                                device=device,
+                                segment_index=segment_index,
+                            ),
+                            entry,
                         )
                     )
 
