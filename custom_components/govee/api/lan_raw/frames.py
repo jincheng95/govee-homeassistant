@@ -10,9 +10,11 @@ A frame is exactly 20 bytes::
     [2:19]  payload, zero-padded
     [19]    checksum = XOR of bytes[0..18]
 
-The identical frame is what the Govee app sends over BLE, where it is wrapped
-in AES-128-ECB + RC4. LAN takes it in the clear, which is why the LAN path is
-the durable one.
+The frame itself is transport-agnostic: the identical 20 bytes travel over LAN
+UDP (base64 inside the ``ptReal`` JSON envelope), over BLE GATT (wrapped in
+AES-128-ECB + RC4 under a session key), and over Govee's cloud MQTT (also as
+``ptReal``). Only the envelope helpers at the bottom of this module are
+LAN/cloud-specific.
 """
 
 from __future__ import annotations

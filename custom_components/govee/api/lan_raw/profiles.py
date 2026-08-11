@@ -6,26 +6,20 @@ device up once and then works entirely off the profile.
 
 What is data and what is code
 -----------------------------
-Data (here): zone bytes, zone names, segment counts, kelvin ranges, hardware
-constraints, and — critically — the per-capability constant block: the segment
-sub-mode byte (``0x2c`` on the H60B0, ``0x15`` on the H6046, UNKNOWN on the
-H6076) and the segment-mask byte offset, which differs *by attribute* (byte 10
-after the kelvin field for colour, byte 6 straight after the level for
-brightness; byte 12 in the H6046's ``SubModeColorV2`` body).
-
-Code (:mod:`.encoders`): the frame layouts themselves. Each capability *names*
-an encoder. A byte-level DSL was considered and rejected — mask packing,
-checksums and clamping are algorithmic and would only be reinvented, badly, in
-table form.
+Data (here): zone bytes, segment counts, kelvin ranges, hardware constraints,
+and the per-capability constant block — the sub-mode byte, the attribute byte,
+and the segment-mask offset (which differs *by attribute*, so it is table
+data, never an encoder literal). Code (:mod:`.encoders`): the frame layouts.
+Each capability *names* an encoder; anything algorithmic (masks, checksums,
+clamping) stays in code.
 
 UNKNOWN
 -------
-The table can say "I do not know this byte". :data:`UNKNOWN` in a constant
+The table can say "I do not know this byte": :data:`UNKNOWN` in a constant
 block makes the codec raise :class:`~.errors.UnknownEncodingError` rather than
-guess: a wrong sub-mode byte is *silently ignored* by the firmware, which is
-indistinguishable from a dead network. The sub-mode byte differs by SKU
-(``0x2c`` on the H60B0, ``0x15`` on the H6046) and must never be assumed to
-carry across models.
+guess. Guessing is never safe — a wrong sub-mode byte is *silently ignored* by
+the firmware, which is indistinguishable from a dead network, and the byte
+differs per SKU (``0x2c`` on the H60B0, ``0x15`` on the H6046).
 """
 
 from __future__ import annotations
@@ -282,12 +276,10 @@ H6046: Final = DeviceProfile(
     sku="H6046",
     goods_type=112,
     name="Light bar",
-    # UNVERIFIED: manufacturer claim only. The H60B0's 6500 K ceiling is a
-    # per-firmware behaviour and must not be assumed to carry across SKUs.
-    # Verified on hardware 2026-08-11: unlike the H60B0, this SKU really does
-    # reach 9000 K. A colorwc sweep 2700->9000 K was accepted at every step,
-    # devStatus echoing the requested value with the lamp still on. The H60B0's
-    # zone-drop behaviour above ~6500 K does NOT generalise across SKUs.
+    # Verified on hardware: unlike the H60B0, this SKU really does reach
+    # 9000 K — a colorwc sweep 2700->9000 K was accepted at every step, with
+    # devStatus echoing each requested value and the lamp staying lit. Kelvin
+    # ceilings are per-firmware and never carry across SKUs.
     kelvin=KelvinRange(2000, 9000, verified=True, note="9000 K confirmed by colorwc sweep + devStatus readback"),
     zones=(
         ZoneSpec(
@@ -309,17 +301,11 @@ H6046: Final = DeviceProfile(
         ),
         Capability.SEGMENT_BRIGHTNESS: CapabilitySpec(
             "segment_level_v2",
-            # Sources disagree on the attribute byte (LAN notes say 0x02,
-            # decompiled SubModeColorV2 numbers brightness 0x03) and therefore
-            # on the mask offset. Refuse until one of them is confirmed.
-            #
-            # Probed 2026-08-11 and still unresolved: sending
-            # `33 05 15 02 <Khi Klo>` nine times across 2700-9000 K produced NO
-            # observable change at all — colorTemInKelvin and brightness both
-            # held their prior values. So attribute 0x02 in this form is neither
-            # colour temp nor brightness; the frame appears to be discarded.
-            # (The same sweep via the documented `colorwc` command worked
-            # perfectly, which is how the kelvin ceiling above was confirmed.)
+            # Sources disagree on the attribute byte (captures say 0x02, the
+            # decompiled SubModeColorV2 struct numbers brightness 0x03) and
+            # therefore on the mask offset. A hardware probe of the 0x02 form
+            # (`33 05 15 02 ...`) produced no observable change at all — the
+            # frame appears to be discarded. Refuse until one is confirmed.
             {"sub_mode": 0x15, "attribute": UNKNOWN, "mask_offset": UNKNOWN},
             verified=False,
             note="attribute byte disputed; raw 0x02 form probed 2026-08-11 and had no effect",

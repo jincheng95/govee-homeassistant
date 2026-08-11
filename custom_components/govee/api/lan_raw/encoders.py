@@ -30,8 +30,7 @@ from .frames import (
 )
 
 SUB_MODE_COMMAND_TYPE = 0x05
-"""``0x05`` is the sub_mode commandType — not a length, as early hand-derived
-readings of the frame assumed."""
+"""commandType for every sub-mode frame (mode select, zone/segment operate)."""
 
 ZONE_POWER_COMMAND_TYPE = 0x30
 WHOLE_POWER_COMMAND_TYPE = 0x01
@@ -50,14 +49,6 @@ def constant(constants: Mapping[str, Any], key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise UnknownEncodingError(f"profile constant {key!r} is UNKNOWN for this SKU — refusing to guess the bytes")
     return value
-
-
-def optional_constant(constants: Mapping[str, Any], key: str) -> int | None:
-    """Read a constant that is legitimately absent for some profiles."""
-    value = constants.get(key)
-    if value is None:
-        return None
-    return constant(constants, key)
 
 
 # --------------------------------------------------------------------------
@@ -226,11 +217,11 @@ def segment_color_v2(
 def segment_level_v2(constants: Mapping[str, Any], *, level: int, mask: bytes) -> bytes:
     """``33 05 15 <attr> <level> <mask0> <mask1>`` — UNVERIFIED shape.
 
-    The two available sources disagree: the LAN reverse-engineering notes put
-    brightness at attribute ``02`` with the mask straight after the level,
-    while the decompiled ``SubModeColorV2`` numbers brightness ``03`` inside
-    the 17-byte colour body. Profiles that cannot resolve that leave the
-    constants UNKNOWN and this encoder refuses.
+    Two sources disagree: captured LAN traffic puts brightness at attribute
+    ``02`` with the mask straight after the level, while the decompiled
+    ``SubModeColorV2`` struct numbers brightness ``03`` inside the colour
+    body. Profiles that cannot resolve that leave the constants UNKNOWN and
+    this encoder refuses.
     """
     body = bytearray(
         [
