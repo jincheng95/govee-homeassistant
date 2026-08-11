@@ -7,9 +7,14 @@ Two entity-level requirements and one honesty requirement:
 * ``lan_udp`` appears as its own opt-in per-transport entity, following exactly
   the convention of the four existing ones (translation key, unique id, icon,
   and the same two-file translation rule).
-* Its availability means "the device answered discovery and we have a frame
-  layout for it" — never "a write landed". Raw frames are unconfirmable, so a
-  send stamps a timestamp and nothing more.
+* Its availability means "a raw frame sent now would have somewhere to go" —
+  never "a write landed". Raw frames are unconfirmable, so a send stamps a
+  timestamp and nothing more.
+
+The honesty requirement is the one with teeth. The sensor must agree with the
+writer's own gates, so the cases that matter are the ones where a device looks
+perfectly healthy on the LAN and still cannot be written to: the option is off,
+or the model is on a stack that ignores raw frames over LAN.
 """
 
 from __future__ import annotations
@@ -18,14 +23,16 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from custom_components.govee import lan_health
+import pytest
+
+from custom_components.govee import lan_udp_health
 from custom_components.govee.binary_sensor import (
     GoveeDeviceConnectivity,
     GoveeTransportConnectivity,
     _TRANSPORT_SPECS,
     async_setup_entry,
 )
-from custom_components.govee.const import CONF_EXPOSE_TRANSPORT_ENTITIES
+from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE, CONF_EXPOSE_TRANSPORT_ENTITIES
 from custom_components.govee.models import GoveeCapability, GoveeDevice, TransportHealth
 from custom_components.govee.models.device import (
     CAPABILITY_ON_OFF,
@@ -49,10 +56,13 @@ def _device(sku: str = "H60B0") -> GoveeDevice:
     )
 
 
-def _coordinator(device: GoveeDevice | None = None, *, on_lan: bool = True) -> MagicMock:
+def _coordinator(device: GoveeDevice | None = None, *, on_lan: bool = True, raw_write: bool = True) -> MagicMock:
     device = device or _device()
     tracker = TransportHealthTracker()
     coordinator = MagicMock()
+    # Explicit, never a MagicMock: an auto-truthy options mapping made every
+    # option-gated assertion in this file pass vacuously.
+    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw_write}
     coordinator.devices = {device.device_id: device}
     coordinator.leak_sensors = {}
     coordinator.register_leak_hubs = MagicMock()
@@ -86,9 +96,11 @@ def _aggregate(coordinator: MagicMock, device: GoveeDevice) -> GoveeDeviceConnec
 
 
 class TestTransportRegistration:
+    """The fifth transport registered exactly like the four before it."""
+
     def test_lan_udp_is_a_tracked_transport(self):
         assert "lan_udp" in TRANSPORT_KINDS
-        assert lan_health.TRANSPORT_LAN_UDP == "lan_udp"
+        assert lan_udp_health.TRANSPORT_LAN_UDP == "lan_udp"
 
     def test_tracker_provisions_it_for_every_device(self):
         tracker = TransportHealthTracker()
@@ -109,6 +121,9 @@ class TestTransportRegistration:
 
 
 class TestEntities:
+    """The opt-in per-transport entity and the always-on attributes."""
+
+    @pytest.mark.asyncio
     async def test_entity_created_when_exposed(self):
         device = _device()
         coordinator = _coordinator(device)
@@ -122,6 +137,7 @@ class TestEntities:
         assert entity.unique_id == f"{DEVICE_ID}_lan_udp_connectivity"
         assert entity.icon == "mdi:lan-pending"
 
+    @pytest.mark.asyncio
     async def test_entity_absent_when_not_exposed(self):
         coordinator = _coordinator()
         added: list = []
@@ -132,7 +148,7 @@ class TestEntities:
     def test_aggregate_sensor_carries_lan_udp_attributes(self):
         device = _device()
         coordinator = _coordinator(device)
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
         entity = _aggregate(coordinator, device)
 
         attrs = entity.extra_state_attributes
@@ -144,7 +160,7 @@ class TestEntities:
     def test_aggregate_sensor_reports_the_failure_reason(self):
         device = _device()
         coordinator = _coordinator(device, on_lan=False)
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
         entity = _aggregate(coordinator, device)
 
         attrs = entity.extra_state_attributes
@@ -158,9 +174,11 @@ class TestEntities:
 
 
 class TestSemantics:
+    """What availability is allowed to claim on an unconfirmable path."""
+
     def test_reachable_and_profiled_is_available(self):
         coordinator = _coordinator()
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is True
@@ -168,26 +186,72 @@ class TestSemantics:
 
     def test_absent_from_the_lan_map_is_unavailable(self):
         coordinator = _coordinator(on_lan=False)
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is False
-        assert health.last_failure_reason == lan_health.REASON_NO_LAN_PRESENCE
+        assert health.last_failure_reason == lan_udp_health.REASON_NO_LAN_PRESENCE
 
     def test_reachable_but_unprofiled_sku_is_unavailable(self):
         coordinator = _coordinator(_device(sku="H6199"))
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is False
-        assert health.last_failure_reason == lan_health.REASON_NO_RAW_PROFILE
+        assert health.last_failure_reason == lan_udp_health.REASON_NO_RAW_PROFILE
+
+    def test_transport_disabled_is_unavailable(self):
+        """The option defaults to off; the sensor must not read "connected".
+
+        With the raw transport off, `lan_target` refuses every device — so a
+        green sensor beside a writer that never writes is a lie, and it is the
+        DEFAULT configuration.
+        """
+        coordinator = _coordinator(raw_write=False)
+        lan_udp_health.refresh(coordinator)
+
+        health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
+        assert health.is_available is False
+        assert health.last_failure_reason == lan_udp_health.REASON_TRANSPORT_DISABLED
+
+    def test_a_sku_that_ignores_lan_raw_frames_is_unavailable(self):
+        """Profiled and reachable is not enough — the pipe has to be right.
+
+        The H6046 answers LAN discovery perfectly and discards every raw frame
+        it is sent there. Reporting it available would be exactly the silent
+        no-op this transport is most prone to.
+        """
+        coordinator = _coordinator(_device(sku="H6046"))
+        lan_udp_health.refresh(coordinator)
+
+        health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
+        assert health.is_available is False
+        assert health.last_failure_reason == lan_udp_health.REASON_NO_LAN_RAW_TRANSPORT
+
+    def test_a_sku_that_does_carry_lan_raw_frames_is_available(self):
+        coordinator = _coordinator(_device(sku="H6076"))
+        lan_udp_health.refresh(coordinator)
+
+        assert coordinator.get_transport_health(DEVICE_ID, "lan_udp").is_available is True
+
+    def test_turning_the_option_on_clears_the_gate_reason(self):
+        """Gate reasons are this pass's to clear; a send failure is not."""
+        coordinator = _coordinator(raw_write=False)
+        lan_udp_health.refresh(coordinator)
+        coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: True}
+
+        lan_udp_health.refresh(coordinator)
+
+        health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
+        assert health.is_available is True
+        assert health.last_failure_reason is None
 
     def test_a_send_stamps_a_time_but_never_availability(self):
         """A UDP datagram into the void proves nothing about the device."""
         coordinator = _coordinator(on_lan=False)
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
-        lan_health.note_send(coordinator, DEVICE_ID)
+        lan_udp_health.note_send(coordinator, DEVICE_ID)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.last_send_ts is not None
@@ -195,34 +259,34 @@ class TestSemantics:
 
     def test_no_receive_direction_is_ever_claimed(self):
         coordinator = _coordinator()
-        lan_health.refresh(coordinator)
-        lan_health.note_send(coordinator, DEVICE_ID)
+        lan_udp_health.refresh(coordinator)
+        lan_udp_health.note_send(coordinator, DEVICE_ID)
 
         # Raw frames get no reply of any kind, so there is nothing to stamp.
         assert coordinator.get_transport_health(DEVICE_ID, "lan_udp").last_success_ts is None
 
     def test_a_hard_send_failure_is_recorded(self):
         coordinator = _coordinator()
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
-        lan_health.note_failure(coordinator, DEVICE_ID)
+        lan_udp_health.note_failure(coordinator, DEVICE_ID)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is False
-        assert health.last_failure_reason == lan_health.REASON_SEND_FAILED
+        assert health.last_failure_reason == lan_udp_health.REASON_SEND_FAILED
 
     def test_refresh_clears_a_stale_gate_reason_but_not_a_send_failure(self):
         coordinator = _coordinator()
-        lan_health.refresh(coordinator)
-        lan_health.note_failure(coordinator, DEVICE_ID)
+        lan_udp_health.refresh(coordinator)
+        lan_udp_health.note_failure(coordinator, DEVICE_ID)
 
-        lan_health.refresh(coordinator)
+        lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         # Reachability is restored (that is what refresh scores), but the last
         # hard failure stays on the record.
         assert health.is_available is True
-        assert health.last_failure_reason == lan_health.REASON_SEND_FAILED
+        assert health.last_failure_reason == lan_udp_health.REASON_SEND_FAILED
 
 
 # ==============================================================================
@@ -231,6 +295,8 @@ class TestSemantics:
 
 
 class TestTranslations:
+    """The two-file translation rule, applied to the new key."""
+
     @staticmethod
     def _block(name: str) -> dict:
         data = json.loads((ROOT / name).read_text(encoding="utf-8"))

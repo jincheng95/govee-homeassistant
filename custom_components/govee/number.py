@@ -19,7 +19,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, SUFFIX_HEATER_TEMPERATURE, SUFFIX_MUSIC_SENSITIVITY
 from .coordinator import GoveeCoordinator
 from .models import GoveeDevice, MusicModeCommand, TemperatureSettingCommand
-from .zone_light import async_zone_number_entities  # fork: per-zone flow rate
+from .platforms.zone_light import async_zone_number_entities  # fork: per-zone flow rate
 
 _LOGGER = logging.getLogger(__name__)
 

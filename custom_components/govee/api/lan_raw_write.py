@@ -9,15 +9,15 @@ intent is one 20-byte UDP frame on the LAN — ``33 30 <zone> <00|01>`` — and 
 lamp acts on it as fast as the packet arrives.
 
 This module is the transport half of that feature. It sits between the entities
-and the codec in :mod:`.api.protocol`, decides whether a LAN write is *safe* for
+and the codec in :mod:`.protocol`, decides whether a LAN write is *safe* for
 a given device, sends it, and reports the result. Callers keep their own
-optimistic state; shared zone state lives in :mod:`.zone_state`.
+optimistic state; shared zone state lives in :mod:`..zone_state`.
 
 Scope, in the order it grew:
 
 * **zone power** — the switches in ``switch.py`` (:func:`async_zone_power`).
 * **zone colour / brightness / colour temperature / flow rate** — the zone
-  light and number entities in ``zone_light.py``, via :func:`async_send_frames`.
+  light and number entities in ``platforms/zone_light.py``, via :func:`async_send_frames`.
   These have no cloud equivalent at zone granularity, so there is nothing to
   fall back to; see that module for what the entities do instead.
 * **per-segment colour** — the segment light entities in
@@ -31,12 +31,19 @@ Gates, all of which must pass, or the caller falls through to whatever it did
 before:
 
 1. The ``enable_lan_raw_write`` option is on (it defaults to **off**).
-2. The intent maps to a capability the device's SKU profile declares.
-3. Every profile constant the frame needs is *known*. A profile that does not
+2. **The SKU actually carries raw frames over LAN** — ``profile.carries(
+   Transport.LAN_RAW)``. Having a profile is not enough: some SKUs are on an
+   older stack that takes raw frames only over BLE and ignores them on the
+   LAN. That is the dangerous case, because the datagram still leaves, no
+   reply is expected, and the write looks successful while the lamp does
+   nothing. Anything that gets here without this check is a silent no-op with
+   an optimistic state update on top of it.
+3. The intent maps to a capability the device's SKU profile declares.
+4. Every profile constant the frame needs is *known*. A profile that does not
    know a byte raises out of the codec rather than guessing — a wrong sub-mode
    byte is silently ignored by firmware, which is indistinguishable from a dead
    network (see ``profiles.UNKNOWN``).
-4. The coordinator currently has a live LAN correlation (an IP) for the device.
+5. The coordinator currently has a live LAN correlation (an IP) for the device.
 
 Nothing here raises at the caller: every failure path returns ``False``, which
 means "I did not handle it, do what you did before".
@@ -45,7 +52,7 @@ Write-only, therefore optimistic and repeated
 ---------------------------------------------
 The raw LAN channel is fire-and-forget by measurement, not by choice: devices
 answer no ``ptReal`` query and a LAN command produces no cloud status push
-either (see :mod:`.api.protocol.client`). Two consequences are baked in here:
+either (see :mod:`.protocol.client`). Two consequences are baked in here:
 
 * **Optimistic state.** There is no echo to wait for, so entity state is set
   the moment the datagrams are away.
@@ -83,19 +90,20 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
 
-from . import lan_health
-from .api.protocol import (
+from .. import lan_udp_health
+from ..const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
+from ..zone_state import ZONE_KEY_BY_TOGGLE, displaced_zone_keys, profile_for, registry
+from .protocol import (
     Capability,
     DeviceProfile,
     GoveeCodec,
     GoveeProtocolError,
     LanUdpClient,
+    Transport,
 )
-from .const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
-from .zone_state import ZONE_KEY_BY_TOGGLE, displaced_zone_keys, profile_for, registry
 
 if TYPE_CHECKING:
-    from .coordinator import GoveeCoordinator
+    from ..coordinator import GoveeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -137,14 +145,34 @@ def lan_target(coordinator: GoveeCoordinator, device_id: str | None, sku: str) -
     """The ``(ip, profile)`` a raw write to this device would use, or None.
 
     None means one of the transport gates failed — the option is off, the SKU
-    is not in the profile table, or the device has no live LAN correlation.
-    Callers use it both to route a write and to decide whether a LAN-only
-    control can be offered at all.
+    is not in the profile table, **the SKU does not carry raw frames over LAN**,
+    or the device has no live LAN correlation. Callers use it both to route a
+    write and to decide whether a LAN-only control can be offered at all.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device_id: The Govee device id, or None for an entity without one.
+        sku: The device model, used to look the profile up.
+
+    Returns:
+        The LAN address and profile to write with, or None to fall back.
     """
     if not _option_enabled(coordinator):
         return None
     profile = profile_for(sku)
     if profile is None:
+        return None
+    if not profile.carries(Transport.LAN_RAW):
+        # Having a profile is NOT permission to send. Some SKUs accept the
+        # datagram and ignore the frame, which is indistinguishable from
+        # success on a fire-and-forget path with no reply — so a device whose
+        # raw pipe is BLE must fall back to the cloud here, not silently
+        # no-op with an optimistic state update on top.
+        _LOGGER.debug(
+            "Govee LAN write: %s does not carry raw frames over LAN (raw transports: %s) — using cloud transport",
+            sku,
+            ", ".join(transport.value for transport in profile.transports),
+        )
         return None
     ip = _lan_ip(coordinator, device_id)
     if ip is None:
@@ -170,37 +198,77 @@ async def async_send_frames(
         return False
     started = time.monotonic()
     try:
-        await _async_send_repeated(ip, frames)
-    except (GoveeProtocolError, OSError) as err:
+        sent = await _async_send_repeated(ip, frames)
+    except GoveeProtocolError as err:
+        # The frames were built successfully and then could not be wrapped for
+        # the wire. That is a bug in this integration, not evidence about the
+        # network — so it must NOT mark the device's transport unavailable,
+        # which would stick (refresh() never clears a hard send failure).
+        _LOGGER.debug(
+            "Govee LAN write: cannot build an envelope for %s (%s) — falling back",
+            device_id,
+            err,
+        )
+        return False
+    except OSError as err:
         _LOGGER.debug(
             "Govee LAN write: raw send to %s (%s) failed (%s) — falling back",
             device_id,
             ip,
             err,
         )
-        lan_health.note_failure(coordinator, device_id)
+        lan_udp_health.note_failure(coordinator, device_id)
         return False
 
-    lan_health.note_send(coordinator, device_id)
+    lan_udp_health.note_send(coordinator, device_id)
     _LOGGER.debug(
-        "Govee LAN write: %s %s via LAN transport %s in %.1f ms (%d x %s)",
+        "Govee LAN write: %s %s via LAN transport %s in %.1f ms (%d/%d x %s)",
         device_id,
         what,
         ip,
         (time.monotonic() - started) * 1000,
+        sent,
         LAN_WRITE_REPEATS,
         " | ".join(frame.hex(" ") for frame in frames),
     )
     return True
 
 
-async def _async_send_repeated(ip: str, frames: Sequence[bytes]) -> None:
-    """Send the same envelope :data:`LAN_WRITE_REPEATS` times, spaced out."""
+async def _async_send_repeated(ip: str, frames: Sequence[bytes]) -> int:
+    """Send the same envelope :data:`LAN_WRITE_REPEATS` times, spaced out.
+
+    The repeats are redundancy, not a sequence: the frames are absolute, so one
+    copy reaching the socket says exactly what three do. A copy that fails
+    therefore does not fail the write — reporting failure would send the caller
+    to the cloud with a second, contradictory command for something the device
+    has already been told.
+
+    Args:
+        ip: The device's LAN address.
+        frames: The frames to put in each envelope.
+
+    Returns:
+        How many copies were handed to the socket (at least one).
+
+    Raises:
+        OSError: If every copy failed.
+        GoveeProtocolError: If the envelope could not be built at all.
+    """
     client = _client()
+    sent = 0
+    last_error: OSError | None = None
     for attempt in range(LAN_WRITE_REPEATS):
         if attempt:
             await asyncio.sleep(LAN_WRITE_GAP_SECONDS)
-        await client.async_send_frames(ip, list(frames))
+        try:
+            await client.async_send_frames(ip, list(frames))
+        except OSError as err:
+            last_error = err
+            continue
+        sent += 1
+    if sent == 0:
+        raise last_error if last_error is not None else OSError("no copies were sent")
+    return sent
 
 
 # ----------------------------------------------------------------------
@@ -378,7 +446,7 @@ def _option_enabled(coordinator: GoveeCoordinator) -> bool:
     return bool(coordinator.config_entry.options.get(CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE))
 
 
-# ``_profile`` predates :mod:`.zone_state`; kept as the module's one-line
+# ``_profile`` predates :mod:`..zone_state`; kept as the module's one-line
 # accessor so existing callers and tests keep working.
 _profile = profile_for
 _zone_power_supported = zone_power_supported

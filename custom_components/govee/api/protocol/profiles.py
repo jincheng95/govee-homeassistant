@@ -19,7 +19,34 @@ The table can say "I do not know this byte": :data:`UNKNOWN` in a constant
 block makes the codec raise :class:`~.errors.UnknownEncodingError` rather than
 guess. Guessing is never safe — a wrong sub-mode byte is *silently ignored* by
 the firmware, which is indistinguishable from a dead network, and the byte
-differs per SKU (``0x2c`` on the H60B0, ``0x15`` on the H6046).
+differs per SKU (``0x2c`` on the H60B0, ``0x15`` on the H6046/H6076).
+
+Transports
+----------
+Which *pipe* accepts a raw frame is a property of the SKU, not of the frame.
+The frames themselves are transport-agnostic — the same 20 bytes travel over
+LAN UDP, BLE GATT and cloud MQTT — but the lamps do not all listen on all
+three, so every profile declares a preference-ordered, non-empty
+:class:`Transport` tuple. Measured, not assumed:
+
+* **H60B0, H6076** take raw frames over LAN UDP (and over encrypted BLE).
+* **H6046** *ignores raw LAN frames entirely.* Seven envelope shapes were tried
+  against it with a power-off frame whose effect is independently readable, and
+  none of them changed anything, while the same frame worked first try on the
+  H60B0. It is not an envelope problem: this SKU is on an older stack that
+  carries raw frames only over an unencrypted BLE link.
+
+The split is predictable from the BLE advertisement's manufacturer id, which a
+scanner can read before connecting: :data:`BLE_MANUFACTURER_MODERN` (``0x8843``)
+is the modern stack, :data:`BLE_MANUFACTURER_LEGACY` (``0x8803``) the legacy
+one. That is why :attr:`DeviceProfile.ble_manufacturer_id` is table data.
+
+**The transport list is a gate, not a hint.** A raw sender cannot detect a
+mismatch — it has no SKU, sends fire-and-forget, and reads no reply — so a
+frame posted to a SKU that does not carry it leaves the socket, changes
+nothing, and is indistinguishable from success. Callers must check
+:meth:`DeviceProfile.carries` before sending and fall back to whatever cloud
+path they had.
 """
 
 from __future__ import annotations
@@ -54,6 +81,31 @@ UNKNOWN: Final = Unknown()
 
 ConstantValue = int | Unknown
 Constants = Mapping[str, ConstantValue]
+
+
+@unique
+class Transport(str, Enum):
+    """A pipe that can carry raw frames to a device.
+
+    The bytes are identical on all three; only the framing around them and the
+    set of SKUs that listen differ.
+    """
+
+    LAN_RAW = "lan_raw"
+    """``ptReal`` frames in a JSON envelope, UDP to the device's command port."""
+
+    BLE_ENCRYPTED = "ble_encrypted"
+    """GATT write after a session handshake, frames encrypted under the key."""
+
+    BLE_PLAINTEXT = "ble_plaintext"
+    """Same characteristic and the same 20-byte frames, no handshake, no crypto."""
+
+
+BLE_MANUFACTURER_MODERN: Final = 0x8843
+"""Advertisement manufacturer id of the modern stack (LAN raw + encrypted BLE)."""
+
+BLE_MANUFACTURER_LEGACY: Final = 0x8803
+"""Advertisement manufacturer id of the legacy stack (plaintext BLE only)."""
 
 
 @unique
@@ -146,6 +198,13 @@ class DeviceProfile:
     goods_type: int
     name: str
     kelvin: KelvinRange
+
+    transports: tuple[Transport, ...]
+    """Pipes this SKU accepts raw frames on, best first. Never empty."""
+
+    ble_manufacturer_id: int
+    """Advertisement manufacturer id, so a scanner can pick a profile early."""
+
     zones: tuple[ZoneSpec, ...] = ()
     capabilities: Mapping[Capability, CapabilitySpec] = field(default_factory=dict)
     modes: Mapping[str, ConstantValue] = field(default_factory=dict)
@@ -157,6 +216,27 @@ class DeviceProfile:
             if zone.key == key:
                 return zone
         raise GoveeProtocolError(f"{self.sku} has no zone {key!r} (have: {[z.key for z in self.zones]})")
+
+    def carries(self, transport: Transport) -> bool:
+        """Whether raw frames reach this SKU over ``transport``.
+
+        The gate every raw sender must pass before it puts bytes on the wire.
+        A sender cannot discover the answer for itself: the raw path is
+        fire-and-forget with no reply, so a frame sent down a pipe the SKU
+        ignores looks exactly like a frame that worked.
+
+        Args:
+            transport: The pipe the caller is about to send on.
+
+        Returns:
+            True when this SKU is known to act on raw frames from that pipe.
+        """
+        return transport in self.transports
+
+    @property
+    def preferred_transport(self) -> Transport:
+        """The first transport in the table's preference order."""
+        return self.transports[0]
 
     def supports(self, capability: Capability, *, zone: str | None = None) -> bool:
         if capability not in self.capabilities:
@@ -177,6 +257,8 @@ H60B0: Final = DeviceProfile(
     # Manufacturer claims 9000 K; above ~6500 K the firmware drops the zone
     # entirely, so 6500 K is a hard cap (verified on hardware).
     kelvin=KelvinRange(2000, 6500, verified=True, note="above ~6500 K the zone drops out"),
+    transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED),
+    ble_manufacturer_id=BLE_MANUFACTURER_MODERN,
     zones=(
         ZoneSpec(
             key="ripple",
@@ -281,6 +363,13 @@ H6046: Final = DeviceProfile(
     # devStatus echoing each requested value and the lamp staying lit. Kelvin
     # ceilings are per-firmware and never carry across SKUs.
     kelvin=KelvinRange(2000, 9000, verified=True, note="9000 K confirmed by colorwc sweep + devStatus readback"),
+    # Legacy stack: raw frames reach this SKU ONLY over an unencrypted BLE
+    # link. Raw LAN frames are accepted by the socket and ignored by the
+    # firmware — seven envelope shapes were tried with an independently
+    # readable power-off frame and none of them did anything, while the same
+    # frame worked first try on the H60B0. Do not add LAN_RAW here.
+    transports=(Transport.BLE_PLAINTEXT,),
+    ble_manufacturer_id=BLE_MANUFACTURER_LEGACY,
     zones=(
         ZoneSpec(
             key="segments",
@@ -288,6 +377,9 @@ H6046: Final = DeviceProfile(
             zone_byte=None,
             segments=10,
             capabilities=frozenset({Capability.SEGMENT_COLOR, Capability.SEGMENT_BRIGHTNESS}),
+            # The cloud API declares 15 segments for this SKU; the hardware has
+            # 10 (2 bars x 5) and segments 11-15 are phantom. Confirmed by
+            # per-segment readback. Trust this number, not the cloud's.
             note="2 bars x 5 segments; no zone byte, segments are addressed by mask alone",
         ),
     ),
@@ -301,14 +393,19 @@ H6046: Final = DeviceProfile(
         ),
         Capability.SEGMENT_BRIGHTNESS: CapabilitySpec(
             "segment_level_v2",
-            # Sources disagree on the attribute byte (captures say 0x02, the
-            # decompiled SubModeColorV2 struct numbers brightness 0x03) and
-            # therefore on the mask offset. A hardware probe of the 0x02 form
-            # (`33 05 15 02 ...`) produced no observable change at all — the
-            # frame appears to be discarded. Refuse until one is confirmed.
-            {"sub_mode": 0x15, "attribute": UNKNOWN, "mask_offset": UNKNOWN},
-            verified=False,
-            note="attribute byte disputed; raw 0x02 form probed 2026-08-11 and had no effect",
+            # Attribute 0x02 is brightness and the mask follows the level byte
+            # immediately: `33 05 15 02 <level> <mask0 mask1>`. Settled by a
+            # closed-loop test — write the frame, read the segments back — in
+            # which one masked segment moved from level 100 to level 25 with
+            # its colour untouched. The earlier probe that "had no effect" was
+            # sent over LAN, which this SKU ignores (see `transports` above).
+            #
+            # mask_offset counts from proType as byte 0, so it differs BY
+            # ATTRIBUTE: the colour body runs to index 11 and masks at 12, the
+            # brightness body runs to index 4 and masks at 5. Reusing 12 here
+            # would write the mask into dead padding and the frame would be a
+            # silent no-op.
+            {"sub_mode": 0x15, "attribute": 0x02, "mask_offset": 5},
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
@@ -321,29 +418,36 @@ H6076: Final = DeviceProfile(
     goods_type=69,
     name="Floor lamp",
     kelvin=KelvinRange(2000, 9000, verified=False, note="generic base2light; ceiling UNVERIFIED"),
+    transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED),
+    ble_manufacturer_id=BLE_MANUFACTURER_MODERN,
     zones=(
         ZoneSpec(
             key="segments",
             name="Segments",
             zone_byte=None,
             segments=7,
-            capabilities=frozenset({Capability.SEGMENT_COLOR}),
+            capabilities=frozenset({Capability.SEGMENT_COLOR, Capability.SEGMENT_BRIGHTNESS}),
             note="segment count comes from the runtime device IC value, not a hardcoded table",
         ),
     ),
     capabilities={
         Capability.POWER: CapabilitySpec("whole_power"),
         Capability.BRIGHTNESS: CapabilitySpec("whole_brightness"),
+        # This SKU shares the whole 0x15 SubModeColorV2 body with the H6046; the
+        # two differ only in transport and segment count. The guess that a
+        # "newer" RGBIC sub-mode would apply here was wrong: the lamp reports
+        # its live sub-mode as 0x15, and a closed-loop paint test (write, then
+        # read the segments back) reddened exactly the masked segment, while the
+        # mask-straight-after-RGB and H60B0 zone forms both did nothing.
         Capability.SEGMENT_COLOR: CapabilitySpec(
             "segment_color_v2",
-            # The sub-mode byte is the open question: most likely the shared
-            # RGBIC form rather than the legacy 0x15, which would also change
-            # the body layout (hence the encoder name is provisional too).
-            # Settling it needs a LAN test against the lamp with someone
-            # watching the segments; nothing here can confirm it in software.
-            {"sub_mode": UNKNOWN, "attribute": 0x01, "mask_offset": 12},
-            verified=False,
-            note="per-segment sub-mode UNCONFIRMED — needs a hardware test against the lamp",
+            {"sub_mode": 0x15, "attribute": 0x01, "mask_offset": 12},
+        ),
+        Capability.SEGMENT_BRIGHTNESS: CapabilitySpec(
+            "segment_level_v2",
+            # Same body as the H6046, confirmed independently on this SKU: a
+            # level+mask frame moved exactly the two masked segments.
+            {"sub_mode": 0x15, "attribute": 0x02, "mask_offset": 5},
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
@@ -369,6 +473,13 @@ def validate_table() -> None:
     it, and so may a diagnostics dump.
     """
     for profile in PROFILES.values():
+        # A SKU with no raw pipe cannot be driven by this package at all and
+        # has no business carrying a profile; a duplicated entry would make the
+        # preference order meaningless.
+        if not profile.transports:
+            raise GoveeProtocolError(f"{profile.sku} declares no transport")
+        if len(set(profile.transports)) != len(profile.transports):
+            raise GoveeProtocolError(f"{profile.sku} repeats a transport: {profile.transports}")
         for capability, spec in profile.capabilities.items():
             if spec.encoder not in ENCODERS:
                 raise GoveeProtocolError(f"{profile.sku}/{capability.value} names unknown encoder {spec.encoder!r}")
@@ -389,6 +500,8 @@ def describe(profile: DeviceProfile) -> dict[str, Any]:
     return {
         "sku": profile.sku,
         "goods_type": profile.goods_type,
+        "transports": [transport.value for transport in profile.transports],
+        "ble_manufacturer_id": profile.ble_manufacturer_id,
         "kelvin": {
             "min": profile.kelvin.minimum,
             "max": profile.kelvin.maximum,

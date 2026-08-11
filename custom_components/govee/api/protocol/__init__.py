@@ -51,6 +51,8 @@ from .frames import (
 )
 from .packets import chunk_effect, commit_frame, upload_effect
 from .profiles import (
+    BLE_MANUFACTURER_LEGACY,
+    BLE_MANUFACTURER_MODERN,
     PROFILES,
     UNKNOWN,
     Capability,
@@ -58,12 +60,15 @@ from .profiles import (
     DeviceProfile,
     KelvinRange,
     MaxSimultaneousZones,
+    Transport,
     ZoneSpec,
     get_profile,
     validate_table,
 )
 
 __all__ = [
+    "BLE_MANUFACTURER_LEGACY",
+    "BLE_MANUFACTURER_MODERN",
     "FRAME_LENGTH",
     "LAN_COMMAND_PORT",
     "PROFILES",
@@ -78,6 +83,7 @@ __all__ = [
     "GoveeProtocolError",
     "MaxSimultaneousZones",
     "SegmentMaskError",
+    "Transport",
     "UnknownEncodingError",
     "UnsupportedCapabilityError",
     "ZoneSpec",

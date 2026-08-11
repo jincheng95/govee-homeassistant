@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-# "lan_udp" (fork) is the write-only raw UDP path — see lan_health.py for what
+# "lan_udp" (fork) is the write-only raw UDP path — see lan_udp_health.py for what
 # its availability does and does not claim.
 TransportKind = Literal["cloud_api", "mqtt", "ble", "lan", "lan_udp"]
 
