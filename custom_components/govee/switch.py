@@ -32,6 +32,7 @@ from .const import (
 )
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
+from .lan_write import async_zone_power
 from .models import (
     GoveeDevice,
     MusicModeCommand,
@@ -504,6 +505,8 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light zone on."""
+        if await async_zone_power(self, on=True):  # fork: raw-LAN fast path
+            return
         success = await self.coordinator.async_control_device(
             self._device_id,
             ToggleCommand(toggle_instance=self._toggle_instance, enabled=True),
@@ -514,6 +517,8 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light zone off."""
+        if await async_zone_power(self, on=False):  # fork: raw-LAN fast path
+            return
         success = await self.coordinator.async_control_device(
             self._device_id,
             ToggleCommand(toggle_instance=self._toggle_instance, enabled=False),

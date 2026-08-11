@@ -1,0 +1,373 @@
+"""Tests for the raw-LAN fast path for zone power toggles (fork feature).
+
+The H60B0's ripple / side / bottom switches can be driven by a single UDP frame
+instead of a 1-3 second cloud round trip. These tests drive the real
+:class:`GoveeNamedLightSwitchEntity` with a recording stand-in for the
+write-only UDP client, so no sockets and no cloud are involved:
+
+1. Frames — exact bytes per zone, on and off, cross-checked against the zone
+   bytes in the profile table.
+2. Gates — option off, device not on the LAN, SKU with no zone-power profile,
+   toggle instance that is not a zone. Each falls through to the cloud path
+   with behaviour unchanged.
+3. Delivery — the idempotent frame goes out :data:`LAN_WRITE_REPEATS` times to
+   the correlated IP, and a send failure falls back rather than lying.
+4. State — optimistic, applied without waiting for any echo, including the
+   zone the hardware displaces under the profile's ``MaxSimultaneousZones``.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from custom_components.govee import lan_write
+from custom_components.govee.api.lan_client import LanDeviceInfo
+from custom_components.govee.api.lan_raw import get_profile
+from custom_components.govee.const import (
+    CONF_ENABLE_LAN_RAW_WRITE,
+    SUFFIX_BOTTOM_LIGHT,
+    SUFFIX_RIPPLE_LIGHT,
+    SUFFIX_SIDE_LIGHT,
+)
+from custom_components.govee.models import GoveeCapability, GoveeDevice
+from custom_components.govee.models.device import (
+    CAPABILITY_COLOR_SETTING,
+    CAPABILITY_ON_OFF,
+    CAPABILITY_TOGGLE,
+    DEVICE_TYPE_LIGHT,
+    INSTANCE_COLOR_RGB,
+    INSTANCE_POWER,
+)
+from custom_components.govee.switch import GoveeNamedLightSwitchEntity
+
+DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
+IP = "10.20.0.51"
+
+# Golden frames: 33 30 <zone> <00|01>, zero-padded to 19 bytes, XOR checksum.
+# The zone bytes are asserted against the profile table separately below, so a
+# table edit that changed them would fail loudly instead of silently repainting
+# the expectation.
+GOLDEN = {
+    ("rippleLightToggle", True): "33300101" + "00" * 15 + "03",
+    ("rippleLightToggle", False): "33300100" + "00" * 15 + "02",
+    ("sideLightToggle", True): "33300201" + "00" * 15 + "00",
+    ("sideLightToggle", False): "33300200" + "00" * 15 + "01",
+    ("bottomLightToggle", True): "33300301" + "00" * 15 + "01",
+    ("bottomLightToggle", False): "33300300" + "00" * 15 + "00",
+}
+
+TOGGLE_SUFFIXES = {
+    "rippleLightToggle": SUFFIX_RIPPLE_LIGHT,
+    "sideLightToggle": SUFFIX_SIDE_LIGHT,
+    "bottomLightToggle": SUFFIX_BOTTOM_LIGHT,
+}
+
+
+class _FakeRawClient:
+    """Records datagrams instead of sending them."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.sends: list[tuple[str, bytes]] = []
+        self.error = error
+
+    async def async_send_frame(self, host: str, frame: bytes) -> None:
+        self.sends.append((host, frame))
+        if self.error is not None:
+            raise self.error
+
+
+def _cap(cap_type: str, instance: str) -> GoveeCapability:
+    return GoveeCapability(type=cap_type, instance=instance, parameters={})
+
+
+def _device(sku: str = "H60B0") -> GoveeDevice:
+    return GoveeDevice(
+        device_id=DEVICE_ID,
+        sku=sku,
+        name="Uplighter Floor Lamp",
+        device_type=DEVICE_TYPE_LIGHT,
+        capabilities=(
+            _cap(CAPABILITY_ON_OFF, INSTANCE_POWER),
+            _cap(CAPABILITY_COLOR_SETTING, INSTANCE_COLOR_RGB),
+            _cap(CAPABILITY_TOGGLE, "rippleLightToggle"),
+            _cap(CAPABILITY_TOGGLE, "sideLightToggle"),
+            _cap(CAPABILITY_TOGGLE, "bottomLightToggle"),
+        ),
+    )
+
+
+def _coordinator(*, enabled: bool = True, on_lan: bool = True, sku: str = "H60B0") -> Any:
+    coordinator = MagicMock()
+    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: enabled}
+    coordinator.async_control_device = AsyncMock(return_value=True)
+    coordinator._lan_devices = {}
+    if on_lan:
+        coordinator._lan_devices[DEVICE_ID] = LanDeviceInfo(
+            device_id=DEVICE_ID,
+            ip=IP,
+            mac=DEVICE_ID,
+            sku=sku,
+            firmware="1.0.0",
+            last_correlated_ts=0.0,
+        )
+    return coordinator
+
+
+def _entity(coordinator: Any, instance: str, device: GoveeDevice | None = None) -> GoveeNamedLightSwitchEntity:
+    entity = GoveeNamedLightSwitchEntity(
+        coordinator,
+        device or _device(),
+        instance,
+        "govee_test_light",
+        TOGGLE_SUFFIXES.get(instance, "_x"),
+        "mdi:shimmer",
+    )
+    entity.async_write_ha_state = MagicMock()
+    return entity
+
+
+@pytest.fixture(autouse=True)
+def _fast_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
+    """Recording client with the inter-repeat gap taken off the wall clock."""
+    client = _FakeRawClient()
+    monkeypatch.setattr(lan_write, "_CLIENT", client)
+    monkeypatch.setattr(lan_write, "LAN_WRITE_GAP_SECONDS", 0)
+    return client
+
+
+# ==============================================================================
+# 1. Frames
+# ==============================================================================
+
+
+class TestFrames:
+    """The bytes on the wire, per zone."""
+
+    @pytest.mark.parametrize("instance,on", sorted(GOLDEN))
+    async def test_golden_frame_per_zone(self, _fast_client, instance, on):
+        entity = _entity(_coordinator(), instance)
+
+        assert await lan_write.async_zone_power(entity, on=on) is True
+
+        hosts = {host for host, _frame in _fast_client.sends}
+        frames = {frame.hex() for _host, frame in _fast_client.sends}
+        assert hosts == {IP}
+        assert frames == {GOLDEN[(instance, on)]}
+
+    @pytest.mark.parametrize("instance,zone_key", sorted(lan_write.ZONE_KEY_BY_TOGGLE.items()))
+    def test_frame_zone_byte_comes_from_the_profile(self, instance, zone_key):
+        zone_byte = get_profile("H60B0").zone(zone_key).zone_byte
+        assert bytes.fromhex(GOLDEN[(instance, True)])[2] == zone_byte
+
+
+# ==============================================================================
+# 2. Gates — every reason to leave the cloud path alone
+# ==============================================================================
+
+
+class TestGates:
+    async def test_option_off_is_a_noop(self, _fast_client):
+        entity = _entity(_coordinator(enabled=False), "rippleLightToggle")
+
+        assert await lan_write.async_zone_power(entity, on=True) is False
+        assert _fast_client.sends == []
+
+    async def test_option_defaults_off(self, _fast_client):
+        coordinator = _coordinator()
+        coordinator.config_entry.options = {}
+        entity = _entity(coordinator, "rippleLightToggle")
+
+        assert await lan_write.async_zone_power(entity, on=True) is False
+        assert _fast_client.sends == []
+
+    async def test_device_not_on_lan_falls_back(self, _fast_client):
+        entity = _entity(_coordinator(on_lan=False), "rippleLightToggle")
+
+        assert await lan_write.async_zone_power(entity, on=True) is False
+        assert _fast_client.sends == []
+
+    async def test_sku_without_zone_power_falls_back(self, _fast_client):
+        # The H6046 has a raw-LAN profile but no zone-power capability.
+        entity = _entity(_coordinator(), "rippleLightToggle", _device(sku="H6046"))
+
+        assert await lan_write.async_zone_power(entity, on=True) is False
+        assert _fast_client.sends == []
+
+    async def test_sku_without_any_profile_falls_back(self, _fast_client):
+        entity = _entity(_coordinator(), "rippleLightToggle", _device(sku="H1310"))
+
+        assert await lan_write.async_zone_power(entity, on=True) is False
+        assert _fast_client.sends == []
+
+    async def test_non_zone_toggle_falls_back(self, _fast_client):
+        entity = _entity(_coordinator(), "mainLightToggle")
+
+        assert await lan_write.async_zone_power(entity, on=True) is False
+        assert _fast_client.sends == []
+
+    async def test_send_failure_falls_back_without_touching_state(self, monkeypatch, _fast_client):
+        monkeypatch.setattr(lan_write, "_CLIENT", _FakeRawClient(error=OSError("network unreachable")))
+        entity = _entity(_coordinator(), "rippleLightToggle")
+
+        assert await lan_write.async_zone_power(entity, on=True) is False
+        assert entity.is_on is False
+        entity.async_write_ha_state.assert_not_called()
+
+
+# ==============================================================================
+# 3. Delivery
+# ==============================================================================
+
+
+class TestDelivery:
+    async def test_frame_is_repeated(self, _fast_client):
+        entity = _entity(_coordinator(), "bottomLightToggle")
+
+        await lan_write.async_zone_power(entity, on=True)
+
+        assert len(_fast_client.sends) == lan_write.LAN_WRITE_REPEATS
+        assert lan_write.LAN_WRITE_REPEATS in (2, 3)
+
+    async def test_repeats_are_identical(self, _fast_client):
+        entity = _entity(_coordinator(), "sideLightToggle")
+
+        await lan_write.async_zone_power(entity, on=False)
+
+        assert len({send for send in _fast_client.sends}) == 1
+
+
+# ==============================================================================
+# 4. Optimistic state, including the displaced zone
+# ==============================================================================
+
+
+class TestOptimisticState:
+    async def test_state_set_without_any_cloud_call(self, _fast_client):
+        coordinator = _coordinator()
+        entity = _entity(coordinator, "rippleLightToggle")
+
+        assert await lan_write.async_zone_power(entity, on=True) is True
+        assert entity.is_on is True
+        entity.async_write_ha_state.assert_called()
+        coordinator.async_control_device.assert_not_called()
+
+    async def test_turn_off_sets_state(self, _fast_client):
+        entity = _entity(_coordinator(), "rippleLightToggle")
+        entity._is_on = True
+
+        await lan_write.async_zone_power(entity, on=False)
+
+        assert entity.is_on is False
+
+    def _lamp(self) -> dict[str, GoveeNamedLightSwitchEntity]:
+        """All three zone switches of one lamp, sharing an entity platform."""
+        coordinator = _coordinator()
+        device = _device()
+        entities = {instance: _entity(coordinator, instance, device) for instance in lan_write.ZONE_KEY_BY_TOGGLE}
+        platform = MagicMock()
+        platform.entities = {f"switch.zone_{index}": entity for index, entity in enumerate(entities.values())}
+        for entity in entities.values():
+            entity.platform = platform
+        return entities
+
+    async def test_third_zone_displaces_the_first(self, _fast_client):
+        # MaxSimultaneousZones(limit=2) on the H60B0: with ripple and ring lit,
+        # switching the downlight on drops the ripple inside the lamp.
+        zones = self._lamp()
+        zones["rippleLightToggle"]._is_on = True
+        zones["sideLightToggle"]._is_on = True
+
+        await lan_write.async_zone_power(zones["bottomLightToggle"], on=True)
+
+        assert zones["bottomLightToggle"].is_on is True
+        assert zones["rippleLightToggle"].is_on is False
+        assert zones["sideLightToggle"].is_on is True
+
+    async def test_no_displacement_below_the_limit(self, _fast_client):
+        zones = self._lamp()
+        zones["rippleLightToggle"]._is_on = True
+
+        await lan_write.async_zone_power(zones["bottomLightToggle"], on=True)
+
+        assert zones["rippleLightToggle"].is_on is True
+
+    async def test_turning_off_never_displaces(self, _fast_client):
+        zones = self._lamp()
+        for entity in zones.values():
+            entity._is_on = True
+
+        await lan_write.async_zone_power(zones["bottomLightToggle"], on=False)
+
+        assert zones["rippleLightToggle"].is_on is True
+        assert zones["sideLightToggle"].is_on is True
+
+    def test_constraint_is_read_from_the_profile(self):
+        # The displacement above must be derived, not hardcoded: same call with
+        # a profile whose limit covers all three zones displaces nothing.
+        profile = get_profile("H60B0")
+        unconstrained = type(profile)(
+            sku=profile.sku,
+            goods_type=profile.goods_type,
+            name=profile.name,
+            kelvin=profile.kelvin,
+            zones=profile.zones,
+            capabilities=profile.capabilities,
+            constraints=(),
+        )
+        lit = {"ripple", "ring"}
+
+        assert lan_write._displaced_zone_keys(profile, "downlight", lit) == ["ripple"]
+        assert lan_write._displaced_zone_keys(unconstrained, "downlight", lit) == []
+
+
+# ==============================================================================
+# 5. Switch wiring — the hook in switch.py
+# ==============================================================================
+
+
+class TestSwitchHook:
+    async def test_lan_path_skips_the_cloud_command(self, _fast_client):
+        coordinator = _coordinator()
+        entity = _entity(coordinator, "rippleLightToggle")
+
+        await entity.async_turn_on()
+
+        coordinator.async_control_device.assert_not_called()
+        assert entity.is_on is True
+        assert len(_fast_client.sends) == lan_write.LAN_WRITE_REPEATS
+
+    async def test_option_off_uses_the_cloud_command_unchanged(self, _fast_client):
+        coordinator = _coordinator(enabled=False)
+        entity = _entity(coordinator, "rippleLightToggle")
+
+        await entity.async_turn_on()
+
+        assert _fast_client.sends == []
+        command = coordinator.async_control_device.call_args[0][1]
+        assert command.toggle_instance == "rippleLightToggle"
+        assert command.enabled is True
+        assert entity.is_on is True
+
+    async def test_option_off_turn_off_uses_the_cloud_command(self, _fast_client):
+        coordinator = _coordinator(enabled=False)
+        entity = _entity(coordinator, "sideLightToggle")
+        entity._is_on = True
+
+        await entity.async_turn_off()
+
+        assert _fast_client.sends == []
+        command = coordinator.async_control_device.call_args[0][1]
+        assert command.enabled is False
+        assert entity.is_on is False
+
+    async def test_cloud_failure_still_does_not_flip_state(self, _fast_client):
+        coordinator = _coordinator(enabled=False)
+        coordinator.async_control_device = AsyncMock(return_value=False)
+        entity = _entity(coordinator, "bottomLightToggle")
+
+        await entity.async_turn_on()
+
+        assert entity.is_on is False
