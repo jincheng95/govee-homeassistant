@@ -3,21 +3,21 @@
 Deliberately independent of ``..exceptions`` so this package stays a plain
 library with zero Home Assistant *and* zero intra-integration coupling. A
 consumer that wants integration-flavoured errors should catch
-:class:`LanRawError` at the boundary and re-raise.
+:class:`GoveeProtocolError` at the boundary and re-raise.
 """
 
 from __future__ import annotations
 
 
-class LanRawError(Exception):
+class GoveeProtocolError(Exception):
     """Base class for every raw-LAN codec failure."""
 
 
-class FrameError(LanRawError):
+class FrameError(GoveeProtocolError):
     """A frame could not be built (body too long, byte out of range, ...)."""
 
 
-class UnsupportedCapabilityError(LanRawError):
+class UnsupportedCapabilityError(GoveeProtocolError):
     """The profile does not declare this capability for this device/zone.
 
     This is the "we know it is not there" case — e.g. asking the H60B0's
@@ -25,7 +25,7 @@ class UnsupportedCapabilityError(LanRawError):
     """
 
 
-class UnknownEncodingError(LanRawError):
+class UnknownEncodingError(GoveeProtocolError):
     """The profile declares the capability but a required constant is UNKNOWN.
 
     This is the "we do not know the bytes yet" case: the table is allowed to
@@ -35,7 +35,7 @@ class UnknownEncodingError(LanRawError):
     """
 
 
-class SegmentMaskError(LanRawError):
+class SegmentMaskError(GoveeProtocolError):
     """The requested segment mask is empty or out of range.
 
     An all-zero mask is accepted by the firmware and silently does nothing,

@@ -32,11 +32,11 @@ guessed.
 
 from __future__ import annotations
 
-from .client import LAN_RAW_COMMAND_PORT, LanRawClient
-from .codec import LanRawCodec
+from .client import LAN_COMMAND_PORT, LanUdpClient
+from .codec import GoveeCodec
 from .errors import (
     FrameError,
-    LanRawError,
+    GoveeProtocolError,
     SegmentMaskError,
     UnknownEncodingError,
     UnsupportedCapabilityError,
@@ -65,7 +65,7 @@ from .profiles import (
 
 __all__ = [
     "FRAME_LENGTH",
-    "LAN_RAW_COMMAND_PORT",
+    "LAN_COMMAND_PORT",
     "PROFILES",
     "UNKNOWN",
     "Capability",
@@ -73,9 +73,9 @@ __all__ = [
     "DeviceProfile",
     "FrameError",
     "KelvinRange",
-    "LanRawClient",
-    "LanRawCodec",
-    "LanRawError",
+    "LanUdpClient",
+    "GoveeCodec",
+    "GoveeProtocolError",
     "MaxSimultaneousZones",
     "SegmentMaskError",
     "UnknownEncodingError",
