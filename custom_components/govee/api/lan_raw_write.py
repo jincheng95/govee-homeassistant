@@ -31,12 +31,19 @@ Gates, all of which must pass, or the caller falls through to whatever it did
 before:
 
 1. The ``enable_lan_raw_write`` option is on (it defaults to **off**).
-2. The intent maps to a capability the device's SKU profile declares.
-3. Every profile constant the frame needs is *known*. A profile that does not
+2. **The SKU actually carries raw frames over LAN** — ``profile.carries(
+   Transport.LAN_RAW)``. Having a profile is not enough: some SKUs are on an
+   older stack that takes raw frames only over BLE and ignores them on the
+   LAN. That is the dangerous case, because the datagram still leaves, no
+   reply is expected, and the write looks successful while the lamp does
+   nothing. Anything that gets here without this check is a silent no-op with
+   an optimistic state update on top of it.
+3. The intent maps to a capability the device's SKU profile declares.
+4. Every profile constant the frame needs is *known*. A profile that does not
    know a byte raises out of the codec rather than guessing — a wrong sub-mode
    byte is silently ignored by firmware, which is indistinguishable from a dead
    network (see ``profiles.UNKNOWN``).
-4. The coordinator currently has a live LAN correlation (an IP) for the device.
+5. The coordinator currently has a live LAN correlation (an IP) for the device.
 
 Nothing here raises at the caller: every failure path returns ``False``, which
 means "I did not handle it, do what you did before".
@@ -92,6 +99,7 @@ from .protocol import (
     GoveeCodec,
     GoveeProtocolError,
     LanUdpClient,
+    Transport,
 )
 
 if TYPE_CHECKING:
@@ -137,14 +145,34 @@ def lan_target(coordinator: GoveeCoordinator, device_id: str | None, sku: str) -
     """The ``(ip, profile)`` a raw write to this device would use, or None.
 
     None means one of the transport gates failed — the option is off, the SKU
-    is not in the profile table, or the device has no live LAN correlation.
-    Callers use it both to route a write and to decide whether a LAN-only
-    control can be offered at all.
+    is not in the profile table, **the SKU does not carry raw frames over LAN**,
+    or the device has no live LAN correlation. Callers use it both to route a
+    write and to decide whether a LAN-only control can be offered at all.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device_id: The Govee device id, or None for an entity without one.
+        sku: The device model, used to look the profile up.
+
+    Returns:
+        The LAN address and profile to write with, or None to fall back.
     """
     if not _option_enabled(coordinator):
         return None
     profile = profile_for(sku)
     if profile is None:
+        return None
+    if not profile.carries(Transport.LAN_RAW):
+        # Having a profile is NOT permission to send. Some SKUs accept the
+        # datagram and ignore the frame, which is indistinguishable from
+        # success on a fire-and-forget path with no reply — so a device whose
+        # raw pipe is BLE must fall back to the cloud here, not silently
+        # no-op with an optimistic state update on top.
+        _LOGGER.debug(
+            "Govee LAN write: %s does not carry raw frames over LAN (raw transports: %s) — using cloud transport",
+            sku,
+            ", ".join(transport.value for transport in profile.transports),
+        )
         return None
     ip = _lan_ip(coordinator, device_id)
     if ip is None:

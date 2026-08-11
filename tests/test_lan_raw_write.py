@@ -322,6 +322,8 @@ class TestOptimisticState:
             goods_type=profile.goods_type,
             name=profile.name,
             kelvin=profile.kelvin,
+            transports=profile.transports,
+            ble_manufacturer_id=profile.ble_manufacturer_id,
             zones=profile.zones,
             capabilities=profile.capabilities,
             constraints=(),

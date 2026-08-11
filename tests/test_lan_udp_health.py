@@ -7,9 +7,14 @@ Two entity-level requirements and one honesty requirement:
 * ``lan_udp`` appears as its own opt-in per-transport entity, following exactly
   the convention of the four existing ones (translation key, unique id, icon,
   and the same two-file translation rule).
-* Its availability means "the device answered discovery and we have a frame
-  layout for it" — never "a write landed". Raw frames are unconfirmable, so a
-  send stamps a timestamp and nothing more.
+* Its availability means "a raw frame sent now would have somewhere to go" —
+  never "a write landed". Raw frames are unconfirmable, so a send stamps a
+  timestamp and nothing more.
+
+The honesty requirement is the one with teeth. The sensor must agree with the
+writer's own gates, so the cases that matter are the ones where a device looks
+perfectly healthy on the LAN and still cannot be written to: the option is off,
+or the model is on a stack that ignores raw frames over LAN.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from custom_components.govee.binary_sensor import (
     _TRANSPORT_SPECS,
     async_setup_entry,
 )
-from custom_components.govee.const import CONF_EXPOSE_TRANSPORT_ENTITIES
+from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE, CONF_EXPOSE_TRANSPORT_ENTITIES
 from custom_components.govee.models import GoveeCapability, GoveeDevice, TransportHealth
 from custom_components.govee.models.device import (
     CAPABILITY_ON_OFF,
@@ -49,10 +54,15 @@ def _device(sku: str = "H60B0") -> GoveeDevice:
     )
 
 
-def _coordinator(device: GoveeDevice | None = None, *, on_lan: bool = True) -> MagicMock:
+def _coordinator(
+    device: GoveeDevice | None = None, *, on_lan: bool = True, raw_write: bool = True
+) -> MagicMock:
     device = device or _device()
     tracker = TransportHealthTracker()
     coordinator = MagicMock()
+    # Explicit, never a MagicMock: an auto-truthy options mapping made every
+    # option-gated assertion in this file pass vacuously.
+    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw_write}
     coordinator.devices = {device.device_id: device}
     coordinator.leak_sensors = {}
     coordinator.register_leak_hubs = MagicMock()
@@ -181,6 +191,52 @@ class TestSemantics:
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is False
         assert health.last_failure_reason == lan_udp_health.REASON_NO_RAW_PROFILE
+
+    def test_transport_disabled_is_unavailable(self):
+        """The option defaults to off; the sensor must not read "connected".
+
+        With the raw transport off, `lan_target` refuses every device — so a
+        green sensor beside a writer that never writes is a lie, and it is the
+        DEFAULT configuration.
+        """
+        coordinator = _coordinator(raw_write=False)
+        lan_udp_health.refresh(coordinator)
+
+        health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
+        assert health.is_available is False
+        assert health.last_failure_reason == lan_udp_health.REASON_TRANSPORT_DISABLED
+
+    def test_a_sku_that_ignores_lan_raw_frames_is_unavailable(self):
+        """Profiled and reachable is not enough — the pipe has to be right.
+
+        The H6046 answers LAN discovery perfectly and discards every raw frame
+        it is sent there. Reporting it available would be exactly the silent
+        no-op this transport is most prone to.
+        """
+        coordinator = _coordinator(_device(sku="H6046"))
+        lan_udp_health.refresh(coordinator)
+
+        health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
+        assert health.is_available is False
+        assert health.last_failure_reason == lan_udp_health.REASON_NO_LAN_RAW_TRANSPORT
+
+    def test_a_sku_that_does_carry_lan_raw_frames_is_available(self):
+        coordinator = _coordinator(_device(sku="H6076"))
+        lan_udp_health.refresh(coordinator)
+
+        assert coordinator.get_transport_health(DEVICE_ID, "lan_udp").is_available is True
+
+    def test_turning_the_option_on_clears_the_gate_reason(self):
+        """Gate reasons are this pass's to clear; a send failure is not."""
+        coordinator = _coordinator(raw_write=False)
+        lan_udp_health.refresh(coordinator)
+        coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: True}
+
+        lan_udp_health.refresh(coordinator)
+
+        health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
+        assert health.is_available is True
+        assert health.last_failure_reason is None
 
     def test_a_send_stamps_a_time_but_never_availability(self):
         """A UDP datagram into the void proves nothing about the device."""

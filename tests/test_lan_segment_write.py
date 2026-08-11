@@ -5,10 +5,16 @@ expresses exactly the same intent, so this path is a pure transport swap: try
 the LAN frame, fall back to ``SegmentColorCommand`` for every reason the frame
 would be a guess.
 
-The interesting cases are the refusals. The H6076's segment sub-mode byte is
-UNKNOWN in the profile table and the codec raises rather than emit a frame that
-the firmware would silently drop — indistinguishable, from the outside, from a
-dead network. That refusal has to reach the cloud path, not the user.
+The interesting cases are the refusals, and the sharpest one is the H6046: it
+has a full segment-colour profile and it ignores raw frames over LAN entirely,
+because it is on an older stack whose raw pipe is BLE. Nothing downstream can
+notice — the send is fire-and-forget, no reply is expected — so a frame posted
+to it would report success, update optimistic state, and change nothing on the
+lamp. The gate is therefore the SKU's declared transport, checked before the
+datagram is built, and the H6046 must come out on the cloud path.
+
+The H6076 is the SKU this path actually serves: same 0x15 body as the H6046,
+but on the modern stack that takes raw LAN writes.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import (
     Capability,
     GoveeCodec,
-    UnknownEncodingError,
+    Transport,
     get_profile,
 )
 from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE
@@ -31,12 +37,20 @@ from custom_components.govee.models import GoveeDeviceState, SegmentColorCommand
 from custom_components.govee.platforms.grouped_segment import GoveeGroupedSegmentEntity
 from custom_components.govee.platforms.segment import GoveeSegmentEntity
 
-DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:46"
+DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:76"
 IP = "10.20.0.52"
+
+# The SKU that carries raw frames over LAN, and its real segment count.
+LAN_SKU = "H6076"
+LAN_SEGMENTS = 7
+
+# The SKU with the same frame body that does NOT carry raw frames over LAN.
+BLE_ONLY_SKU = "H6046"
+BLE_ONLY_SEGMENTS = 10
 
 # Golden frames: 33 05 15 01 <R G B> <Khi Klo> <wR wG wB> <mask0 mask1> <xor>.
 GOLDEN_SEG0_RED = "33051501ff0000000000000001000000000000dc"
-GOLDEN_ALL_BLACK = "330515010000000000000000ff030000000000de"
+GOLDEN_ALL_BLACK = "3305150100000000000000007f0000000000005d"
 GOLDEN_SEG0_BLACK = "3305150100000000000000000100000000000023"
 
 
@@ -80,19 +94,19 @@ def _coordinator(*, enabled: bool = True, on_lan: bool = True) -> Any:
             device_id=DEVICE_ID,
             ip=IP,
             mac=DEVICE_ID,
-            sku="H6046",
+            sku=LAN_SKU,
             firmware="1.0.0",
             last_correlated_ts=0.0,
         )
     return coordinator
 
 
-def _segment_entity(coordinator: Any, *, sku: str = "H6046", segment_count: int = 10, index: int = 0) -> Any:
+def _segment_entity(coordinator: Any, *, sku: str = LAN_SKU, segment_count: int = LAN_SEGMENTS, index: int = 0) -> Any:
     device = MagicMock()
     device.device_id = DEVICE_ID
     device.sku = sku
     device.segment_count = segment_count
-    device.name = "Light Bar"
+    device.name = "Floor Lamp"
 
     with patch.object(GoveeSegmentEntity, "__init__", lambda self, *a, **kw: None):
         entity = GoveeSegmentEntity.__new__(GoveeSegmentEntity)
@@ -107,12 +121,12 @@ def _segment_entity(coordinator: Any, *, sku: str = "H6046", segment_count: int 
     return entity
 
 
-def _grouped_entity(coordinator: Any, *, segment_count: int = 10) -> Any:
+def _grouped_entity(coordinator: Any, *, segment_count: int = LAN_SEGMENTS) -> Any:
     device = MagicMock()
     device.device_id = DEVICE_ID
-    device.sku = "H6046"
+    device.sku = LAN_SKU
     device.segment_count = segment_count
-    device.name = "Light Bar"
+    device.name = "Floor Lamp"
 
     with patch.object(GoveeGroupedSegmentEntity, "__init__", lambda self, *a, **kw: None):
         entity = GoveeGroupedSegmentEntity.__new__(GoveeGroupedSegmentEntity)
@@ -168,7 +182,7 @@ class TestFrames:
         assert len(raw_client.envelopes) == lan_raw_write.LAN_WRITE_REPEATS
 
     def test_mask_bit_matches_the_segment_index(self):
-        profile = get_profile("H6046")
+        profile = get_profile(LAN_SKU)
         spec = profile.capabilities[Capability.SEGMENT_COLOR]
         frame = bytes.fromhex(GOLDEN_SEG0_RED)
         offset = spec.constants["mask_offset"]
@@ -211,10 +225,17 @@ class TestFallback:
         assert raw_client.envelopes == []
         coordinator.async_control_device.assert_awaited()
 
-    async def test_unknown_constant_refuses_and_uses_the_cloud(self, raw_client):
-        """H6076's segment sub-mode is UNKNOWN — refuse, never guess."""
+    async def test_a_ble_only_sku_never_gets_a_lan_frame(self, raw_client):
+        """The H6046 has a full SEGMENT_COLOR profile and ignores LAN raw frames.
+
+        Regression test for a silent no-op: routing on "the profile declares
+        the capability" sent this SKU a datagram it discards, reported success
+        and updated optimistic state, while the lamp did nothing. The gate is
+        the SKU's transport list, so this must land on the cloud command.
+        """
+        # Fully reachable on the LAN — the only thing wrong is the SKU's stack.
         coordinator = _coordinator()
-        entity = _segment_entity(coordinator, sku="H6076", segment_count=7)
+        entity = _segment_entity(coordinator, sku=BLE_ONLY_SKU, segment_count=BLE_ONLY_SEGMENTS)
 
         await entity.async_turn_on(rgb_color=(255, 0, 0))
 
@@ -222,24 +243,48 @@ class TestFallback:
         command = coordinator.async_control_device.await_args_list[-1].args[1]
         assert isinstance(command, SegmentColorCommand)
 
-    def test_the_codec_really_does_refuse_for_h6076(self):
-        with pytest.raises(UnknownEncodingError):
-            GoveeCodec(get_profile("H6076")).segment_color((255, 0, 0), segments=[0])
+    def test_the_transport_lists_are_what_the_gate_reads(self):
+        """The gate is data, not a SKU branch: assert the declared transports."""
+        assert get_profile(BLE_ONLY_SKU).carries(Transport.LAN_RAW) is False
+        assert get_profile(BLE_ONLY_SKU).carries(Transport.BLE_PLAINTEXT) is True
+        assert get_profile(LAN_SKU).carries(Transport.LAN_RAW) is True
+        assert get_profile("H60B0").carries(Transport.LAN_RAW) is True
 
-    def test_segment_brightness_is_still_refused(self):
-        """H6046's segment-brightness attribute is UNKNOWN, and stays UNKNOWN.
+    def test_both_v2_skus_now_encode_the_same_segment_bodies(self):
+        """The 0x15 body is shared; the SKUs differ only in transport and width.
 
-        There is no cloud equivalent either, so nothing exposes it at all — the
-        integration would rather offer no control than a control that silently
-        does nothing.
+        Both constant blocks were UNKNOWN until hardware settled them, so this
+        pins that they are settled *and* that they agree.
         """
-        with pytest.raises(UnknownEncodingError):
-            GoveeCodec(get_profile("H6046")).segment_brightness(50, segments=[0])
-        spec = get_profile("H6046").capabilities[Capability.SEGMENT_BRIGHTNESS]
-        assert spec.known is False
+        for sku in (LAN_SKU, BLE_ONLY_SKU):
+            profile = get_profile(sku)
+            colour = profile.capabilities[Capability.SEGMENT_COLOR]
+            level = profile.capabilities[Capability.SEGMENT_BRIGHTNESS]
+            assert colour.constants == {"sub_mode": 0x15, "attribute": 0x01, "mask_offset": 12}
+            assert level.constants == {"sub_mode": 0x15, "attribute": 0x02, "mask_offset": 5}
+            assert colour.known and level.known
+            # Encoding no longer raises for either SKU.
+            GoveeCodec(profile).segment_color((255, 0, 0), segments=[0])
+            GoveeCodec(profile).segment_brightness(50, segments=[0])
+
+    def test_segment_brightness_mask_follows_the_level_byte(self):
+        """mask_offset counts from proType and differs BY ATTRIBUTE.
+
+        Reusing the colour body's offset of 12 here would drop the mask into
+        dead padding and the frame would be a silent no-op.
+        """
+        frame = GoveeCodec(get_profile(BLE_ONLY_SKU)).segment_brightness(25, segments=[1])
+
+        assert frame.hex() == "330515021902000000000000000000000000003a"
+        assert frame[4] == 25  # level
+        assert frame[5] == 0b0000_0010  # mask, immediately after
 
     async def test_segment_count_mismatch_uses_the_cloud(self, raw_client):
-        """The table's mask width and the entity's indices must agree."""
+        """The table's mask width and the entity's indices must agree.
+
+        The cloud over-reports segment counts on some SKUs, and a mask built
+        for the wrong width lights the wrong LEDs.
+        """
         coordinator = _coordinator()
         entity = _segment_entity(coordinator, segment_count=15)
 

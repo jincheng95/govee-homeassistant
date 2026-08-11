@@ -18,6 +18,8 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Callable
+from dataclasses import replace
+from unittest.mock import patch
 
 import pytest
 
@@ -421,20 +423,61 @@ class TestProfiles:
         assert constraint.zone_keys == ("ripple", "ring", "downlight")
 
     def test_segment_sub_mode_is_data_not_branching(self) -> None:
-        """The sub-mode byte differs per SKU and must stay table data."""
+        """The sub-mode byte differs per SKU and must stay table data.
+
+        The H6046 and H6076 share the whole 0x15 body; the H60B0 does not.
+        Assuming one carries to the other is exactly the mistake that made a
+        session's worth of segment paints vanish silently.
+        """
         h60b0 = get_profile("H60B0").capabilities[Capability.ZONE_COLOR]
         h6046 = get_profile("H6046").capabilities[Capability.SEGMENT_COLOR]
         h6076 = get_profile("H6076").capabilities[Capability.SEGMENT_COLOR]
         assert h60b0.constants["sub_mode"] == 0x2C
         assert h6046.constants["sub_mode"] == 0x15
-        assert h6076.constants["sub_mode"] is profiles.UNKNOWN
+        assert h6076.constants["sub_mode"] == 0x15
+
+    def test_the_shipped_table_has_no_unknown_constants_left(self) -> None:
+        """Every constant block in the table is settled against hardware.
+
+        Not a style rule: an UNKNOWN is a capability the integration refuses to
+        offer, so this is the list of things that currently work.
+        """
+        for profile in profiles.PROFILES.values():
+            for capability, spec in profile.capabilities.items():
+                assert spec.known, f"{profile.sku}/{capability.value} still UNKNOWN"
 
     def test_unknown_constants_refuse_to_encode(self) -> None:
-        """The table can say "I do not know" — and then we do not guess."""
+        """The table can say "I do not know" — and then we do not guess.
+
+        Exercised against a synthetic profile so the mechanism stays covered
+        now that no shipped SKU has an UNKNOWN left.
+        """
+        unsettled = profiles.DeviceProfile(
+            sku="H9999",
+            goods_type=999,
+            name="Unsettled",
+            kelvin=profiles.KelvinRange(2000, 6500),
+            transports=(profiles.Transport.LAN_RAW,),
+            ble_manufacturer_id=profiles.BLE_MANUFACTURER_MODERN,
+            zones=(
+                profiles.ZoneSpec(
+                    key="segments",
+                    name="Segments",
+                    zone_byte=None,
+                    segments=4,
+                    capabilities=frozenset({Capability.SEGMENT_COLOR}),
+                ),
+            ),
+            capabilities={
+                Capability.SEGMENT_COLOR: profiles.CapabilitySpec(
+                    "segment_color_v2",
+                    {"sub_mode": profiles.UNKNOWN, "attribute": 0x01, "mask_offset": 12},
+                    verified=False,
+                )
+            },
+        )
         with pytest.raises(UnknownEncodingError):
-            H6076.segment_color((255, 0, 0), segments=[0])
-        with pytest.raises(UnknownEncodingError):
-            H6046.segment_brightness(50, segments=[0])
+            GoveeCodec(unsettled).segment_color((255, 0, 0), segments=[0])
 
     def test_unsupported_capability_is_distinct_from_unknown(self) -> None:
         with pytest.raises(UnsupportedCapabilityError):
@@ -460,12 +503,61 @@ class TestProfiles:
 
     def test_capability_spec_known_flag(self) -> None:
         assert get_profile("H60B0").capabilities[Capability.ZONE_COLOR].known
-        assert not get_profile("H6076").capabilities[Capability.SEGMENT_COLOR].known
+        assert not profiles.CapabilitySpec("zone_color", {"sub_mode": profiles.UNKNOWN}).known
+
+    def test_every_profile_declares_a_transport(self) -> None:
+        """A SKU with no raw pipe cannot be driven and must not have a profile."""
+        for profile in profiles.PROFILES.values():
+            assert profile.transports
+            assert len(set(profile.transports)) == len(profile.transports)
+            assert profile.preferred_transport is profile.transports[0]
+
+    def test_the_legacy_sku_does_not_carry_raw_frames_over_lan(self) -> None:
+        """The one asymmetry the whole transport field exists to express.
+
+        The H6046 accepts the datagram and ignores the frame, which a
+        fire-and-forget sender cannot distinguish from success — so this must
+        be readable from the table without connecting to anything.
+        """
+        h6046 = get_profile("H6046")
+        assert h6046.carries(profiles.Transport.LAN_RAW) is False
+        assert h6046.carries(profiles.Transport.BLE_PLAINTEXT) is True
+        assert h6046.carries(profiles.Transport.BLE_ENCRYPTED) is False
+
+        for sku in ("H60B0", "H6076"):
+            profile = get_profile(sku)
+            assert profile.carries(profiles.Transport.LAN_RAW) is True
+            assert profile.carries(profiles.Transport.BLE_PLAINTEXT) is False
+
+    def test_manufacturer_id_predicts_the_stack(self) -> None:
+        """A scanner can pick the profile from the advertisement, pre-connect."""
+        assert get_profile("H6046").ble_manufacturer_id == profiles.BLE_MANUFACTURER_LEGACY
+        assert get_profile("H60B0").ble_manufacturer_id == profiles.BLE_MANUFACTURER_MODERN
+        assert get_profile("H6076").ble_manufacturer_id == profiles.BLE_MANUFACTURER_MODERN
+
+        legacy = profiles.BLE_MANUFACTURER_LEGACY
+        modern = profiles.BLE_MANUFACTURER_MODERN
+        assert legacy != modern
+        # The manufacturer id and the transport list must agree, or the
+        # advertisement would route a device to a stack it cannot use.
+        for profile in profiles.PROFILES.values():
+            expected = modern if profile.carries(profiles.Transport.LAN_RAW) else legacy
+            assert profile.ble_manufacturer_id == expected
+
+    def test_table_self_check_rejects_a_transportless_profile(self) -> None:
+        """validate_table() is the guard rail for a new table entry."""
+        base = get_profile("H60B0")
+        for bad in ((), (profiles.Transport.LAN_RAW, profiles.Transport.LAN_RAW)):
+            broken = replace(base, sku="H9999", transports=bad)
+            with patch.dict(profiles.PROFILES, {"H9999": broken}):
+                with pytest.raises(GoveeProtocolError):
+                    profiles.validate_table()
 
     def test_describe_is_json_safe(self) -> None:
         for sku in ("H60B0", "H6046", "H6076"):
             dumped = json.dumps(profiles.describe(get_profile(sku)))
             assert sku in dumped
+            assert "transports" in dumped
 
     def test_bar_power_mask(self) -> None:
         assert _hex(H6046.bar_power_mask(0x11)).startswith("33 33 11")
@@ -477,6 +569,8 @@ class TestProfiles:
             goods_type=999,
             name="Imaginary bar",
             kelvin=profiles.KelvinRange(2000, 6500),
+            transports=(profiles.Transport.LAN_RAW,),
+            ble_manufacturer_id=profiles.BLE_MANUFACTURER_MODERN,
             zones=(
                 profiles.ZoneSpec(
                     key="segments",
