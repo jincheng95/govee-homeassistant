@@ -1,14 +1,14 @@
 """Tests for the raw Govee LAN codec (``api/lan_raw``).
 
-The heart of this file is :data:`GOLDEN_FRAMES`: every frame verified against
-real hardware in ``govee-lab/PROTOCOL.md`` §3 and §4, expressed as
-*profile + intent -> exact bytes*. LAN writes are unverifiable at runtime (the
-lamps never answer a raw frame), so these fixtures ARE the verification: if a
-refactor changes a single byte, a golden test fails.
+The heart of this file is :data:`GOLDEN_FRAMES`: frames captured from hardware
+and verified byte-for-byte, expressed as *profile + intent -> exact bytes*. LAN
+writes are unverifiable at runtime (the lamps never answer a raw frame), so
+these fixtures ARE the verification: if a refactor changes a single byte, a
+golden test fails.
 
-Each fixture is checked three ways — the hex from the spec, the base64 from the
-spec, and an independently recomputed XOR checksum — so a typo in the spec
-table cannot quietly become the expected value.
+Each fixture is checked three ways — the captured hex, the captured base64, and
+an independently recomputed XOR checksum — so a transcription slip cannot
+quietly become the expected value.
 
 No test here opens a socket; the client tests inject a fake endpoint factory.
 """
@@ -49,7 +49,7 @@ def _hex(frame: bytes) -> str:
 
 
 # ==============================================================================
-# Golden frames — PROTOCOL.md §3 (H60B0) and §4 (H6046)
+# Golden frames — captured from hardware (H60B0 and H6046)
 # ==============================================================================
 
 # (id, intent, expected hex, expected base64)
@@ -186,7 +186,7 @@ GOLDEN_FRAMES: list[tuple[str, Callable[[], bytes], str, str]] = [
         "aa 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ab",
         "qgEAAAAAAAAAAAAAAAAAAAAAAKs=",
     ),
-    # PROTOCOL.md §4 — H6046 SubModeColorV2, segment 1 (index 0) red
+    # H6046 SubModeColorV2, segment 1 (index 0) red
     (
         "H6046 segment 1 red",
         lambda: H6046.segment_color((255, 0, 0), segments=[0]),
@@ -213,10 +213,10 @@ class TestGoldenFrames:
     def test_spec_table_is_self_consistent(
         self, name: str, _intent: Callable[[], bytes], expected_hex: str, expected_b64: str
     ) -> None:
-        """The spec's own hex, base64 and checksum must agree with each other.
+        """The captured hex, base64 and checksum must agree with each other.
 
-        Guards against a transcription error in PROTOCOL.md silently becoming
-        this suite's expected value.
+        Guards against a transcription error in the capture notes silently
+        becoming this suite's expected value.
         """
         raw = bytes.fromhex(expected_hex.replace(" ", ""))
         assert len(raw) == frames_mod.FRAME_LENGTH
@@ -324,7 +324,7 @@ class TestSegmentMask:
         assert segment_mask(range(10), segment_count=10) == b"\xff\x03"
 
     def test_empty_mask_is_refused(self) -> None:
-        """An all-zero mask is accepted by the firmware and does nothing (§3)."""
+        """An all-zero mask is accepted by the firmware and does nothing."""
         with pytest.raises(SegmentMaskError):
             segment_mask([], segment_count=8)
 
@@ -365,7 +365,7 @@ class TestSegmentMask:
 
 class TestKelvin:
     def test_h60b0_clamps_to_the_verified_ceiling(self) -> None:
-        """Above ~6500 K the firmware drops the zone entirely (§3)."""
+        """Above ~6500 K the firmware drops the zone entirely."""
         assert H60B0.clamp_kelvin(9000) == 6500
         assert H60B0.clamp_kelvin(1200) == 2000
         assert H60B0.clamp_kelvin(4000) == 4000

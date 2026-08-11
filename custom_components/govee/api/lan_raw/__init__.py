@@ -19,8 +19,10 @@ Layering::
     codec.py      profile + intent -> frames
     client.py     write-only UDP send to :4003 (reads stay with devStatus)
 
-The spec is ``govee-lab/PROTOCOL.md``; ``govee-lab/HANDOFF.md`` keeps the
-evidence trail.
+Every byte constant here was derived from LAN captures against the three SKUs
+in :mod:`.profiles` and is pinned byte-for-byte by the golden-frame tests;
+anything not confirmed on hardware is marked UNKNOWN and refused rather than
+guessed.
 """
 
 from __future__ import annotations

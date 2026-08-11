@@ -30,7 +30,8 @@ from .frames import (
 )
 
 SUB_MODE_COMMAND_TYPE = 0x05
-"""``0x05`` is the sub_mode commandType — not a length (§3)."""
+"""``0x05`` is the sub_mode commandType — not a length, as early hand-derived
+readings of the frame assumed."""
 
 ZONE_POWER_COMMAND_TYPE = 0x30
 WHOLE_POWER_COMMAND_TYPE = 0x01
