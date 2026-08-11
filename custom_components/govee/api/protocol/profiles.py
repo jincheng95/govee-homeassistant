@@ -178,15 +178,21 @@ class KelvinRange:
 
 @dataclass(frozen=True)
 class MaxSimultaneousZones:
-    """Hardware limit: at most ``limit`` of ``zone_keys`` can be lit at once.
+    """Hardware limit: at most ``limit`` of these zones can be lit at once.
 
-    Declarative only — nothing in this package enforces it yet. It is recorded
-    here so a future zone-light platform reads the constraint out of the table
-    instead of rediscovering it by eye.
+    ``displacement_order`` lists the zones **weakest first**. When enabling a
+    zone would exceed ``limit``, the lamp drops the first zone in this order
+    that is currently lit; the zone just enabled always survives. The ranking
+    is fixed hardware behaviour, not a recency rule — which order the incumbent
+    zones were switched on in makes no difference.
+
+    Declarative only: this package emits frames and does not track state, so
+    the constraint is recorded here for the consumer that owns zone state to
+    read out of the table rather than rediscover by eye.
     """
 
     limit: int
-    zone_keys: tuple[str, ...]
+    displacement_order: tuple[str, ...]
     note: str = ""
 
 
@@ -348,8 +354,14 @@ H60B0: Final = DeviceProfile(
     constraints=(
         MaxSimultaneousZones(
             limit=2,
-            zone_keys=("ripple", "ring", "downlight"),
-            note="hardware limit: enabling the downlight kicks the ripple off",
+            # Weakest first. Established on hardware across every transition:
+            # the newly enabled zone always survives, and of the two incumbents
+            # the lower-ranked one goes dark. The ring is never displaced; the
+            # downlight yields to anything. Order is what makes this correct --
+            # an earlier ("ripple", "ring", "downlight") predicted the ring
+            # would drop where the lamp actually dropped the downlight.
+            displacement_order=("downlight", "ripple", "ring"),
+            note="at most 2 zones lit; yield order downlight -> ripple -> ring",
         ),
     ),
 )
@@ -491,7 +503,7 @@ def validate_table() -> None:
                         "which the profile does not encode"
                     )
         for constraint in profile.constraints:
-            for key in constraint.zone_keys:
+            for key in constraint.displacement_order:
                 profile.zone(key)
 
 
@@ -526,7 +538,7 @@ def describe(profile: DeviceProfile) -> dict[str, Any]:
             for capability, spec in profile.capabilities.items()
         },
         "constraints": [
-            {"max_simultaneous_zones": constraint.limit, "zones": list(constraint.zone_keys)}
+            {"max_simultaneous_zones": constraint.limit, "zones": list(constraint.displacement_order)}
             for constraint in profile.constraints
         ],
     }

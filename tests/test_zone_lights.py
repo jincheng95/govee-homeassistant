@@ -70,7 +70,12 @@ from custom_components.govee.platforms.zone_light import (
     async_zone_light_entities,
     async_zone_number_entities,
 )
-from custom_components.govee.zone_state import register_zone_switch, registry, zone_switch_suppressed
+from custom_components.govee.zone_state import (
+    displaced_zone_keys,
+    register_zone_switch,
+    registry,
+    zone_switch_suppressed,
+)
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
 IP = "10.20.0.51"
@@ -535,7 +540,56 @@ class TestDisplacement:
         constraint = get_profile("H60B0").constraints[0]
 
         assert constraint.limit == 2
-        assert constraint.zone_keys == ("ripple", "ring", "downlight")
+        assert constraint.displacement_order == ("downlight", "ripple", "ring")
+
+    @pytest.mark.parametrize(
+        ("lit", "enabled", "expected_dark"),
+        [
+            (("ripple", "ring"), "downlight", ["ripple"]),
+            (("ring", "downlight"), "ripple", ["downlight"]),
+            (("ripple", "downlight"), "ring", ["downlight"]),
+        ],
+        ids=["ripple+ring -> downlight", "ring+downlight -> ripple", "ripple+downlight -> ring"],
+    )
+    def test_displacement_truth_table(self, lit, enabled, expected_dark):
+        """Every three-zone transition, as the hardware actually behaves.
+
+        Measured on the lamp: the zone just enabled always survives, and of the
+        two incumbents the lower-ranked one goes dark. Ranking, strongest
+        first: ring > ripple > downlight. The ring is never displaced; the
+        downlight yields to anything.
+        """
+        assert displaced_zone_keys(get_profile("H60B0"), enabled, lit) == expected_dark
+
+    @pytest.mark.parametrize(
+        ("lit", "enabled"),
+        [
+            (("ripple",), "ring"),
+            (("ring",), "ripple"),
+            (("ripple",), "downlight"),
+            (("downlight",), "ripple"),
+            (("ring",), "downlight"),
+            (("downlight",), "ring"),
+        ],
+    )
+    def test_second_zone_displaces_nothing(self, lit, enabled):
+        """All six ordered pairs are reachable — the limit is 2, not 1.
+
+        This is what rules out a mutual-exclusion model: ripple and downlight
+        coexist happily, so they are not a physically incompatible pair.
+        """
+        assert displaced_zone_keys(get_profile("H60B0"), enabled, lit) == []
+
+    def test_displacement_ignores_the_order_zones_were_enabled_in(self):
+        """A fixed ranking, not "least recently enabled loses".
+
+        The downlight yields whether it was switched on before or after the
+        ring, so recency predicts nothing.
+        """
+        profile = get_profile("H60B0")
+
+        assert displaced_zone_keys(profile, "ripple", ("ring", "downlight")) == ["downlight"]
+        assert displaced_zone_keys(profile, "ripple", ("downlight", "ring")) == ["downlight"]
 
 
 # ==============================================================================
