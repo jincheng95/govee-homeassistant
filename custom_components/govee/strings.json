@@ -87,7 +87,7 @@
           "enable_mqtt_control": "Send power/brightness/color over MQTT (faster, experimental)",
           "lan_targets": "LAN device addresses / subnets (advanced)",
           "enable_lan_nudge": "Refresh over LAN when the cloud reports a change",
-          "enable_lan_raw_write": "Send zone on/off over LAN (uplighter zones, faster)"
+          "enable_lan_raw_write": "Send advanced commands over LAN"
         },
         "data_description": {
           "api_temperature_unit": "Auto (default) converts known Fahrenheit-reporting thermometers (e.g. H5179, H5109, H5110, H5111, H5075, H5100) automatically. Choose Fahrenheit if another thermometer reads about 1.8× too high (e.g. 74 instead of 23), or Celsius to force no conversion. Govee's API omits unit metadata, so the value can't always be auto-detected.",
@@ -95,7 +95,7 @@
           "enable_mqtt_control": "Routes power/brightness/color commands through Govee's MQTT channel instead of the REST cloud API, reducing latency and bypassing REST rate limits. Requires email/password login (MQTT credentials). Falls back to REST automatically when MQTT is unavailable. Experimental — uses an undocumented channel; leave off if commands behave unexpectedly.",
           "lan_targets": "Only needed when LAN-enabled Govee devices are on a different subnet/VLAN than Home Assistant, so the local discovery scan can't reach them. Enter a comma-separated list of device IPs (10.20.0.51), broadcast addresses (10.20.0.255), and/or subnets in CIDR (10.20.0.0/24, /24 or smaller). Subnets are scanned device-by-device since most routers drop cross-VLAN broadcasts. Leave blank if all devices share Home Assistant's network.",
           "enable_lan_nudge": "When a cloud push reports a change made outside Home Assistant, read that device's real state over your local network rather than trusting the push payload. Applies only to devices found on the LAN.",
-          "enable_lan_raw_write": "Sends the on/off commands for the Govee uplighter's ripple, side and bottom zones straight to the lamp over your local network instead of through Govee's cloud, so the zone switches react immediately instead of after a one to three second round trip. Only used when the lamp is found on the LAN and its model is known to the local protocol table; anything else, including every other control (colour, brightness, scenes), keeps using the cloud exactly as before. The lamp cannot report zone state back over the local network, so the switch shows the state that was just commanded."
+          "enable_lan_raw_write": "Sends commands that would otherwise go through Govee's cloud straight to the device over your local network, so they act immediately rather than after a one to three second round trip. Currently covers multi-zone on/off; whole-device power and brightness already use the LAN. Applies only to devices found on the LAN whose model is in the local protocol table \u2014 everything else keeps using the cloud. Devices cannot report zone state back locally, so switches show the state last commanded."
         }
       },
       "select_segment_devices": {
