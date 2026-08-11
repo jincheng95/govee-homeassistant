@@ -1,10 +1,12 @@
 """Tests for issue #126 — H60B3 uplighter per-part light toggles.
 
 The H60B3 exposes its three physical light parts as named toggles
-(nebulaLightToggle / sideLightToggle / bottomLightToggle). Detection is the
-generic ``named_light_toggle_instances`` property (which also covers the
-H1310/H1370 main/background toggles from issue #114); the switch platform maps
-each known instance to a translation key, unique_id suffix, and icon.
+(nebulaLightToggle / sideLightToggle / bottomLightToggle); the H60B0 is the
+same lamp with a ripple diffuser and reports rippleLightToggle instead of
+nebulaLightToggle. Detection is the generic ``named_light_toggle_instances``
+property (which also covers the H1310/H1370 main/background toggles from issue
+#114); the switch platform maps each known instance to a translation key,
+unique_id suffix, and icon.
 
 Also covers issue #128 — H5075/H5100 thermo-hygrometers report °F under the
 °C-tagged unit, so they join FAHRENHEIT_REPORTING_SKUS.
@@ -53,6 +55,27 @@ def _h60b3() -> GoveeDevice:
     )
 
 
+def _h60b0() -> GoveeDevice:
+    # Same lamp as the H60B3 with a ripple diffuser instead of the nebula one,
+    # so it reports rippleLightToggle in place of nebulaLightToggle. Capability
+    # shape verified against GET /router/api/v1/user/devices.
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:60:B0",
+        sku="H60B0",
+        name="Uplighter Floor Lamp",
+        device_type=DEVICE_TYPE_LIGHT,
+        capabilities=(
+            _cap(CAPABILITY_ON_OFF, INSTANCE_POWER),
+            _cap(CAPABILITY_RANGE, INSTANCE_BRIGHTNESS),
+            _cap(CAPABILITY_COLOR_SETTING, INSTANCE_COLOR_RGB),
+            _cap(CAPABILITY_TOGGLE, "rippleLightToggle"),
+            _cap(CAPABILITY_TOGGLE, "sideLightToggle"),
+            _cap(CAPABILITY_TOGGLE, "bottomLightToggle"),
+            _cap(CAPABILITY_TOGGLE, "dreamViewToggle"),
+        ),
+    )
+
+
 def _h1310() -> GoveeDevice:
     return GoveeDevice(
         device_id="AA:BB:CC:DD:EE:FF:13:10",
@@ -72,6 +95,13 @@ class TestNamedLightToggleDetection:
     def test_h60b3_three_named_toggles(self):
         assert _h60b3().named_light_toggle_instances == [
             "nebulaLightToggle",
+            "sideLightToggle",
+            "bottomLightToggle",
+        ]
+
+    def test_h60b0_three_named_toggles(self):
+        assert _h60b0().named_light_toggle_instances == [
+            "rippleLightToggle",
             "sideLightToggle",
             "bottomLightToggle",
         ]
@@ -134,6 +164,25 @@ class TestSwitchPlatformWiring:
         )
         assert named["sideLightToggle"]._attr_translation_key == "govee_side_light"
         assert named["bottomLightToggle"]._attr_icon == "mdi:floor-lamp"
+
+    @pytest.mark.asyncio
+    async def test_h60b0_creates_three_named_light_switches(self):
+        added = await self._setup(_h60b0())
+        named = {
+            e._toggle_instance: e
+            for e in added
+            if type(e).__name__ == "GoveeNamedLightSwitchEntity"
+        }
+        assert sorted(named) == [
+            "bottomLightToggle",
+            "rippleLightToggle",
+            "sideLightToggle",
+        ]
+        assert (
+            named["rippleLightToggle"]._attr_unique_id
+            == "AA:BB:CC:DD:EE:FF:60:B0_ripple_light"
+        )
+        assert named["rippleLightToggle"]._attr_translation_key == "govee_ripple_light"
 
     @pytest.mark.asyncio
     async def test_unknown_named_toggle_skipped(self):

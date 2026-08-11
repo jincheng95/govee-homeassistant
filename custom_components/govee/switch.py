@@ -26,6 +26,7 @@ from .const import (
     SUFFIX_MUSIC_MODE,
     SUFFIX_NEBULA_LIGHT,
     SUFFIX_NIGHT_LIGHT,
+    SUFFIX_RIPPLE_LIGHT,
     SUFFIX_SIDE_LIGHT,
     SUFFIX_SOCKET,
 )
@@ -51,8 +52,10 @@ PARALLEL_UPDATES = 0
 
 # Named per-part light toggles (issues #114, #126): capability instance ->
 # (translation_key, unique_id suffix, icon). Devices covered so far: ceiling-fan
-# lights (H1310/H1370: main/background) and the H60B3 uplighter floor lamp
-# (nebula/side/bottom). Unknown ``<name>LightToggle`` instances are logged and
+# lights (H1310/H1370: main/background) and the H60B3/H60B0 uplighter floor
+# lamp (nebula or ripple, plus side/bottom — the H60B0 is the same lamp with a
+# ripple diffuser, so it reports ``rippleLightToggle`` where the H60B3 reports
+# ``nebulaLightToggle``). Unknown ``<name>LightToggle`` instances are logged and
 # skipped so a new SKU surfaces in debug logs instead of silently missing.
 NAMED_LIGHT_TOGGLE_SPECS: dict[str, tuple[str, str, str]] = {
     INSTANCE_MAIN_LIGHT_TOGGLE: (
@@ -68,6 +71,11 @@ NAMED_LIGHT_TOGGLE_SPECS: dict[str, tuple[str, str, str]] = {
     "nebulaLightToggle": (
         "govee_nebula_light",
         SUFFIX_NEBULA_LIGHT,
+        "mdi:shimmer",
+    ),
+    "rippleLightToggle": (
+        "govee_ripple_light",
+        SUFFIX_RIPPLE_LIGHT,
         "mdi:shimmer",
     ),
     "sideLightToggle": (
@@ -196,9 +204,10 @@ async def async_setup_entry(
                 )
 
             # Named per-part light toggles — main/background on ceiling-fan
-            # lights (H1310/H1370, issue #114), nebula/side/bottom on the
-            # H60B3 uplighter (issue #126). Govee returns "" for these on
-            # poll, so they are optimistic + RestoreEntity like the zones.
+            # lights (H1310/H1370, issue #114), nebula (H60B3) or ripple
+            # (H60B0) plus side/bottom on the uplighter floor lamp (issue
+            # #126). Govee returns "" for these on poll, so they are
+            # optimistic + RestoreEntity like the zones.
             for instance in device.named_light_toggle_instances:
                 spec = NAMED_LIGHT_TOGGLE_SPECS.get(instance)
                 if spec is None:
@@ -453,8 +462,8 @@ class GoveeSocketSwitchEntity(GoveeEntity, SwitchEntity):
 
 class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
     """On/off switch for a named light part — main/background on ceiling-fan
-    lights (H1310/H1370, issue #114), nebula/side/bottom on the H60B3
-    uplighter floor lamp (issue #126).
+    lights (H1310/H1370, issue #114), nebula (H60B3) or ripple (H60B0) plus
+    side/bottom on the uplighter floor lamp (issue #126).
 
     Govee returns "" for these toggles on poll, so state is optimistic and
     restored across restarts via RestoreEntity (the same approach as the

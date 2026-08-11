@@ -430,10 +430,11 @@ class GoveeDevice:
         Multi-part fixtures expose each physical light as a
         ``<name>LightToggle`` ``devices.capabilities.toggle`` — e.g.
         ``mainLightToggle``/``backgroundLightToggle`` on ceiling-fan lights
-        (H1310/H1370) and ``nebulaLightToggle``/``sideLightToggle``/
-        ``bottomLightToggle`` on the H60B3 uplighter floor lamp. The
-        lowercase-prefix pattern deliberately excludes ``nightlightToggle``
-        (lowercase l — a mode, not a light part) and the numeric
+        (H1310/H1370) and ``nebulaLightToggle`` (H60B3) or
+        ``rippleLightToggle`` (H60B0, the same lamp with a ripple diffuser)
+        plus ``sideLightToggle``/``bottomLightToggle`` on the uplighter floor
+        lamp. The lowercase-prefix pattern deliberately excludes
+        ``nightlightToggle`` (lowercase l — a mode, not a light part) and the numeric
         ``light{N}Toggle`` zones, which have their own property. Returns
         instance names in capability order.
         """
