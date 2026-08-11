@@ -9,7 +9,7 @@ intent is one 20-byte UDP frame on the LAN — ``33 30 <zone> <00|01>`` — and 
 lamp acts on it as fast as the packet arrives.
 
 This module is the whole feature. It sits between the switch entity and the
-codec in :mod:`.api.lan_raw`, decides whether the LAN write is *safe* for this
+codec in :mod:`.api.protocol`, decides whether the LAN write is *safe* for this
 device, sends it, and applies the optimistic state the LAN transport cannot
 confirm. ``switch.py`` carries a single line per toggle method.
 
@@ -36,7 +36,7 @@ Write-only, therefore optimistic and repeated
 ---------------------------------------------
 The raw LAN channel is fire-and-forget by measurement, not by choice: devices
 answer no ``ptReal`` query and a LAN command produces no cloud status push
-either (see :mod:`.api.lan_raw.client`). Two consequences are baked in here:
+either (see :mod:`.api.protocol.client`). Two consequences are baked in here:
 
 * **Optimistic state.** There is no echo to wait for, so the switch state is
   set the moment the datagrams are away.
@@ -53,7 +53,7 @@ The hardware constraint
 The H60B0 can light at most two of its three zones at once: switching one on
 can knock another off inside the lamp, with no notification. That limit is
 declared in the profile table as
-:class:`~.api.lan_raw.profiles.MaxSimultaneousZones` and is read out of it here
+:class:`~.api.protocol.profiles.MaxSimultaneousZones` and is read out of it here
 — the ordering of ``zone_keys`` in the table is the displacement order (the
 first-listed zone yields first, which is why the H60B0 note reads "enabling the
 downlight kicks the ripple off"). When a LAN write displaces a zone, that
@@ -73,12 +73,12 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Final
 
-from .api.lan_raw import (
+from .api.protocol import (
     Capability,
     DeviceProfile,
-    LanRawClient,
-    LanRawCodec,
-    LanRawError,
+    LanUdpClient,
+    GoveeCodec,
+    GoveeProtocolError,
     MaxSimultaneousZones,
     get_profile,
 )
@@ -105,14 +105,14 @@ LAN_WRITE_REPEATS: Final = 3
 # every copy, short enough to stay far inside "instant" for a human finger.
 LAN_WRITE_GAP_SECONDS: Final = 0.03
 
-_CLIENT: LanRawClient | None = None
+_CLIENT: LanUdpClient | None = None
 
 
-def _client() -> LanRawClient:
+def _client() -> LanUdpClient:
     """The module-wide write-only UDP client (binds nothing, holds no socket)."""
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = LanRawClient()
+        _CLIENT = LanUdpClient()
     return _CLIENT
 
 
@@ -157,9 +157,9 @@ async def async_zone_power(entity: Any, *, on: bool) -> bool:
 
     started = time.monotonic()
     try:
-        frame = LanRawCodec(profile).zone_power(zone_key, on)
+        frame = GoveeCodec(profile).zone_power(zone_key, on)
         await _async_send_repeated(ip, frame)
-    except (LanRawError, OSError) as err:
+    except (GoveeProtocolError, OSError) as err:
         _LOGGER.debug(
             "Govee LAN write: raw send to %s (%s) failed (%s) — using cloud transport",
             device_id,
@@ -196,7 +196,7 @@ def _zone_power_supported(profile: DeviceProfile, zone_key: str) -> bool:
     """Whether this profile can express zone power for ``zone_key``."""
     try:
         zone = profile.zone(zone_key)
-    except LanRawError:
+    except GoveeProtocolError:
         return False
     if zone.zone_byte is None:
         return False
@@ -207,7 +207,7 @@ def _profile(sku: str) -> DeviceProfile | None:
     """The raw-LAN profile for ``sku``, or None when the table has no entry."""
     try:
         return get_profile(sku)
-    except LanRawError:
+    except GoveeProtocolError:
         return None
 
 

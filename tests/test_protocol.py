@@ -1,4 +1,4 @@
-"""Tests for the raw Govee LAN codec (``api/lan_raw``).
+"""Tests for the raw Govee LAN codec (``api/protocol``).
 
 The heart of this file is :data:`GOLDEN_FRAMES`: frames captured from hardware
 and verified byte-for-byte, expressed as *profile + intent -> exact bytes*. LAN
@@ -21,10 +21,10 @@ from collections.abc import Callable
 
 import pytest
 
-from custom_components.govee.api.lan_raw import (
+from custom_components.govee.api.protocol import (
     Capability,
-    LanRawClient,
-    LanRawCodec,
+    LanUdpClient,
+    GoveeCodec,
     SegmentMaskError,
     UnknownEncodingError,
     UnsupportedCapabilityError,
@@ -37,11 +37,11 @@ from custom_components.govee.api.lan_raw import (
     validate_table,
     xor_checksum,
 )
-from custom_components.govee.api.lan_raw.errors import FrameError, LanRawError
+from custom_components.govee.api.protocol.errors import FrameError, GoveeProtocolError
 
-H60B0 = LanRawCodec.for_sku("H60B0")
-H6046 = LanRawCodec.for_sku("H6046")
-H6076 = LanRawCodec.for_sku("H6076")
+H60B0 = GoveeCodec.for_sku("H60B0")
+H6046 = GoveeCodec.for_sku("H6046")
+H6076 = GoveeCodec.for_sku("H6076")
 
 
 def _hex(frame: bytes) -> str:
@@ -347,7 +347,7 @@ class TestSegmentMask:
             H6046.segment_color((255, 0, 0), segments=[])
 
     def test_codec_refuses_segments_on_an_unsegmented_zone(self) -> None:
-        with pytest.raises(LanRawError):
+        with pytest.raises(GoveeProtocolError):
             H60B0.zone_color("ripple", (255, 0, 0), segments=[0])
 
     def test_mask_offset_differs_per_attribute(self) -> None:
@@ -402,7 +402,7 @@ class TestProfiles:
         assert get_profile("h60b0") is get_profile("H60B0")
 
     def test_unknown_sku_is_refused(self) -> None:
-        with pytest.raises(LanRawError):
+        with pytest.raises(GoveeProtocolError):
             get_profile("H0000")
 
     def test_h60b0_zone_bytes_and_segments(self) -> None:
@@ -445,11 +445,11 @@ class TestProfiles:
             H60B0.mode("nonsense")
 
     def test_unknown_zone_is_refused(self) -> None:
-        with pytest.raises(LanRawError):
+        with pytest.raises(GoveeProtocolError):
             H60B0.zone_power("nope", True)
 
     def test_zoneless_sku_has_no_zone_byte(self) -> None:
-        with pytest.raises(LanRawError):
+        with pytest.raises(GoveeProtocolError):
             H6046.zone_power("segments", True)
 
     def test_supports_reports_zone_scoped_capabilities(self) -> None:
@@ -493,7 +493,7 @@ class TestProfiles:
                 )
             },
         )
-        frame = LanRawCodec(clone).segment_color((255, 0, 0), segments=[0])
+        frame = GoveeCodec(clone).segment_color((255, 0, 0), segments=[0])
         assert _hex(frame) == _hex(H6046.segment_color((255, 0, 0), segments=[0]))
 
 
@@ -572,7 +572,7 @@ class _FakeSender:
 
 
 class TestClient:
-    def _client(self) -> tuple[LanRawClient, list[tuple[str, int]], _FakeSender]:
+    def _client(self) -> tuple[LanUdpClient, list[tuple[str, int]], _FakeSender]:
         sender = _FakeSender()
         opened: list[tuple[str, int]] = []
 
@@ -580,7 +580,7 @@ class TestClient:
             opened.append((host, port))
             return sender
 
-        return LanRawClient(endpoint_factory=factory), opened, sender
+        return LanUdpClient(endpoint_factory=factory), opened, sender
 
     async def test_sends_ptreal_to_port_4003(self) -> None:
         client, opened, sender = self._client()
@@ -606,7 +606,7 @@ class TestClient:
         async def factory(host: str, port: int) -> _FakeSender:
             return sender
 
-        client = LanRawClient(endpoint_factory=factory)
+        client = LanUdpClient(endpoint_factory=factory)
         with pytest.raises(OSError):
             await client.async_send_frame("192.0.2.205", H60B0.power(True))
         assert sender.closed is True
@@ -617,9 +617,9 @@ class TestClient:
         assert not [name for name in dir(client) if "recv" in name or "read" in name]
 
     def test_default_port_is_the_command_port(self) -> None:
-        from custom_components.govee.api.lan_raw.client import LAN_RAW_COMMAND_PORT
+        from custom_components.govee.api.protocol.client import LAN_COMMAND_PORT
 
-        assert LAN_RAW_COMMAND_PORT == 4003
+        assert LAN_COMMAND_PORT == 4003
 
 
 # ==============================================================================
@@ -633,9 +633,9 @@ class TestLayering:
         import pathlib
         import re
 
-        from custom_components.govee.api import lan_raw
+        from custom_components.govee.api import protocol
 
-        package = pathlib.Path(lan_raw.__file__).parent
+        package = pathlib.Path(protocol.__file__).parent
         modules = sorted(package.glob("*.py"))
         assert len(modules) >= 7
         for module in modules:

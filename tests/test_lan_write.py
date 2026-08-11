@@ -25,7 +25,7 @@ import pytest
 
 from custom_components.govee import lan_write
 from custom_components.govee.api.lan_client import LanDeviceInfo
-from custom_components.govee.api.lan_raw import get_profile
+from custom_components.govee.api.protocol import get_profile
 from custom_components.govee.const import (
     CONF_ENABLE_LAN_RAW_WRITE,
     SUFFIX_BOTTOM_LIGHT,

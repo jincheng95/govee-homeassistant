@@ -1,6 +1,6 @@
 """Profile-driven frame builder — the public surface of the raw-LAN codec.
 
-:class:`LanRawCodec` binds one :class:`~.profiles.DeviceProfile` and turns
+:class:`GoveeCodec` binds one :class:`~.profiles.DeviceProfile` and turns
 *intents* ("paint ring segments 0-3 blue") into 20-byte frames. It never reads
 device state: zone and segment state is readable by nothing — not LAN, not
 cloud — so every consumer is necessarily optimistic and must be able to build a
@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .encoders import ENCODERS
-from .errors import LanRawError, UnknownEncodingError, UnsupportedCapabilityError
+from .errors import GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
 from .frames import ptreal_message, segment_mask
 from .profiles import (
     Capability,
@@ -27,14 +27,14 @@ from .profiles import (
 )
 
 
-class LanRawCodec:
+class GoveeCodec:
     """Build raw-LAN frames for one device, driven entirely by its profile."""
 
     def __init__(self, profile: DeviceProfile) -> None:
         self.profile = profile
 
     @classmethod
-    def for_sku(cls, sku: str) -> LanRawCodec:
+    def for_sku(cls, sku: str) -> GoveeCodec:
         return cls(get_profile(sku))
 
     # -- plumbing ---------------------------------------------------------
@@ -66,7 +66,7 @@ class LanRawCodec:
     @staticmethod
     def _zone_byte(zone: ZoneSpec) -> int:
         if zone.zone_byte is None:
-            raise LanRawError(f"zone {zone.key!r} is not addressed by a zone byte")
+            raise GoveeProtocolError(f"zone {zone.key!r} is not addressed by a zone byte")
         return zone.zone_byte
 
     def _mask(self, zone: ZoneSpec, segments: Iterable[int] | None) -> bytes | None:
@@ -79,7 +79,7 @@ class LanRawCodec:
         """
         if not zone.segmented:
             if segments is not None:
-                raise LanRawError(f"zone {zone.key!r} has no addressable segments")
+                raise GoveeProtocolError(f"zone {zone.key!r} has no addressable segments")
             return None
         chosen = range(zone.segments) if segments is None else segments
         return segment_mask(chosen, segment_count=zone.segments)
@@ -88,7 +88,7 @@ class LanRawCodec:
         """Like :meth:`_mask` but for capabilities whose frame always has one."""
         mask = self._mask(zone, segments)
         if mask is None:
-            raise LanRawError(f"zone {zone.key!r} has no addressable segments")
+            raise GoveeProtocolError(f"zone {zone.key!r} has no addressable segments")
         return mask
 
     def clamp_kelvin(self, kelvin: int) -> int:

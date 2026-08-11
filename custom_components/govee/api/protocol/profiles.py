@@ -30,7 +30,7 @@ from enum import Enum, unique
 from typing import Any, Final
 
 from .encoders import ENCODERS
-from .errors import LanRawError
+from .errors import GoveeProtocolError
 
 
 class Unknown:
@@ -156,7 +156,7 @@ class DeviceProfile:
         for zone in self.zones:
             if zone.key == key:
                 return zone
-        raise LanRawError(f"{self.sku} has no zone {key!r} (have: {[z.key for z in self.zones]})")
+        raise GoveeProtocolError(f"{self.sku} has no zone {key!r} (have: {[z.key for z in self.zones]})")
 
     def supports(self, capability: Capability, *, zone: str | None = None) -> bool:
         if capability not in self.capabilities:
@@ -359,7 +359,7 @@ def get_profile(sku: str) -> DeviceProfile:
     try:
         return PROFILES[sku.upper()]
     except KeyError as err:
-        raise LanRawError(f"no raw-LAN profile for SKU {sku!r}") from err
+        raise GoveeProtocolError(f"no raw-LAN profile for SKU {sku!r}") from err
 
 
 def validate_table() -> None:
@@ -371,11 +371,11 @@ def validate_table() -> None:
     for profile in PROFILES.values():
         for capability, spec in profile.capabilities.items():
             if spec.encoder not in ENCODERS:
-                raise LanRawError(f"{profile.sku}/{capability.value} names unknown encoder {spec.encoder!r}")
+                raise GoveeProtocolError(f"{profile.sku}/{capability.value} names unknown encoder {spec.encoder!r}")
         for zone in profile.zones:
             for capability in zone.capabilities:
                 if capability not in profile.capabilities:
-                    raise LanRawError(
+                    raise GoveeProtocolError(
                         f"{profile.sku} zone {zone.key!r} claims {capability.value} "
                         "which the profile does not encode"
                     )

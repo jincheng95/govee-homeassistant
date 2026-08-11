@@ -28,7 +28,7 @@ from typing import Any
 
 from .frames import encode_message, ptreal_message
 
-LAN_RAW_COMMAND_PORT = 4003
+LAN_COMMAND_PORT = 4003
 """Devices listen for commands here. Replies (if any) would go to :4002."""
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,13 +53,13 @@ async def _default_endpoint_factory(host: str, port: int) -> DatagramSender:
     return transport  # type: ignore[return-value]
 
 
-class LanRawClient:
+class LanUdpClient:
     """Send ``ptReal`` frames to a device. Never reads, never binds a port."""
 
     def __init__(
         self,
         *,
-        port: int = LAN_RAW_COMMAND_PORT,
+        port: int = LAN_COMMAND_PORT,
         endpoint_factory: EndpointFactory | None = None,
     ) -> None:
         self._port = port
@@ -81,6 +81,6 @@ class LanRawClient:
         sender = await self._endpoint_factory(host, self._port)
         try:
             sender.sendto(payload)
-            _LOGGER.debug("lan_raw -> %s:%s %d bytes", host, self._port, len(payload))
+            _LOGGER.debug("protocol udp -> %s:%s %d bytes", host, self._port, len(payload))
         finally:
             sender.close()
