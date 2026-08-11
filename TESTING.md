@@ -75,8 +75,20 @@ tests/
 ├── test_models.py           # Domain models (RGBColor, Device, State, Commands)
 ├── test_api_client.py       # API client and exceptions
 ├── test_coordinator.py      # Coordinator logic and observer pattern
-└── test_config_flow.py      # Config flow, options, reauth, reconfigure, repairs
+├── test_config_flow.py      # Config flow, options, reauth, reconfigure, repairs
+└── ...                      # one file per module, plus issue-specific files
 ```
+
+Fork-added modules follow the same one-file-per-module rule:
+
+| Test file | Module under test |
+|-----------|-------------------|
+| `test_protocol.py` | `api/protocol/` — golden frames, profile table, transports |
+| `test_lan_raw_write.py` | `api/lan_raw_write.py` — zone power over raw LAN |
+| `test_lan_segment_write.py` | `api/lan_raw_write.py` — the per-segment colour path |
+| `test_lan_nudge.py` | `api/lan_nudge.py` |
+| `test_lan_udp_health.py` | `lan_udp_health.py` |
+| `test_zone_lights.py` | `platforms/zone_light.py` + `zone_state.py` |
 
 ### Test Coverage by File
 
