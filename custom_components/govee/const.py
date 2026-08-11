@@ -40,6 +40,14 @@ CONF_ENABLE_LAN_NUDGE: Final = "enable_lan_nudge"
 # Off by default — see lan_write.py for the gates and the optimistic state.
 CONF_ENABLE_LAN_RAW_WRITE: Final = "enable_lan_raw_write"
 
+# Replace a multi-zone lamp's zone on/off SWITCHES with full light entities that
+# carry each zone's real capabilities (colour, brightness, colour temperature),
+# plus a number entity for the ripple flow rate. Separate from
+# CONF_ENABLE_LAN_RAW_WRITE on purpose: that one picks a transport, this one
+# changes the entity model, which is a bigger commitment. Off by default — see
+# zone_light.py.
+CONF_ENABLE_ZONE_LIGHTS: Final = "enable_zone_lights"
+
 # Some Govee thermometer/hygrometer SKUs report temperatures in Fahrenheit via
 # the Cloud API without unit metadata, while the native sensor unit is tagged
 # Celsius — so a 101°F reading surfaces as 213.5°F in HA (issues #72, #78, #96).
@@ -126,6 +134,7 @@ DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
 DEFAULT_LAN_TARGETS: Final = ""
 DEFAULT_ENABLE_LAN_NUDGE: Final = True
 DEFAULT_ENABLE_LAN_RAW_WRITE: Final = False
+DEFAULT_ENABLE_ZONE_LIGHTS: Final = False
 
 # Optimistic state handling
 # Grace window (seconds) during which API polls do NOT overwrite optimistic
@@ -220,6 +229,11 @@ SUFFIX_MUSIC_MODE_SELECT: Final = "_music_mode_select"
 SUFFIX_REFRESH_SCENES: Final = "_refresh_scenes"
 SUFFIX_NIGHT_LIGHT: Final = "_night_light"
 SUFFIX_LIGHT_ZONE: Final = "_light_zone_"
+# Fork: zone-light entity model (CONF_ENABLE_ZONE_LIGHTS). A separate namespace
+# from SUFFIX_RIPPLE_LIGHT & co so the zone switches keep their registry entries
+# (and history) when the option is turned back off.
+SUFFIX_ZONE: Final = "_zone_"
+SUFFIX_ZONE_FLOW_RATE: Final = "_zone_flow_rate_"
 SUFFIX_SOCKET: Final = "_socket_"
 SUFFIX_MAIN_LIGHT: Final = "_main_light"
 SUFFIX_BACKGROUND_LIGHT: Final = "_background_light"

@@ -25,6 +25,7 @@ from ..const import SUFFIX_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
+from ..lan_write import async_segment_color  # fork: raw-LAN fast path
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,10 +123,11 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
             color=color,
         )
 
-        await self.coordinator.async_control_device(
-            self._device_id,
-            command,
-        )
+        if not await async_segment_color(self, self._rgb_color, (self._segment_index,)):  # fork: raw-LAN
+            await self.coordinator.async_control_device(
+                self._device_id,
+                command,
+            )
 
         self._is_on = True
         self.async_write_ha_state()
@@ -151,7 +153,8 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
                 segment_indices=(self._segment_index,),
                 color=RGBColor(r=0, g=0, b=0),
             )
-            await self.coordinator.async_control_device(self._device_id, command)
+            if not await async_segment_color(self, (0, 0, 0), (self._segment_index,)):  # fork: raw-LAN
+                await self.coordinator.async_control_device(self._device_id, command)
         else:
             _LOGGER.debug(
                 "Skipping segment %d turn_off for %s (power_off_pending=%s, device_already_off=%s)",

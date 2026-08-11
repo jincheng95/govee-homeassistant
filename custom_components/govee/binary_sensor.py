@@ -52,6 +52,7 @@ _TRANSPORT_SPECS: tuple[tuple[TransportKind, str, str], ...] = (
     ("mqtt", "mqtt_connectivity", "mdi:cloud-sync"),
     ("ble", "ble_connectivity", "mdi:bluetooth"),
     ("lan", "lan_connectivity", "mdi:lan"),
+    ("lan_udp", "lan_udp_connectivity", "mdi:lan-pending"),  # fork: raw write path
 )
 
 

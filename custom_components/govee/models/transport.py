@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-TransportKind = Literal["cloud_api", "mqtt", "ble", "lan"]
+# "lan_udp" (fork) is the write-only raw UDP path — see lan_health.py for what
+# its availability does and does not claim.
+TransportKind = Literal["cloud_api", "mqtt", "ble", "lan", "lan_udp"]
 
-TRANSPORT_KINDS: tuple[TransportKind, ...] = ("cloud_api", "mqtt", "ble", "lan")
+TRANSPORT_KINDS: tuple[TransportKind, ...] = ("cloud_api", "mqtt", "ble", "lan", "lan_udp")
 
 
 @dataclass
