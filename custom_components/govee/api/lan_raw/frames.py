@@ -1,7 +1,7 @@
 """20-byte Govee protocol frames, the ``ptReal`` envelope and base64 packing.
 
 Everything in this module is pure: bytes in, bytes out, no sockets, no clock,
-no Home Assistant. See ``PROTOCOL.md`` §1 for the wire format.
+no Home Assistant.
 
 A frame is exactly 20 bytes::
 
@@ -70,7 +70,7 @@ def ptreal_message(frames: Iterable[bytes]) -> dict[str, Any]:
     """Wrap frames in the ``ptReal`` envelope.
 
     The ``command`` array may hold several frames; the device applies them in
-    order. That is how the 0xA3 multipacket effect upload is sent (§5).
+    order. That is how the 0xA3 multipacket effect upload is sent.
     """
     commands = [frame_to_base64(frame) for frame in frames]
     if not commands:
@@ -84,7 +84,7 @@ def encode_message(message: Mapping[str, Any]) -> bytes:
 
 
 def kelvin_bytes(kelvin: int) -> bytes:
-    """Kelvin is 2 bytes, BIG-endian (§3). 2700 K -> ``0a 8c``."""
+    """Kelvin is 2 bytes, BIG-endian. 2700 K -> ``0a 8c``."""
     if not 0 <= kelvin <= 0xFFFF:
         raise FrameError(f"kelvin out of 16-bit range: {kelvin}")
     return kelvin.to_bytes(2, "big")
@@ -95,7 +95,7 @@ def segment_mask(segments: Iterable[int], *, segment_count: int) -> bytes:
 
     ``mask0`` bit *i* selects segment *i* (0-7); ``mask1`` bit *i* selects
     segment *i+8*. Refuses an empty selection: an all-zero mask is accepted by
-    the firmware and silently does nothing (§3).
+    the firmware and silently does nothing.
     """
     if segment_count > MAX_SEGMENTS:
         raise SegmentMaskError(f"segment_count {segment_count} exceeds {MAX_SEGMENTS}")

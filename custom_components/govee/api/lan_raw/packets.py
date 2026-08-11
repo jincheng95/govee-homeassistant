@@ -1,4 +1,4 @@
-"""The ``0xA3`` multipacket chunker (PROTOCOL.md §5).
+"""The ``0xA3`` multipacket chunker.
 
 Effects (DIY and named scenes) carry more parameters than fit in a 20-byte
 frame, so the payload is chunked across ``0xA3`` frames and then activated by a
@@ -14,11 +14,11 @@ the 4th byte of packet 0 — an early reassembly bug treated those 3 header byte
 as effect data and shifted every subsequent offset label by 3.
 
 **UNTESTED AGAINST HARDWARE ON THIS BRANCH.** The chunking mechanism is
-transcribed from the spec and from the working lab replay in
-``govee-lab/govee_udp_lab.py``, but effect *payload* encoders (the ripple record
-and the RGBIC ring block) are deliberately out of scope here, so nothing in
-this module has been round-tripped against a lamp as part of this layer. Treat
-it as a mechanism, not a verified behaviour.
+transcribed from a captured DIY effect upload and from a replay of it that was
+seen to work, but effect *payload* encoders (the ripple record and the RGBIC
+ring block) are deliberately out of scope here, so nothing in this module has
+been round-tripped against a lamp as part of this layer. Treat it as a
+mechanism, not a verified behaviour.
 """
 
 from __future__ import annotations

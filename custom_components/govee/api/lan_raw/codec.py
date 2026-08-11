@@ -6,9 +6,9 @@ device state: zone and segment state is readable by nothing — not LAN, not
 cloud — so every consumer is necessarily optimistic and must be able to build a
 frame from nothing but the intent.
 
-Segment indices are always 0-based, matching the mask bit positions. (Note the
-PROTOCOL.md frame table labels them 1-based in prose: "seg 3" there is index 2
-here.)
+Segment indices are always 0-based, matching the mask bit positions. (The
+captured reference frames label segments 1-based in prose — "seg 3" there is
+index 2 here.)
 """
 
 from __future__ import annotations

@@ -23,8 +23,9 @@ UNKNOWN
 The table can say "I do not know this byte". :data:`UNKNOWN` in a constant
 block makes the codec raise :class:`~.errors.UnknownEncodingError` rather than
 guess: a wrong sub-mode byte is *silently ignored* by the firmware, which is
-indistinguishable from a dead network (PROTOCOL.md §4, "the per-SKU sub-mode
-trap").
+indistinguishable from a dead network. The sub-mode byte differs by SKU
+(``0x2c`` on the H60B0, ``0x15`` on the H6046) and must never be assumed to
+carry across models.
 """
 
 from __future__ import annotations
@@ -180,7 +181,7 @@ H60B0: Final = DeviceProfile(
     goods_type=301,
     name="Uplighter",
     # Manufacturer claims 9000 K; above ~6500 K the firmware drops the zone
-    # entirely, so 6500 K is a hard cap (§3, verified on hardware).
+    # entirely, so 6500 K is a hard cap (verified on hardware).
     kelvin=KelvinRange(2000, 6500, verified=True, note="above ~6500 K the zone drops out"),
     zones=(
         ZoneSpec(
@@ -283,7 +284,6 @@ H6046: Final = DeviceProfile(
     name="Light bar",
     # UNVERIFIED: manufacturer claim only. The H60B0's 6500 K ceiling is a
     # per-firmware behaviour and must not be assumed to carry across SKUs.
-    # govee-lab/probe_h6046_kelvin.py resolves this without human eyes.
     # Verified on hardware 2026-08-11: unlike the H60B0, this SKU really does
     # reach 9000 K. A colorwc sweep 2700->9000 K was accepted at every step,
     # devStatus echoing the requested value with the lamp still on. The H60B0's
@@ -353,10 +353,11 @@ H6076: Final = DeviceProfile(
             # The sub-mode byte is the open question: most likely the shared
             # RGBIC form rather than the legacy 0x15, which would also change
             # the body layout (hence the encoder name is provisional too).
-            # govee-lab/probe_h6076_submode.py needs a human to eyeball it.
+            # Settling it needs a LAN test against the lamp with someone
+            # watching the segments; nothing here can confirm it in software.
             {"sub_mode": UNKNOWN, "attribute": 0x01, "mask_offset": 12},
             verified=False,
-            note="per-segment sub-mode UNCONFIRMED — see govee-lab/probe_h6076_submode.py",
+            note="per-segment sub-mode UNCONFIRMED — needs a hardware test against the lamp",
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),

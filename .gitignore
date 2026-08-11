@@ -161,3 +161,10 @@ profile-README.md
 .claude/
 sprints/
 sprint-registry.json
+
+# Internal working notes (kept on disk, never published — the code must stand
+# alone without them). Root-anchored so legitimate docs/ material is untouched.
+/FORK-CHANGES.md
+/HANDOFF.md
+/PROTOCOL.md
+/MIGRATION_PLAN.md
