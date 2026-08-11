@@ -33,6 +33,13 @@ CONF_LAN_TARGETS: Final = "lan_targets"
 # cooldown live in lan_nudge.py.
 CONF_ENABLE_LAN_NUDGE: Final = "enable_lan_nudge"
 
+# Send zone on/off (the H60B0 uplighter's ripple / side / bottom switches) as a
+# raw LAN frame instead of a cloud command, when the device is LAN-reachable and
+# its SKU profile declares the zone. Cuts a 1-3 s cloud round trip to a single
+# UDP datagram; everything the LAN path cannot express still goes via the cloud.
+# Off by default — see lan_write.py for the gates and the optimistic state.
+CONF_ENABLE_LAN_RAW_WRITE: Final = "enable_lan_raw_write"
+
 # Some Govee thermometer/hygrometer SKUs report temperatures in Fahrenheit via
 # the Cloud API without unit metadata, while the native sensor unit is tagged
 # Celsius — so a 101°F reading surfaces as 213.5°F in HA (issues #72, #78, #96).
@@ -118,6 +125,7 @@ DEFAULT_ENABLE_MQTT_CONTROL: Final = False
 DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
 DEFAULT_LAN_TARGETS: Final = ""
 DEFAULT_ENABLE_LAN_NUDGE: Final = True
+DEFAULT_ENABLE_LAN_RAW_WRITE: Final = False
 
 # Optimistic state handling
 # Grace window (seconds) during which API polls do NOT overwrite optimistic
