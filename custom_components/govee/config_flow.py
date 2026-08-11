@@ -38,6 +38,7 @@ from .const import (
     CONF_EMAIL,
     CONF_ENABLE_DIY_SCENES,
     CONF_ENABLE_GROUPS,
+    CONF_ENABLE_LAN_NUDGE,
     CONF_ENABLE_MQTT_CONTROL,
     CONF_ENABLE_SCENES,
     CONF_ENABLE_SEGMENTS,
@@ -50,6 +51,7 @@ from .const import (
     DEFAULT_API_TEMPERATURE_UNIT,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
+    DEFAULT_ENABLE_LAN_NUDGE,
     DEFAULT_ENABLE_MQTT_CONTROL,
     DEFAULT_ENABLE_SCENES,
     DEFAULT_ENABLE_SEGMENTS,
@@ -730,6 +732,12 @@ class GoveeOptionsFlow(OptionsFlow):
                         CONF_LAN_TARGETS,
                         default=source.get(CONF_LAN_TARGETS, DEFAULT_LAN_TARGETS),
                     ): str,
+                    vol.Optional(
+                        CONF_ENABLE_LAN_NUDGE,
+                        default=source.get(
+                            CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE
+                        ),
+                    ): bool,
                 }
             ),
             errors=errors,

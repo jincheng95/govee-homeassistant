@@ -114,6 +114,7 @@ from .models.device import (
     MAINS_POWERED_DEVICE_TYPES,
 )
 from .models.device import GoveeLeakSensor, GoveeLeakSensorState
+from .lan_nudge import async_cancel_nudges, async_note_cloud_push
 from .scene_cache import SceneCacheManager
 from .repairs import (
     async_create_auth_issue,
@@ -2265,6 +2266,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.debug("MQTT update for unknown device: %s", device_id)
             return
 
+        # Fork feature: treat the push as a content-free "device changed" signal
+        # and schedule a LAN devStatus read, which is authoritative for the
+        # fields LAN reports. No-op unless the device is LAN-correlated and the
+        # option is on. Called BEFORE update_from_mqtt so the optimistic/echo
+        # bookkeeping this push is about to clear is still intact. See
+        # lan_nudge.py.
+        async_note_cloud_push(self, device_id)
+
         state = self._states.get(device_id)
         if state is None:
             state = GoveeDeviceState.create_empty(device_id)
@@ -3632,6 +3641,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if self._bff_poll_task and not self._bff_poll_task.done():
             self._bff_poll_task.cancel()
             self._bff_poll_task = None
+        # Cancel any scheduled cloud-push LAN nudges (fork feature)
+        async_cancel_nudges(self)
         # Cancel standalone water-detector polling (issue #62)
         if self._wd_poll_unsub:
             self._wd_poll_unsub()
