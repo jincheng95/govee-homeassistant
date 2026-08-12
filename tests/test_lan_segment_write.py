@@ -15,6 +15,13 @@ datagram is built, and the H6046 must come out on the cloud path.
 
 The H6076 is the SKU this path actually serves: same 0x15 body as the H6046,
 but on the modern stack that takes raw LAN writes.
+
+The H60B0 is the third shape, added later (roadmap 2.5): it has **no** segment
+capability at all. Its 8 addressable LEDs belong to the ring *zone*, so a
+segment paint is the zone-colour frame with a segment mask, and a segment
+brightness is the zone-brightness frame with the same mask at a different
+offset. The routing is table data — ``profile.segment_zone`` — not a SKU
+branch, and every frame below is one of the reference's verified §3.1 rows.
 """
 
 from __future__ import annotations
@@ -52,6 +59,26 @@ BLE_ONLY_SEGMENTS = 10
 GOLDEN_SEG0_RED = "33051501ff0000000000000001000000000000dc"
 GOLDEN_ALL_BLACK = "3305150100000000000000007f0000000000005d"
 GOLDEN_SEG0_BLACK = "3305150100000000000000000100000000000023"
+
+# The SKU whose segments live on a zone: ring, 8 segments, zone byte 2.
+ZONE_SKU = "H60B0"
+ZONE_SEGMENTS = 8
+ZONE_KEY = "ring"
+
+# Golden frames, all verified rows of `reference/govee-device-protocol.md` §3.1:
+#   colour     33 05 2c 02 01 <R G B> <Khi Klo> <mask0 mask1>   (mask at 10)
+#   brightness 33 05 2c 02 02 <level> <mask0 mask1>             (mask at 6)
+GOLDEN_RING_SEG3_YELLOW = "33052c0201ffff0000000400000000000000001d"  # "ring, seg 3 only yellow"
+GOLDEN_RING_ALL_CYAN = "33052c020100ffff0000ff0000000000000000e6"  # "ring, all 8 segs cyan"
+GOLDEN_RING_BRIGHT_ALL_100 = "33052c020264ff00000000000000000000000081"  # "ring brightness all 100%"
+GOLDEN_RING_BRIGHT_5_8_32 = "33052c020220f0000000000000000000000000ca"  # "ring brightness segs 5-8 at 32%"
+# Not a reference row: same colour body as seg-3-yellow with RGB zeroed, which
+# is what a segment turn_off paints.
+GOLDEN_RING_SEG3_BLACK = "33052c020100000000000400000000000000001d"
+
+# HA brightness values that land on the golden levels (0-255 -> 0-100).
+HA_BRIGHTNESS_100_PERCENT = 255
+HA_BRIGHTNESS_32_PERCENT = 82
 
 
 class _FakeRawClient:
@@ -121,10 +148,10 @@ def _segment_entity(coordinator: Any, *, sku: str = LAN_SKU, segment_count: int 
     return entity
 
 
-def _grouped_entity(coordinator: Any, *, segment_count: int = LAN_SEGMENTS) -> Any:
+def _grouped_entity(coordinator: Any, *, sku: str = LAN_SKU, segment_count: int = LAN_SEGMENTS) -> Any:
     device = MagicMock()
     device.device_id = DEVICE_ID
-    device.sku = LAN_SKU
+    device.sku = sku
     device.segment_count = segment_count
     device.name = "Floor Lamp"
 
@@ -318,3 +345,167 @@ class TestFallback:
         assert raw_client.envelopes == []
         coordinator.async_control_device.assert_not_awaited()
         assert entity.is_on is False
+
+
+# ==============================================================================
+# 3. Zone-owned segments — the H60B0's ring (roadmap 2.5)
+# ==============================================================================
+
+
+def _ring_entity(coordinator: Any, *, index: int = 2, segment_count: int = ZONE_SEGMENTS) -> Any:
+    """A segment entity on the SKU whose segments belong to the ring zone."""
+    return _segment_entity(coordinator, sku=ZONE_SKU, segment_count=segment_count, index=index)
+
+
+class TestZoneOwnedSegments:
+    """The H60B0 paints segments with the ZONE frame plus a mask."""
+
+    def test_the_profile_is_what_selects_the_form(self):
+        """No SKU branch anywhere: the table says where the segments live."""
+        zone_profile = get_profile(ZONE_SKU)
+        mask_profile = get_profile(LAN_SKU)
+
+        assert zone_profile.segment_zone_key == ZONE_KEY
+        assert mask_profile.segment_zone_key is None
+        # ...and the reason it needs saying: this SKU has no segment capability.
+        assert Capability.SEGMENT_COLOR not in zone_profile.capabilities
+        assert Capability.SEGMENT_BRIGHTNESS not in zone_profile.capabilities
+
+    def test_the_mask_offset_is_per_attribute_table_data(self):
+        """Colour masks at frame index 10, brightness at 6. Same zone, same mask."""
+        profile = get_profile(ZONE_SKU)
+
+        colour = profile.capabilities[Capability.ZONE_COLOR].constants
+        level = profile.capabilities[Capability.ZONE_BRIGHTNESS].constants
+        assert colour == {"sub_mode": 0x2C, "attribute": 0x01, "mask_offset": 10}
+        assert level == {"sub_mode": 0x2C, "attribute": 0x02, "mask_offset": 6}
+
+        colour_frame = bytes.fromhex(GOLDEN_RING_SEG3_YELLOW)
+        level_frame = bytes.fromhex(GOLDEN_RING_BRIGHT_5_8_32)
+        assert colour_frame[colour["mask_offset"]] == 0b0000_0100  # segment 3, 1-based
+        assert level_frame[level["mask_offset"]] == 0b1111_0000  # segments 5-8
+
+    @pytest.mark.asyncio
+    async def test_single_segment_paint_is_the_zone_colour_frame(self, raw_client):
+        coordinator = _coordinator()
+        entity = _ring_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 255, 0))
+
+        assert raw_client.hexes == [GOLDEN_RING_SEG3_YELLOW]
+        coordinator.async_control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_turn_off_paints_the_masked_segment_black(self, raw_client):
+        coordinator = _coordinator()
+        entity = _ring_entity(coordinator)
+
+        await entity.async_turn_off()
+
+        assert raw_client.hexes == [GOLDEN_RING_SEG3_BLACK]
+        coordinator.async_control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_grouped_entity_masks_every_segment(self, raw_client):
+        coordinator = _coordinator()
+        entity = _grouped_entity(coordinator, sku=ZONE_SKU, segment_count=ZONE_SEGMENTS)
+
+        await entity.async_turn_on(rgb_color=(0, 255, 255))
+
+        assert raw_client.hexes == [GOLDEN_RING_ALL_CYAN]
+
+    @pytest.mark.asyncio
+    async def test_brightness_rides_along_as_a_second_frame(self, raw_client):
+        """One envelope, colour then level, both masked to the same segments."""
+        coordinator = _coordinator()
+        entity = _grouped_entity(coordinator, sku=ZONE_SKU, segment_count=ZONE_SEGMENTS)
+
+        await entity.async_turn_on(rgb_color=(0, 255, 255), brightness=HA_BRIGHTNESS_100_PERCENT)
+
+        assert raw_client.hexes == [GOLDEN_RING_ALL_CYAN, GOLDEN_RING_BRIGHT_ALL_100]
+
+    @pytest.mark.asyncio
+    async def test_masked_brightness_matches_the_reference_frame(self, raw_client):
+        """Segments 5-8 at 32% — the reference's verified ZONE_BRIGHTNESS row."""
+        coordinator = _coordinator()
+        entity = _ring_entity(coordinator)
+
+        handled = await lan_raw_write.async_segment_color(
+            entity, (0, 255, 255), [4, 5, 6, 7], brightness=HA_BRIGHTNESS_32_PERCENT
+        )
+
+        assert handled is True
+        assert raw_client.hexes[1] == GOLDEN_RING_BRIGHT_5_8_32
+
+    @pytest.mark.asyncio
+    async def test_a_colour_only_paint_sends_no_level_frame(self, raw_client):
+        """An untouched brightness slider must not overwrite the zone's level."""
+        coordinator = _coordinator()
+        entity = _ring_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 255, 0))
+
+        assert len(raw_client.hexes) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_empty_selection_is_never_sent(self, raw_client):
+        """An all-zero mask is accepted by the firmware and silently does nothing.
+
+        The codec refuses to build it; this asserts the refusal reaches the
+        caller as "not handled" rather than as a datagram or an exception.
+        """
+        coordinator = _coordinator()
+        entity = _ring_entity(coordinator)
+
+        handled = await lan_raw_write.async_segment_color(entity, (255, 0, 0), [], brightness=255)
+
+        assert handled is False
+        assert raw_client.envelopes == []
+
+    @pytest.mark.asyncio
+    async def test_no_lan_target_falls_back_to_the_cloud(self, raw_client):
+        coordinator = _coordinator(on_lan=False)
+        entity = _ring_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 255, 0), brightness=HA_BRIGHTNESS_100_PERCENT)
+
+        assert raw_client.envelopes == []
+        command = coordinator.async_control_device.await_args_list[-1].args[1]
+        assert isinstance(command, SegmentColorCommand)
+
+    @pytest.mark.asyncio
+    async def test_option_off_falls_back_to_the_cloud(self, raw_client):
+        coordinator = _coordinator(enabled=False)
+        entity = _ring_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 255, 0))
+
+        assert raw_client.envelopes == []
+        command = coordinator.async_control_device.await_args_list[-1].args[1]
+        assert isinstance(command, SegmentColorCommand)
+
+    @pytest.mark.asyncio
+    async def test_segment_count_mismatch_falls_back_to_the_cloud(self, raw_client):
+        """The zone's mask width and the entity's indices must agree."""
+        coordinator = _coordinator()
+        entity = _ring_entity(coordinator, segment_count=15)
+
+        await entity.async_turn_on(rgb_color=(255, 255, 0))
+
+        assert raw_client.envelopes == []
+        coordinator.async_control_device.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_mask_only_path_is_untouched_by_a_brightness(self, raw_client):
+        """The H6076 keeps its one colour frame even when a brightness is passed.
+
+        Its SEGMENT_BRIGHTNESS shape is a different frame on a different SKU;
+        this change is scoped to the zone-owned form.
+        """
+        coordinator = _coordinator()
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0), brightness=HA_BRIGHTNESS_32_PERCENT)
+
+        assert raw_client.hexes == [GOLDEN_SEG0_RED]
+        coordinator.async_control_device.assert_not_awaited()

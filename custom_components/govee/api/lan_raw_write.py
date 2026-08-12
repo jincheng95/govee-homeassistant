@@ -23,7 +23,17 @@ Scope, in the order it grew:
 * **per-segment colour** — the segment light entities in
   ``platforms/segment.py`` and ``platforms/grouped_segment.py``
   (:func:`async_segment_color`). This one *does* have a cloud equivalent
-  (``SegmentColorCommand``), so it falls back cleanly.
+  (``SegmentColorCommand``), so it falls back cleanly. Two wire forms live
+  behind that one entry point, chosen by the profile, never by a SKU branch:
+
+  - **mask-only** (H6046, H6076): the dedicated ``SEGMENT_COLOR`` frame, which
+    carries a mask and no zone byte.
+  - **zone + mask** (H60B0): the SKU has no segment capability at all — its 8
+    LEDs are the ring *zone's*, so a paint is the ordinary zone-colour frame
+    with the segment mask filled in. The profile says so with
+    ``segment_zone``; see :class:`~.protocol.profiles.SegmentZoneSpec`. On
+    this form an explicit brightness rides along as a second frame
+    (``ZONE_BRIGHTNESS`` + the same mask) in the same envelope.
 
 What makes a LAN write safe
 ---------------------------
@@ -112,6 +122,9 @@ _displaced_zone_keys = displaced_zone_keys
 
 # Profile zone key used by SKUs whose segments are addressed by mask alone.
 SEGMENT_ZONE_KEY: Final = "segments"
+
+# HA's brightness scale, converted to the 0-100 the frames carry.
+HA_BRIGHTNESS_MAX: Final = 255
 
 # How many copies of the (idempotent) frame go out per press. See the module
 # docstring: UDP is unacknowledged, and an absolute frame makes repeats free.
@@ -349,17 +362,36 @@ def zone_power_supported(profile: DeviceProfile, zone_key: str) -> bool:
 # ----------------------------------------------------------------------
 
 
-async def async_segment_color(entity: Any, rgb: tuple[int, int, int], segments: Sequence[int]) -> bool:
+async def async_segment_color(
+    entity: Any,
+    rgb: tuple[int, int, int],
+    segments: Sequence[int],
+    *,
+    brightness: int | None = None,
+) -> bool:
     """Try to paint segments of an RGBIC device over raw LAN.
 
-    Returns False — "not handled, use the cloud" — for every reason a raw frame
-    would be a guess: option off, no profile, no ``SEGMENT_COLOR`` capability, a
-    profile constant still UNKNOWN (the H6076's segment sub-mode), no LAN
-    correlation, or a mismatch between the segment count the entities index and
-    the mask width the table declares.
+    Which frame goes out is a property of the profile, not of the caller: a SKU
+    that declares ``segment_zone`` gets the zone-colour frame plus a segment
+    mask (the H60B0's ring), anything else gets the mask-only ``SEGMENT_COLOR``
+    frame (the H6076). Callers hold flat 0-based segment indices either way.
 
-    The cloud fallback is exact here — ``SegmentColorCommand`` expresses the
-    same intent — so nothing is lost by refusing.
+    Returns False — "not handled, use the cloud" — for every reason a raw frame
+    would be a guess: option off, no profile, neither segment form declared, a
+    profile constant still UNKNOWN, no LAN correlation, an empty selection (an
+    all-zero mask is silently ignored by the firmware), or a mismatch between
+    the segment count the entities index and the mask width the table declares.
+
+    The cloud fallback is exact for the colour — ``SegmentColorCommand``
+    expresses the same intent — so nothing is lost by refusing.
+
+    Args:
+        entity: The segment (or grouped-segment) light entity being written.
+        rgb: The colour to paint.
+        segments: 0-based segment indices to paint.
+        brightness: HA brightness (0-255) when the user moved the slider in
+            this call, else None. Only the zone+mask form carries it; the
+            mask-only SKUs keep the colour-only behaviour they shipped with.
     """
     coordinator = _coordinator(entity)
     device_id = _device_id(entity)
@@ -369,26 +401,87 @@ async def async_segment_color(entity: Any, rgb: tuple[int, int, int], segments: 
         return False
     ip, profile = target
 
-    if not profile.supports(Capability.SEGMENT_COLOR, zone=SEGMENT_ZONE_KEY):
+    zone_key = profile.segment_zone_key
+    if zone_key is not None:
+        frames = _zone_segment_frames(entity, profile, zone_key, rgb, segments, brightness)
+    else:
+        frames = _masked_segment_frames(entity, profile, rgb, segments)
+    if not frames:
         return False
-    if not _segment_count_matches(entity, profile):
+
+    return await async_send_frames(coordinator, device_id, ip, frames, what=f"segments {list(segments)} -> {rgb}")
+
+
+def _masked_segment_frames(
+    entity: Any,
+    profile: DeviceProfile,
+    rgb: tuple[int, int, int],
+    segments: Sequence[int],
+) -> list[bytes]:
+    """The mask-only ``SEGMENT_COLOR`` frame (H6076), or [] to fall back."""
+    if not profile.supports(Capability.SEGMENT_COLOR, zone=SEGMENT_ZONE_KEY):
+        return []
+    if not _segment_count_matches(entity, profile, SEGMENT_ZONE_KEY):
         _LOGGER.debug(
             "Govee LAN write: %s segment count disagrees with the profile mask width — using cloud transport",
-            device_id,
+            profile.sku,
         )
-        return False
+        return []
 
     try:
-        frame = GoveeCodec(profile).segment_color(rgb, segments=list(segments), zone=SEGMENT_ZONE_KEY)
+        return [GoveeCodec(profile).segment_color(rgb, segments=list(segments), zone=SEGMENT_ZONE_KEY)]
     except GoveeProtocolError as err:
         # UnknownEncodingError lands here: the table refuses to guess a byte.
-        _LOGGER.debug("Govee LAN write: cannot encode segment colour for %s (%s) — using cloud transport", sku, err)
-        return False
+        _LOGGER.debug(
+            "Govee LAN write: cannot encode segment colour for %s (%s) — using cloud transport", profile.sku, err
+        )
+        return []
 
-    return await async_send_frames(coordinator, device_id, ip, [frame], what=f"segments {list(segments)} -> {rgb}")
+
+def _zone_segment_frames(
+    entity: Any,
+    profile: DeviceProfile,
+    zone_key: str,
+    rgb: tuple[int, int, int],
+    segments: Sequence[int],
+    brightness: int | None,
+) -> list[bytes]:
+    """The zone-colour(+brightness) frames for a SKU whose segments live on a zone.
+
+    The mask offsets differ by attribute (colour at frame index 10, brightness
+    at 6 on the H60B0) and are table data on the two capabilities, so both
+    frames are built by the codec — never assembled here.
+    """
+    if not profile.supports(Capability.ZONE_COLOR, zone=zone_key):
+        return []
+    if not _segment_count_matches(entity, profile, zone_key):
+        _LOGGER.debug(
+            "Govee LAN write: %s segment count disagrees with the %s zone's mask width — using cloud transport",
+            profile.sku,
+            zone_key,
+        )
+        return []
+
+    codec = GoveeCodec(profile)
+    chosen = list(segments)
+    try:
+        frames = [codec.zone_color(zone_key, rgb, segments=chosen)]
+        if brightness is not None and profile.supports(Capability.ZONE_BRIGHTNESS, zone=zone_key):
+            frames.append(codec.zone_brightness(zone_key, ha_to_percent(brightness), segments=chosen))
+    except GoveeProtocolError as err:
+        # SegmentMaskError (empty selection) and UnknownEncodingError both land
+        # here; either way the frame would be a guess or a silent no-op.
+        _LOGGER.debug(
+            "Govee LAN write: cannot encode a %s segment paint for %s (%s) — using cloud transport",
+            zone_key,
+            profile.sku,
+            err,
+        )
+        return []
+    return frames
 
 
-def _segment_count_matches(entity: Any, profile: DeviceProfile) -> bool:
+def _segment_count_matches(entity: Any, profile: DeviceProfile, zone_key: str) -> bool:
     """Whether the device's reported segment count matches the profile's mask.
 
     The entities index segments from the cloud's ``segmentedColorRgb`` count; the
@@ -397,10 +490,19 @@ def _segment_count_matches(entity: Any, profile: DeviceProfile) -> bool:
     LEDs, so the write is refused rather than approximated.
     """
     try:
-        zone = profile.zone(SEGMENT_ZONE_KEY)
+        zone = profile.zone(zone_key)
     except GoveeProtocolError:
         return False
     return bool(zone.segments) and zone.segments == _segment_count(entity)
+
+
+def ha_to_percent(ha_brightness: int) -> int:
+    """HA's 0-255 brightness as the 0-100 the frames carry.
+
+    Never rounds a lit entity down to 0: 0 is "off" on the wire, which is a
+    power intent, not a level.
+    """
+    return max(1, min(100, round(int(ha_brightness) * 100 / HA_BRIGHTNESS_MAX)))
 
 
 # ----------------------------------------------------------------------
