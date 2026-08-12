@@ -279,3 +279,38 @@ class TestGroupedSegmentEntity:
         # Only PowerCommand should have been sent, not SegmentColorCommand
         assert len(commands_sent) == 1
         assert isinstance(commands_sent[0], PowerCommand)
+
+
+class TestGroupedSegmentPowerSync:
+    """Turning the grouped segments on marks the whole device on."""
+
+    @staticmethod
+    def _commands(entity) -> list:
+        return [call.args[1] for call in entity.coordinator.async_control_device.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_turn_on_powers_the_device_when_it_is_reported_off(self):
+        entity = _make_grouped_segment_entity(power_state=False)
+
+        await entity.async_turn_on()
+
+        commands = self._commands(entity)
+        assert isinstance(commands[0], PowerCommand)
+        assert commands[0].power_on is True
+        assert isinstance(commands[1], SegmentColorCommand)
+
+    @pytest.mark.asyncio
+    async def test_turn_on_sends_no_power_command_when_the_device_is_on(self):
+        entity = _make_grouped_segment_entity(power_state=True)
+
+        await entity.async_turn_on()
+
+        assert not any(isinstance(cmd, PowerCommand) for cmd in self._commands(entity))
+
+    @pytest.mark.asyncio
+    async def test_turn_off_never_powers_the_device_off(self):
+        entity = _make_grouped_segment_entity(power_state=True)
+
+        await entity.async_turn_off()
+
+        assert not any(isinstance(cmd, PowerCommand) for cmd in self._commands(entity))

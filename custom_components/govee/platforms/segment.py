@@ -21,6 +21,7 @@ from homeassistant.components.light import (  # type: ignore[attr-defined]
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 
+from ..child_power import async_ensure_device_powered  # fork: child -> master power
 from ..const import SUFFIX_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
@@ -122,6 +123,8 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
             segment_indices=(self._segment_index,),
             color=color,
         )
+
+        await async_ensure_device_powered(self.coordinator, self._device_id)  # fork: child -> master power
 
         if not await async_segment_color(self, self._rgb_color, (self._segment_index,)):  # fork: raw-LAN
             await self.coordinator.async_control_device(

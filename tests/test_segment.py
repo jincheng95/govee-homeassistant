@@ -230,3 +230,54 @@ class TestSegmentTurnOffLogic:
         # Only PowerCommand should have been sent, not SegmentColorCommand
         assert len(commands_sent) == 1
         assert isinstance(commands_sent[0], PowerCommand)
+
+
+class TestSegmentPowerSync:
+    """A segment turning on marks the whole device on (child -> master sync).
+
+    Same rule the zone lights have always applied, extended to segments: a lit
+    child above a device reported off is a state the user never asked for. The
+    reverse is deliberately absent — other segments may still be lit, and
+    nothing reports per-segment power back.
+    """
+
+    @staticmethod
+    def _commands(entity) -> list:
+        return [call.args[1] for call in entity.coordinator.async_control_device.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_turn_on_powers_the_device_when_it_is_reported_off(self):
+        entity = _make_segment_entity(power_state=False)
+
+        await entity.async_turn_on()
+
+        commands = self._commands(entity)
+        # Power first, so the paint lands on a lit device.
+        assert isinstance(commands[0], PowerCommand)
+        assert commands[0].power_on is True
+        assert isinstance(commands[1], SegmentColorCommand)
+
+    @pytest.mark.asyncio
+    async def test_turn_on_sends_no_power_command_when_the_device_is_on(self):
+        entity = _make_segment_entity(power_state=True)
+
+        await entity.async_turn_on()
+
+        assert not any(isinstance(cmd, PowerCommand) for cmd in self._commands(entity))
+
+    @pytest.mark.asyncio
+    async def test_turn_on_sends_no_power_command_when_the_state_is_unknown(self):
+        """An unknown state is not evidence the lamp is off."""
+        entity = _make_segment_entity(state_exists=False)
+
+        await entity.async_turn_on()
+
+        assert not any(isinstance(cmd, PowerCommand) for cmd in self._commands(entity))
+
+    @pytest.mark.asyncio
+    async def test_turn_off_never_powers_the_device_off(self):
+        entity = _make_segment_entity(power_state=True)
+
+        await entity.async_turn_off()
+
+        assert not any(isinstance(cmd, PowerCommand) for cmd in self._commands(entity))

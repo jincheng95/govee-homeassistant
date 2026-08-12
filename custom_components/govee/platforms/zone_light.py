@@ -131,10 +131,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from ..api import lan_raw_write
+from ..child_power import async_ensure_device_powered
 from ..api.protocol import Capability, DeviceProfile, GoveeCodec, GoveeProtocolError, ZoneSpec
 from ..const import SUFFIX_ZONE, SUFFIX_ZONE_FLOW_RATE
 from ..entity import GoveeEntity
-from ..models import GoveeDevice, PowerCommand, ToggleCommand
+from ..models import GoveeDevice, ToggleCommand
 from ..zone_state import (
     ZONE_KEY_BY_TOGGLE,
     modelled_zone_keys,
@@ -563,11 +564,13 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def _async_ensure_device_powered(self) -> None:
-        """Power the lamp on over the normal path if it is reported off."""
-        state = self.device_state
-        if state is None or state.power_state:
-            return
-        await self.coordinator.async_control_device(self._device_id, PowerCommand(power_on=True))
+        """Power the lamp on over the normal path if it is reported off.
+
+        The rule itself lives in :mod:`..child_power`, which the segment
+        entities call too — a child turning on marks its parent on, whatever
+        kind of child it is.
+        """
+        await async_ensure_device_powered(self.coordinator, self._device_id)
 
     def _require_cloud_toggle_instance(self) -> str:
         """The cloud toggle backing this zone, or raise before anything is sent.
