@@ -977,6 +977,34 @@ class TestMasterDemotion:
         assert master.effect_list is None
         assert master._enable_scenes is False
 
+    def test_master_reports_no_effect(self):
+        """The attribute follows the list off the master (roadmap 1.4).
+
+        ``effect_list`` is None and the EFFECT feature bit is gone, so an
+        ``effect`` value would be an attribute no caller could set or clear —
+        and templates read it directly.
+        """
+        coordinator = _coordinator()
+        state = coordinator.get_state(DEVICE_ID)
+        state.active_scene = "3853"
+        state.active_scene_name = "Lake Placid"
+        master = _master(coordinator, _entry(coordinator))
+        master._scene_id_to_effect = {"3853": "Lake Placid"}
+
+        assert master.effect is None
+
+    def test_a_light_that_kept_its_scenes_still_reports_its_effect(self):
+        """The control: the guard is the demotion, not a blanket None."""
+        coordinator = _coordinator()
+        state = coordinator.get_state(DEVICE_ID)
+        state.active_scene = "3853"
+        state.active_scene_name = "Lake Placid"
+        light = GoveeLightEntity(coordinator, _device(), True)
+        light._enable_scenes = True
+        light._scene_id_to_effect = {"3853": "Lake Placid"}
+
+        assert light.effect == "Lake Placid"
+
     def test_master_keeps_the_nameless_primary_marker(self):
         """``name = None`` is what the device page's divider keys off.
 
