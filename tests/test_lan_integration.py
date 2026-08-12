@@ -25,7 +25,8 @@ regression):
    unavailable and a later write falls through LAN -> MQTT -> REST (not lost).
 5. A DHCP IP that re-maps to a DIFFERENT device's MAC re-correlates and never
    clobbers the wrong device (blocking #3).
-6. Color / ColorTemp commands NEVER go over LAN (blocking #2); they take REST.
+6. Color / ColorTemp commands go over LAN when the readback confirms them, and
+   fall back to REST when the device ignores the write (#149, #158).
 7. Bootstrap: the FIRST control after startup falls through because LAN health
    defaults unavailable until the first successful read.
 """
@@ -158,17 +159,21 @@ class _FakeDevice:
     """In-process fake Govee device(s) answering LAN over the fake send socket.
 
     Each registered IP models one device's reported state. The responder wraps the
-    real client's send transport: a ``turn`` / ``brightness`` write is APPLIED to
-    the device (so a later ``devStatus`` confirm reports the new value, exactly as
-    real firmware would) but elicits no reply; a ``devStatus`` query is answered
-    synchronously by feeding the encoded reply back through the client's own
-    ``_handle_datagram`` — unless the device has gone silent.
+    real client's send transport: a ``turn`` / ``brightness`` / ``colorwc`` write
+    is APPLIED to the device (so a later ``devStatus`` confirm reports the new
+    value, exactly as real firmware would) but elicits no reply; a ``devStatus``
+    query is answered synchronously by feeding the encoded reply back through the
+    client's own ``_handle_datagram`` — unless the device has gone silent.
+
+    ``ignores_color`` models the firmware behind issues #149/#158: it answers
+    reads but silently drops colour writes.
     """
 
     def __init__(self) -> None:
         """Start with no devices and answering enabled."""
         self.devices: dict[str, dict[str, Any]] = {}
         self.silent = False
+        self.ignores_color = False
 
     def add(
         self,
@@ -216,6 +221,21 @@ class _FakeDevice:
                 return  # control write: applied, no devStatus reply
             if cmd == "brightness":
                 dev["brightness"] = int(body.get("value"))
+                return
+            if cmd == "colorwc":
+                if self.ignores_color:
+                    return  # firmware that swallows colour writes (#149)
+                kelvin = int(body.get("colorTemInKelvin") or 0)
+                if kelvin:
+                    dev["color_temp"] = kelvin
+                else:
+                    rgb = body.get("color") or {}
+                    dev["color"] = (
+                        int(rgb.get("r", 0)),
+                        int(rgb.get("g", 0)),
+                        int(rgb.get("b", 0)),
+                    )
+                    dev["color_temp"] = 0
                 return
             if cmd == "devStatus" and not self.silent:
                 client._handle_datagram(ip, _encode(**dev))
@@ -641,58 +661,84 @@ class TestDhcpReassignment:
 # ==============================================================================
 
 
-class TestColorNeverOverLan:
-    """Color and color-temperature writes always take the cloud (REST) path."""
+class TestColorOverLan:
+    """Colour and colour-temperature writes prefer LAN, verified by readback.
+
+    Issues #149/#158: Govee's cloud accepts a colorRgb write with HTTP 200 and
+    "success" but never delivers it to some strips. A LAN write reaches the
+    device directly, and the readback proves whether it landed.
+    """
 
     DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
     IP = "10.0.0.5"
 
-    async def _ready(self, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+    async def _ready(self, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, Any]:
         coord, _ = _build_coordinator({self.DEVICE_ID: _light_device(self.DEVICE_ID)})
         client, responder = await _wire_lan(monkeypatch, coord)
         _correlate(coord, self.DEVICE_ID, self.IP)
         responder.add(self.IP, on=True, brightness=80)
-        # Make LAN fully available so the ONLY reason color/CT skip LAN is that
-        # command_to_lan returns None for them — not a closed write-health gate.
         await coord._refresh_lan_reads()
         assert coord._transport.get(self.DEVICE_ID, "lan").is_available is True
         client._send_transport.sent.clear()
-        return coord, client
+        return coord, client, responder
 
     @pytest.mark.asyncio
-    async def test_color_command_takes_rest_not_lan(
+    async def test_color_command_goes_over_lan(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        coord, client = await self._ready(monkeypatch)
+        coord, client, responder = await self._ready(monkeypatch)
 
         result = await coord.async_control_device(
             self.DEVICE_ID, ColorCommand(color=RGBColor(0, 0, 255))
         )
 
         assert result is True
-        # No LAN datagram was emitted for the color write...
-        assert client._send_transport.sent == []
-        # ...REST delivered it instead.
-        coord._api_client.control_device.assert_awaited_once()
-        assert isinstance(
-            coord._api_client.control_device.call_args.args[2], ColorCommand
-        )
+        sent = [json.loads(d.decode())["msg"] for d, _ in client._send_transport.sent]
+        assert {
+            "cmd": "colorwc",
+            "data": {"color": {"r": 0, "g": 0, "b": 255}, "colorTemInKelvin": 0},
+        } in sent
+        # The device applied it, so REST was never needed.
+        coord._api_client.control_device.assert_not_awaited()
+        assert responder.devices[self.IP]["color"] == (0, 0, 255)
 
     @pytest.mark.asyncio
-    async def test_color_temp_command_takes_rest_not_lan(
+    async def test_color_temp_command_goes_over_lan(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        coord, client = await self._ready(monkeypatch)
+        coord, client, responder = await self._ready(monkeypatch)
 
         result = await coord.async_control_device(
             self.DEVICE_ID, ColorTempCommand(kelvin=4000)
         )
 
         assert result is True
-        assert client._send_transport.sent == []
+        sent = [json.loads(d.decode())["msg"] for d, _ in client._send_transport.sent]
+        assert {
+            "cmd": "colorwc",
+            "data": {"color": {"r": 0, "g": 0, "b": 0}, "colorTemInKelvin": 4000},
+        } in sent
+        coord._api_client.control_device.assert_not_awaited()
+        assert responder.devices[self.IP]["color_temp"] == 4000
+
+    @pytest.mark.asyncio
+    async def test_color_falls_back_to_rest_when_the_device_ignores_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The never-stranded guarantee: firmware that swallows the LAN colour
+        # write still reports its old colour, so the readback fails to confirm
+        # and REST delivers the command instead.
+        coord, client, responder = await self._ready(monkeypatch)
+        responder.ignores_color = True
+
+        result = await coord.async_control_device(
+            self.DEVICE_ID, ColorCommand(color=RGBColor(0, 0, 255))
+        )
+
+        assert result is True
         coord._api_client.control_device.assert_awaited_once()
         assert isinstance(
-            coord._api_client.control_device.call_args.args[2], ColorTempCommand
+            coord._api_client.control_device.call_args.args[2], ColorCommand
         )
 
 

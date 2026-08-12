@@ -507,3 +507,55 @@ class TestControlDeviceLogging:
             "instance": "backgroundLightToggle",
             "value": 1,
         }
+
+
+class TestRecordLocalCommand:
+    """LAN/MQTT/BLE writes belong in the same history diagnostics reads.
+
+    Issues #149/#158: a colour write that went out over LAN or MQTT left no
+    trace at all in a diagnostics download, which is exactly the report where
+    the command history is the evidence.
+    """
+
+    def _client(self):
+        from custom_components.govee.api.client import GoveeApiClient
+
+        return GoveeApiClient(api_key="k")
+
+    def test_delivered_command_is_recorded(self):
+        client = self._client()
+        client.record_local_command(
+            "AA:BB", "H6159", "lan", {"instance": "colorRgb"}, delivered=True
+        )
+        record = client.recent_commands[-1]
+        assert record["transport"] == "lan"
+        assert record["device"] == "AA:BB"
+        assert record["response"] == {"delivered": True, "detail": None}
+        assert record["error"] is None
+
+    def test_unconfirmed_command_records_the_reason_as_an_error(self):
+        client = self._client()
+        client.record_local_command(
+            "AA:BB",
+            "H6159",
+            "lan",
+            {"instance": "colorRgb"},
+            delivered=False,
+            detail="device reported a different value than was sent",
+        )
+        record = client.recent_commands[-1]
+        assert record["error"] == "device reported a different value than was sent"
+        assert record["response"]["delivered"] is False
+
+    def test_local_records_share_the_buffer_with_cloud_records(self):
+        client = self._client()
+        client.record_local_command(
+            "AA:BB", "H6159", "mqtt", {"instance": "colorRgb"}, delivered=True
+        )
+        client.record_local_command(
+            "AA:BB", "H6159", "lan", {"instance": "brightness"}, delivered=True
+        )
+        assert [r["capability"]["instance"] for r in client.recent_commands] == [
+            "colorRgb",
+            "brightness",
+        ]

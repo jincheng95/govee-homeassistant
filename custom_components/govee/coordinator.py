@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover — HA installs without Bluetooth
 
 from .ble_advertisement import BleAdvertisementHandler
 from .ble_advertisement import sku_from_ble_name as _sku_from_ble_name  # noqa: F401
-from .api.mqtt_control import command_to_mqtt
+from .api.mqtt_control import color_legacy_followup, command_to_mqtt
 from .api.lan import (
     LanTargetError,
     async_get_lan_broadcast_addresses,
@@ -159,6 +159,11 @@ SEGMENT_COMMAND_PACING_SECONDS = 0.12
 # round-trip back) can drift by a unit or two; ±2 absorbs that without masking
 # a genuinely wrong value (issue #57).
 LAN_BRIGHTNESS_CONFIRM_TOLERANCE = 2
+
+# Tolerance (Kelvin) for confirming a LAN colour-temperature write by reading
+# the device back. Firmware snaps the requested value onto its own grid, so an
+# exact match would reject writes that did land (issues #149, #158).
+LAN_COLOR_TEMP_CONFIRM_TOLERANCE = 150
 
 # BFF polling interval for leak sensor state (seconds)
 BFF_POLL_INTERVAL = 300  # 5 minutes
@@ -1744,6 +1749,32 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         except Exception as err:
             _LOGGER.warning("Failed to discover leak sensors: %s", err)
             # Non-fatal: integration continues without leak sensors
+
+    def _record_local_command(
+        self,
+        device_id: str,
+        sku: str,
+        transport: str,
+        command: DeviceCommand,
+        *,
+        delivered: bool,
+        detail: str | None = None,
+    ) -> None:
+        """Mirror a LAN/MQTT/BLE send into the diagnostics command history.
+
+        Best-effort: diagnostics must never be able to break a control write.
+        """
+        try:
+            self._api_client.record_local_command(
+                device_id,
+                sku,
+                transport,
+                command.to_api_payload(),
+                delivered=delivered,
+                detail=detail,
+            )
+        except Exception:  # pragma: no cover - defensive
+            _LOGGER.debug("Could not record %s command for %s", transport, device_id)
 
     def _battery_candidate_devices(self) -> set[str]:
         """Devices that could still gain a battery reading from the BFF.
@@ -3339,6 +3370,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # it. A transient power-on miss must never flap LAN off (#57).
             if lan_confirm.counts_as_miss(device.sku, time.monotonic() - sent_at):
                 self._note_lan_write_miss(device_id)
+            self._record_local_command(
+                device_id,
+                device.sku,
+                "lan",
+                command,
+                delivered=False,
+                detail="no readback within the confirm window",
+            )
             return False
 
         if not self._lan_write_confirmed(device, command, reply):
@@ -3357,6 +3396,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._record_transport_success(device_id, "lan")
             if lan_confirm.counts_as_miss(device.sku, time.monotonic() - sent_at):
                 self._note_lan_write_miss(device_id)
+            self._record_local_command(
+                device_id,
+                device.sku,
+                "lan",
+                command,
+                delivered=False,
+                detail="device reported a different value than was sent",
+            )
             return False
 
         # Confirmed: stamp the LAN write (send + success — the verify-by-read
@@ -3366,6 +3413,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._record_transport_success(device_id, "lan")
         self._clear_lan_write_misses(device_id)
         self._apply_lan_read(device_id, reply)
+        self._record_local_command(device_id, device.sku, "lan", command, delivered=True)
         return True
 
     def _lan_write_confirmed(
@@ -3376,8 +3424,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     ) -> bool:
         """Return ``True`` when a LAN readback confirms the just-sent write.
 
-        Only power and brightness reach LAN (``command_to_lan`` returns ``None``
-        for everything else), so only those two are confirmable:
+        Power, brightness, colour and colour temperature reach LAN
+        (``command_to_lan`` returns ``None`` for everything else), and all four
+        are confirmable against the ``devStatus`` fields:
 
         * :class:`PowerCommand` — require an exact ``reply.on == command.power_on``.
           A plug whose ``devStatus`` lacks ``onOff`` reports ``reply.on is None``
@@ -3387,6 +3436,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
           device-native range and require it within
           ``LAN_BRIGHTNESS_CONFIRM_TOLERANCE`` of the requested value, absorbing
           0-100<->native rounding.
+        * :class:`ColorCommand` — require the reported RGB triplet to match
+          exactly. A device that ignored the write reports its previous colour,
+          which is precisely the case that must fall through to REST (#149).
+        * :class:`ColorTempCommand` — require the reported Kelvin within
+          ``LAN_COLOR_TEMP_CONFIRM_TOLERANCE``; firmware rounds the requested
+          value onto its own grid.
 
         Any other command type is treated as unconfirmable (returns ``False``).
         Such commands should never reach LAN, so this is a defensive backstop.
@@ -3408,6 +3463,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 reply.brightness_0_100, device.brightness_range
             )
             return abs(native - command.brightness) <= LAN_BRIGHTNESS_CONFIRM_TOLERANCE
+        if isinstance(command, ColorCommand):
+            return reply.color == command.color
+        if isinstance(command, ColorTempCommand):
+            if reply.color_temp_kelvin is None:
+                return False
+            return (
+                abs(reply.color_temp_kelvin - command.kelvin)
+                <= LAN_COLOR_TEMP_CONFIRM_TOLERANCE
+            )
         return False
 
     async def _try_mqtt_command(
@@ -3437,7 +3501,21 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         )
         if not success:
             self._record_transport_failure(device_id, "mqtt", "publish_failed")
-        return success
+            return False
+
+        # Older strips act only on the legacy `color` command and ignore
+        # `colorwc`. Nothing acknowledges an MQTT publish, so both are sent —
+        # they carry the same RGB, making the follow-up a no-op for devices that
+        # already applied the first one (issues #149, #158).
+        followup = color_legacy_followup(command)
+        if followup is not None:
+            legacy_cmd, legacy_data, legacy_version = followup
+            await self._mqtt_client.async_publish_command(
+                topic, legacy_cmd, legacy_data, cmd_version=legacy_version
+            )
+
+        self._record_local_command(device_id, sku, "mqtt", command, delivered=True)
+        return True
 
     async def _try_ble_command(self, device_id: str, command: DeviceCommand) -> bool:
         """Attempt to send a command via BLE. Returns True on success.

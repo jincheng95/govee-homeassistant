@@ -9,6 +9,7 @@ from custom_components.govee.api.mqtt_control import (
     build_color_data,
     build_color_legacy_data,
     build_turn_data,
+    color_legacy_followup,
     command_to_mqtt,
 )
 from custom_components.govee.models.commands import (
@@ -165,3 +166,29 @@ class TestTryMqttCommand:
         health = coord._transport.get("dev1", "mqtt")
         assert health is not None
         assert health.last_failure_reason == "publish_failed"
+
+
+class TestColorLegacyFollowup:
+    """Older strips act only on the legacy ``color`` command (#149, #158)."""
+
+    def test_color_command_gets_a_legacy_followup(self):
+        followup = color_legacy_followup(ColorCommand(color=RGBColor(r=1, g=2, b=3)))
+        assert followup == ("color", {"r": 1, "g": 2, "b": 3}, 1)
+
+    def test_legacy_followup_carries_the_same_rgb_as_colorwc(self):
+        # The follow-up must be a no-op for devices that already applied the
+        # primary write, which only holds if both carry the same triplet.
+        command = ColorCommand(color=RGBColor(r=10, g=20, b=30))
+        _, primary_data, _ = command_to_mqtt(command, "H6159")
+        _, legacy_data, _ = color_legacy_followup(command)
+        assert primary_data["color"] == legacy_data
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            PowerCommand(power_on=True),
+            BrightnessCommand(brightness=50),
+        ],
+    )
+    def test_non_color_commands_get_no_followup(self, command):
+        assert color_legacy_followup(command) is None

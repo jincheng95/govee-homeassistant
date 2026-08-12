@@ -3930,9 +3930,25 @@ class TestTryLanCommand:
         assert client.send_calls == []
 
     @pytest.mark.asyncio
-    async def test_color_command_never_uses_lan(self):
+    async def test_color_command_confirms_over_lan(self):
+        # Colour is LAN-routed and confirmed by readback (#149, #158).
         coord, _ = self._ready_coord()
-        client = _FakeWriteClient(read_reply=self._status())
+        client = _FakeWriteClient(read_reply=self._status(color=RGBColor(0, 255, 0)))
+        coord._lan_client = client
+        result = await coord._try_lan_command(
+            self.DEVICE_ID,
+            coord._devices[self.DEVICE_ID],
+            ColorCommand(color=RGBColor(0, 255, 0)),
+        )
+        assert result is True
+        assert client.send_calls and client.send_calls[0][1] == "colorwc"
+
+    @pytest.mark.asyncio
+    async def test_color_falls_through_when_readback_disagrees(self):
+        # A device that ignored the write reports its old colour, so the write
+        # must fall through to REST rather than be silently dropped (#149).
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=self._status(color=RGBColor(255, 0, 0)))
         coord._lan_client = client
         result = await coord._try_lan_command(
             self.DEVICE_ID,
@@ -3940,12 +3956,27 @@ class TestTryLanCommand:
             ColorCommand(color=RGBColor(0, 255, 0)),
         )
         assert result is False
-        assert client.send_calls == []  # command_to_lan returns None for colour
 
     @pytest.mark.asyncio
-    async def test_color_temp_command_never_uses_lan(self):
+    async def test_color_temp_command_confirms_within_tolerance(self):
+        # Firmware snaps Kelvin onto its own grid, so the confirm allows a
+        # small delta rather than demanding an exact echo (#149, #158).
         coord, _ = self._ready_coord()
-        client = _FakeWriteClient(read_reply=self._status())
+        client = _FakeWriteClient(read_reply=self._status(color_temp_kelvin=4050))
+        coord._lan_client = client
+        result = await coord._try_lan_command(
+            self.DEVICE_ID,
+            coord._devices[self.DEVICE_ID],
+            ColorTempCommand(kelvin=4000),
+        )
+        assert result is True
+        assert client.send_calls and client.send_calls[0][1] == "colorwc"
+
+    @pytest.mark.asyncio
+    async def test_color_temp_falls_through_when_device_stays_in_rgb_mode(self):
+        # colorTemInKelvin == 0 means "not in CT mode" — the write didn't land.
+        coord, _ = self._ready_coord()
+        client = _FakeWriteClient(read_reply=self._status(color_temp_kelvin=None))
         coord._lan_client = client
         result = await coord._try_lan_command(
             self.DEVICE_ID,
@@ -3953,7 +3984,6 @@ class TestTryLanCommand:
             ColorTempCommand(kelvin=4000),
         )
         assert result is False
-        assert client.send_calls == []
 
     # ---- precedence BLE > LAN > MQTT > REST --------------------------------
 

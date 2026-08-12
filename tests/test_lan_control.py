@@ -93,9 +93,6 @@ class TestCommandToLanReturnsNone:
     @pytest.mark.parametrize(
         "command",
         [
-            # Colour and colour temperature: unverifiable LAN writes -> keep REST.
-            ColorCommand(color=RGBColor(r=255, g=0, b=128)),
-            ColorTempCommand(kelvin=3000),
             # Scenes / DIY / snapshots: no LAN readback.
             SceneCommand(scene_id=1, scene_name="Sunset"),
             DIYSceneCommand(scene_id=7, scene_name="Mine"),
@@ -112,10 +109,20 @@ class TestCommandToLanReturnsNone:
     def test_unmapped_commands_return_none(self, command):
         assert command_to_lan(command, "H601F", RANGE_0_100) is None
 
-    def test_color_returns_none_even_for_non_quirk_sku(self):
-        # Explicit: colour is never LAN-routed regardless of SKU.
+    def test_color_maps_to_colorwc_with_kelvin_zeroed(self):
+        # Colour and colour temperature share one command; the unused half must
+        # be zeroed or the firmware picks arbitrarily (#149, #158).
         cmd = ColorCommand(color=RGBColor(r=10, g=20, b=30))
-        assert command_to_lan(cmd, "H6072", RANGE_0_254) is None
+        assert command_to_lan(cmd, "H6072", RANGE_0_254) == (
+            "colorwc",
+            {"color": {"r": 10, "g": 20, "b": 30}, "colorTemInKelvin": 0},
+        )
+
+    def test_color_temp_maps_to_colorwc_with_rgb_zeroed(self):
+        assert command_to_lan(ColorTempCommand(kelvin=3000), "H6072", RANGE_0_100) == (
+            "colorwc",
+            {"color": {"r": 0, "g": 0, "b": 0}, "colorTemInKelvin": 3000},
+        )
 
 
 # --------------------------------------------------------------------------- #
