@@ -213,8 +213,8 @@ Two options in ⚙️ Configure gate the feature, because a DIY upload has no cl
 
 | Option | Needed for |
 |---|---|
-| **Zone lights instead of zone switches (advanced)** | The per‑zone entities and the DIY authoring controls |
-| **Send advanced commands over LAN** | The upload itself — the lamp must be reachable on your LAN |
+| **Separate light entities for each zone of a multi‑zone lamp** | The per‑zone entities and the DIY authoring controls |
+| **Control light zones over the local network** | The upload itself — the lamp must be reachable on your LAN |
 
 With both on, each zone gets staging controls (mode / speed / palette / direction / flow rate) plus an **Apply DIY effect** button. Nothing leaves the house until you press it.
 
