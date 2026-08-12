@@ -3242,10 +3242,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if self._lan_writes_suppressed(device_id):
             return False
 
-        # [5] Only power + brightness map to LAN; colour / colour-temp / scenes /
-        #     segments / music / DIY / work-modes / toggles (and the H5080/H5083
-        #     power quirk) return None so they keep using REST, where the write
-        #     is acknowledged and no readback confirmation is needed.
+        # [5] Power, brightness, colour and colour-temp map to LAN — exactly the
+        #     four fields a devStatus read reports back, which is what makes the
+        #     verify-by-read below possible. Scenes / segments / music / DIY /
+        #     work-modes / toggles (and the H5080/H5083 power quirk) return None
+        #     so they keep using REST, where the write is acknowledged and no
+        #     readback confirmation is needed.
         mapped = command_to_lan(command, device.sku, device.brightness_range)
         if mapped is None:
             return False
