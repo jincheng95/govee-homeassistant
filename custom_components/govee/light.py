@@ -282,6 +282,13 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
     @property
     def effect(self) -> str | None:
         """Return currently active effect (scene name)."""
+        if not self._enable_scenes:
+            # Fork: with the zone lights on, `as_master_light` demotes this
+            # entity and clears `_enable_scenes` — the effect list and the
+            # EFFECT feature bit are gone, so reporting an effect anyway leaves
+            # an attribute no caller can set or clear. (Same answer when the
+            # scenes option is simply off: nothing populates `_effect_names`.)
+            return None
         state = self.device_state
         if not state or not state.active_scene:
             return None

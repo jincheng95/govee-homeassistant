@@ -713,6 +713,12 @@ class GoveeOptionsFlow(OptionsFlow):
                         ),
                     ): bool,
                     vol.Optional(
+                        CONF_ENABLE_ZONE_LIGHTS,
+                        default=source.get(
+                            CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
+                        ),
+                    ): bool,
+                    vol.Optional(
                         CONF_EXPOSE_TRANSPORT_ENTITIES,
                         default=source.get(
                             CONF_EXPOSE_TRANSPORT_ENTITIES,
@@ -727,6 +733,18 @@ class GoveeOptionsFlow(OptionsFlow):
                         ),
                     ): bool,
                     vol.Optional(
+                        CONF_ENABLE_LAN_RAW_WRITE,
+                        default=source.get(
+                            CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
+                        ),
+                    ): bool,
+                    vol.Optional(
+                        CONF_ENABLE_LAN_NUDGE,
+                        default=source.get(
+                            CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE
+                        ),
+                    ): bool,
+                    vol.Optional(
                         CONF_API_TEMPERATURE_UNIT,
                         default=source.get(
                             CONF_API_TEMPERATURE_UNIT, DEFAULT_API_TEMPERATURE_UNIT
@@ -736,24 +754,6 @@ class GoveeOptionsFlow(OptionsFlow):
                         CONF_LAN_TARGETS,
                         default=source.get(CONF_LAN_TARGETS, DEFAULT_LAN_TARGETS),
                     ): str,
-                    vol.Optional(
-                        CONF_ENABLE_LAN_NUDGE,
-                        default=source.get(
-                            CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE
-                        ),
-                    ): bool,
-                    vol.Optional(
-                        CONF_ENABLE_LAN_RAW_WRITE,
-                        default=source.get(
-                            CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
-                        ),
-                    ): bool,
-                    vol.Optional(
-                        CONF_ENABLE_ZONE_LIGHTS,
-                        default=source.get(
-                            CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
-                        ),
-                    ): bool,
                 }
             ),
             errors=errors,
