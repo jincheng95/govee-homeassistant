@@ -243,22 +243,41 @@ class TestGates:
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio
-    async def test_coordinator_write_suppression_holds_raw_frames(self, _fast_client):
-        """Upstream's post-failure LAN-write cooldown covers raw frames too.
+    async def test_coordinator_write_suppression_reroutes_zone_power(self, _fast_client):
+        """The #57 cooldown reroutes fallback-capable intents to the cloud.
 
         While ``_lan_writes_suppressed`` is set upstream routes that device's
-        writes to MQTT/REST. Raw frames ride the same UDP path to the same
-        lamp and are unacknowledged, so sending them inside the window is both
-        against the flag and unfalsifiable.
+        writes to MQTT/REST. Zone power has an exact cloud fallback
+        (``ToggleCommand``), so the raw path honours the hold and returns
+        False — the caller reroutes and nothing is lost.
         """
         coordinator = _coordinator()
         coordinator._lan_writes_suppressed = MagicMock(return_value=True)
         entity = _entity(coordinator, "rippleLightToggle")
 
         assert await lan_raw_write.async_zone_power(entity, on=True) is False
-        assert lan_raw_write.lan_target(coordinator, DEVICE_ID, "H60B0") is None
         assert _fast_client.sends == []
         coordinator._lan_writes_suppressed.assert_called_with(DEVICE_ID)
+
+    def test_lan_only_writes_ignore_the_suppression_window(self):
+        """``lan_target`` stays live during the cooldown (narrowed 2026-08-12).
+
+        The cooldown is armed by confirm-misses on upstream's *verified*
+        tier — the H60B0's master routinely confirms late — and zone
+        colour/CT/flow-rate and DIY uploads have NO cloud fallback: for them
+        "stand down" means a total outage, not a reroute. Coupling them to
+        the flag blacked out zone painting in 5-minute windows on every
+        Adaptive sun tick (the 2026-08-12 living-room flicker).
+        """
+        coordinator = _coordinator()
+        coordinator._lan_writes_suppressed = MagicMock(return_value=True)
+
+        target = lan_raw_write.lan_target(coordinator, DEVICE_ID, "H60B0")
+
+        assert target is not None
+        ip, profile = target
+        assert ip == IP
+        assert profile.sku == "H60B0"
 
     @pytest.mark.asyncio
     async def test_raw_frames_resume_when_the_suppression_clears(self, _fast_client):

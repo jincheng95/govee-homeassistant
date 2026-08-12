@@ -174,14 +174,6 @@ def lan_target(coordinator: GoveeCoordinator, device_id: str | None, sku: str) -
             ", ".join(transport.value for transport in profile.transports),
         )
         return None
-    if _writes_suppressed(coordinator, device_id):
-        # Upstream holds LAN *writes* for a device whose recent LAN writes did
-        # not confirm (issue #57) and routes them to MQTT/REST for the cooldown.
-        # Raw frames ride the same UDP path to the same lamp, so sending them
-        # inside that window is exactly what the flag says not to do — and they
-        # cannot even fail visibly, being unacknowledged.
-        _LOGGER.debug("Govee LAN write: writes to %s are suppressed by the coordinator — using cloud transport", sku)
-        return None
     ip = _lan_ip(coordinator, device_id)
     if ip is None:
         return None
@@ -309,6 +301,17 @@ async def async_zone_power(entity: Any, *, on: bool) -> bool:
         return False
     ip, profile = target
 
+    if _writes_suppressed(coordinator, device_id):
+        # Upstream holds LAN writes for this device (issue #57 post-failure
+        # cooldown). Zone power has an exact cloud fallback (ToggleCommand),
+        # so honour the hold and let the caller reroute — nothing is lost.
+        # LAN-only writes (zone colour/CT/flow, DIY uploads) deliberately do
+        # NOT consult the flag: for them "stand down" means an outage, not a
+        # reroute, and a late confirm on the verified tier says nothing about
+        # the fire-and-forget pipe (2026-08-12 flicker incident).
+        _LOGGER.debug("Govee LAN write: writes to %s are in upstream's cooldown — routing zone power via cloud", sku)
+        return False
+
     if not zone_power_supported(profile, zone_key):
         _LOGGER.debug(
             "Govee LAN write: %s/%s has no raw zone-power profile — using cloud transport",
@@ -368,6 +371,14 @@ async def async_segment_color(entity: Any, rgb: tuple[int, int, int], segments: 
     if target is None or device_id is None:
         return False
     ip, profile = target
+
+    if _writes_suppressed(coordinator, device_id):
+        # Cooldown (issue #57): segment colour has an exact cloud fallback
+        # (``SegmentColorCommand``), so honour the hold like zone power does.
+        _LOGGER.debug(
+            "Govee LAN write: writes to %s are in upstream's cooldown — routing segment colour via cloud", sku
+        )
+        return False
 
     if not profile.supports(Capability.SEGMENT_COLOR, zone=SEGMENT_ZONE_KEY):
         return False
@@ -453,8 +464,16 @@ def _writes_suppressed(coordinator: GoveeCoordinator, device_id: str | None) -> 
     """Whether upstream is currently holding LAN writes for ``device_id``.
 
     Reads upstream's own cooldown predicate, which also re-arms an expired
-    window — the same call upstream's `_try_lan_command` makes, so the fork's
-    raw path and upstream's LAN tier come out of the cooldown together.
+    window — the same call upstream's `_try_lan_command` makes, so the fork
+    and upstream's LAN tier come out of the cooldown together.
+
+    Consulted ONLY by intents with an exact cloud fallback (zone power,
+    segment colour), where honouring the hold means a reroute. LAN-only
+    writes (zone colour/CT/flow-rate, DIY uploads) never consult it: for
+    them standing down is a total outage, and the cooldown is armed by
+    confirm-misses on upstream's *verified* tier — which the H60B0's master
+    produces routinely by reporting stale state late — so coupling them
+    blacked out zone painting for 5-minute stretches (2026-08-12).
 
     Strictly ``is True``: this reaches a private upstream method, and anything
     that is not a real ``True`` (a rename leaving None, a stub) must mean "not
