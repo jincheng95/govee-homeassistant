@@ -39,7 +39,11 @@ from .const import (
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .models import GoveeDevice
-from .models.device import GoveeLeakSensor, leak_sensor_device_info
+from .models.device import (
+    LEAK_SENSOR_SKUS,
+    GoveeLeakSensor,
+    leak_sensor_device_info,
+)
 from .platforms.diy_effect import (
     async_diy_preview_entities,
 )
@@ -111,8 +115,18 @@ async def async_setup_entry(
         # not (e.g. H5110 via H5151, #83). Only create the entity when a battery
         # reading is actually present, so SKUs without one don't get a
         # permanently-unknown sensor.
+        #
+        # Leak sensors are excluded: they get their battery from the leak path
+        # below, under the very same `<device_id>_battery` unique_id. Creating
+        # both means HA keeps one and drops the other, and the dropped one's
+        # registry entry lingers as an Unavailable row — reported for an H5058
+        # behind an H5043 on #145.
         state = coordinator.get_state(device.device_id)
-        if state is not None and state.battery is not None:
+        if (
+            state is not None
+            and state.battery is not None
+            and device.sku.upper() not in LEAK_SENSOR_SKUS
+        ):
             entities.append(GoveeThermoBatterySensor(coordinator, device))
 
     # Register gateway hubs (leak + thermo) before async_add_entities so the

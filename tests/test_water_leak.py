@@ -319,3 +319,97 @@ class TestHubAttachedSensorNotDuplicated:
         coordinator._leak_sensors = colonless
 
         assert await self._water_leak_entities(entry) == []
+
+
+class TestLeakBatteryUniqueIdCollision:
+    """A leak sensor must get exactly one battery entity (#145).
+
+    An H5058 that also appears in the Developer API used to get both
+    GoveeThermoBatterySensor and GoveeLeakBatterySensor under the identical
+    `<device_id>_battery` unique_id; HA drops one, and the dropped one's
+    registry entry lingers as an Unavailable row.
+    """
+
+    @pytest.mark.asyncio
+    async def test_leak_sku_gets_no_thermo_battery_entity(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from custom_components.govee import sensor as sensor_module
+
+        device = GoveeDevice(
+            device_id="01:32:7A:C4:06:02:1C:42",
+            sku="H5058",
+            name="Master sink",
+            device_type="devices.types.sensor",
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_EVENT,
+                    instance=INSTANCE_BODY_APPEARED_EVENT,
+                    parameters={},
+                ),
+            ),
+            is_group=False,
+        )
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.battery = 88
+
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.leak_sensors = {}
+        coordinator.mqtt_client = None
+
+        added: list = []
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        await sensor_module.async_setup_entry(
+            MagicMock(), entry, lambda entities: added.extend(entities)
+        )
+
+        assert not [
+            e for e in added if isinstance(e, sensor_module.GoveeThermoBatterySensor)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_non_leak_thermometer_still_gets_its_battery_entity(self):
+        from unittest.mock import MagicMock
+
+        from custom_components.govee import sensor as sensor_module
+        from custom_components.govee.models.device import (
+            CAPABILITY_PROPERTY,
+            INSTANCE_SENSOR_TEMPERATURE,
+        )
+
+        device = GoveeDevice(
+            device_id="11:22:33:44:55:66:77:88",
+            sku="H5109",
+            name="Garage",
+            device_type="devices.types.thermometer",
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_PROPERTY,
+                    instance=INSTANCE_SENSOR_TEMPERATURE,
+                    parameters={},
+                ),
+            ),
+            is_group=False,
+        )
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.battery = 70
+
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.leak_sensors = {}
+        coordinator.mqtt_client = None
+
+        added: list = []
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        await sensor_module.async_setup_entry(
+            MagicMock(), entry, lambda entities: added.extend(entities)
+        )
+
+        assert [
+            e for e in added if isinstance(e, sensor_module.GoveeThermoBatterySensor)
+        ]
