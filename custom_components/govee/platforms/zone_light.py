@@ -457,7 +457,7 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
             raise HomeAssistantError(
                 f"{self._device.name}: the {zone_display_name(self._zone)} zone's colour and brightness "
                 "can only be set over the local network, and this device is not currently reachable there "
-                "(check the 'Send advanced commands over LAN' option and the LAN UDP connectivity sensor)"
+                "(check the 'Control light zones over the local network' option and the LAN UDP connectivity sensor)"
             )
 
         # Everything that can fail without touching the lamp is resolved BEFORE
