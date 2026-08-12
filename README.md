@@ -20,6 +20,17 @@
 
 ---
 
+## 🔀 About this fork
+
+A fork of [`lasswellt/govee-homeassistant`](https://github.com/lasswellt/govee-homeassistant) that pushes multi‑zone lamps (H60B0 first) beyond what the cloud API exposes, using a hardware‑verified device protocol:
+
+- **Per‑zone light entities** — each zone of a multi‑zone lamp becomes its own light, named after the zone; the whole‑device light acts as a WLED‑style master (opt‑in).
+- **Raw LAN write transport** — zone and segment commands go over local UDP instead of the cloud, with transport‑health tracking (opt‑in).
+- **DIY effect composer** — per‑zone mode / speed / palette entities staged locally and uploaded as one effect, plus a `govee.apply_diy_effect` service for automations.
+- Everything else tracks upstream; versions are upstream‑anchored (`YYYY.M.D.patch`).
+
+---
+
 ## 📊 Live status
 
 <div align="center">
