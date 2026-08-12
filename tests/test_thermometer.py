@@ -804,6 +804,8 @@ class TestDeveloperThermometerBattery:
         coordinator.devices = {did: device}
         coordinator.get_state = MagicMock(return_value=state)
         coordinator.is_bff_thermometer = MagicMock(return_value=False)  # Developer-API
+        # Not a hub-discovered leak sensor, so no competing battery entity (#145).
+        coordinator.is_bff_leak_sensor = MagicMock(return_value=False)
         coordinator.mqtt_client = None
         coordinator.leak_sensors = {}
         coordinator.register_thermo_hubs = MagicMock()

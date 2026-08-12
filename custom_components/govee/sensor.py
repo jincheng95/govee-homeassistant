@@ -39,11 +39,7 @@ from .const import (
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .models import GoveeDevice
-from .models.device import (
-    LEAK_SENSOR_SKUS,
-    GoveeLeakSensor,
-    leak_sensor_device_info,
-)
+from .models.device import GoveeLeakSensor, leak_sensor_device_info
 from .platforms.diy_effect import (
     async_diy_preview_entities,
 )
@@ -116,16 +112,18 @@ async def async_setup_entry(
         # reading is actually present, so SKUs without one don't get a
         # permanently-unknown sensor.
         #
-        # Leak sensors are excluded: they get their battery from the leak path
-        # below, under the very same `<device_id>_battery` unique_id. Creating
-        # both means HA keeps one and drops the other, and the dropped one's
-        # registry entry lingers as an Unavailable row — reported for an H5058
-        # behind an H5043 on #145.
+        # Skipped only for devices the hub/BFF path ALSO creates a battery
+        # entity for below, since both use the same `<device_id>_battery`
+        # unique_id: HA keeps one and drops the other, leaving the dropped one's
+        # registry entry behind as an Unavailable row (an H5058 behind an H5043,
+        # issue #145). The test is membership of that path, not the SKU — a
+        # standalone H5054 shares the leak SKUs but is never in it, and gets its
+        # battery from the water-detector poll through this entity.
         state = coordinator.get_state(device.device_id)
         if (
             state is not None
             and state.battery is not None
-            and device.sku.upper() not in LEAK_SENSOR_SKUS
+            and not coordinator.is_bff_leak_sensor(device.device_id)
         ):
             entities.append(GoveeThermoBatterySensor(coordinator, device))
 
