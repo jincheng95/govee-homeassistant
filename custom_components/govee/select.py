@@ -32,6 +32,7 @@ from .const import (
     SUFFIX_SNAPSHOT_SELECT,
 )
 from .coordinator import GoveeCoordinator
+from .platforms.diy_effect import async_diy_select_entities  # fork: DIY effect
 from .entity import GoveeEntity
 from .models import (
     GoveeDevice,
@@ -255,6 +256,8 @@ async def async_setup_entry(
                     device.name,
                     len(nightlight_scene_options),
                 )
+
+    entities.extend(async_diy_select_entities(coordinator, entry))  # fork: DIY effect
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee scene select entities", len(entities))

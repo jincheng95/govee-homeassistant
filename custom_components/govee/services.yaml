@@ -35,3 +35,36 @@ set_segment_color:
       example: "[255, 0, 0]"
       selector:
         color_rgb:
+
+apply_diy_effect:
+  name: Apply DIY Effect
+  description: >-
+    Compose and upload a DIY effect to a multi-zone lamp (H60B0). Requires the
+    "zone lights" and "send advanced commands over LAN" options. A zone that is
+    omitted is switched off in the uploaded effect.
+  fields:
+    device_id:
+      name: Device ID
+      description: Device ID of the multi-zone lamp
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        text:
+    ripple:
+      name: Ripple
+      description: >-
+        Ripple zone record - mode (name or number), speed 1-100, colors as a
+        list of [R, G, B], direction (cw/ccw/reverse), flow_rate 1-100
+      required: false
+      example: '{"mode": "twinkle", "speed": 60, "colors": [[255, 0, 0]]}'
+      selector:
+        object:
+    ring:
+      name: Ring
+      description: >-
+        Ring zone record - mode (name or number), speed 1-100, colors as a list
+        of [R, G, B]
+      required: false
+      example: '{"mode": "gradient", "colors": [[0, 176, 255], [255, 0, 128]]}'
+      selector:
+        object:

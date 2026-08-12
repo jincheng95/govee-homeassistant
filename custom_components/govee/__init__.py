@@ -45,12 +45,19 @@ from .const import (
     KEY_IOT_LOGIN_FAILED,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
+    SUFFIX_DIY_APPLY,
+    SUFFIX_DIY_DIRECTION,
+    SUFFIX_DIY_FLOW_RATE,
+    SUFFIX_DIY_MODE,
+    SUFFIX_DIY_PALETTE,
     SUFFIX_DIY_SCENE_SELECT,
+    SUFFIX_DIY_SPEED,
     SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SCENE_SELECT,
     SUFFIX_SEGMENT,
 )
 from .coordinator import GoveeCoordinator
+from .zone_state import zone_lights_enabled
 from .services import (
     SERVICE_REFRESH_SCENES,
     async_setup_services,
@@ -72,6 +79,7 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.EVENT,  # Leak sensor button presses
     Platform.BUTTON,
+    Platform.TEXT,  # fork: DIY effect palettes (option-gated, usually empty)
 ]
 
 # Type alias for runtime data
@@ -381,6 +389,7 @@ async def _async_cleanup_orphaned_entities(
     device_modes = options.get("segment_mode_by_device", {})
     enable_scenes = options.get(CONF_ENABLE_SCENES, DEFAULT_ENABLE_SCENES)
     enable_diy_scenes = options.get(CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES)
+    enable_diy_effects = zone_lights_enabled(entry)
 
     _LOGGER.debug(
         "Orphan cleanup: device_modes=%s, enable_scenes=%s, enable_diy_scenes=%s",
@@ -434,6 +443,13 @@ async def _async_cleanup_orphaned_entities(
             elif unique_id.endswith(SUFFIX_DIY_SCENE_SELECT) and not enable_diy_scenes:
                 should_remove = True
                 removal_reason = "DIY scenes disabled"
+            elif _is_diy_effect_suffix(suffix) and not enable_diy_effects:
+                # Fork: the DIY authoring controls need BOTH the zone-light
+                # option and the raw-LAN transport (zone_lights_enabled checks
+                # the pair), because a DIY effect has no cloud equivalent at
+                # all. Turning either off must take the entities with it.
+                should_remove = True
+                removal_reason = "DIY effect controls disabled"
         else:
             # Device not in coordinator (unknown device)
             should_remove = True
@@ -529,3 +545,25 @@ async def _async_update_listener(
     )
 
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _is_diy_effect_suffix(suffix: str) -> bool:
+    """Whether a unique_id suffix belongs to the fork's DIY authoring controls.
+
+    Args:
+        suffix: The part of the unique_id after the device id.
+
+    Returns:
+        True for the per-zone staging entities and the per-device apply button.
+    """
+    if suffix == SUFFIX_DIY_APPLY:
+        return True
+    return suffix.startswith(
+        (
+            SUFFIX_DIY_MODE,
+            SUFFIX_DIY_SPEED,
+            SUFFIX_DIY_DIRECTION,
+            SUFFIX_DIY_FLOW_RATE,
+            SUFFIX_DIY_PALETTE,
+        )
+    )

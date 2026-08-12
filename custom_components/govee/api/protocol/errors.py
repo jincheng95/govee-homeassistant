@@ -35,6 +35,16 @@ class UnknownEncodingError(GoveeProtocolError):
     """
 
 
+class DiyEffectError(GoveeProtocolError):
+    """A DIY effect payload could not be encoded from the given parameters.
+
+    Raised for out-of-range mode/speed/flow values, an empty or oversized
+    palette, or direction/flow parameters aimed at a zone whose record has no
+    such field — sending those anyway would shift every following byte and be
+    silently misread by the firmware.
+    """
+
+
 class SegmentMaskError(GoveeProtocolError):
     """The requested segment mask is empty or out of range.
 

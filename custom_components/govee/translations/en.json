@@ -376,6 +376,24 @@
           "description": "Color as [R, G, B] values"
         }
       }
+    },
+    "apply_diy_effect": {
+      "name": "Apply DIY Effect",
+      "description": "Compose and upload a DIY effect to a multi-zone lamp (H60B0)",
+      "fields": {
+        "device_id": {
+          "name": "Device ID",
+          "description": "Device ID of the multi-zone lamp"
+        },
+        "ripple": {
+          "name": "Ripple",
+          "description": "Ripple zone record: mode, speed, colors, direction, flow_rate"
+        },
+        "ring": {
+          "name": "Ring",
+          "description": "Ring zone record: mode, speed, colors"
+        }
+      }
     }
   },
   "issues": {

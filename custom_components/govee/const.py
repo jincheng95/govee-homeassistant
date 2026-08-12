@@ -234,6 +234,15 @@ SUFFIX_LIGHT_ZONE: Final = "_light_zone_"
 # (and history) when the option is turned back off.
 SUFFIX_ZONE: Final = "_zone_"
 SUFFIX_ZONE_FLOW_RATE: Final = "_zone_flow_rate_"
+# Fork: staged DIY-effect authoring controls, gated by the same two options as
+# the zone lights. Per-zone suffixes end in "_" and carry the zone key; the
+# apply button is one per device and therefore has no trailing separator.
+SUFFIX_DIY_MODE: Final = "_diy_mode_"
+SUFFIX_DIY_SPEED: Final = "_diy_speed_"
+SUFFIX_DIY_DIRECTION: Final = "_diy_direction_"
+SUFFIX_DIY_FLOW_RATE: Final = "_diy_flow_rate_"
+SUFFIX_DIY_PALETTE: Final = "_diy_palette_"
+SUFFIX_DIY_APPLY: Final = "_diy_apply"
 SUFFIX_SOCKET: Final = "_socket_"
 SUFFIX_MAIN_LIGHT: Final = "_main_light"
 SUFFIX_BACKGROUND_LIGHT: Final = "_background_light"

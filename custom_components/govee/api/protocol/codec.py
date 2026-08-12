@@ -14,9 +14,11 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from .diy import DiyZoneEffect, all_off, encode_payload
 from .encoders import ENCODERS
-from .errors import GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
+from .errors import DiyEffectError, GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
 from .frames import ptreal_message, segment_mask
+from .packets import upload_effect
 from .profiles import (
     Capability,
     CapabilitySpec,
@@ -170,6 +172,37 @@ class GoveeCodec:
         """Ripple flow rate, 0-100. LAN-only — the cloud API cannot express it."""
         spec = self._zone(zone)
         return self._encode(Capability.ZONE_FLOW_RATE, spec, zone_byte=self._zone_byte(spec), level=rate)
+
+    def diy_effect(
+        self,
+        effects: Mapping[str, DiyZoneEffect | None],
+        *,
+        index: int = 0,
+    ) -> list[bytes]:
+        """Build the full DIY upload: ``0xA3`` chunks plus the commit frame.
+
+        ``effects`` maps zone key ("ripple", "ring") to that zone's
+        :class:`~.diy.DiyZoneEffect`; zones left out get the empty "off"
+        record. At least one zone must be on — an all-off DIY would just
+        blank the lamp, which is a power intent, not an effect.
+
+        ``index`` is the commit frame's effect slot. The verified capture
+        used a cloud-saved DIY's slot (3); 0 — a locally composed, unsaved
+        effect — is the untested-but-expected default.
+
+        Send the returned frames in order, in one envelope
+        (:meth:`message` / ``LanUdpClient.async_send_frames``).
+        """
+        spec = self.profile.diy
+        if spec is None:
+            raise UnsupportedCapabilityError(f"{self.profile.sku} has no DIY effect layout")
+        if all_off(effects.values()):
+            raise DiyEffectError("all zones off — refuse to upload a blank DIY effect")
+        sub_mode = self.profile.modes.get("diy")
+        if not isinstance(sub_mode, int):
+            raise UnknownEncodingError(f"{self.profile.sku} 'diy' commit sub-mode is UNKNOWN")
+        payload = encode_payload(spec, effects)
+        return list(upload_effect(payload, marker=spec.marker, sub_mode=sub_mode, index=index))
 
     # -- segment-addressed (no zone byte) ---------------------------------
 

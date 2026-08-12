@@ -197,6 +197,49 @@ class MaxSimultaneousZones:
 
 
 @dataclass(frozen=True)
+class DiyZoneSpec:
+    """One zone's slot in the DIY effect payload, in wire order.
+
+    ``modes`` is the bound name→int table for this zone's picker. The two
+    zones do NOT share an enum (ripple twinkle = 11, ring twinkle = 3), and
+    the ripple's table is known incomplete — it demonstrably accepts ring-enum
+    ints on top of its own, because the app's "Simple" authoring mode writes
+    the ring int into both records. Consumers should therefore offer these
+    names but tolerate raw ints.
+    """
+
+    zone_key: str
+    modes: Mapping[str, int]
+    has_direction: bool = False
+    has_flow_rate: bool = False
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class DiyEffectSpec:
+    """How this SKU takes a DIY effect upload.
+
+    ``marker`` is the per-effect-type multipacket marker byte, echoed by the
+    commit frame (0x58 for a DIY; a music palette uses 0x41). ``zones`` is the
+    payload's record order — every zone always gets a record, "off" zones an
+    empty one, so the order is wire truth, not preference.
+    """
+
+    marker: int
+    zones: tuple[DiyZoneSpec, ...]
+    verified: bool = True
+    note: str = ""
+
+    def zone(self, key: str) -> DiyZoneSpec:
+        for zone in self.zones:
+            if zone.zone_key == key:
+                return zone
+        raise GoveeProtocolError(
+            f"no DIY record for zone {key!r} (have: {[z.zone_key for z in self.zones]})"
+        )
+
+
+@dataclass(frozen=True)
 class DeviceProfile:
     """Everything the codec needs to talk to one SKU."""
 
@@ -215,6 +258,7 @@ class DeviceProfile:
     capabilities: Mapping[Capability, CapabilitySpec] = field(default_factory=dict)
     modes: Mapping[str, ConstantValue] = field(default_factory=dict)
     constraints: tuple[MaxSimultaneousZones, ...] = ()
+    diy: DiyEffectSpec | None = None
     note: str = ""
 
     def zone(self, key: str) -> ZoneSpec:
@@ -351,6 +395,48 @@ H60B0: Final = DeviceProfile(
         Capability.QUERY: CapabilitySpec("query"),
     },
     modes={"scene": 0x04, "diy": 0x0A, "solid": 0x0D, "music": 0x13, "game": 0x14},
+    diy=DiyEffectSpec(
+        marker=0x58,
+        zones=(
+            DiyZoneSpec(
+                zone_key="ripple",
+                # Bound from owner-saved DIYs with known settings. NOT the
+                # app's display order, and NOT the ring enum: twinkle is 11
+                # here and 3 there. `3` is unbound on this zone (appears in
+                # factory blobs via the app's Simple mode, name unknown).
+                modes={
+                    "none": 0,
+                    "gradient": 1,
+                    "breathe": 2,
+                    "rainbow": 4,
+                    "twinkle": 11,
+                    "jumping": 12,
+                },
+                has_direction=True,
+                has_flow_rate=True,
+                note="only zone with direction + flow; accepts ring-enum ints too (Simple mode)",
+            ),
+            DiyZoneSpec(
+                zone_key="ring",
+                # Complete and fully bound: 1-10 in the app's display order.
+                modes={
+                    "none": 0,
+                    "gradient": 1,
+                    "breathe": 2,
+                    "twinkle": 3,
+                    "rainbow": 4,
+                    "graffiti": 5,
+                    "flow": 6,
+                    "alternate": 7,
+                    "gleam": 8,
+                    "cover": 9,
+                    "colorful": 10,
+                },
+                note="no direction/flow tail; mode 9 'cover' sets mode_param=0x01 in the one sample",
+            ),
+        ),
+        note="0x50-form payload: 0d + ripple record + ring record; commit 33 05 0a <idx> 00 58",
+    ),
     constraints=(
         MaxSimultaneousZones(
             limit=2,
@@ -505,6 +591,22 @@ def validate_table() -> None:
         for constraint in profile.constraints:
             for key in constraint.displacement_order:
                 profile.zone(key)
+        if profile.diy is not None:
+            if not profile.diy.zones:
+                raise GoveeProtocolError(
+                    f"{profile.sku} declares a DIY spec with no zone records"
+                )
+            if not isinstance(profile.modes.get("diy"), int):
+                raise GoveeProtocolError(
+                    f"{profile.sku} declares DIY effects but no 'diy' commit sub-mode"
+                )
+            for diy_zone in profile.diy.zones:
+                profile.zone(diy_zone.zone_key)
+                for name, mode in diy_zone.modes.items():
+                    if not 0 <= mode <= 0xFF:
+                        raise GoveeProtocolError(
+                            f"{profile.sku} DIY zone {diy_zone.zone_key!r} mode {name!r} = {mode} not a byte"
+                        )
 
 
 def describe(profile: DeviceProfile) -> dict[str, Any]:
@@ -541,4 +643,21 @@ def describe(profile: DeviceProfile) -> dict[str, Any]:
             {"max_simultaneous_zones": constraint.limit, "zones": list(constraint.displacement_order)}
             for constraint in profile.constraints
         ],
+        "diy": (
+            None
+            if profile.diy is None
+            else {
+                "marker": profile.diy.marker,
+                "verified": profile.diy.verified,
+                "zones": [
+                    {
+                        "zone_key": zone.zone_key,
+                        "modes": dict(zone.modes),
+                        "has_direction": zone.has_direction,
+                        "has_flow_rate": zone.has_flow_rate,
+                    }
+                    for zone in profile.diy.zones
+                ],
+            }
+        ),
     }

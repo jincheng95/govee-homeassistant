@@ -17,6 +17,7 @@ Layering::
     encoders.py   frame layouts, named by the table (code)
     frames.py     20-byte frames, XOR checksum, masks, ptReal envelope
     packets.py    0xA3 multipacket chunker (mechanism only, hardware-untested)
+    diy.py        DIY effect payload records (0x50 form) riding the chunker
     codec.py      profile + intent -> frames
     client.py     write-only UDP send to :4003 (reads stay with devStatus)
 
@@ -34,7 +35,18 @@ from __future__ import annotations
 
 from .client import LAN_COMMAND_PORT, LanUdpClient
 from .codec import GoveeCodec
+from .diy import (
+    DIRECTION_CCW,
+    DIRECTION_CW,
+    DIRECTION_REVERSE,
+    DIRECTIONS,
+    MAX_DIY_COLORS,
+    MODE_NONE,
+    DiyZoneEffect,
+    resolve_mode,
+)
 from .errors import (
+    DiyEffectError,
     FrameError,
     GoveeProtocolError,
     SegmentMaskError,
@@ -58,6 +70,8 @@ from .profiles import (
     Capability,
     CapabilitySpec,
     DeviceProfile,
+    DiyEffectSpec,
+    DiyZoneSpec,
     KelvinRange,
     MaxSimultaneousZones,
     Transport,
@@ -69,13 +83,23 @@ from .profiles import (
 __all__ = [
     "BLE_MANUFACTURER_LEGACY",
     "BLE_MANUFACTURER_MODERN",
+    "DIRECTIONS",
+    "DIRECTION_CCW",
+    "DIRECTION_CW",
+    "DIRECTION_REVERSE",
     "FRAME_LENGTH",
     "LAN_COMMAND_PORT",
+    "MAX_DIY_COLORS",
+    "MODE_NONE",
     "PROFILES",
     "UNKNOWN",
     "Capability",
     "CapabilitySpec",
     "DeviceProfile",
+    "DiyEffectError",
+    "DiyEffectSpec",
+    "DiyZoneEffect",
+    "DiyZoneSpec",
     "FrameError",
     "KelvinRange",
     "LanUdpClient",
@@ -93,6 +117,7 @@ __all__ = [
     "frame_to_base64",
     "get_profile",
     "ptreal_message",
+    "resolve_mode",
     "segment_mask",
     "upload_effect",
     "validate_table",
