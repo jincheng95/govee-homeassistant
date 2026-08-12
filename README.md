@@ -205,6 +205,66 @@ data:
 
 ---
 
+## DIY effects on multi‑zone lamps (fork)
+
+On a multi‑zone lamp (H60B0 today) a **DIY effect** is not a setting you toggle — it's a small document you author: each zone gets an effect mode, a transition speed, a colour palette, and (on the ripple zone only) a diffuser direction and flow rate. The whole thing is uploaded to the lamp in one shot over the local network.
+
+Two options in ⚙️ Configure gate the feature, because a DIY upload has no cloud equivalent at all:
+
+| Option | Needed for |
+|---|---|
+| **Zone lights instead of zone switches (advanced)** | The per‑zone entities and the DIY authoring controls |
+| **Send advanced commands over LAN** | The upload itself — the lamp must be reachable on your LAN |
+
+With both on, each zone gets staging controls (mode / speed / palette / direction / flow rate) plus an **Apply DIY effect** button. Nothing leaves the house until you press it.
+
+### `govee.apply_diy_effect`
+
+For automations, the same upload is available as an action. It **targets** the lamp the normal Home Assistant way — pick the device, or any one of its light entities, from the picker:
+
+```yaml
+actions:
+  - action: govee.apply_diy_effect
+    target:
+      device_id: 4a1f2c9e8b7d6a5c4e3f2a1b0c9d8e7f
+    data:
+      ripple_mode: twinkle
+      ripple_speed: 60
+      ripple_colors: [[255, 0, 0], [0, 176, 255]]
+      ripple_direction: ccw
+      ripple_flow_rate: 30
+      ring_mode: gradient
+      ring_colors: [[255, 255, 255]]
+```
+
+**Targeting.** Exactly one DIY‑capable device per call — a DIY effect is an authored document with per‑zone mode tables, so fanning one call across several lamps would be a partial write rather than a success. Targeting a device that isn't a multi‑zone lamp, or resolving to more than one, fails with a message saying so. A raw Govee device id (`AA:BB:CC:DD:EE:FF:00:11`) passed as `device_id` is still accepted, so automations written before the picker existed keep working.
+
+**Fields.** All eight are optional:
+
+| Field | Values | Default |
+|---|---|---|
+| `ripple_mode` | `none`, `gradient`, `breathe`, `rainbow`, `twinkle`, `jumping` — or a raw number 0–255 | — |
+| `ripple_speed` | 1–100 | `50` |
+| `ripple_colors` | list of `[R, G, B]`, 1–16 entries | — |
+| `ripple_direction` | `cw`, `ccw`, `reverse` | `cw` |
+| `ripple_flow_rate` | 1–100 | `50` |
+| `ring_mode` | `none`, `gradient`, `breathe`, `twinkle`, `rainbow`, `graffiti`, `flow`, `alternate`, `gleam`, `cover`, `colorful` — or a raw number 0–255 | — |
+| `ring_speed` | 1–100 | `50` |
+| `ring_colors` | list of `[R, G, B]`, 1–16 entries | — |
+
+The ring zone has no direction or flow rate — its record carries no such field on the wire, so neither is offered for it. Raw numbers are accepted for both modes because the ripple's mode table is known to be incomplete and the lamp also plays the ring's mode numbers on it.
+
+**Semantics.** A call is self‑contained, so the same automation produces the same lamp every time:
+
+- A zone with **all** of its fields omitted (or `*_mode: none`) is switched **off** in the uploaded effect — not left at whatever you last staged in the UI.
+- A field omitted inside a zone you *do* use takes the **fixed default** above, again ignoring the staged draft.
+- Naming any of a zone's fields requires that zone's `*_mode` — turning a zone on is a choice, and there's no sensible mode to invent for it.
+- A zone that's on needs at least one colour.
+
+Whatever the action sends is mirrored back into the DIY staging entities, so the authoring controls show what actually went to the lamp rather than a draft the automation just overwrote.
+
+---
+
 ## Device groups
 
 Enable **group devices** in options to surface Govee‑app groups as single light entities. A command to a group is sent once and fanned out to all members by Govee's cloud, which syncs better than grouping the same lights with Home Assistant helpers (those fire separate commands that arrive at slightly different times). Group state is best‑effort (groups can't be polled), and group lights support power/brightness/color only.
@@ -239,6 +299,7 @@ So a reading can look "frozen" while polling is perfectly healthy — it's the l
 |---|---|
 | `govee.refresh_scenes` | Re‑fetch the scene catalog from Govee (optional `device_id`). |
 | `govee.set_segment_color` | Set RGB color on specific segments of an RGBIC device. |
+| `govee.apply_diy_effect` | Compose and upload a DIY effect to one multi‑zone lamp (fork; targets a device or one of its entities — see [above](#goveeapply_diy_effect)). |
 
 ---
 
