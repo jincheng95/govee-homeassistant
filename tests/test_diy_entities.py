@@ -25,7 +25,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import voluptuous as vol
+import yaml
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.govee import diy_state, services
 from custom_components.govee.api import lan_raw_write
@@ -38,6 +44,7 @@ from custom_components.govee.api.protocol import (
 from custom_components.govee.const import (
     CONF_ENABLE_LAN_RAW_WRITE,
     CONF_ENABLE_ZONE_LIGHTS,
+    DOMAIN,
 )
 from custom_components.govee.models import (
     GoveeCapability,
@@ -68,6 +75,7 @@ from custom_components.govee.platforms.diy_effect import (
 )
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
+OTHER_DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B1"
 IP = "10.20.0.51"
 
 PROFILE = get_profile("H60B0")
@@ -114,11 +122,15 @@ def _cap(cap_type: str, instance: str) -> GoveeCapability:
     return GoveeCapability(type=cap_type, instance=instance, parameters={})
 
 
-def _device(sku: str = "H60B0") -> GoveeDevice:
+def _device(
+    sku: str = "H60B0",
+    device_id: str = DEVICE_ID,
+    name: str = "Uplighter Floor Lamp",
+) -> GoveeDevice:
     return GoveeDevice(
-        device_id=DEVICE_ID,
+        device_id=device_id,
         sku=sku,
-        name="Uplighter Floor Lamp",
+        name=name,
         device_type=DEVICE_TYPE_LIGHT,
         capabilities=(
             _cap(CAPABILITY_ON_OFF, INSTANCE_POWER),
@@ -164,13 +176,9 @@ def _coordinator(
     return coordinator
 
 
-def _entry(
-    coordinator: Any, *, zone_lights: bool = True, lan_raw_write_on: bool | None = None
-) -> Any:
+def _entry(coordinator: Any, *, zone_lights: bool = True, lan_raw_write_on: bool | None = None) -> Any:
     if lan_raw_write_on is None:
-        lan_raw_write_on = bool(
-            coordinator.config_entry.options.get(CONF_ENABLE_LAN_RAW_WRITE, False)
-        )
+        lan_raw_write_on = bool(coordinator.config_entry.options.get(CONF_ENABLE_LAN_RAW_WRITE, False))
     entry = MagicMock()
     entry.runtime_data = coordinator
     entry.options = {
@@ -200,12 +208,43 @@ def _controls(coordinator: Any, entry: Any) -> dict[str, Any]:
     )
     controls: dict[str, Any] = {}
     for entity in built:
-        key = (
-            type(entity).__name__.replace("GoveeDiy", "").replace("Button", "").lower()
-        )
+        key = type(entity).__name__.replace("GoveeDiy", "").replace("Button", "").lower()
         zone = getattr(entity, "_zone_key", None)
         controls[key if zone is None else f"{key}.{zone}"] = entity
     return controls
+
+
+def _register_device(
+    hass: Any,
+    *,
+    device_id: str = DEVICE_ID,
+    name: str = "Uplighter Floor Lamp",
+    identifier_domain: str = DOMAIN,
+) -> tuple[Any, Any]:
+    """A registry device (+ one light entity on it), as the platforms write it.
+
+    ``identifier_domain`` is the lever the "target belongs to some other
+    integration" test pulls: everything else about the entry is identical, only
+    the identifier tuple's domain differs.
+    """
+    entry = MockConfigEntry(domain=DOMAIN, entry_id=f"entry_{device_id}")
+    entry.add_to_hass(hass)
+    device_entry = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(identifier_domain, device_id)},
+        name=name,
+        manufacturer="Govee",
+        model="H60B0",
+    )
+    entity_entry = er.async_get(hass).async_get_or_create(
+        "light",
+        DOMAIN,
+        device_id,
+        config_entry=entry,
+        device_id=device_entry.id,
+        suggested_object_id=name.lower().replace(" ", "_"),
+    )
+    return device_entry, entity_entry
 
 
 # ==============================================================================
@@ -282,14 +321,8 @@ class TestWiring:
 
         assert controls["modeselect.ripple"].unique_id == f"{DEVICE_ID}_diy_mode_ripple"
         assert controls["speednumber.ring"].unique_id == f"{DEVICE_ID}_diy_speed_ring"
-        assert (
-            controls["directionselect.ripple"].unique_id
-            == f"{DEVICE_ID}_diy_direction_ripple"
-        )
-        assert (
-            controls["flowratenumber.ripple"].unique_id
-            == f"{DEVICE_ID}_diy_flow_rate_ripple"
-        )
+        assert controls["directionselect.ripple"].unique_id == f"{DEVICE_ID}_diy_direction_ripple"
+        assert controls["flowratenumber.ripple"].unique_id == f"{DEVICE_ID}_diy_flow_rate_ripple"
         assert controls["palettetext.ring"].unique_id == f"{DEVICE_ID}_diy_palette_ring"
         assert controls["apply"].unique_id == f"{DEVICE_ID}_diy_apply"
 
@@ -309,9 +342,7 @@ class TestWiring:
     def test_group_devices_are_skipped(self):
         device = _device()
         coordinator = _coordinator(device)
-        coordinator.devices = {
-            device.device_id: MagicMock(wraps=device, is_group=True, sku="H60B0")
-        }
+        coordinator.devices = {device.device_id: MagicMock(wraps=device, is_group=True, sku="H60B0")}
 
         assert async_diy_button_entities(coordinator, _entry(coordinator)) == []
 
@@ -342,9 +373,7 @@ class TestWiring:
         coordinator = _coordinator()
         entry = _entry(coordinator)
         added: list = []
-        await text_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await text_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
 
         assert sorted(e._zone_key for e in added) == ["ring", "ripple"]
         assert all(isinstance(e, GoveeDiyPaletteText) for e in added)
@@ -428,9 +457,7 @@ class TestStaging:
     @pytest.mark.asyncio
     async def test_direction_maps_labels_to_protocol_codes(self, raw_client):
         coordinator = _coordinator()
-        direction = _controls(coordinator, _entry(coordinator))[
-            "directionselect.ripple"
-        ]
+        direction = _controls(coordinator, _entry(coordinator))["directionselect.ripple"]
 
         assert direction.options == ["CW", "CCW", "Reverse"]
         assert direction.current_option == "CW"
@@ -468,10 +495,7 @@ class TestStaging:
         coordinator = _coordinator()
         controls = _controls(coordinator, _entry(coordinator))
 
-        assert all(
-            entity.entity_category is EntityCategory.CONFIG
-            for entity in controls.values()
-        )
+        assert all(entity.entity_category is EntityCategory.CONFIG for entity in controls.values())
 
     def test_staging_entities_do_not_need_the_lan(self):
         """A draft can be edited while the lamp is off the network."""
@@ -566,9 +590,7 @@ class TestApply:
     """The button turns the staged document into exactly the codec's frames."""
 
     @pytest.mark.asyncio
-    async def test_press_sends_the_codecs_frames_for_the_staged_document(
-        self, raw_client
-    ):
+    async def test_press_sends_the_codecs_frames_for_the_staged_document(self, raw_client):
         coordinator = _coordinator()
         controls = _controls(coordinator, _entry(coordinator))
 
@@ -605,12 +627,8 @@ class TestApply:
 
         assert raw_client.hexes == _expected_hexes(
             {
-                "ripple": DiyZoneEffect(
-                    mode=1, speed=50, colors=((255, 0, 0),), direction=1, flow_rate=50
-                ),
-                "ring": DiyZoneEffect(
-                    mode=9, speed=50, colors=((0, 176, 255), (255, 255, 255))
-                ),
+                "ripple": DiyZoneEffect(mode=1, speed=50, colors=((255, 0, 0),), direction=1, flow_rate=50),
+                "ring": DiyZoneEffect(mode=9, speed=50, colors=((0, 176, 255), (255, 255, 255))),
             }
         )
         # One envelope: the 0xA3 chunks and their commit frame must not be
@@ -773,52 +791,53 @@ class TestRestore:
 
 
 class TestService:
-    """``govee.apply_diy_effect`` — deterministic, and it updates the draft.
+    """``govee.apply_diy_effect`` — native targeting, flat fields, self-contained.
 
-    The handler is a closure inside ``async_setup_services``, so it is captured
-    by registering the services against a stub hass. Payloads go through the
-    *real* schema before reaching it, so no test can pass data the service
-    would have rejected.
+    The services are registered on a real ``hass`` and driven through
+    ``hass.services.async_call``, so every payload passes the *real* schema and
+    reaches the handler as a real ``ServiceCall`` — no test can pass data the
+    service would have rejected, and the ``target:`` keys are merged into
+    ``call.data`` the same way Home Assistant does it. A real ``hass`` is
+    needed anyway: target resolution reads the device and entity registries.
     """
 
     @staticmethod
-    async def _handler(monkeypatch, coordinator):
-        hass = MagicMock()
-        registered: dict[str, tuple[Any, Any]] = {}
-        hass.services.async_register = (
-            lambda domain, name, handler, schema=None: registered.__setitem__(
-                name, (handler, schema)
-            )
-        )
+    async def _handler(monkeypatch, hass, coordinator):
         await services.async_setup_services(hass)
         monkeypatch.setattr(
             services,
             "_get_coordinator_for_device",
-            lambda _hass, _device_id: coordinator,
+            lambda _hass, device_id: (
+                coordinator if coordinator is not None and device_id in coordinator.devices else None
+            ),
         )
-        handler, schema = registered[services.SERVICE_APPLY_DIY_EFFECT]
 
         async def _call(payload: dict[str, Any]) -> None:
-            await handler(MagicMock(data=schema(payload)))
+            await hass.services.async_call(
+                DOMAIN,
+                services.SERVICE_APPLY_DIY_EFFECT,
+                payload,
+                blocking=True,
+            )
 
         return _call
 
     @pytest.mark.asyncio
-    async def test_happy_path_sends_the_codecs_frames(self, monkeypatch, raw_client):
+    async def test_happy_path_sends_the_codecs_frames(self, monkeypatch, hass, raw_client):
         coordinator = _coordinator()
-        call = await self._handler(monkeypatch, coordinator)
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
 
         await call(
             {
-                "device_id": DEVICE_ID,
-                "ripple": {
-                    "mode": "twinkle",
-                    "speed": 60,
-                    "colors": [[255, 0, 0], [0, 176, 255]],
-                    "direction": "ccw",
-                    "flow_rate": 30,
-                },
-                "ring": {"mode": "gradient", "colors": [[255, 255, 255]]},
+                "device_id": device_entry.id,
+                "ripple_mode": "twinkle",
+                "ripple_speed": 60,
+                "ripple_colors": [[255, 0, 0], [0, 176, 255]],
+                "ripple_direction": "ccw",
+                "ripple_flow_rate": 30,
+                "ring_mode": "gradient",
+                "ring_colors": [[255, 255, 255]],
             }
         )
 
@@ -835,69 +854,237 @@ class TestService:
             }
         )
 
+    # -- target resolution --------------------------------------------------
+
     @pytest.mark.asyncio
-    async def test_a_raw_int_mode_is_accepted(self, monkeypatch, raw_client):
-        """The ripple's table is known incomplete; ints must pass through."""
+    async def test_an_entity_target_resolves_to_its_device(self, monkeypatch, hass, raw_client):
+        """Picking any one of the lamp's entities picks the lamp."""
         coordinator = _coordinator()
-        call = await self._handler(monkeypatch, coordinator)
+        _device_entry, entity_entry = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
 
         await call(
-            {"device_id": DEVICE_ID, "ripple": {"mode": 3, "colors": [[1, 2, 3]]}}
+            {
+                "entity_id": entity_entry.entity_id,
+                "ring_mode": "gradient",
+                "ring_colors": [[255, 0, 0]],
+            }
         )
 
         assert raw_client.hexes == _expected_hexes(
             {
-                "ripple": DiyZoneEffect(
-                    mode=3, speed=50, colors=((1, 2, 3),), direction=1, flow_rate=50
-                ),
+                "ripple": None,
+                "ring": DiyZoneEffect(mode=1, speed=50, colors=((255, 0, 0),)),
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_device_and_its_entity_together_are_one_device(self, monkeypatch, hass, raw_client):
+        """Overlapping targets must not read as 'more than one device'."""
+        coordinator = _coordinator()
+        device_entry, entity_entry = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        await call(
+            {
+                "device_id": device_entry.id,
+                "entity_id": entity_entry.entity_id,
+                "ring_mode": "gradient",
+                "ring_colors": [[255, 0, 0]],
+            }
+        )
+
+        assert raw_client.envelopes != []
+
+    @pytest.mark.asyncio
+    async def test_a_raw_govee_device_id_is_still_accepted(self, monkeypatch, hass, raw_client):
+        """Pre-``target:`` automations passed the Govee id straight through."""
+        coordinator = _coordinator()
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        await call(
+            {
+                "device_id": DEVICE_ID,
+                "ring_mode": "gradient",
+                "ring_colors": [[255, 0, 0]],
+            }
+        )
+
+        assert raw_client.envelopes != []
+
+    @pytest.mark.asyncio
+    async def test_a_target_from_another_integration_raises(self, monkeypatch, hass, raw_client):
+        coordinator = _coordinator()
+        device_entry, _entity = _register_device(hass, identifier_domain="demo")
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        with pytest.raises(HomeAssistantError, match="No Govee device in the target"):
+            await call({"device_id": device_entry.id, "ring_mode": "gradient"})
+
+        assert raw_client.envelopes == []
+
+    @pytest.mark.asyncio
+    async def test_no_target_at_all_raises(self, monkeypatch, hass, raw_client):
+        coordinator = _coordinator()
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        with pytest.raises(HomeAssistantError, match="No Govee device in the target"):
+            await call({"ring_mode": "gradient", "ring_colors": [[1, 2, 3]]})
+
+    @pytest.mark.asyncio
+    async def test_two_targeted_lamps_raise_exactly_one(self, monkeypatch, hass, raw_client):
+        """One authored document, one lamp — fanning out is not a success."""
+        coordinator = _coordinator()
+        coordinator.devices[OTHER_DEVICE_ID] = _device(device_id=OTHER_DEVICE_ID, name="Second Uplighter")
+        first_entry, _entity = _register_device(hass)
+        second_entry, _entity2 = _register_device(hass, device_id=OTHER_DEVICE_ID, name="Second Uplighter")
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        with pytest.raises(HomeAssistantError, match="exactly one device"):
+            await call(
+                {
+                    "device_id": [first_entry.id, second_entry.id],
+                    "ring_mode": "gradient",
+                    "ring_colors": [[1, 2, 3]],
+                }
+            )
+
+        assert raw_client.envelopes == []
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_device_raises(self, monkeypatch, hass, raw_client):
+        _device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, None)
+
+        with pytest.raises(HomeAssistantError, match="not known to this integration"):
+            await call({"device_id": _device_entry.id})
+
+    @pytest.mark.asyncio
+    async def test_a_sku_without_diy_raises(self, monkeypatch, hass, raw_client):
+        coordinator = _coordinator(_device(sku="H6076"))
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        with pytest.raises(HomeAssistantError, match="does not support DIY effects"):
+            await call(
+                {
+                    "device_id": device_entry.id,
+                    "ring_mode": "gradient",
+                    "ring_colors": [[1, 2, 3]],
+                }
+            )
+
+    # -- the flat per-zone fields -------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_a_raw_int_mode_is_accepted(self, monkeypatch, hass, raw_client):
+        """The ripple's table is known incomplete; ints must pass through."""
+        coordinator = _coordinator()
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        await call(
+            {
+                "device_id": device_entry.id,
+                "ripple_mode": 3,
+                "ripple_colors": [[1, 2, 3]],
+            }
+        )
+
+        assert raw_client.hexes == _expected_hexes(
+            {
+                "ripple": DiyZoneEffect(mode=3, speed=50, colors=((1, 2, 3),), direction=1, flow_rate=50),
                 "ring": None,
             }
         )
 
     @pytest.mark.asyncio
-    async def test_an_omitted_zone_is_switched_off_not_left_staged(
-        self, monkeypatch, raw_client
-    ):
-        """The call is self-contained: what is not named is off."""
+    async def test_omitted_fields_take_the_fixed_default_not_the_draft(self, monkeypatch, hass, raw_client):
+        """Speed/direction/flow left out fall back to the defaults, not staging."""
         coordinator = _coordinator()
-        diy_state.store(coordinator).set_mode(DEVICE_ID, "ring", 9)
-        diy_state.store(coordinator).set_colors(DEVICE_ID, "ring", ((1, 2, 3),))
-        call = await self._handler(monkeypatch, coordinator)
+        store = diy_state.store(coordinator)
+        store.set_speed(DEVICE_ID, "ripple", 7)
+        store.set_direction(DEVICE_ID, "ripple", 3)
+        store.set_flow_rate(DEVICE_ID, "ripple", 9)
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
 
         await call(
             {
-                "device_id": DEVICE_ID,
-                "ripple": {"mode": "gradient", "colors": [[255, 0, 0]]},
+                "device_id": device_entry.id,
+                "ripple_mode": "gradient",
+                "ripple_colors": [[255, 0, 0]],
             }
         )
 
         assert raw_client.hexes == _expected_hexes(
             {
-                "ripple": DiyZoneEffect(
-                    mode=1, speed=50, colors=((255, 0, 0),), direction=1, flow_rate=50
-                ),
+                "ripple": DiyZoneEffect(mode=1, speed=50, colors=((255, 0, 0),), direction=1, flow_rate=50),
+                "ring": None,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_zone_with_every_field_omitted_is_switched_off(self, monkeypatch, hass, raw_client):
+        """The call is self-contained: what is not named is off."""
+        coordinator = _coordinator()
+        diy_state.store(coordinator).set_mode(DEVICE_ID, "ring", 9)
+        diy_state.store(coordinator).set_colors(DEVICE_ID, "ring", ((1, 2, 3),))
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        await call(
+            {
+                "device_id": device_entry.id,
+                "ripple_mode": "gradient",
+                "ripple_colors": [[255, 0, 0]],
+            }
+        )
+
+        assert raw_client.hexes == _expected_hexes(
+            {
+                "ripple": DiyZoneEffect(mode=1, speed=50, colors=((255, 0, 0),), direction=1, flow_rate=50),
                 "ring": None,
             }
         )
         assert diy_state.store(coordinator).mode(DEVICE_ID, "ring") == 0
 
     @pytest.mark.asyncio
-    async def test_the_config_entities_show_what_was_sent(
-        self, monkeypatch, raw_client
-    ):
+    async def test_mode_none_also_switches_a_zone_off(self, monkeypatch, hass, raw_client):
         coordinator = _coordinator()
-        controls = _controls(coordinator, _entry(coordinator))
-        call = await self._handler(monkeypatch, coordinator)
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
 
         await call(
             {
-                "device_id": DEVICE_ID,
-                "ripple": {
-                    "mode": "rainbow",
-                    "speed": 80,
-                    "colors": [[255, 0, 0]],
-                    "direction": "reverse",
-                },
+                "device_id": device_entry.id,
+                "ripple_mode": "gradient",
+                "ripple_colors": [[255, 0, 0]],
+                "ring_mode": "none",
+            }
+        )
+
+        assert raw_client.hexes == _expected_hexes(
+            {
+                "ripple": DiyZoneEffect(mode=1, speed=50, colors=((255, 0, 0),), direction=1, flow_rate=50),
+                "ring": None,
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_config_entities_show_what_was_sent(self, monkeypatch, hass, raw_client):
+        coordinator = _coordinator()
+        controls = _controls(coordinator, _entry(coordinator))
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
+
+        await call(
+            {
+                "device_id": device_entry.id,
+                "ripple_mode": "rainbow",
+                "ripple_speed": 80,
+                "ripple_colors": [[255, 0, 0]],
+                "ripple_direction": "reverse",
             }
         )
 
@@ -908,62 +1095,77 @@ class TestService:
         assert controls["modeselect.ring"].current_option == "None"
 
     @pytest.mark.asyncio
-    async def test_a_bad_mode_name_raises_and_sends_nothing(
-        self, monkeypatch, raw_client
-    ):
+    async def test_a_bad_mode_name_raises_and_sends_nothing(self, monkeypatch, hass, raw_client):
         coordinator = _coordinator()
-        call = await self._handler(monkeypatch, coordinator)
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
 
         with pytest.raises(HomeAssistantError, match="no DIY mode"):
             await call(
                 {
-                    "device_id": DEVICE_ID,
-                    "ring": {"mode": "sparkle", "colors": [[1, 2, 3]]},
+                    "device_id": device_entry.id,
+                    "ring_mode": "sparkle",
+                    "ring_colors": [[1, 2, 3]],
                 }
             )
 
         assert raw_client.envelopes == []
 
     @pytest.mark.asyncio
-    async def test_a_sku_without_diy_raises(self, monkeypatch, raw_client):
-        coordinator = _coordinator(_device(sku="H6076"))
-        call = await self._handler(monkeypatch, coordinator)
-
-        with pytest.raises(HomeAssistantError, match="does not support DIY effects"):
-            await call(
-                {
-                    "device_id": DEVICE_ID,
-                    "ring": {"mode": "gradient", "colors": [[1, 2, 3]]},
-                }
-            )
-
-    @pytest.mark.asyncio
-    async def test_an_unknown_device_raises(self, monkeypatch, raw_client):
-        call = await self._handler(monkeypatch, None)
-
-        with pytest.raises(HomeAssistantError, match="not known"):
-            await call({"device_id": DEVICE_ID})
-
-    @pytest.mark.asyncio
-    async def test_naming_no_zone_at_all_raises(self, monkeypatch, raw_client):
+    async def test_naming_no_zone_at_all_raises(self, monkeypatch, hass, raw_client):
         coordinator = _coordinator()
-        call = await self._handler(monkeypatch, coordinator)
+        device_entry, _entity = _register_device(hass)
+        call = await self._handler(monkeypatch, hass, coordinator)
 
         with pytest.raises(HomeAssistantError, match="cannot build this DIY effect"):
-            await call({"device_id": DEVICE_ID})
+            await call({"device_id": device_entry.id})
 
-    @pytest.mark.asyncio
-    async def test_direction_and_flow_are_not_offered_for_the_ring(self, monkeypatch):
+    # -- schema shape --------------------------------------------------------
+
+    def test_direction_and_flow_are_not_offered_for_the_ring(self):
         """Schema-level: the ring's wire record has no tail to put them in."""
-        import voluptuous as vol
+        for stray in ("ring_direction", "ring_flow_rate"):
+            with pytest.raises(vol.Invalid):
+                services.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
+                    {"device_id": DEVICE_ID, "ring_mode": "gradient", stray: "cw"}
+                )
 
-        with pytest.raises(vol.Invalid):
-            services.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
-                {
-                    "device_id": DEVICE_ID,
-                    "ring": {"mode": "gradient", "direction": "cw"},
-                }
-            )
+    def test_a_zone_field_without_its_mode_is_rejected(self):
+        """Naming a zone is what switches it on; there is no default mode."""
+        with pytest.raises(vol.Invalid, match="ripple_mode is required"):
+            services.SERVICE_APPLY_DIY_EFFECT_SCHEMA({"device_id": DEVICE_ID, "ripple_speed": 60})
+
+    def test_the_target_fields_are_the_standard_ones(self):
+        """`target:` in YAML lands in call.data under these five keys."""
+        validated = services.SERVICE_APPLY_DIY_EFFECT_SCHEMA({"area_id": "living_room", "ring_mode": "gradient"})
+        assert validated["area_id"] == ["living_room"]
+        for key in ("entity_id", "device_id", "area_id", "floor_id", "label_id"):
+            assert key in cv.TARGET_SERVICE_FIELDS
+
+    def test_the_yaml_mode_options_match_the_profile_tables(self):
+        """A drift guard: the dropdowns are hand-written, the tables are truth."""
+        with open("custom_components/govee/services.yaml", encoding="utf-8") as handle:
+            schema = yaml.safe_load(handle)["apply_diy_effect"]
+
+        assert schema["target"]["device"]["filter"] == [{"integration": "govee"}]
+        fields = {}
+        for name, spec in schema["fields"].items():
+            fields.update(spec["fields"] if "fields" in spec else {name: spec})
+
+        for zone in PROFILE.diy.zones:
+            options = fields[f"{zone.zone_key}_mode"]["selector"]["select"]["options"]
+            assert sorted(options) == sorted(zone.modes)
+
+        assert sorted(fields) == [
+            "ring_colors",
+            "ring_mode",
+            "ring_speed",
+            "ripple_colors",
+            "ripple_direction",
+            "ripple_flow_rate",
+            "ripple_mode",
+            "ripple_speed",
+        ]
 
     @pytest.mark.asyncio
     async def test_the_service_is_unregistered_on_unload(self):

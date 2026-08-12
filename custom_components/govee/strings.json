@@ -96,8 +96,8 @@
           "enable_mqtt_control": "Routes power/brightness/color commands through Govee's MQTT channel instead of the REST cloud API, reducing latency and bypassing REST rate limits. Requires email/password login (MQTT credentials). Falls back to REST automatically when MQTT is unavailable. Experimental — uses an undocumented channel; leave off if commands behave unexpectedly.",
           "lan_targets": "Only needed when LAN-enabled Govee devices are on a different subnet/VLAN than Home Assistant, so the local discovery scan can't reach them. Enter a comma-separated list of device IPs (10.20.0.51), broadcast addresses (10.20.0.255), and/or subnets in CIDR (10.20.0.0/24, /24 or smaller). Subnets are scanned device-by-device since most routers drop cross-VLAN broadcasts. Leave blank if all devices share Home Assistant's network.",
           "enable_lan_nudge": "When a cloud push reports a change made outside Home Assistant, read that device's real state over your local network rather than trusting the push payload. Applies only to devices found on the LAN.",
-          "enable_lan_raw_write": "Sends commands that would otherwise go through Govee's cloud straight to the device over your local network, so they act immediately rather than after a one to three second round trip. Currently covers multi-zone on/off; whole-device power and brightness already use the LAN. Applies only to devices found on the LAN whose model is in the local protocol table \u2014 everything else keeps using the cloud. Devices cannot report zone state back locally, so switches show the state last commanded.",
-          "enable_zone_lights": "Replaces a multi-zone lamp's zone on/off switches with full light entities that carry each zone's real capabilities \u2014 colour and brightness for the ripple and ring zones, colour temperature for the white-only downlight \u2014 plus a slider for the ripple flow rate. This CHANGES the entity model: the zone switches disappear while it is on, and the lamp's own light entity becomes a master (power and brightness only, renamed \"Master\"), with colour, colour temperature and the effect list moving to the zones \u2014 the scenes stay available on the separate scene selector. Automations calling light.turn_on with an effect on that entity must be repointed. Turning the option off restores everything unchanged. REQUIRES \"Send advanced commands over LAN\": only the local protocol can address a single zone, so with that option off this one does nothing at all and the zone switches stay. Zone colour and brightness cannot be read back from the device, so those entities show what was last commanded."
+          "enable_lan_raw_write": "Sends commands that would otherwise go through Govee's cloud straight to the device over your local network, so they act immediately rather than after a one to three second round trip. Currently covers multi-zone on/off; whole-device power and brightness already use the LAN. Applies only to devices found on the LAN whose model is in the local protocol table — everything else keeps using the cloud. Devices cannot report zone state back locally, so switches show the state last commanded.",
+          "enable_zone_lights": "Replaces a multi-zone lamp's zone on/off switches with full light entities that carry each zone's real capabilities — colour and brightness for the ripple and ring zones, colour temperature for the white-only downlight — plus a slider for the ripple flow rate. This CHANGES the entity model: the zone switches disappear while it is on, and the lamp's own light entity becomes a master (power and brightness only, renamed \"Master\"), with colour, colour temperature and the effect list moving to the zones — the scenes stay available on the separate scene selector. Automations calling light.turn_on with an effect on that entity must be repointed. Turning the option off restores everything unchanged. REQUIRES \"Send advanced commands over LAN\": only the local protocol can address a single zone, so with that option off this one does nothing at all and the zone switches stay. Zone colour and brightness cannot be read back from the device, so those entities show what was last commanded."
         }
       },
       "select_segment_devices": {
@@ -379,19 +379,47 @@
     },
     "apply_diy_effect": {
       "name": "Apply DIY Effect",
-      "description": "Compose and upload a DIY effect to a multi-zone lamp (H60B0)",
+      "description": "Compose and upload a DIY effect to a multi-zone lamp (H60B0). Target exactly one lamp, either the device or any one of its entities. A zone whose fields are all omitted is switched off in the uploaded effect.",
       "fields": {
-        "device_id": {
-          "name": "Device ID",
-          "description": "Device ID of the multi-zone lamp"
+        "ripple_mode": {
+          "name": "Ripple mode",
+          "description": "Effect mode for the ripple zone: a name, or a raw number 0-255. \"none\" (or omitting every ripple field) switches the zone off."
         },
-        "ripple": {
-          "name": "Ripple",
-          "description": "Ripple zone record: mode, speed, colors, direction, flow_rate"
+        "ripple_speed": {
+          "name": "Ripple speed",
+          "description": "Transition speed for the ripple zone, 1-100. Default 50."
         },
-        "ring": {
-          "name": "Ring",
-          "description": "Ring zone record: mode, speed, colors"
+        "ripple_colors": {
+          "name": "Ripple colors",
+          "description": "Ripple palette as a list of [R, G, B] triplets, 1-16 colors."
+        },
+        "ripple_direction": {
+          "name": "Ripple direction",
+          "description": "Diffuser direction for the ripple zone: cw, ccw or reverse. Default cw."
+        },
+        "ripple_flow_rate": {
+          "name": "Ripple flow rate",
+          "description": "Water flow rate for the ripple zone, 1-100. Default 50."
+        },
+        "ring_mode": {
+          "name": "Ring mode",
+          "description": "Effect mode for the ring zone: a name, or a raw number 0-255. \"none\" (or omitting every ring field) switches the zone off."
+        },
+        "ring_speed": {
+          "name": "Ring speed",
+          "description": "Transition speed for the ring zone, 1-100. Default 50."
+        },
+        "ring_colors": {
+          "name": "Ring colors",
+          "description": "Ring palette as a list of [R, G, B] triplets, 1-16 colors."
+        }
+      },
+      "sections": {
+        "ripple_section": {
+          "name": "Ripple zone"
+        },
+        "ring_section": {
+          "name": "Ring zone"
         }
       }
     }
