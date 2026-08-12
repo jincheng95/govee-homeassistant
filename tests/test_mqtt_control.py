@@ -192,3 +192,56 @@ class TestColorLegacyFollowup:
     )
     def test_non_color_commands_get_no_followup(self, command):
         assert color_legacy_followup(command) is None
+
+
+class TestGatewayPtRealPublish:
+    """A gateway-attached device is commanded through its gateway (#135)."""
+
+    def _client(self):
+        from custom_components.govee.api.mqtt import GoveeAwsIotClient
+
+        client = GoveeAwsIotClient.__new__(GoveeAwsIotClient)
+        client.async_publish_command = AsyncMock(return_value=True)
+        return client
+
+    ROUTE = {
+        "device": "0F:E4:D4:13:68:51:F0:B2",
+        "sku": "H5044",
+        "topic": "GD/gateway-hash",
+    }
+
+    @pytest.mark.asyncio
+    async def test_publishes_to_the_gateway_topic_addressed_to_the_gateway(self):
+        client = self._client()
+
+        ok = await client.async_publish_gateway_ptreal(
+            self.ROUTE, "M3AAAAAAAAAAAAAAAAAAAAAAAEM="
+        )
+
+        assert ok is True
+        topic, cmd, data = client.async_publish_command.await_args.args
+        assert topic == "GD/gateway-hash"
+        assert cmd == "ptReal"
+        # Addressed to the GATEWAY, not the leaf device — publishing to the leaf
+        # topic produced no echo and no actuation on live hardware.
+        assert data["device"] == "0F:E4:D4:13:68:51:F0:B2"
+        assert data["sku"] == "H5044"
+        assert data["command"] == ["M3AAAAAAAAAAAAAAAAAAAAAAAEM="]
+
+    @pytest.mark.asyncio
+    async def test_accepts_a_multi_packet_sequence(self):
+        client = self._client()
+
+        await client.async_publish_gateway_ptreal(self.ROUTE, ["pkt1", "pkt2"])
+
+        _, _, data = client.async_publish_command.await_args.args
+        assert data["command"] == ["pkt1", "pkt2"]
+
+    @pytest.mark.asyncio
+    async def test_route_without_a_topic_publishes_nothing(self):
+        client = self._client()
+
+        ok = await client.async_publish_gateway_ptreal({"device": "AA:BB"}, "pkt")
+
+        assert ok is False
+        client.async_publish_command.assert_not_awaited()

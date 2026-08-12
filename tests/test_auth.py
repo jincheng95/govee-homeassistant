@@ -2324,3 +2324,69 @@ class TestBffThermoReadings:
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
         assert thermo == {}
+
+
+class TestGatewayRoutes:
+    """Gateway-attached devices need their gateway's command topic (#135).
+
+    Publishing to an H5901's own GD/ topic does not actuate the valve — the
+    H5044 gateway ignores it. Confirmed on live hardware by @thephw.
+    """
+
+    def _h5901_entry(self, *, gateway_topic="GD/gateway-hash", as_json_string=False):
+        settings = {
+            "topic": "GD/device-hash",
+            "gatewayId": 1055056,
+            "gatewayInfo": {
+                "sku": "H5044",
+                "device": "0F:E4:D4:13:68:51:F0:B2",
+                "topic": gateway_topic,
+            },
+        }
+        device_ext = {"deviceSettings": json.dumps(settings) if as_json_string else settings}
+        return {
+            "sku": "H5901",
+            "device": "00:11:22:33:44:55:2A:22",
+            "deviceName": "Smart Water Timer",
+            "deviceExt": device_ext,
+        }
+
+    def test_extracts_the_gateway_route(self):
+        routes = GoveeAuthClient._extract_gateway_routes([self._h5901_entry()])
+        assert routes == {
+            "00:11:22:33:44:55:2A:22": {
+                "device": "0F:E4:D4:13:68:51:F0:B2",
+                "sku": "H5044",
+                "topic": "GD/gateway-hash",
+            }
+        }
+
+    def test_handles_device_settings_delivered_as_a_json_string(self):
+        routes = GoveeAuthClient._extract_gateway_routes(
+            [self._h5901_entry(as_json_string=True)]
+        )
+        assert routes["00:11:22:33:44:55:2A:22"]["topic"] == "GD/gateway-hash"
+
+    def test_device_without_a_gateway_topic_is_skipped(self):
+        routes = GoveeAuthClient._extract_gateway_routes(
+            [self._h5901_entry(gateway_topic="")]
+        )
+        assert routes == {}
+
+    def test_plain_wifi_device_has_no_route(self):
+        entry = {
+            "sku": "H6159",
+            "device": "AA:BB:CC:DD:EE:FF:00:11",
+            "deviceExt": {"deviceSettings": {"topic": "GD/wifi-hash"}},
+        }
+        assert GoveeAuthClient._extract_gateway_routes([entry]) == {}
+
+    def test_malformed_entries_do_not_raise(self):
+        entries = [
+            {},
+            {"device": "AA:BB"},
+            {"device": "AA:BB", "deviceExt": "not json"},
+            {"device": "AA:BB", "deviceExt": {"deviceSettings": "not json"}},
+            {"device": "AA:BB", "deviceExt": {"deviceSettings": {"gatewayInfo": "x"}}},
+        ]
+        assert GoveeAuthClient._extract_gateway_routes(entries) == {}

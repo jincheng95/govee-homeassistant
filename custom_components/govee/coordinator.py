@@ -303,6 +303,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # Device-specific MQTT topics from undocumented API
         # Maps device_id -> MQTT topic for publishing commands
         self._device_topics: dict[str, str] = {}
+        # device_id -> its gateway's {device, sku, topic}. Gateway-attached BLE
+        # devices (e.g. an H5901 behind an H5044) ignore anything published to
+        # their own topic; commands have to be relayed through the gateway
+        # (issue #135).
+        self._gateway_routes: dict[str, dict[str, str]] = {}
 
         # BLE passthrough manager for MQTT-based commands
         self._ble_manager = BlePassthroughManager(
@@ -751,6 +756,20 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def device_topic_count(self) -> int:
         """Number of devices with a resolved MQTT publish topic."""
         return len(self._device_topics)
+
+    @property
+    def gateway_route_count(self) -> int:
+        """Number of devices reachable through a gateway's command topic (#135)."""
+        return len(self._gateway_routes)
+
+    def gateway_route(self, device_id: str) -> dict[str, str] | None:
+        """The gateway command route for a device, if it has one.
+
+        Gateway-attached BLE devices (e.g. an H5901 Smart Water Timer behind an
+        H5044) ignore commands published to their own topic — the packet has to
+        be relayed through the gateway (issue #135).
+        """
+        return self._gateway_routes.get(device_id)
 
     def consume_button_press(self, device_id: str) -> bool:
         """Consume one pending button press for device_id. Returns True if consumed."""
@@ -1643,9 +1662,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 self._device_topics = await auth_client.fetch_device_topics(
                     self._iot_credentials.token
                 )
+                # Gateway-attached BLE devices only act on commands published to
+                # their gateway's topic, not their own (#135).
+                self._gateway_routes = auth_client.gateway_routes()
                 _LOGGER.info(
-                    "Fetched MQTT topics for %d devices",
+                    "Fetched MQTT topics for %d devices (%d via a gateway)",
                     len(self._device_topics),
+                    len(self._gateway_routes),
                 )
         except GoveeApiError as err:
             _LOGGER.warning("Failed to fetch device topics: %s", err)
