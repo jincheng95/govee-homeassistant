@@ -299,11 +299,13 @@ Update both files when changing option labels:
 
 ## Release Process
 
-1. **Bump version** in `manifest.json` (CalVer: `YYYY.MM.patch`)
-2. **Commit**: `git add -A && git commit -m "message"`
+Versions are **upstream-anchored**: `<upstream release>.<fork increment>` (e.g. `2026.8.14.2` = second fork release on top of upstream `2026.8.14`). For a fork-only change, bump the fourth segment; the first three change only when merging a new upstream release. On upstream merges, `manifest.json`'s version line always resolves as **ours**, then bump.
+
+1. **Bump version** in `manifest.json` (e.g. `2026.8.14.2` → `2026.8.14.3`)
+2. **Commit**: `git commit -am "chore(release): <version>"`
 3. **Push**: `git push origin master`
-4. **Wait for CI**: Check with `gh run list --limit 5`
-5. **Create release**: `gh release create vYYYY.MM.patch --title "vYYYY.MM.patch" --notes "..."`
+4. **Tag**: `git tag v<version> && git push origin v<version>`
+5. **Wait for CI**: Check with `gh run list --limit 5`
 
 ## Directory Updates
 
