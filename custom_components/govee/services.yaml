@@ -47,12 +47,10 @@ apply_diy_effect:
     whatever the DIY config entities currently show.
   target:
     device:
-      filter:
-        - integration: govee
+      integration: govee
     entity:
-      filter:
-        - integration: govee
-          domain: light
+      integration: govee
+      domain: light
   fields:
     ripple_section:
       name: Ripple zone
