@@ -174,6 +174,14 @@ def lan_target(coordinator: GoveeCoordinator, device_id: str | None, sku: str) -
             ", ".join(transport.value for transport in profile.transports),
         )
         return None
+    if _writes_suppressed(coordinator, device_id):
+        # Upstream holds LAN *writes* for a device whose recent LAN writes did
+        # not confirm (issue #57) and routes them to MQTT/REST for the cooldown.
+        # Raw frames ride the same UDP path to the same lamp, so sending them
+        # inside that window is exactly what the flag says not to do — and they
+        # cannot even fail visibly, being unacknowledged.
+        _LOGGER.debug("Govee LAN write: writes to %s are suppressed by the coordinator — using cloud transport", sku)
+        return None
     ip = _lan_ip(coordinator, device_id)
     if ip is None:
         return None
@@ -439,6 +447,25 @@ def _lan_ip(coordinator: GoveeCoordinator, device_id: str | None) -> str | None:
     """
     info = coordinator._lan_devices.get(device_id)
     return info.ip if info is not None and info.ip else None
+
+
+def _writes_suppressed(coordinator: GoveeCoordinator, device_id: str | None) -> bool:
+    """Whether upstream is currently holding LAN writes for ``device_id``.
+
+    Reads upstream's own cooldown predicate, which also re-arms an expired
+    window — the same call upstream's `_try_lan_command` makes, so the fork's
+    raw path and upstream's LAN tier come out of the cooldown together.
+
+    Strictly ``is True``: this reaches a private upstream method, and anything
+    that is not a real ``True`` (a rename leaving None, a stub) must mean "not
+    suppressed", i.e. the behaviour this module had before the check existed.
+    """
+    if device_id is None:
+        return False
+    suppressed = getattr(coordinator, "_lan_writes_suppressed", None)
+    if suppressed is None:
+        return False
+    return suppressed(device_id) is True
 
 
 def _option_enabled(coordinator: GoveeCoordinator) -> bool:

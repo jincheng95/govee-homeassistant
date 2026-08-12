@@ -243,6 +243,47 @@ class TestGates:
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio
+    async def test_coordinator_write_suppression_holds_raw_frames(self, _fast_client):
+        """Upstream's post-failure LAN-write cooldown covers raw frames too.
+
+        While ``_lan_writes_suppressed`` is set upstream routes that device's
+        writes to MQTT/REST. Raw frames ride the same UDP path to the same
+        lamp and are unacknowledged, so sending them inside the window is both
+        against the flag and unfalsifiable.
+        """
+        coordinator = _coordinator()
+        coordinator._lan_writes_suppressed = MagicMock(return_value=True)
+        entity = _entity(coordinator, "rippleLightToggle")
+
+        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert lan_raw_write.lan_target(coordinator, DEVICE_ID, "H60B0") is None
+        assert _fast_client.sends == []
+        coordinator._lan_writes_suppressed.assert_called_with(DEVICE_ID)
+
+    @pytest.mark.asyncio
+    async def test_raw_frames_resume_when_the_suppression_clears(self, _fast_client):
+        """The cooldown is a window, not a latch — the next write goes out."""
+        coordinator = _coordinator()
+        suppressed = MagicMock(return_value=True)
+        coordinator._lan_writes_suppressed = suppressed
+        entity = _entity(coordinator, "rippleLightToggle")
+        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+
+        suppressed.return_value = False
+
+        assert await lan_raw_write.async_zone_power(entity, on=True) is True
+        assert {frame.hex() for _host, frame in _fast_client.sends} == {GOLDEN[("rippleLightToggle", True)]}
+
+    @pytest.mark.asyncio
+    async def test_a_missing_suppression_flag_does_not_block_writes(self, _fast_client):
+        """An upstream rename must fail towards the pre-existing behaviour."""
+        coordinator = _coordinator()
+        del coordinator._lan_writes_suppressed  # MagicMock: attribute now absent
+        entity = _entity(coordinator, "rippleLightToggle")
+
+        assert await lan_raw_write.async_zone_power(entity, on=True) is True
+
+    @pytest.mark.asyncio
     async def test_send_failure_falls_back_without_touching_state(self, monkeypatch, _fast_client):
         monkeypatch.setattr(lan_raw_write, "_CLIENT", _FakeRawClient(error=OSError("network unreachable")))
         entity = _entity(_coordinator(), "rippleLightToggle")
