@@ -347,11 +347,14 @@ class GoveeTemperatureSensor(_BffThermometerAvailabilityMixin, SensorEntity):
             if config_entry is not None
             else DEFAULT_API_TEMPERATURE_UNIT
         )
-        if resolve_fahrenheit_conversion(
-            self._device.sku,
-            api_unit,
-            getattr(state, "heater_temperature_unit", None),
-        ):
+        # Heaters carry their unit in the temperature_setting STRUCT; for
+        # everything else the account's own fahOpen preference is the next best
+        # ground truth, because the Developer API mirrors it (issue #157).
+        unit_hint = getattr(state, "heater_temperature_unit", None)
+        if unit_hint is None:
+            unit_hint = self.coordinator.account_temperature_unit(self._device_id)
+
+        if resolve_fahrenheit_conversion(self._device.sku, api_unit, unit_hint):
             return (value - 32.0) * (5.0 / 9.0)
 
         return value

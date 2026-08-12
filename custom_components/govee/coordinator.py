@@ -361,6 +361,19 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # owned by the BFF poll, not /device/state. Tracked here so
         # _fetch_device_state skips the (futile) developer poll for them.
         self._bff_thermometer_ids: set[str] = set()
+        # Developer-API devices the BFF also lists but has no reading for yet
+        # (issue #151). They stay on the Developer poll — claiming them would
+        # leave the sensor permanently unknown — and are promoted into
+        # _bff_thermometer_ids by the 5-min refresh once a reading shows up.
+        self._bff_thermo_pending: set[str] = set()
+        # The account's own display-unit preference per device, read from the
+        # BFF `deviceSettings.fahOpen` flag. BFF `tem` itself is always °C
+        # (confirmed on an H5111 with fahOpen=false, issue #134), but the
+        # *Developer* API mirrors this preference — an H5310 on a °F account
+        # returns 88.34 meaning 88.34°F (issue #157). Authoritative when known;
+        # FAHRENHEIT_REPORTING_SKUS is only the fallback for accounts whose BFF
+        # list we can't read.
+        self._display_fahrenheit: dict[str, bool] = {}
         # Gateway hubs (e.g. H5044) bridging BFF thermo-hygrometers, keyed by
         # hub_device_id -> {"sku"}. Registered as HA devices so via_device on
         # the thermo entities resolves (#86).
@@ -761,6 +774,19 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         so entity availability must not gate on it (issue #97).
         """
         return device_id in self._bff_thermometer_ids
+
+    def account_temperature_unit(self, device_id: str) -> str | None:
+        """Return the account's display unit for a device, if Govee told us.
+
+        ``"fahrenheit"`` / ``"celsius"`` when the BFF device list carried a
+        ``fahOpen`` flag for this device, otherwise None (caller falls back to
+        the SKU allowlist). Same contract as the heater ``unit`` metadata, so it
+        feeds ``resolve_fahrenheit_conversion`` unchanged (issue #157).
+        """
+        fah_open = self._display_fahrenheit.get(device_id)
+        if fah_open is None:
+            return None
+        return "fahrenheit" if fah_open else "celsius"
 
     def is_water_detector(self, device_id: str) -> bool:
         """Return True if this device is a standalone water detector (H5054).
@@ -1705,13 +1731,43 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._apply_bff_thermo_battery(thermo_readings)
 
             # Start the 5-min BFF poll if we have leak sensors OR thermometers
-            # whose readings we refresh via the BFF tickle (#83).
-            if self._leak_sensors or self._thermo_bff_devices:
+            # whose readings we refresh via the BFF tickle (#83) — or a battery
+            # reading that simply hasn't arrived yet, which is the only thing
+            # that would ever create the battery entity (issue #132).
+            if (
+                self._leak_sensors
+                or self._thermo_bff_devices
+                or self._battery_candidate_devices()
+            ):
                 self._schedule_bff_poll()
 
         except Exception as err:
             _LOGGER.warning("Failed to discover leak sensors: %s", err)
             # Non-fatal: integration continues without leak sensors
+
+    def _battery_candidate_devices(self) -> set[str]:
+        """Devices that could still gain a battery reading from the BFF.
+
+        The BFF is the only source of battery for gateway-bridged thermometers
+        (#83). If the first discovery pass came back without a reading for one —
+        a transient hiccup, or a hub that hadn't reported yet — nothing else
+        would ever look again, and the battery entity would never be created
+        (issue #132, H5109 behind an H5042). Keeping these in scope lets the
+        5-min poll retry.
+        """
+        candidates: set[str] = set()
+        for device_id, device in self._devices.items():
+            if not device.is_thermometer:
+                continue
+            if (
+                device.device_type in MAINS_POWERED_DEVICE_TYPES
+                or device.sku.upper() in MAINS_POWERED_BATTERY_SKUS
+            ):
+                continue
+            state = self._states.get(device_id)
+            if state is None or state.battery is None:
+                candidates.add(device_id)
+        return candidates
 
     def _apply_bff_thermo_battery(
         self,
@@ -1795,6 +1851,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # state now comes from the OpenAPI waterFullEvent push
             # (_on_openapi_event).
 
+    def _note_display_unit(self, device_id: str, sensor: dict[str, Any]) -> None:
+        """Record the account's ``fahOpen`` display preference for a device.
+
+        Only stored when Govee actually reported the flag — a missing value must
+        stay missing so the SKU allowlist keeps its say (issue #157).
+        """
+        fah_open = sensor.get("fah_open")
+        if isinstance(fah_open, bool):
+            self._display_fahrenheit[device_id] = fah_open
+
     async def _discover_bff_thermometers(self) -> None:
         """Discover thermo-hygrometers (H5301) via the BFF device list (issue #86).
 
@@ -1825,13 +1891,34 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 if not device_id:
                     continue
 
+                self._note_display_unit(device_id, sensor)
+
                 # A device already discovered via the Developer API (e.g. the
                 # H5179 WiFi thermometer, #141) whose live reading only comes
                 # from the BFF lastDeviceData — the Developer poll returns empty
                 # strings. Route it through the BFF path (owns its state, skips
                 # the futile Developer poll via _bff_thermometer_ids) instead of
                 # synthesizing a duplicate device.
+                #
+                # Only hand the device over once the BFF has actually produced a
+                # reading, though. Some gateway-bridged units are listed with an
+                # empty lastDeviceData (issue #151), and claiming those would
+                # silence a Developer poll that does work, leaving the sensor
+                # permanently unknown. _refresh_bff_thermometers takes over later
+                # if a reading does show up.
                 if device_id in self._devices:
+                    if (
+                        sensor.get("temperature") is None
+                        and sensor.get("humidity") is None
+                    ):
+                        _LOGGER.debug(
+                            "BFF thermo %s (%s) has no reading — leaving it on the "
+                            "Developer API poll (issue #151)",
+                            sensor.get("name", device_id),
+                            sensor.get("sku", "?"),
+                        )
+                        self._bff_thermo_pending.add(device_id)
+                        continue
                     self._bff_thermometer_ids.add(device_id)
                     state = self._states.get(
                         device_id
@@ -1878,12 +1965,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 ):
                     self._sensor_reading_changed_at[device_id] = dt_util.utcnow()
 
-            if self._bff_thermometer_ids:
+            if self._bff_thermometer_ids or self._bff_thermo_pending:
                 _LOGGER.info(
                     "Discovered %d BFF thermo-hygrometers (issue #86)",
                     len(self._bff_thermometer_ids),
                 )
-                # Reuse the 5-min BFF poll loop to refresh readings.
+                # Reuse the 5-min BFF poll loop to refresh readings — also for
+                # the devices still on the Developer poll, so one of them can be
+                # promoted the moment the BFF starts reporting (#151).
                 self._schedule_bff_poll()
 
         except Exception as err:
@@ -1892,7 +1981,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
     async def _refresh_bff_thermometers(self) -> None:
         """Refresh temp/humidity readings for BFF thermo-hygrometers (issue #86)."""
-        if not self._bff_thermometer_ids or not self._iot_credentials:
+        if not self._iot_credentials:
+            return
+        if not self._bff_thermometer_ids and not self._bff_thermo_pending:
             return
 
         try:
@@ -1907,6 +1998,21 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         changed = False
         for sensor in sensors:
             device_id = sensor["device_id"]
+            self._note_display_unit(device_id, sensor)
+
+            # A device parked on the Developer poll because the BFF had nothing
+            # for it (#151) takes over here as soon as a reading appears.
+            if device_id in self._bff_thermo_pending:
+                if sensor.get("temperature") is None and sensor.get("humidity") is None:
+                    continue
+                _LOGGER.info(
+                    "BFF now reports %s — taking over its readings from the "
+                    "Developer API poll (issue #151)",
+                    sensor.get("name", device_id),
+                )
+                self._bff_thermo_pending.discard(device_id)
+                self._bff_thermometer_ids.add(device_id)
+
             existing = self._states.get(device_id)
             if existing is None:
                 continue
@@ -2034,7 +2140,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """
         if not self._iot_credentials:
             return
-        if not self._leak_sensors and not self._thermo_bff_devices:
+        if (
+            not self._leak_sensors
+            and not self._thermo_bff_devices
+            and not self._battery_candidate_devices()
+        ):
             return
 
         try:

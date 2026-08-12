@@ -91,9 +91,14 @@ CONF_API_TEMPERATURE_UNIT: Final = "api_temperature_unit"
 #     °C-tagged unit — a ~6.1°F freezer reading surfaced as 43.3°F in HA. Same
 #     BLE-bridged read path as H5110 (issue #83 findings: API returns °F with
 #     no unit field).
+#   H5310 (pool thermometer, gateway-bridged): a pool at 88°F surfaced as ~191°F
+#     — the Developer API had returned 88.34 already in °F (issue #157). This
+#     entry is only the fallback: when the account's own `fahOpen` preference is
+#     known (BFF device list), that hint wins and a °C account is left alone.
 FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
     {
         "H5179",
+        "H5310",
         "H5109",
         "H5110",
         "H5111",

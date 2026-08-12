@@ -177,7 +177,7 @@ class TestTemperatureSensorFahrenheitConversion:
     cloud API. Verifies the GoveeTemperatureSensor.native_value path honors
     the api_temperature_unit option."""
 
-    def _make_sensor_stub(self, raw_value, api_unit, sku="H6072"):
+    def _make_sensor_stub(self, raw_value, api_unit, sku="H6072", account_unit=None):
         from types import SimpleNamespace
 
         from custom_components.govee.sensor import GoveeTemperatureSensor
@@ -187,6 +187,8 @@ class TestTemperatureSensorFahrenheitConversion:
             config_entry=SimpleNamespace(options={"api_temperature_unit": api_unit}),
             # Developer-API thermometer, not a BFF-sourced one (#141).
             is_bff_thermometer=lambda _device_id: False,
+            # No fahOpen flag seen for this device unless a test says otherwise.
+            account_temperature_unit=lambda _device_id: account_unit,
         )
         stub = SimpleNamespace(
             device_state=state,
@@ -238,6 +240,7 @@ class TestTemperatureSensorFahrenheitConversion:
         coordinator = SimpleNamespace(
             config_entry=SimpleNamespace(options={}),
             is_bff_thermometer=lambda _device_id: False,
+            account_temperature_unit=lambda _device_id: None,
         )
         stub = SimpleNamespace(
             device_state=state,
@@ -261,6 +264,7 @@ class TestTemperatureSensorFahrenheitConversion:
         coordinator = SimpleNamespace(
             config_entry=SimpleNamespace(options={"api_temperature_unit": "auto"}),
             is_bff_thermometer=lambda _device_id: True,
+            account_temperature_unit=lambda _device_id: None,
         )
         stub = SimpleNamespace(
             device_state=state,
@@ -319,6 +323,72 @@ class TestTemperatureSensorFahrenheitConversion:
     def test_h5111_celsius_override_passthrough(self):
         # An account whose Govee app is set to °C can opt out via the option.
         assert self._make_sensor_stub(-14.3, "celsius", sku="H5111") == -14.3
+
+    def test_h5310_pool_thermometer_auto_converts_fahrenheit(self):
+        # Issue #157: an 88°F pool surfaced as ~191°F because the Developer API
+        # had already returned °F. With no fahOpen flag to go on, the SKU
+        # allowlist converts it.
+        result = self._make_sensor_stub(88.34, "auto", sku="H5310")
+        assert abs(result - 31.3) < 0.05
+
+    def test_account_fahrenheit_hint_converts_unknown_sku(self):
+        # A device outside the allowlist still converts when Govee tells us the
+        # account reports in °F (issue #157).
+        result = self._make_sensor_stub(
+            70.0, "auto", sku="H6072", account_unit="fahrenheit"
+        )
+        assert abs(result - 21.111111) < 1e-4
+
+    def test_account_celsius_hint_beats_sku_allowlist(self):
+        # The protection for °C accounts: an H5310 on a Celsius account reports
+        # °C, and the fahOpen=false hint must stop the allowlist from mangling
+        # it (issue #157 vs #151).
+        assert (
+            self._make_sensor_stub(29.4, "auto", sku="H5310", account_unit="celsius")
+            == 29.4
+        )
+
+    def test_explicit_option_still_beats_account_hint(self):
+        # "celsius"/"fahrenheit" are user overrides — they outrank any hint.
+        assert (
+            self._make_sensor_stub(
+                88.34, "celsius", sku="H5310", account_unit="fahrenheit"
+            )
+            == 88.34
+        )
+
+
+class TestAccountTemperatureUnit:
+    """coordinator.account_temperature_unit maps BFF fahOpen -> unit (#157)."""
+
+    def _coordinator(self):
+        from custom_components.govee.coordinator import GoveeCoordinator
+
+        coordinator = GoveeCoordinator.__new__(GoveeCoordinator)
+        coordinator._display_fahrenheit = {}
+        return coordinator
+
+    def test_unknown_device_returns_none(self):
+        assert self._coordinator().account_temperature_unit("dev") is None
+
+    def test_fah_open_true_is_fahrenheit(self):
+        coordinator = self._coordinator()
+        coordinator._note_display_unit("dev", {"fah_open": True})
+        assert coordinator.account_temperature_unit("dev") == "fahrenheit"
+
+    def test_fah_open_false_is_celsius(self):
+        coordinator = self._coordinator()
+        coordinator._note_display_unit("dev", {"fah_open": False})
+        assert coordinator.account_temperature_unit("dev") == "celsius"
+
+    def test_missing_flag_is_not_recorded(self):
+        # A device Govee didn't report fahOpen for must stay unknown, so the
+        # SKU allowlist keeps its say rather than being overridden by a guess.
+        coordinator = self._coordinator()
+        coordinator._note_display_unit("dev", {"fah_open": None})
+        coordinator._note_display_unit("dev2", {})
+        assert coordinator.account_temperature_unit("dev") is None
+        assert coordinator.account_temperature_unit("dev2") is None
 
 
 class TestSyntheticThermometer:
@@ -800,3 +870,209 @@ class TestResolveFahrenheitDeviceUnitHint:
 
         assert resolve_fahrenheit_conversion("H713B", "celsius", "Fahrenheit") is False
         assert resolve_fahrenheit_conversion("H713B", "fahrenheit", "Celsius") is True
+
+
+class TestBffThermoHandover:
+    """A BFF entry with no reading must not silence a working Developer poll.
+
+    Issue #151: an H5310 behind an H5044 is listed by the BFF with an empty
+    ``lastDeviceData``. Claiming it there suppressed ``/device/state`` for good,
+    so the sensor sat at ``unknown`` forever.
+    """
+
+    def _coordinator(self, devices=(), states=None):
+        from unittest.mock import MagicMock
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+
+        coordinator = GoveeCoordinator.__new__(GoveeCoordinator)
+        coordinator._devices = {d: MagicMock() for d in devices}
+        coordinator._states = dict(states or {})
+        coordinator._bff_thermometer_ids = set()
+        coordinator._bff_thermo_pending = set()
+        coordinator._display_fahrenheit = {}
+        coordinator._bff_thermo_hubs = {}
+        coordinator._sensor_reading_changed_at = {}
+        coordinator.hass = MagicMock()
+        return coordinator
+
+    def _sensor(self, device_id, temperature=None, humidity=None):
+        return {
+            "device_id": device_id,
+            "name": "Pool",
+            "sku": "H5310",
+            "temperature": temperature,
+            "humidity": humidity,
+            "battery": None,
+            "online": True,
+            "hub_device_id": "",
+            "hub_sku": "",
+            "fah_open": None,
+            "sw_version": "",
+            "hw_version": "",
+        }
+
+    async def _discover(self, coordinator, sensors):
+        """Drive _discover_bff_thermometers with a stubbed auth client."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        coordinator._iot_credentials = MagicMock(token="tok")
+        coordinator._schedule_bff_poll = MagicMock()
+        coordinator._ensure_transport_health = MagicMock()
+
+        auth_client = MagicMock()
+        auth_client.fetch_bff_thermo_hygrometers = AsyncMock(return_value=sensors)
+        auth_client.bff_device_census = MagicMock(return_value=[])
+        auth_client.bff_response_skeleton = MagicMock(return_value={})
+        auth_client.bff_device_values = MagicMock(return_value=[])
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=auth_client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "custom_components.govee.coordinator.GoveeAuthClient", return_value=ctx
+        ):
+            await coordinator._discover_bff_thermometers()
+
+    async def _refresh(self, coordinator, sensors):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        coordinator._iot_credentials = MagicMock(token="tok")
+        coordinator._record_transport_success = MagicMock()
+        coordinator._note_sensor_reading_change = MagicMock()
+        coordinator.async_set_updated_data = MagicMock()
+
+        auth_client = MagicMock()
+        auth_client.fetch_bff_thermo_hygrometers = AsyncMock(return_value=sensors)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=auth_client)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "custom_components.govee.coordinator.GoveeAuthClient", return_value=ctx
+        ):
+            await coordinator._refresh_bff_thermometers()
+
+    @pytest.mark.asyncio
+    async def test_reading_less_entry_leaves_developer_poll_alone(self):
+        coordinator = self._coordinator(devices=["pool"])
+        await self._discover(coordinator, [self._sensor("pool")])
+
+        assert "pool" not in coordinator._bff_thermometer_ids
+        assert "pool" in coordinator._bff_thermo_pending
+
+    @pytest.mark.asyncio
+    async def test_entry_with_a_reading_is_claimed(self):
+        coordinator = self._coordinator(devices=["pool"])
+        await self._discover(coordinator, [self._sensor("pool", temperature=29.4)])
+
+        assert "pool" in coordinator._bff_thermometer_ids
+        assert "pool" not in coordinator._bff_thermo_pending
+
+    @pytest.mark.asyncio
+    async def test_pending_device_is_promoted_once_a_reading_arrives(self):
+        state = GoveeDeviceState.create_empty("pool")
+        coordinator = self._coordinator(devices=["pool"], states={"pool": state})
+        await self._discover(coordinator, [self._sensor("pool")])
+        assert "pool" in coordinator._bff_thermo_pending
+
+        await self._refresh(coordinator, [self._sensor("pool", temperature=29.4)])
+
+        assert "pool" in coordinator._bff_thermometer_ids
+        assert "pool" not in coordinator._bff_thermo_pending
+        assert coordinator._states["pool"].sensor_temperature == 29.4
+
+    @pytest.mark.asyncio
+    async def test_pending_device_stays_pending_while_bff_is_empty(self):
+        state = GoveeDeviceState.create_empty("pool")
+        coordinator = self._coordinator(devices=["pool"], states={"pool": state})
+        await self._discover(coordinator, [self._sensor("pool")])
+
+        await self._refresh(coordinator, [self._sensor("pool")])
+
+        assert coordinator._bff_thermo_pending == {"pool"}
+        assert not coordinator._bff_thermometer_ids
+
+    @pytest.mark.asyncio
+    async def test_bff_only_device_is_still_synthesized_without_a_reading(self):
+        # A device absent from the Developer API has no other source, so it must
+        # keep being created even when the first BFF poll is empty (#86).
+        coordinator = self._coordinator(devices=[])
+        await self._discover(coordinator, [self._sensor("pool")])
+
+        assert "pool" in coordinator._devices
+        assert "pool" in coordinator._bff_thermometer_ids
+
+
+class TestBatteryCandidateDevices:
+    """The BFF poll must keep looking for a battery that hasn't arrived yet.
+
+    Issue #132: an H5109 behind an H5042 lost its battery entity. Battery for
+    gateway-bridged thermometers only ever comes from the BFF, and nothing
+    retried once the first pass came back empty.
+    """
+
+    def _coordinator(self, devices, states=None):
+        from custom_components.govee.coordinator import GoveeCoordinator
+
+        coordinator = GoveeCoordinator.__new__(GoveeCoordinator)
+        coordinator._devices = devices
+        coordinator._states = dict(states or {})
+        return coordinator
+
+    def _thermometer(self, sku="H5109"):
+        return GoveeDevice(
+            device_id="11:22:33:44:55:66:77:88",
+            sku=sku,
+            name="Garage",
+            device_type=DEVICE_TYPE_THERMOMETER,
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_PROPERTY,
+                    instance=INSTANCE_SENSOR_TEMPERATURE,
+                    parameters={},
+                ),
+            ),
+            is_group=False,
+        )
+
+    def test_thermometer_without_a_battery_reading_is_a_candidate(self):
+        device = self._thermometer()
+        coordinator = self._coordinator({device.device_id: device})
+        assert coordinator._battery_candidate_devices() == {device.device_id}
+
+    def test_thermometer_that_already_has_battery_is_not_a_candidate(self):
+        device = self._thermometer()
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.battery = 88
+        coordinator = self._coordinator(
+            {device.device_id: device}, {device.device_id: state}
+        )
+        assert coordinator._battery_candidate_devices() == set()
+
+    def test_mains_powered_sku_is_never_a_candidate(self):
+        # The H5106 reports a phantom battery: 100 while plugged in (#114).
+        device = self._thermometer(sku="H5106")
+        coordinator = self._coordinator({device.device_id: device})
+        assert coordinator._battery_candidate_devices() == set()
+
+    def test_non_thermometer_is_not_a_candidate(self):
+        from custom_components.govee.models.device import (
+            CAPABILITY_ON_OFF,
+            INSTANCE_POWER,
+        )
+
+        light = GoveeDevice(
+            device_id="00:11:22:33:44:55:66:77",
+            sku="H6072",
+            name="Lamp",
+            device_type="devices.types.light",
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
+                ),
+            ),
+            is_group=False,
+        )
+        coordinator = self._coordinator({light.device_id: light})
+        assert coordinator._battery_candidate_devices() == set()
