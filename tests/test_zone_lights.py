@@ -1084,3 +1084,84 @@ class TestSegmentNaming:
         as_zone_named_segment(seg_entity, _entry(coordinator))
 
         assert seg_entity._attr_name == "Segment 1"
+
+
+# ==============================================================================
+# 11. Registry cleanup when the option goes back off (roadmap 1.1)
+# ==============================================================================
+
+
+async def _cleanup_removals(*, zone_lights: bool) -> set[str]:
+    """Run the orphan cleanup over one device's fork entities; return the pruned unique ids."""
+    from custom_components.govee import _async_cleanup_orphaned_entities
+
+    coordinator = _coordinator()
+    entry = _entry(coordinator, zone_lights=zone_lights, lan_raw_write=True)
+    entry.entry_id = "entry_1"
+    entry.options["segment_mode_by_device"] = {}
+
+    unique_ids = [
+        f"{DEVICE_ID}_zone_ripple",
+        f"{DEVICE_ID}_zone_ring",
+        f"{DEVICE_ID}_zone_downlight",
+        f"{DEVICE_ID}_zone_flow_rate_ripple",
+        f"{DEVICE_ID}_diy_mode_ripple",
+        f"{DEVICE_ID}_diy_apply",
+        # Controls: the zone *switches* keep their entries by design, and an
+        # unrelated upstream entity must not be touched either.
+        f"{DEVICE_ID}_ripple_light",
+        f"{DEVICE_ID}_scene_select",
+    ]
+    entries = []
+    for unique_id in unique_ids:
+        registry_entry = MagicMock()
+        registry_entry.unique_id = unique_id
+        registry_entry.entity_id = f"light.{unique_id}"
+        entries.append(registry_entry)
+
+    removed: set[str] = set()
+    entity_registry = MagicMock()
+    entity_registry.async_remove = MagicMock(side_effect=lambda entity_id: removed.add(entity_id))
+
+    with patch("custom_components.govee.er") as er_mod, patch("custom_components.govee.dr") as dr_mod:
+        er_mod.async_get.return_value = entity_registry
+        er_mod.async_entries_for_config_entry.return_value = entries
+        dr_mod.async_get.return_value = MagicMock()
+        dr_mod.async_entries_for_config_entry.return_value = []
+        await _async_cleanup_orphaned_entities(MagicMock(), entry, coordinator)
+
+    return {entity_id[len("light.") :] for entity_id in removed}
+
+
+class TestOrphanCleanup:
+    """Turning the option off must take its entities out of the registry.
+
+    Without this the zone lights and their flow-rate numbers linger forever as
+    unavailable entities, because nothing else ever removes a unique id the
+    integration simply stopped creating.
+    """
+
+    @pytest.mark.asyncio
+    async def test_zone_entities_are_pruned_when_the_option_goes_off(self):
+        removed = await _cleanup_removals(zone_lights=False)
+
+        assert {
+            f"{DEVICE_ID}_zone_ripple",
+            f"{DEVICE_ID}_zone_ring",
+            f"{DEVICE_ID}_zone_downlight",
+            f"{DEVICE_ID}_zone_flow_rate_ripple",
+            f"{DEVICE_ID}_diy_mode_ripple",
+            f"{DEVICE_ID}_diy_apply",
+        } <= removed
+
+    @pytest.mark.asyncio
+    async def test_the_zone_switches_and_upstream_entities_survive_the_prune(self):
+        """The switches come back when the option does, so their history must live."""
+        removed = await _cleanup_removals(zone_lights=False)
+
+        assert f"{DEVICE_ID}_ripple_light" not in removed
+        assert f"{DEVICE_ID}_scene_select" not in removed
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_pruned_while_the_option_is_on(self):
+        assert await _cleanup_removals(zone_lights=True) == set()

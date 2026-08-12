@@ -55,6 +55,7 @@ from .const import (
     SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SCENE_SELECT,
     SUFFIX_SEGMENT,
+    SUFFIX_ZONE,
 )
 from .coordinator import GoveeCoordinator
 from .zone_state import zone_lights_enabled
@@ -389,7 +390,8 @@ async def _async_cleanup_orphaned_entities(
     device_modes = options.get("segment_mode_by_device", {})
     enable_scenes = options.get(CONF_ENABLE_SCENES, DEFAULT_ENABLE_SCENES)
     enable_diy_scenes = options.get(CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES)
-    enable_diy_effects = zone_lights_enabled(entry)
+    enable_zone_lights = zone_lights_enabled(entry)
+    enable_diy_effects = enable_zone_lights
 
     _LOGGER.debug(
         "Orphan cleanup: device_modes=%s, enable_scenes=%s, enable_diy_scenes=%s",
@@ -443,6 +445,14 @@ async def _async_cleanup_orphaned_entities(
             elif unique_id.endswith(SUFFIX_DIY_SCENE_SELECT) and not enable_diy_scenes:
                 should_remove = True
                 removal_reason = "DIY scenes disabled"
+            elif suffix.startswith(SUFFIX_ZONE) and not enable_zone_lights:
+                # Fork: the zone light entities (and their flow-rate numbers,
+                # whose suffix also starts with SUFFIX_ZONE) exist only while
+                # zone_lights_enabled() holds. Without this branch they linger
+                # in the registry as permanently unavailable entities once the
+                # option is turned back off.
+                should_remove = True
+                removal_reason = "zone lights disabled"
             elif _is_diy_effect_suffix(suffix) and not enable_diy_effects:
                 # Fork: the DIY authoring controls need BOTH the zone-light
                 # option and the raw-LAN transport (zone_lights_enabled checks
