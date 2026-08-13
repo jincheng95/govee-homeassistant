@@ -286,6 +286,20 @@ class DeviceProfile:
     diy: DiyEffectSpec | None = None
     segment_zone: SegmentZoneSpec | None = None
     """Set when this SKU's segments are painted with the ZONE frame + a mask."""
+    echo_lag_seconds: float = 0.0
+    """How long this SKU keeps reporting its PRE-command state after a write.
+
+    A ``devStatus`` poll taken inside this window answers promptly and answers
+    *wrong*: it repeats the state the lamp held before the command. §2.1 of the
+    protocol reference states the rule — "do not read back sooner than ~1.5 s
+    after a write" — with a measured write→visible latency of 0.3–1.1 s.
+
+    A consumer that verifies a write by reading the device back must wait this
+    long first, or its confirm can only ever fail. The default of ``0.0`` means
+    **not measured on this SKU**, not "answers instantly": it leaves every such
+    consumer behaving exactly as it did before the field existed, so a SKU opts
+    in only once someone has timed it on hardware.
+    """
     note: str = ""
 
     @property
@@ -492,6 +506,13 @@ H60B0: Final = DeviceProfile(
             note="at most 2 zones lit; yield order downlight -> ripple -> ring",
         ),
     ),
+    # Measured on hardware (2026-08-12, instrumented flicker investigation): a
+    # devStatus poll answers in ~28 ms and repeats the PRE-command state for
+    # well over a second after a write — a power-on confirm read taken 28 ms
+    # later still reported `onOff: 0`. §2.1's "do not read back sooner than
+    # ~1.5 s" is the rule this number comes from; worst write→visible latency
+    # observed on this SKU was 1.09 s, so 1.5 s carries margin.
+    echo_lag_seconds=1.5,
 )
 
 H6046: Final = DeviceProfile(

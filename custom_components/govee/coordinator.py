@@ -116,6 +116,7 @@ from .models.device import (
 from .models.device import GoveeLeakSensor, GoveeLeakSensorState
 from .api.lan_nudge import async_cancel_nudges, async_note_cloud_push
 from . import lan_udp_health  # fork: raw LAN UDP write path
+from . import lan_confirm  # fork: per-SKU echo-lag awareness for the confirm read
 from .scene_cache import SceneCacheManager
 from .repairs import (
     async_create_auth_issue,
@@ -2928,7 +2929,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self.async_set_updated_data(self._states)
 
         # [8] Verify-by-read: a LAN write is unacked, so read the device back and
-        #     require the reported value to match what we sent.
+        #     require the reported value to match what we sent. Fork hook: some
+        #     SKUs echo their PRE-command state for a while (the H60B0 for ~1.5s,
+        #     reference §2.1), which makes an immediate confirm read fail by
+        #     construction — settle first, and never count a read taken inside
+        #     that window as a miss. See .lan_confirm.
+        sent_at = time.monotonic()
+        await lan_confirm.async_settle(device.sku)
         reply = await self._lan_client.async_read_one(ip, LAN_WRITE_CONFIRM_TIMEOUT)
         if reply is None:
             # No reply in the confirm window — ambiguous. Count it toward write
@@ -2937,7 +2944,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # the authority on transport liveness. The write already fell through
             # to MQTT/REST, which re-applies the optimistic update and delivers
             # it. A transient power-on miss must never flap LAN off (#57).
-            self._note_lan_write_miss(device_id)
+            if lan_confirm.counts_as_miss(device.sku, time.monotonic() - sent_at):
+                self._note_lan_write_miss(device_id)
             return False
 
         if not self._lan_write_confirmed(device, command, reply):
@@ -2954,7 +2962,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # MQTT/REST. Transport health is NEVER flipped on a content mismatch —
             # that flap, synced to control activity, was the reported bug (#57).
             self._record_transport_success(device_id, "lan")
-            self._note_lan_write_miss(device_id)
+            if lan_confirm.counts_as_miss(device.sku, time.monotonic() - sent_at):
+                self._note_lan_write_miss(device_id)
             return False
 
         # Confirmed: stamp the LAN write (send + success — the verify-by-read
