@@ -126,7 +126,9 @@ class GoveeGroupedSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
 
         await async_ensure_device_powered(self.coordinator, self._device_id)  # fork: child -> master power
 
-        if not await async_segment_color(self, self._rgb_color, self._segment_indices):  # fork: raw-LAN
+        if not await async_segment_color(  # fork: raw-LAN
+            self, self._rgb_color, self._segment_indices, brightness=kwargs.get(ATTR_BRIGHTNESS)
+        ):
             await self.coordinator.async_control_device(
                 self._device_id,
                 command,

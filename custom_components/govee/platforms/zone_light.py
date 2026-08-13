@@ -718,6 +718,6 @@ def _color_modes(zone: ZoneSpec) -> set[ColorMode]:
     return modes
 
 
-def _ha_to_percent(ha_brightness: int) -> int:
-    """HA's 0-255 brightness as the 0-100 the frames carry."""
-    return max(1, min(100, round(int(ha_brightness) * 100 / HA_BRIGHTNESS_MAX)))
+# The 0-255 -> 0-100 conversion lives with the raw writer, which does it for
+# the segment paints too; one definition, one rounding rule.
+_ha_to_percent = lan_raw_write.ha_to_percent

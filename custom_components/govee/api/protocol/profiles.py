@@ -197,6 +197,31 @@ class MaxSimultaneousZones:
 
 
 @dataclass(frozen=True)
+class SegmentZoneSpec:
+    """Which zone owns the device's flat per-segment entities.
+
+    Two different wire forms address "a segment":
+
+    * **Mask-only** (H6046, H6076) — a dedicated ``SEGMENT_COLOR`` /
+      ``SEGMENT_BRIGHTNESS`` capability with no zone byte at all. Those SKUs
+      model it as a zone whose ``zone_byte`` is None and leave this field unset.
+    * **Zone + mask** (H60B0) — there *is* no segment capability. The 8
+      addressable LEDs belong to the ring ZONE, and painting them is the
+      ordinary ``ZONE_COLOR`` / ``ZONE_BRIGHTNESS`` frame with the zone's
+      segment mask filled in.
+
+    A consumer holding flat 0-based segment indices cannot tell those apart
+    from the capability set alone, so the second case is declared here: "this
+    SKU's segments live on zone X". The mask offsets stay where they already
+    are — per-attribute constants on the zone capabilities — so nothing about
+    the frame layout moves into this spec.
+    """
+
+    zone_key: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class DiyZoneSpec:
     """One zone's slot in the DIY effect payload, in wire order.
 
@@ -259,7 +284,14 @@ class DeviceProfile:
     modes: Mapping[str, ConstantValue] = field(default_factory=dict)
     constraints: tuple[MaxSimultaneousZones, ...] = ()
     diy: DiyEffectSpec | None = None
+    segment_zone: SegmentZoneSpec | None = None
+    """Set when this SKU's segments are painted with the ZONE frame + a mask."""
     note: str = ""
+
+    @property
+    def segment_zone_key(self) -> str | None:
+        """The zone that owns this SKU's segments, or None for mask-only SKUs."""
+        return None if self.segment_zone is None else self.segment_zone.zone_key
 
     def zone(self, key: str) -> ZoneSpec:
         for zone in self.zones:
@@ -437,6 +469,16 @@ H60B0: Final = DeviceProfile(
         ),
         note="0x50-form payload: 0d + ripple record + ring record; commit 33 05 0a <idx> 00 58",
     ),
+    # This SKU has no SEGMENT_COLOR capability at all: the 8 addressable LEDs
+    # are the ring zone's, and a segment paint is `33 05 2c 02 01 <RGB> <K K>
+    # <mask0 mask1>` — the zone-colour frame with the mask filled in (verified,
+    # `reference` §3.1 "ring, seg 3 only yellow"). Brightness is the same shape
+    # under attribute 0x02, where the mask sits at a different offset; both
+    # offsets are already table data on the two capabilities.
+    segment_zone=SegmentZoneSpec(
+        zone_key="ring",
+        note="segments are the ring zone's; painted with ZONE_COLOR/ZONE_BRIGHTNESS + mask",
+    ),
     constraints=(
         MaxSimultaneousZones(
             limit=2,
@@ -591,6 +633,19 @@ def validate_table() -> None:
         for constraint in profile.constraints:
             for key in constraint.displacement_order:
                 profile.zone(key)
+        if profile.segment_zone is not None:
+            # "Segments live on zone X" is only meaningful if X exists, has
+            # segments to mask, and can be painted by the zone-colour frame.
+            segment_zone = profile.zone(profile.segment_zone.zone_key)
+            if not segment_zone.segmented:
+                raise GoveeProtocolError(
+                    f"{profile.sku} points its segments at zone {segment_zone.key!r}, which has none"
+                )
+            if Capability.ZONE_COLOR not in segment_zone.capabilities:
+                raise GoveeProtocolError(
+                    f"{profile.sku} points its segments at zone {segment_zone.key!r}, "
+                    "which does not encode zone_color"
+                )
         if profile.diy is not None:
             if not profile.diy.zones:
                 raise GoveeProtocolError(
@@ -643,6 +698,7 @@ def describe(profile: DeviceProfile) -> dict[str, Any]:
             {"max_simultaneous_zones": constraint.limit, "zones": list(constraint.displacement_order)}
             for constraint in profile.constraints
         ],
+        "segment_zone": profile.segment_zone_key,
         "diy": (
             None
             if profile.diy is None

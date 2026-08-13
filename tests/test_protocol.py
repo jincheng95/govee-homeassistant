@@ -561,6 +561,40 @@ class TestProfiles:
                 with pytest.raises(GoveeProtocolError):
                     profiles.validate_table()
 
+    def test_table_self_check_rejects_a_bad_segment_zone(self) -> None:
+        """A segment_zone must point at a zone that can actually paint them."""
+        base = get_profile("H60B0")
+        for bad in (
+            profiles.SegmentZoneSpec(zone_key="nowhere"),  # no such zone
+            profiles.SegmentZoneSpec(zone_key="downlight"),  # no segments, no colour
+        ):
+            broken = replace(base, sku="H9999", segment_zone=bad)
+            with patch.dict(profiles.PROFILES, {"H9999": broken}):
+                with pytest.raises(GoveeProtocolError):
+                    profiles.validate_table()
+
+    def test_table_self_check_rejects_a_segment_zone_without_colour(self) -> None:
+        """A segmented zone that cannot encode zone_color cannot own segments."""
+        base = get_profile("H60B0")
+        ring = base.zone("ring")
+        zones = tuple(
+            replace(zone, capabilities=frozenset({Capability.ZONE_BRIGHTNESS})) if zone.key == "ring" else zone
+            for zone in base.zones
+        )
+        broken = replace(base, sku="H9999", zones=zones)
+        with patch.dict(profiles.PROFILES, {"H9999": broken}):
+            with pytest.raises(GoveeProtocolError):
+                profiles.validate_table()
+        assert Capability.ZONE_COLOR in ring.capabilities  # the real table is fine
+
+    def test_h60b0_segments_are_declared_as_the_rings(self) -> None:
+        """The zone-owned segment form is table data, not a SKU branch."""
+        profile = get_profile("H60B0")
+        assert profile.segment_zone_key == "ring"
+        assert profile.zone("ring").segments == 8
+        assert get_profile("H6076").segment_zone_key is None
+        assert profiles.describe(profile)["segment_zone"] == "ring"
+
     def test_describe_is_json_safe(self) -> None:
         for sku in ("H60B0", "H6046", "H6076"):
             dumped = json.dumps(profiles.describe(get_profile(sku)))
