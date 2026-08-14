@@ -333,7 +333,7 @@ class GoveeAwsIotClient:
                     # Subscribe to account topic for all device updates
                     topic = self._credentials.account_topic
                     await client.subscribe(topic)
-                    _LOGGER.debug("Subscribed to topic: %s", topic[:30] + "...")
+                    _LOGGER.debug("Subscribed to topic: %s...", topic[:8])
 
                     async for message in client.messages:
                         if not self._running:
@@ -427,7 +427,7 @@ class GoveeAwsIotClient:
             topic = getattr(message, "topic", "?")
             _LOGGER.debug(
                 "AWS IoT inbound topic=%s payload=%s",
-                topic,
+                str(topic)[:8],
                 payload_str[:500],
             )
 
@@ -459,7 +459,7 @@ class GoveeAwsIotClient:
                 try:
                     self._on_raw_frames(device_id, data)
                 except Exception as err:  # pragma: no cover - defensive
-                    _LOGGER.error("Raw-frame callback failed for %s: %s", device_id, err)
+                    _LOGGER.debug("Raw-frame callback failed for %s: %s", device_id, err)
 
             # Handle multiSync messages (leak sensor events)
             cmd = data.get("cmd")
@@ -703,7 +703,7 @@ class GoveeAwsIotClient:
             _LOGGER.debug(
                 "Published %s to %s...",
                 cmd,
-                device_topic[:30],
+                device_topic[:8],
             )
             return True
         except Exception as err:

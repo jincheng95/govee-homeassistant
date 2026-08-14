@@ -172,7 +172,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         coordinator = _get_coordinator_for_device(hass, device_id)
         if not coordinator:
-            _LOGGER.error("Device %s not found", device_id)
+            _LOGGER.debug("Device %s not found", device_id)
             return
 
         color = RGBColor(r=rgb[0], g=rgb[1], b=rgb[2])
@@ -182,7 +182,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         )
 
         await coordinator.async_control_device(device_id, command)
-        _LOGGER.info(
+        _LOGGER.debug(
             "Set segments %s to color %s on device %s",
             segments,
             rgb,
