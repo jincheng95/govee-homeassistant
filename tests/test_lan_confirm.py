@@ -72,9 +72,6 @@ class TestCountsAsMiss:
         assert lan_confirm.counts_as_miss("H6072", 0.0) is True
         assert lan_confirm.counts_as_miss("H6072", 99.0) is True
 
-    def test_read_inside_the_echo_window_does_not_count(self):
-        assert lan_confirm.counts_as_miss("H60B0", 0.028) is False
-
     def test_read_after_the_echo_window_counts(self):
         assert lan_confirm.counts_as_miss("H60B0", 1.5) is True
         assert lan_confirm.counts_as_miss("H60B0", 2.0) is True
@@ -99,6 +96,71 @@ class TestAsyncSettle:
         started = time.monotonic()
         assert await lan_confirm.async_settle("H60B0") == TEST_ECHO_LAG
         assert time.monotonic() - started >= TEST_ECHO_LAG
+
+
+class TestTheWindowIsMeasuredFromTheSend:
+    """``since=`` is what makes the echo window a real interval.
+
+    Timed from the start of the confirm, "elapsed" always contained the settle
+    wait, so :func:`counts_as_miss` could only ever answer True and the settle
+    was served again in full however long the write had already been out.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _shrink_the_echo_lag(self, monkeypatch):
+        monkeypatch.setitem(
+            profiles_mod.PROFILES,
+            "H60B0",
+            dataclasses.replace(profiles_mod.H60B0, echo_lag_seconds=TEST_ECHO_LAG),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_window_already_passed_is_not_waited_again(self):
+        started = time.monotonic()
+
+        waited = await lan_confirm.async_settle("H60B0", since=started - TEST_ECHO_LAG * 10)
+
+        assert waited == 0.0
+        assert time.monotonic() - started < TEST_ECHO_LAG
+
+    @pytest.mark.asyncio
+    async def test_only_the_remainder_of_the_window_is_waited(self):
+        waited = await lan_confirm.async_settle("H60B0", since=time.monotonic() - TEST_ECHO_LAG / 2)
+
+        assert 0 < waited <= TEST_ECHO_LAG / 2
+
+    @pytest.mark.asyncio
+    async def test_the_confirm_dates_its_window_from_the_send(self):
+        # A deferred confirm runs behind its own datagram. Handed the real send
+        # time, it reads immediately instead of settling a second time.
+        coord = _h60b0_coord()
+        lamp = _EchoingLamp()
+        # The write landed while the task was still queued, so the lamp already
+        # reports post-command state and its echo window is long gone.
+        lamp.on = True
+        coord._lan_client = lamp
+        sent_at = time.monotonic() - TEST_ECHO_LAG * 10
+
+        started = time.monotonic()
+        confirmed = await coord._async_confirm_lan_write(
+            DEVICE_ID, coord._devices[DEVICE_ID], PowerCommand(power_on=True), IP, sent_at
+        )
+
+        assert confirmed is True
+        assert time.monotonic() - started < TEST_ECHO_LAG
+
+    @pytest.mark.asyncio
+    async def test_a_real_miss_is_still_counted(self):
+        # The window excuses a read taken too early, never a write that did not
+        # land: the integrated flow's elapsed is past the lag, so it counts.
+        coord = _h60b0_coord()
+        lamp = _EchoingLamp()
+        lamp.async_read_one = _DeafRead(lamp)  # type: ignore[method-assign]
+        coord._lan_client = lamp
+
+        await coord._try_lan_command(DEVICE_ID, coord._devices[DEVICE_ID], PowerCommand(power_on=True))
+
+        assert coord._lan_write_misses[DEVICE_ID] == 1
 
 
 class _EchoingLamp:

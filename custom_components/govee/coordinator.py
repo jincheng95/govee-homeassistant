@@ -3035,6 +3035,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if not sent:
             self._record_transport_failure(device_id, "lan", "send_failed")
             return False
+        # Fork: the moment the datagram left. The echo window is measured from
+        # HERE, not from the start of the confirm — see .lan_confirm.
+        sent_at = time.monotonic()
 
         # [7] Apply optimistic state immediately for ~0ms UI feedback, before the
         #     confirm read blocks for up to LAN_WRITE_CONFIRM_TIMEOUT.
@@ -3055,13 +3058,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._config_entry.async_create_background_task(
                 self.hass,
                 self._async_confirm_lan_write_deferred(
-                    device_id, device, command, ip, self._command_generation.get(device_id, 0)
+                    device_id, device, command, ip, self._command_generation.get(device_id, 0), sent_at
                 ),
                 name="govee_lan_deferred_confirm",
             )
             return True
 
-        return await self._async_confirm_lan_write(device_id, device, command, ip)
+        return await self._async_confirm_lan_write(device_id, device, command, ip, sent_at)
 
     async def _async_confirm_lan_write_deferred(
         self,
@@ -3070,6 +3073,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         command: DeviceCommand,
         ip: str,
         generation: int,
+        sent_at: float,
     ) -> None:
         """Run a deferred LAN confirm and, if it fails, the cloud fallback (fork).
 
@@ -3084,9 +3088,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 it must abort when the counter has moved: the user issued
                 something newer, and re-sending would override it (a deferred
                 power-on re-lighting a lamp just turned off).
+            sent_at: When the datagram left, for the echo window.
         """
         try:
-            if await self._async_confirm_lan_write(device_id, device, command, ip):
+            if await self._async_confirm_lan_write(device_id, device, command, ip, sent_at):
                 return
             if self._command_generation.get(device_id, 0) != generation:
                 _LOGGER.debug(
@@ -3117,6 +3122,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device: GoveeDevice,
         command: DeviceCommand,
         ip: str,
+        sent_at: float,
     ) -> bool:
         """Confirm a just-sent LAN write by reading the device back.
 
@@ -3124,6 +3130,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         either block the caller (upstream's behaviour, unchanged) or run in a
         background task. Everything below this line is upstream's step [8]
         verbatim.
+
+        Args:
+            sent_at: ``time.monotonic()`` at the send. The echo window is
+                measured from the datagram, not from the confirm's own start,
+                or the elapsed always includes the settle and the window check
+                can never refuse a miss.
 
         Returns:
             ``True`` only when the readback matches the sent value.
@@ -3139,8 +3151,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         #     reference §2.1), which makes an immediate confirm read fail by
         #     construction — settle first, and never count a read taken inside
         #     that window as a miss. See .lan_confirm.
-        sent_at = time.monotonic()
-        await lan_confirm.async_settle(device.sku)
+        await lan_confirm.async_settle(device.sku, since=sent_at)
         reply = await self._lan_client.async_read_one(ip, LAN_WRITE_CONFIRM_TIMEOUT)
         if reply is None:
             # No reply in the confirm window — ambiguous. Count it toward write
