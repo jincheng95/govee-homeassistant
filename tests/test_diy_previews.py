@@ -13,6 +13,7 @@ lives in one place and is named in another:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -187,6 +188,26 @@ class TestStaticPath:
 
         await diy_previews.async_register_previews(hass)
         await diy_previews.async_register_previews(hass)
+
+        assert hass.http.async_register_static_paths.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_setups_register_once_and_both_succeed(self):
+        """The registration await is a yield point two entries can both reach."""
+        hass = MagicMock()
+        hass.data = {}
+
+        async def slow_register(configs):
+            await asyncio.sleep(0)
+            if hass.http.async_register_static_paths.await_count > 1:
+                raise RuntimeError("Path already registered")
+
+        hass.http.async_register_static_paths = AsyncMock(side_effect=slow_register)
+
+        await asyncio.gather(
+            diy_previews.async_register_previews(hass),
+            diy_previews.async_register_previews(hass),
+        )
 
         assert hass.http.async_register_static_paths.await_count == 1
 

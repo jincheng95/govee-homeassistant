@@ -30,6 +30,7 @@ fails the suite rather than shipping a dead URL.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Final
@@ -53,6 +54,9 @@ them, and a dashboard card must be able to render one without a bearer token.
 
 _REGISTERED_KEY: Final = f"{DOMAIN}_diy_previews_registered"
 """hass.data flag: the static path is per-HA, not per-config-entry."""
+
+_REGISTER_LOCK_KEY: Final = f"{DOMAIN}_diy_previews_lock"
+"""hass.data lock serialising the registration; see async_register_previews."""
 
 # mode name (as the profile table spells it) -> shipped filename, per DIY zone.
 # The numeric prefixes are the vendor's gifIds and are kept so a file can be
@@ -134,9 +138,11 @@ def preview_map(zone: DiyZoneSpec) -> dict[str, str]:
 async def async_register_previews(hass: HomeAssistant) -> None:
     """Serve the shipped artwork under :data:`URL_BASE`.
 
-    Idempotent and per-HA rather than per-entry: the path is a constant and
-    registering it twice raises. A second config entry, or a reload, finds the
-    flag already set and does nothing.
+    Per-HA rather than per-entry: the path is a constant and registering it
+    twice raises. The flag alone is not enough — the registration await is a
+    yield point, so two entries setting up concurrently would both pass the
+    check and the second would fail its whole setup. The lock closes that
+    window, and a waiter re-checks the flag rather than registering again.
 
     Args:
         hass: The Home Assistant instance.
@@ -144,19 +150,26 @@ async def async_register_previews(hass: HomeAssistant) -> None:
     if hass.data.get(_REGISTERED_KEY):
         return
 
-    # Imported here, not at module scope: `http` is a soft dependency of this
-    # integration and the import should not run during a manifest-only load.
-    from homeassistant.components.http import StaticPathConfig
+    lock = hass.data.setdefault(_REGISTER_LOCK_KEY, asyncio.Lock())
+    async with lock:
+        if hass.data.get(_REGISTERED_KEY):
+            return
 
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                URL_BASE,
-                str(preview_dir()),
-                # The artwork is immutable — it ships with the version.
-                cache_headers=True,
-            )
-        ]
-    )
-    hass.data[_REGISTERED_KEY] = True
+        # Imported here, not at module scope: `http` is a soft dependency of
+        # this integration and the import should not run during a
+        # manifest-only load.
+        from homeassistant.components.http import StaticPathConfig
+
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    URL_BASE,
+                    str(preview_dir()),
+                    # The artwork is immutable — it ships with the version.
+                    cache_headers=True,
+                )
+            ]
+        )
+        hass.data[_REGISTERED_KEY] = True
+
     _LOGGER.debug("Serving Govee DIY mode previews at %s", URL_BASE)
