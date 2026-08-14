@@ -1250,7 +1250,7 @@ class TestSkuFromBleName:
     def test_standard_govee_name(self):
         from custom_components.govee.coordinator import _sku_from_ble_name
 
-        assert _sku_from_ble_name("Govee_H6072_754B") == "H6072"
+        assert _sku_from_ble_name("Govee_H6072_EEFF") == "H6072"
 
     def test_ihoment_name(self):
         from custom_components.govee.coordinator import _sku_from_ble_name
@@ -1358,7 +1358,7 @@ class TestBleAdvertisementHandling:
         coord._ble_ignored_skus_logged = set()
         coord._ble_handler = BleAdvertisementHandler(coord)
 
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
         coord._handle_ble_advertisement(info)
 
         assert "AA:BB:CC:DD:EE:FF:00:11" not in coord._ble_devices
@@ -1369,7 +1369,7 @@ class TestBleAdvertisementHandling:
         coord = self._make_coordinator_with_devices(
             {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
         )
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
 
         coord._handle_ble_advertisement(info)
 
@@ -1406,7 +1406,7 @@ class TestBleAdvertisementHandling:
             is_group=True,
         )
         coord = self._make_coordinator_with_devices({"12345": group})
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
 
         coord._handle_ble_advertisement(info)
 
@@ -1437,7 +1437,7 @@ class TestBleAdvertisementHandling:
                 "00:22:11:22:33:44:55:66": dev2,
             }
         )
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
 
         coord._handle_ble_advertisement(info)
 
@@ -1468,7 +1468,7 @@ class TestBleAdvertisementHandling:
             }
         )
         # BLE MAC doesn't match either device's suffix
-        info = self._make_service_info("Govee_H6072_754B", "99:88:77:66:55:44")
+        info = self._make_service_info("Govee_H6072_EEFF", "99:88:77:66:55:44")
 
         coord._handle_ble_advertisement(info)
 
@@ -1479,8 +1479,8 @@ class TestBleAdvertisementHandling:
         coord = self._make_coordinator_with_devices(
             {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
         )
-        info1 = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
-        info2 = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info1 = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
+        info2 = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
 
         coord._handle_ble_advertisement(info1)
         coord._handle_ble_advertisement(info2)
@@ -1504,7 +1504,7 @@ class TestBleAdvertisementHandling:
             {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
         )
         coord.hass = MagicMock()
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
 
         coord._handle_ble_advertisement(info)
 
@@ -1526,7 +1526,7 @@ class TestBleAdvertisementHandling:
             {"AA:BB:CC:DD:EE:FF:00:11": sample_device}
         )
         coord.hass = MagicMock()
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
 
         coord._handle_ble_advertisement(info)
 
@@ -1553,7 +1553,7 @@ class TestBleAdvertisementHandling:
         offline_state.online = False
         coord._states["AA:BB:CC:DD:EE:FF:00:11"] = offline_state
 
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
         coord._handle_ble_advertisement(info)
 
         assert coord._states["AA:BB:CC:DD:EE:FF:00:11"].online is True
@@ -1578,7 +1578,7 @@ class TestBleAdvertisementHandling:
         coord._states["AA:BB:CC:DD:EE:FF:00:11"] = offline_state
         original_id = id(offline_state)
 
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
         coord._handle_ble_advertisement(info)
 
         new_state = coord._states["AA:BB:CC:DD:EE:FF:00:11"]

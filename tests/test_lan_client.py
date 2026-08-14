@@ -248,7 +248,7 @@ class TestLanDevStatusImmutability:
 # correlate_scan — matching, normalization, group skip, unmatched, ts stamp
 # ==============================================================================
 
-_MAC = "03:9C:DC:06:75:4B:10:7C"
+_MAC = "AA:BB:CC:DD:EE:FF:11:22"
 _GROUP_ID = "11825917"
 
 
@@ -279,7 +279,7 @@ class TestCorrelateScanMatching:
     def test_hex_normalized_match_lowercase_no_separators(self):
         # Scan reports the MAC without colons and lower-cased; the coordinator
         # holds the canonical colon-delimited upper-case form.
-        records = [_scan_record("039cdc06754b107c")]
+        records = [_scan_record("aabbccddeeff1122")]
 
         matched, unmatched = correlate_scan(records, [_MAC], now=1.0)
 
@@ -287,10 +287,10 @@ class TestCorrelateScanMatching:
         assert set(matched) == {_MAC}
         # device_id is the coordinator id; mac is the raw scan identifier.
         assert matched[_MAC].device_id == _MAC
-        assert matched[_MAC].mac == "039cdc06754b107c"
+        assert matched[_MAC].mac == "aabbccddeeff1122"
 
     def test_hex_normalized_match_dash_separated(self):
-        records = [_scan_record("03-9C-DC-06-75-4B-10-7C")]
+        records = [_scan_record("AA-BB-CC-DD-EE-FF-11-22")]
         matched, _ = correlate_scan(records, [_MAC], now=1.0)
         assert set(matched) == {_MAC}
 

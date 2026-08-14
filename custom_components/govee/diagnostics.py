@@ -82,7 +82,7 @@ TO_REDACT = {
 }
 
 # Govee device IDs are MAC-derived: 8 colon-separated hex octets
-# (e.g., "03:9C:DC:06:75:4B:10:7C"). Group device IDs are numeric-only.
+# (e.g., "AA:BB:CC:DD:EE:FF:11:22"). Group device IDs are numeric-only.
 _MAC_PATTERN = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5,7}$")
 
 

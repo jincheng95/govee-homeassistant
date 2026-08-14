@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 from custom_components.govee.api.auth import GoveeIotCredentials
 from custom_components.govee.api.mqtt import GoveeAwsIotClient
 
-HUB_ID = "07:23:5C:E7:53:5F:6F:0A"
+HUB_ID = "11:22:33:44:55:66:50:44"
 
 
 def _make_client() -> GoveeAwsIotClient:
@@ -232,7 +232,7 @@ class TestPresenceReportDecode:
 class TestPerDeviceReceiveTimestamp:
     """_handle_message stamps a per-device inbound MQTT receive timestamp."""
 
-    DEV = "03:9C:DC:06:75:4B:10:7C"
+    DEV = "AA:BB:CC:DD:EE:FF:11:22"
 
     def _state_msg(self, device_id: str) -> MagicMock:
         msg = MagicMock()

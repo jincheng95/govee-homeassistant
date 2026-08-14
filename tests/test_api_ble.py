@@ -6,8 +6,7 @@ RGB encoding, brightness encoding) and the ``GoveeBLEDevice`` wrapper class
 fan-out, command plumbing). No real Bluetooth hardware is touched — all GATT
 interactions are mocked.
 
-Reference behavior is validated against Beshelmek/govee_ble_lights
-(see ``docs/_research/2026-04-08_ble-direct-support.md`` for the cross-check).
+Reference behavior is validated against Beshelmek/govee_ble_lights.
 """
 
 from __future__ import annotations

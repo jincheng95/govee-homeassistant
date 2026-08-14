@@ -104,7 +104,7 @@ def h7150_capabilities() -> tuple[GoveeCapability, ...]:
 @pytest.fixture
 def h7150_device(h7150_capabilities) -> GoveeDevice:
     return GoveeDevice(
-        device_id="0A:E8:D4:AD:FC:7A:05:2A",
+        device_id="11:22:33:44:55:66:70:00",
         sku="H7150",
         name="Dehumidifier",
         device_type=DEVICE_TYPE_DEHUMIDIFIER,
@@ -203,7 +203,7 @@ def h7152_capabilities() -> tuple[GoveeCapability, ...]:
 @pytest.fixture
 def h7152_device(h7152_capabilities) -> GoveeDevice:
     return GoveeDevice(
-        device_id="1B:F9:E5:BE:0D:8B:16:3B",
+        device_id="11:22:33:44:55:66:70:01",
         sku="H7152",
         name="Dehumidifier Pro",
         device_type=DEVICE_TYPE_DEHUMIDIFIER,
@@ -471,7 +471,7 @@ class TestEntityCommands:
             if not (c.type == CAPABILITY_RANGE and c.instance == INSTANCE_HUMIDITY)
         )
         device = GoveeDevice(
-            device_id="0A:E8:D4:AD:FC:7A:05:2A",
+            device_id="11:22:33:44:55:66:70:00",
             sku="H7150",
             name="Dehumidifier",
             device_type=DEVICE_TYPE_DEHUMIDIFIER,

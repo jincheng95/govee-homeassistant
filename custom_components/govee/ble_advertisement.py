@@ -45,7 +45,7 @@ _BLE_NAME_PREFIXES = ("Govee_*", "ihoment_*", "GBK_*")
 
 
 def sku_from_ble_name(name: str | None) -> str | None:
-    """Extract SKU from a BLE advertising name like ``Govee_H6072_754B``.
+    """Extract SKU from a BLE advertising name like ``Govee_H6072_EEFF``.
 
     Govee BLE lights advertise with names following the pattern
     ``<Prefix>_<SKU>_<Suffix>`` where the SKU starts with ``H`` followed
@@ -121,8 +121,7 @@ class BleAdvertisementHandler:
     def handle_advertisement(self, service_info: Any) -> None:
         """Correlate one BLE advertisement with a known cloud device.
 
-        Matching strategy (see
-        ``docs/_research/2026-04-09_multi-transport-single-entity.md``):
+        Matching strategy:
           1. Extract SKU from the advertising name.
           2. Find cloud devices with that SKU (ignoring group devices).
           3. If exactly one match → unambiguous correlation.

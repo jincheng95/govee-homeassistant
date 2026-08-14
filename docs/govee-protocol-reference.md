@@ -97,7 +97,7 @@ All POST requests use this structure:
   "requestId": "550e8400-e29b-41d4-a716-446655440000",
   "payload": {
     "sku": "H618E",
-    "device": "8C:2E:9C:04:A0:03:82:D1",
+    "device": "11:22:33:44:55:66:60:1F",
     "capability": {
       "type": "devices.capabilities.TYPE",
       "instance": "INSTANCE_NAME",
@@ -116,7 +116,7 @@ All POST requests use this structure:
   "msg": "success",
   "payload": {
     "sku": "H618E",
-    "device": "8C:2E:9C:04:A0:03:82:D1",
+    "device": "11:22:33:44:55:66:60:1F",
     "capabilities": [
       {
         "type": "devices.capabilities.on_off",
@@ -258,7 +258,7 @@ curl -s -X GET "$GOVEE_API/user/devices" \
   "data": [
     {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C",
+      "device": "AA:BB:CC:DD:EE:FF:11:22",
       "deviceName": "Master F Left",
       "type": "devices.types.light",
       "capabilities": [
@@ -352,7 +352,7 @@ curl -s -X POST "$GOVEE_API/device/state" \
     "requestId": "state-001",
     "payload": {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C"
+      "device": "AA:BB:CC:DD:EE:FF:11:22"
     }
   }' | jq .
 ```
@@ -365,7 +365,7 @@ curl -s -X POST "$GOVEE_API/device/state" \
   "code": 200,
   "payload": {
     "sku": "H601F",
-    "device": "03:9C:DC:06:75:4B:10:7C",
+    "device": "AA:BB:CC:DD:EE:FF:11:22",
     "capabilities": [
       {
         "type": "devices.capabilities.online",
@@ -420,7 +420,7 @@ curl -s -X POST "$GOVEE_API/device/control" \
     "requestId": "power-on-001",
     "payload": {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C",
+      "device": "AA:BB:CC:DD:EE:FF:11:22",
       "capability": {
         "type": "devices.capabilities.on_off",
         "instance": "powerSwitch",
@@ -454,7 +454,7 @@ curl -s -X POST "$GOVEE_API/device/control" \
     "requestId": "brightness-001",
     "payload": {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C",
+      "device": "AA:BB:CC:DD:EE:FF:11:22",
       "capability": {
         "type": "devices.capabilities.range",
         "instance": "brightness",
@@ -473,7 +473,7 @@ curl -s -X POST "$GOVEE_API/device/control" \
     "requestId": "color-001",
     "payload": {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C",
+      "device": "AA:BB:CC:DD:EE:FF:11:22",
       "capability": {
         "type": "devices.capabilities.color_setting",
         "instance": "colorRgb",
@@ -492,7 +492,7 @@ curl -s -X POST "$GOVEE_API/device/control" \
     "requestId": "segment-001",
     "payload": {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C",
+      "device": "AA:BB:CC:DD:EE:FF:11:22",
       "capability": {
         "type": "devices.capabilities.segment_color_setting",
         "instance": "segmentedColorRgb",
@@ -530,7 +530,7 @@ curl -s -X POST "$GOVEE_API/device/scenes" \
     "requestId": "scenes-001",
     "payload": {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C"
+      "device": "AA:BB:CC:DD:EE:FF:11:22"
     }
   }' | jq .
 ```
@@ -543,7 +543,7 @@ curl -s -X POST "$GOVEE_API/device/scenes" \
   "code": 200,
   "payload": {
     "sku": "H601F",
-    "device": "03:9C:DC:06:75:4B:10:7C",
+    "device": "AA:BB:CC:DD:EE:FF:11:22",
     "capabilities": [
       {
         "type": "devices.capabilities.dynamic_scene",
@@ -584,7 +584,7 @@ curl -s -X POST "$GOVEE_API/device/control" \
     "requestId": "scene-activate-001",
     "payload": {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C",
+      "device": "AA:BB:CC:DD:EE:FF:11:22",
       "capability": {
         "type": "devices.capabilities.dynamic_scene",
         "instance": "lightScene",
@@ -604,7 +604,7 @@ curl -s -X POST "$GOVEE_API/device/diy-scenes" \
     "requestId": "diy-scenes-001",
     "payload": {
       "sku": "H601F",
-      "device": "03:9C:DC:06:75:4B:10:7C"
+      "device": "AA:BB:CC:DD:EE:FF:11:22"
     }
   }' | jq .
 ```
@@ -617,7 +617,7 @@ curl -s -X POST "$GOVEE_API/device/diy-scenes" \
   "code": 200,
   "payload": {
     "sku": "H601F",
-    "device": "03:9C:DC:06:75:4B:10:7C",
+    "device": "AA:BB:CC:DD:EE:FF:11:22",
     "capabilities": [
       {
         "type": "devices.capabilities.dynamic_scene",
@@ -690,8 +690,8 @@ This protocol provides real-time device state updates and is used by the Govee m
 | **Authentication** | Mutual TLS with client certificates |
 | **Keepalive** | 120 seconds |
 
-*Endpoint confirmed via PCAP analysis. Multiple IPs observed (load-balanced):*
-*98.88.204.61, 35.169.219.171, 13.223.152.107, 3.231.7.138*
+*Endpoint confirmed via PCAP analysis. It resolves to several rotating AWS*
+*addresses (load-balanced); resolve the hostname rather than pinning an IP.*
 
 ### 3.2 Authentication Flow
 
@@ -732,8 +732,8 @@ Two topic types are used:
 
 | Prefix | Purpose | Example |
 |--------|---------|---------|
-| `GA/` | Account topic (receive state updates) | `GA/6e325aac784478097fe4a9c0fb4da9b3` |
-| `GD/` | Device topic (send commands) | `GD/3c863a6df68bbbfb346997c964c84289` |
+| `GA/` | Account topic (receive state updates) | `GA/<32-hex account topic>` |
+| `GD/` | Device topic (send commands) | `GD/<32-hex device topic>` |
 
 - Subscribe to `GA/` topic to receive state updates for all devices
 - Publish commands to device-specific `GD/` topic
@@ -749,7 +749,7 @@ Two topic types are used:
 {
   "proType": 2,
   "sku": "H601F",
-  "device": "03:9C:DC:06:75:4B:10:7C",
+  "device": "AA:BB:CC:DD:EE:FF:11:22",
   "softVersion": "1.00.24",
   "wifiSoftVersion": "1.00.24",
   "wifiHardVersion": "4.01.01",
@@ -1138,7 +1138,6 @@ data.devices[].deviceExt
 - **Phantom battery on mains-powered devices.** Mains devices (e.g. **H5106** air-quality monitor, H7152) report a constant `battery: 100` in `deviceSettings`. The integration suppresses battery for these (by device_type **and** by SKU allow-list, since some mains SKUs aren't a mains device_type) — see #114/#125.
 - **Battery flicker.** The account list refreshes on Govee's own cadence and can momentarily omit `battery`, so the value is preserved (last-known) across cloud polls rather than flipping to `unknown` (#125).
 - **No live sensor readings.** The BFF does **not** carry current temp/humidity for dehumidifiers (H7150/H7152) or a real PM2.5 for the H5106 — those are BLE-only in the Govee app (#114, #118).
-- Full field catalog and per-SKU examples: `docs/_research/2026-06-30_30day-issue-sweep.md`.
 
 ### 4.4 Scene Library Request
 
@@ -1242,8 +1241,8 @@ Local network control without cloud dependency. Must be enabled in Govee app dev
   "msg": {
     "cmd": "scan",
     "data": {
-      "ip": "192.168.1.23",
-      "device": "1F:80:C5:32:32:36:72:4E",
+      "ip": "10.20.0.23",
+      "device": "11:22:33:44:55:66:61:8E",
       "sku": "H618E",
       "bleVersionHard": "3.01.01",
       "bleVersionSoft": "1.03.01",
@@ -2395,7 +2394,7 @@ Standalone leak sensor returned by the Developer (API-key) endpoint. Leak state 
 
 - `bodyAppearedEvent` value `1` = LEAKED, `2` = UN_LEAKED → maps to a `binary_sensor` device_class `moisture`.
 - `probesState.top` / `probesState.bot` report per-probe state (`1` = water present, `0` = clear); expose as attributes.
-- Device IDs use the extended 16-octet form (e.g. `03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C`).
+- Device IDs use the extended 16-octet form (e.g. `11:22:33:44:55:66:77:88:FF:FF:00:33:FF:FF:00:4C`).
 
 ##### Runtime leak delivery — hub `multiSync` packet (issue #87)
 
@@ -2418,7 +2417,6 @@ is_wet = raw[5] == 0x01 or (len(raw) >= 17 and (raw[14] == 0x01 or raw[16] == 0x
 - **H5059** reports wet in bytes `14`/`16`; earlier SKUs (H5058) were decoded off byte `5`. The OR keeps both working.
 - Button-press packets (`0x32`) encode the sensor MAC in bytes `2..9` **reverse byte order**, not a slot number.
 - The `(hub, sno) → sensor_id` map is built from the account/BFF device list; a sensor whose SKU is absent from `LEAK_SENSOR_SKUS` is dropped before the map is built, so its events log as "unknown sensor". Supported SKUs: `H5058`, `H5054`, `H5055`, `H5059`; hubs: `H5043`, `H5044`.
-- Full derivation: `docs/_research/2026-06-04_h5059-h5044-leak-sensor-support.md`.
 
 #### H5054 — Water Detector (NOT in Developer API)
 
@@ -2487,13 +2485,13 @@ Reports `devices.types.thermometer` (not `air_quality_monitor` like the H5140). 
 - **Target humidity lives in the Auto-mode `modeValue`.** `workMode` is a STRUCT `{workMode ENUM, modeValue}`. gearMode `modeValue` is the fan gear (Low 1 / Medium 2 / High 3 — the **H7150 omits Medium**). The humidity setpoint is the Auto `modeValue`, but its advertised range is **model-dependent**: the **H7150** allows a settable `30–80`, while the **H7151/H7152 pin Auto to a fixed `80` (range `min:80, max:80`)**. Either way the `/device/state` poll returns `modeValue: 0` for Auto — Govee doesn't populate the current Auto setpoint — so `configured_humidity` reads null/0 (reporter #118 on an H7150 saw `workMode 3 / modeValue 0`). This exact "Auto → modeValue 0, HA number expects 80" mismatch is independently reproduced in govee2mqtt #413.
 - **`waterFullEvent` is a push-only event** (`alarmType 58`, `eventState.options[].value 1` = "Water bucket is full or has been pulled out"). It is absent from the `/device/state` poll and not pushed over MQTT, so tank-full state is read from **BFF `deviceSettings.waterFull`** (`1` = full) → `binary_sensor` device_class `problem`. Requires email/password (#118).
 - The `range`/`humidity` `state.value` comes back as an **empty string `""`** in the poll. There is **no `sensorTemperature` / `sensorHumidity` capability at all** on these dehumidifiers — live room temp/humidity is BLE-only in the Govee app and unavailable to any cloud integration (confirmed in govee2mqtt #413: `"instance":"humidity","state":{"value":""}`, "reports humidity only via Bluetooth").
-- Cross-validated 2026-06-30 against the **goveelife** real-device fixtures (`h7150_2024-08-12.json`, `h7151_2025-06-01.json`) and **govee2mqtt** issues #413 / #145 — see `docs/_research/2026-06-30_30day-issue-sweep.md`.
+- Cross-validated 2026-06-30 against the **goveelife** real-device fixtures (`h7150_2024-08-12.json`, `h7151_2025-06-01.json`) and **govee2mqtt** issues #413 / #145.
 
 #### H5310 — Smart Thermometer P2 / Pool Thermometer (`devices.types.thermometer`, gateway-bridged)
 
 Battery thermo-hygrometer that reaches the cloud through an **H5044 gateway**; not returned by the Developer API for some accounts (surfaces via BFF). Only `sensorTemperature` + `sensorHumidity` property capabilities.
 
-- **Extended 16-octet device id** (`03:55:01:25:00:00:00:0B:FF:FF:00:41:FF:FF:00:33`), not the standard 8-octet Govee MAC — relevant to id parsing.
+- **Extended 16-octet device id** (`11:22:33:44:55:66:77:99:FF:FF:00:41:FF:FF:00:33`), not the standard 8-octet Govee MAC — relevant to id parsing.
 - The pool probe is **temperature-only**: `sensorHumidity` comes back as `655.35` (= `0xFFFF / 100`, a "no-data" sentinel). Treat the sentinel as unavailable rather than a real 655% reading (#100).
 - Rides the gateway with **no direct MQTT topic** (`device_topic_count=0`); the H5044 pushes 20-byte `ee34…` multi-sync frames. Richer cached state (`tem`/`hum`/`avgDay…`) is in BFF `lastDeviceData`.
 
@@ -2549,7 +2547,7 @@ POST /router/api/v1/device/scenes
   "requestId": "uuid",
   "payload": {
     "sku": "H618E",
-    "device": "8C:2E:9C:04:A0:03:82:D1"
+    "device": "11:22:33:44:55:66:60:1F"
   }
 }
 ```
@@ -2630,38 +2628,19 @@ DIY Styles:
 | MQTT (8883) | 761 | ~200 KB | AWS IoT real-time |
 | DNS (53) | 48 | ~5 KB | Name resolution |
 
-### 11.3 Server IPs Observed
+### 11.3 Server Endpoints Observed
 
-**app2.govee.com (Auth + Internal API):**
-| IP | TLS Connections |
-|----|-----------------|
-| 52.0.106.177 | 15 |
-| 18.208.241.196 | 7 |
-| 100.49.147.20 | 7 |
-| 54.165.11.166 | 6 |
-| 3.93.134.192 | 1 |
+Raw addresses are not recorded: they are rotating AWS/Google infrastructure and
+carry no protocol meaning. The hostnames below are the stable identity.
 
-**AWS IoT MQTT (aqm3wd1qlc3dy-ats.iot.us-east-1.amazonaws.com):**
-| IP | Purpose |
-|----|---------|
-| 98.88.204.61 | Primary MQTT endpoint |
-| 35.169.219.171 | Failover/load-balanced |
-| 13.223.152.107 | Failover/load-balanced |
-| 3.231.7.138 | Failover/load-balanced |
-
-**CDN / Static Assets:**
-| IP | Service |
-|----|---------|
-| 3.161.193.104 | app-h5-manifest.govee.com |
-| 99.84.237.29 | d1f2504ijhdyjw.cloudfront.net |
-| 99.84.237.110 | d1f2504ijhdyjw.cloudfront.net |
-| 99.84.237.10 | d1f2504ijhdyjw.cloudfront.net |
-
-**Analytics:**
-| IP | Service |
-|----|---------|
-| 74.125.136.94 | firebase-settings.crashlytics.com |
-| 216.239.36.223 | firebaselogging-pa.googleapis.com |
+| Hostname | Connections | Purpose |
+|----------|-------------|---------|
+| `app2.govee.com` | 36 over 5 addresses | Auth + internal API |
+| `aqm3wd1qlc3dy-ats.iot.us-east-1.amazonaws.com` | 4 addresses, load-balanced | AWS IoT MQTT |
+| `app-h5-manifest.govee.com` | 1 address | CDN / static assets |
+| `d1f2504ijhdyjw.cloudfront.net` | 3 addresses | CDN / static assets |
+| `firebase-settings.crashlytics.com` | 1 address | Analytics |
+| `firebaselogging-pa.googleapis.com` | 1 address | Analytics |
 
 ### 11.4 TLS SNI Hostnames
 

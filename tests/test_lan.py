@@ -98,7 +98,7 @@ async def test_parses_and_returns_devices(monkeypatch):
     responses = [
         _scan_response(
             ip="192.168.1.23",
-            device="1F:80:C5:32:32:36:72:4E",
+            device="11:22:33:44:55:66:61:8E",
             sku="H6072",
             wifiVersionSoft="1.02.03",
         )
@@ -110,7 +110,7 @@ async def test_parses_and_returns_devices(monkeypatch):
     assert len(devices) == 1
     assert devices[0]["sku"] == "H6072"
     assert devices[0]["ip"] == "192.168.1.23"
-    assert devices[0]["device"] == "1F:80:C5:32:32:36:72:4E"
+    assert devices[0]["device"] == "11:22:33:44:55:66:61:8E"
     assert devices[0]["wifiVersionSoft"] == "1.02.03"
 
 
@@ -224,7 +224,7 @@ class TestScanReplyWithoutAnIp:
     Captured from the real lamp (wifiVersionHard 4.01.00) at 192.0.2.206::
 
         {"msg": {"cmd": "scan", "data": {"bleVersionHard": "3.05.00",
-         "bleVersionSoft": "1.04.05", "device": "26:FC:77:88:99:AA:BB:CC",
+         "bleVersionSoft": "1.04.05", "device": "AA:BB:77:88:99:AA:BB:CC",
          "sku": "H6076", "wifiVersionHard": "4.01.00",
          "wifiVersionSoft": "1.00.16"}}}
 
@@ -235,7 +235,7 @@ class TestScanReplyWithoutAnIp:
     """
 
     SOURCE = "192.0.2.206"
-    MAC = "26:FC:77:88:99:AA:BB:CC"
+    MAC = "AA:BB:77:88:99:AA:BB:CC"
 
     def _h6076_reply(self, **overrides):
         body = {
