@@ -38,6 +38,7 @@ from .const import (
     CONF_EMAIL,
     CONF_ENABLE_DIY_SCENES,
     CONF_ENABLE_GROUPS,
+    CONF_ENABLE_BLE_RAW_WRITE,
     CONF_ENABLE_LAN_NUDGE,
     CONF_ENABLE_LAN_RAW_WRITE,
     CONF_ENABLE_MQTT_CONTROL,
@@ -53,6 +54,7 @@ from .const import (
     DEFAULT_API_TEMPERATURE_UNIT,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
+    DEFAULT_ENABLE_BLE_RAW_WRITE,
     DEFAULT_ENABLE_LAN_NUDGE,
     DEFAULT_ENABLE_LAN_RAW_WRITE,
     DEFAULT_ENABLE_MQTT_CONTROL,
@@ -736,6 +738,12 @@ class GoveeOptionsFlow(OptionsFlow):
                         CONF_ENABLE_LAN_RAW_WRITE,
                         default=source.get(
                             CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
+                        ),
+                    ): bool,
+                    vol.Optional(
+                        CONF_ENABLE_BLE_RAW_WRITE,
+                        default=source.get(
+                            CONF_ENABLE_BLE_RAW_WRITE, DEFAULT_ENABLE_BLE_RAW_WRITE
                         ),
                     ): bool,
                     vol.Optional(

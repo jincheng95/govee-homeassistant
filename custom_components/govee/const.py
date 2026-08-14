@@ -40,6 +40,13 @@ CONF_ENABLE_LAN_NUDGE: Final = "enable_lan_nudge"
 # Off by default — see api/lan_raw_write.py for the gates and the optimistic state.
 CONF_ENABLE_LAN_RAW_WRITE: Final = "enable_lan_raw_write"
 
+# Send the same raw frames over an unencrypted BLE GATT link, for SKUs whose
+# profile declares Transport.BLE_PLAINTEXT (the H6046 light bar, which ignores
+# raw frames on the LAN entirely and so has no other local path). Off by
+# default: BLE is a one-central link, so while HA holds it the Govee app
+# cannot connect. See api/ble_raw_write.py.
+CONF_ENABLE_BLE_RAW_WRITE: Final = "enable_ble_raw_write"
+
 # Replace a multi-zone lamp's zone on/off SWITCHES with full light entities that
 # carry each zone's real capabilities (colour, brightness, colour temperature),
 # plus a number entity for the ripple flow rate. Separate from
@@ -134,6 +141,7 @@ DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
 DEFAULT_LAN_TARGETS: Final = ""
 DEFAULT_ENABLE_LAN_NUDGE: Final = True
 DEFAULT_ENABLE_LAN_RAW_WRITE: Final = False
+DEFAULT_ENABLE_BLE_RAW_WRITE: Final = False
 DEFAULT_ENABLE_ZONE_LIGHTS: Final = False
 
 # Optimistic state handling

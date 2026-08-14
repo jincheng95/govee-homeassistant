@@ -159,8 +159,9 @@ async def async_send_frames(
 
 
 def _options(coordinator: GoveeCoordinator) -> Any:
-    """The config entry's options mapping."""
-    return coordinator.config_entry.options
+    """The config entry's options mapping (empty when there is no entry)."""
+    entry = getattr(coordinator, "config_entry", None)
+    return getattr(entry, "options", None) or {}
 
 
 def _mqtt_client(coordinator: GoveeCoordinator) -> Any:

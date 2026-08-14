@@ -113,7 +113,7 @@ from .. import lan_udp_health
 from ..const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
 from ..segment_limit import segment_count
 from ..zone_state import ZONE_KEY_BY_TOGGLE, displaced_zone_keys, profile_for, registry
-from . import mqtt_raw_write
+from . import ble_raw_write, mqtt_raw_write
 from .protocol import (
     Capability,
     DeviceProfile,
@@ -428,7 +428,7 @@ async def async_segment_color(
     if zone_key is not None:
         frames = _zone_segment_frames(entity, profile, zone_key, rgb, segments, brightness)
     else:
-        frames = _masked_segment_frames(entity, profile, rgb, segments)
+        frames = _masked_segment_frames(entity, profile, rgb, segments, brightness)
     if not frames:
         return False
 
@@ -453,9 +453,12 @@ async def async_route_frames(
 
     1. **LAN raw** — one UDP datagram on the local subnet, ~30 ms. The default
        for every SKU on the modern stack.
-    2. **MQTT ptReal** — the identical bytes published to the device's cloud
+    2. **BLE plaintext** — the identical bytes over an unencrypted GATT write,
+       for SKUs whose only raw pipe that is (the H6046 light bar). Local, but a
+       one-central link, so it is tried second and held only briefly.
+    3. **MQTT ptReal** — the identical bytes published to the device's cloud
        topic, ~300-500 ms. Covers a lamp with no LAN correlation, and every SKU
-       that has no local raw pipe at all.
+       that has no usable local raw pipe.
 
     Every tier that does not apply returns "not handled" and the next one is
     tried; when none of them can, this returns False and the caller falls back
@@ -482,6 +485,9 @@ async def async_route_frames(
         if await async_send_frames(coordinator, device_id, ip, frames, what=what):
             return True
 
+    if await ble_raw_write.async_send_frames(coordinator, device_id, sku, profile, frames, what=what):
+        return True
+
     return await mqtt_raw_write.async_send_frames(coordinator, device_id, sku, profile, frames, what=what)
 
 
@@ -492,7 +498,11 @@ def raw_write_enabled(coordinator: GoveeCoordinator) -> bool:
     option (see :func:`async_route_frames`). With every raw option off this is
     False and nothing below is even built.
     """
-    return _option_enabled(coordinator) or mqtt_raw_write.mqtt_raw_enabled(coordinator)
+    return (
+        _option_enabled(coordinator)
+        or ble_raw_write.ble_raw_enabled(coordinator)
+        or mqtt_raw_write.mqtt_raw_enabled(coordinator)
+    )
 
 
 def _masked_segment_frames(
@@ -500,8 +510,17 @@ def _masked_segment_frames(
     profile: DeviceProfile,
     rgb: tuple[int, int, int],
     segments: Sequence[int],
+    brightness: int | None = None,
 ) -> list[bytes]:
-    """The mask-only ``SEGMENT_COLOR`` frame (H6076), or [] to fall back."""
+    """The mask-only ``SEGMENT_COLOR`` (+level) frames, or [] to fall back.
+
+    An explicit brightness rides along as a second frame under attribute 0x02,
+    where the mask sits at a different offset — both offsets are table data on
+    the two capabilities, so the codec builds both. Verified on hardware for
+    the H6046 and the H6076 alike (a level+mask frame moved exactly the masked
+    segments on both). A colour-only paint sends no level frame, so an
+    untouched slider never overwrites what the segments are at.
+    """
     if not profile.supports(Capability.SEGMENT_COLOR, zone=SEGMENT_ZONE_KEY):
         return []
     if not _segment_count_matches(entity, profile, SEGMENT_ZONE_KEY):
@@ -511,8 +530,13 @@ def _masked_segment_frames(
         )
         return []
 
+    codec = GoveeCodec(profile)
+    chosen = list(segments)
     try:
-        return [GoveeCodec(profile).segment_color(rgb, segments=list(segments), zone=SEGMENT_ZONE_KEY)]
+        frames = [codec.segment_color(rgb, segments=chosen, zone=SEGMENT_ZONE_KEY)]
+        if brightness is not None and profile.supports(Capability.SEGMENT_BRIGHTNESS, zone=SEGMENT_ZONE_KEY):
+            frames.append(codec.segment_brightness(ha_to_percent(brightness), segments=chosen))
+        return frames
     except GoveeProtocolError as err:
         # UnknownEncodingError lands here: the table refuses to guess a byte.
         _LOGGER.debug(

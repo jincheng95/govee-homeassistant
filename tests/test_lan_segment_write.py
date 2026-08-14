@@ -59,6 +59,9 @@ BLE_ONLY_SEGMENTS = 10
 GOLDEN_SEG0_RED = "33051501ff0000000000000001000000000000dc"
 GOLDEN_ALL_BLACK = "3305150100000000000000007f0000000000005d"
 GOLDEN_SEG0_BLACK = "3305150100000000000000000100000000000023"
+# The level frame that rides with a colour paint when the slider moved:
+# 33 05 15 02 <level> <mask0 mask1> — mask straight after the level (§3.2).
+GOLDEN_SEG0_LEVEL_32 = "3305150220010000000000000000000000000000"
 
 # The SKU whose segments live on a zone: ring, 8 segments, zone byte 2.
 ZONE_SKU = "H60B0"
@@ -530,16 +533,28 @@ class TestZoneOwnedSegments:
         coordinator.async_control_device.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_the_mask_only_path_is_untouched_by_a_brightness(self, raw_client):
-        """The H6076 keeps its one colour frame even when a brightness is passed.
+    async def test_the_mask_only_path_carries_brightness_too(self, raw_client):
+        """Both forms now send a level frame when the slider moved.
 
-        Its SEGMENT_BRIGHTNESS shape is a different frame on a different SKU;
-        this change is scoped to the zone-owned form.
+        The mask-only SKUs shipped colour-only; their ``SEGMENT_BRIGHTNESS``
+        body (attribute 0x02, mask straight after the level) is hardware-
+        verified on the H6046 and the H6076 alike, and the H6046's segments
+        need it — that SKU has no zone form to fall back on.
         """
         coordinator = _coordinator()
         entity = _segment_entity(coordinator)
 
         await entity.async_turn_on(rgb_color=(255, 0, 0), brightness=HA_BRIGHTNESS_32_PERCENT)
 
-        assert raw_client.hexes == [GOLDEN_SEG0_RED]
+        assert raw_client.hexes == [GOLDEN_SEG0_RED, GOLDEN_SEG0_LEVEL_32]
         coordinator.async_control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_mask_only_path_sends_no_level_frame_without_a_brightness(self, raw_client):
+        """An untouched slider must not overwrite the segments' level."""
+        coordinator = _coordinator()
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        assert raw_client.hexes == [GOLDEN_SEG0_RED]
