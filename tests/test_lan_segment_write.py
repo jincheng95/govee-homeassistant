@@ -337,16 +337,35 @@ class TestFallback:
     async def test_segment_count_mismatch_uses_the_cloud(self, raw_client):
         """The table's mask width and the entity's indices must agree.
 
-        The cloud over-reports segment counts on some SKUs, and a mask built
-        for the wrong width lights the wrong LEDs.
+        A device reporting FEWER segments than the table expects is a
+        different hardware revision, and a mask built for the wrong width
+        lights the wrong LEDs — so the paint stays on the cloud.
+        """
+        coordinator = _coordinator()
+        entity = _segment_entity(coordinator, segment_count=4)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        assert raw_client.envelopes == []
+        coordinator.async_control_device.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_cloud_over_report_no_longer_blocks_the_lan_path(self, raw_client):
+        """The 15-vs-7 over-report is capped at entity creation, so the gate passes.
+
+        Live 2026-08-14: the cloud advertises 15 segments for the H6076 and the
+        lamp has 7. That disagreement used to route every dining-room segment
+        paint over the cloud ("segment count disagrees with the profile mask
+        width"). The count is now capped at the profile's width before it
+        reaches this gate, so the frame is built and goes out over the LAN.
         """
         coordinator = _coordinator()
         entity = _segment_entity(coordinator, segment_count=15)
 
         await entity.async_turn_on(rgb_color=(255, 0, 0))
 
-        assert raw_client.envelopes == []
-        coordinator.async_control_device.assert_awaited()
+        assert raw_client.hexes == [GOLDEN_SEG0_RED]
+        coordinator.async_control_device.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_turn_off_still_skips_everything_when_the_device_is_off(self, raw_client):
@@ -503,7 +522,7 @@ class TestZoneOwnedSegments:
     async def test_segment_count_mismatch_falls_back_to_the_cloud(self, raw_client):
         """The zone's mask width and the entity's indices must agree."""
         coordinator = _coordinator()
-        entity = _ring_entity(coordinator, segment_count=15)
+        entity = _ring_entity(coordinator, segment_count=4)
 
         await entity.async_turn_on(rgb_color=(255, 255, 0))
 

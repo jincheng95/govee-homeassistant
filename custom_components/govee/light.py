@@ -50,6 +50,7 @@ from .models import (
 from .models.device import INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
 from .platforms.segment import GoveeSegmentEntity
+from .segment_limit import segment_count as verified_segment_count  # fork: hardware segment cap
 from .platforms.zone_light import (  # fork: zone lights
     as_master_light,
     as_zone_named_segment,
@@ -104,11 +105,16 @@ async def async_setup_entry(
             # Use per-device mode if set, otherwise default to individual
             segment_mode = device_modes.get(device.device_id, SEGMENT_MODE_INDIVIDUAL)
 
+            # fork: the cloud over-reports segments (15 advertised for a
+            # 7-segment H6076). Create as many as the hardware has.
+            segment_count = verified_segment_count(device)
+
             _LOGGER.debug(
-                "Segment check for %s: device_mode=%s, supports_segments=%s, segment_count=%d",
+                "Segment check for %s: device_mode=%s, supports_segments=%s, segment_count=%d (advertised %d)",
                 device.name,
                 device_modes.get(device.device_id, "default (individual)"),
                 device.supports_segments,
+                segment_count,
                 device.segment_count,
             )
 
@@ -129,10 +135,10 @@ async def async_setup_entry(
             elif segment_mode == SEGMENT_MODE_INDIVIDUAL:
                 _LOGGER.debug(
                     "Creating %d individual segment entities for %s",
-                    device.segment_count,
+                    segment_count,
                     device.name,
                 )
-                for segment_index in range(device.segment_count):
+                for segment_index in range(segment_count):  # fork: hardware cap
                     entities.append(
                         as_zone_named_segment(  # fork: zone lights name segments after their zone
                             GoveeSegmentEntity(

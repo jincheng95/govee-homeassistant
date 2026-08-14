@@ -58,6 +58,7 @@ from .const import (
     SUFFIX_ZONE,
 )
 from .coordinator import GoveeCoordinator
+from .segment_limit import is_phantom_segment_id  # fork: hardware segment cap
 from .zone_state import zone_lights_enabled
 from .services import (
     SERVICE_REFRESH_SCENES,
@@ -439,6 +440,13 @@ async def _async_cleanup_orphaned_entities(
                 if segment_mode != SEGMENT_MODE_INDIVIDUAL:
                     should_remove = True
                     removal_reason = "individual segments disabled"
+                elif _is_phantom_segment(coordinator, device_id, suffix):
+                    # Fork: Govee's API over-reports segments (15 advertised
+                    # for a 7-segment H6076), so entities above the hardware
+                    # count exist in registries created before the cap. They
+                    # can never light anything — prune them on reload.
+                    should_remove = True
+                    removal_reason = "segment above the hardware count"
             elif unique_id.endswith(SUFFIX_SCENE_SELECT) and not enable_scenes:
                 should_remove = True
                 removal_reason = "scenes disabled"
@@ -555,6 +563,31 @@ async def _async_update_listener(
     )
 
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _is_phantom_segment(
+    coordinator: GoveeCoordinator,
+    device_id: str,
+    suffix: str,
+) -> bool:
+    """Whether a segment unique-id names a segment the hardware does not have.
+
+    Fork: the per-SKU profile table carries the physical segment count (the
+    mask width the codec builds from); the cloud advertises more on the RGBIC
+    family. Everything at or above the hardware count is a phantom entity.
+
+    Args:
+        coordinator: The coordinator holding the discovered devices.
+        device_id: The device the entity belongs to.
+        suffix: The unique_id with the device id stripped.
+
+    Returns:
+        True when the entity should be removed from the registry.
+    """
+    device = coordinator.devices.get(device_id)
+    if device is None:
+        return False
+    return is_phantom_segment_id(suffix, device.sku, device.segment_count)
 
 
 def _is_diy_effect_suffix(suffix: str) -> bool:

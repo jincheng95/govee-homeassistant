@@ -102,6 +102,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from .. import lan_udp_health
 from ..const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
+from ..segment_limit import segment_count
 from ..zone_state import ZONE_KEY_BY_TOGGLE, displaced_zone_keys, profile_for, registry
 from .protocol import (
     Capability,
@@ -538,8 +539,15 @@ def _sku(entity: Any) -> str:
 
 
 def _segment_count(entity: Any) -> int:
-    """How many segments the device reports (drives the entity indices)."""
-    return int(getattr(getattr(entity, "_device", None), "segment_count", 0) or 0)
+    """How many segments the device actually has (drives the entity indices).
+
+    The cloud's advertised count capped at the profile's verified one, which
+    is what ``light.py`` creates entities from — so the comparison against the
+    mask width sees the same number the entities index by. Reading the raw
+    cloud count here made the H6076's 15-vs-7 over-report look like a hardware
+    disagreement and sent every segment paint back over the cloud.
+    """
+    return segment_count(getattr(entity, "_device", None))
 
 
 def _toggle_instance(entity: Any) -> str:

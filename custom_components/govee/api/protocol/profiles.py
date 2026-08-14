@@ -307,6 +307,37 @@ class DeviceProfile:
         """The zone that owns this SKU's segments, or None for mask-only SKUs."""
         return None if self.segment_zone is None else self.segment_zone.zone_key
 
+    @property
+    def verified_segment_count(self) -> int | None:
+        """How many segments this SKU physically has, or None when unknown.
+
+        This is the **mask width** the table already declares — the number of
+        LEDs a segment mask can address — not a second constant that could
+        drift away from it. Whichever zone owns the segments (the one named by
+        :attr:`segment_zone`, else the one carrying ``SEGMENT_COLOR``) states
+        it, and the codec builds masks of exactly that width.
+
+        It exists as a property because the cloud over-reports: Govee's
+        platform API declares 15 segments for the H6046 (10 real) and for the
+        H6076 (7 real, verified 2026-08-14 against the live openapi devices
+        endpoint). A consumer that creates one entity per advertised segment
+        gets phantom entities that can never light anything, and — worse — a
+        count that disagrees with the mask width, which the raw-write path
+        reads as "the table describes different hardware" and refuses. So the
+        table's width is also the entity-count cap.
+
+        Returns:
+            The physical segment count, or None for a SKU whose profile
+            declares no segments at all (nothing to cap).
+        """
+        key = self.segment_zone_key
+        if key is not None:
+            return self.zone(key).segments or None
+        for zone in self.zones:
+            if zone.segmented and Capability.SEGMENT_COLOR in zone.capabilities:
+                return zone.segments
+        return None
+
     def zone(self, key: str) -> ZoneSpec:
         for zone in self.zones:
             if zone.key == key:
