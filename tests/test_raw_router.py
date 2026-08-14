@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.govee import lan_udp_health
-from custom_components.govee.api import lan_raw_write
+from custom_components.govee.api import lan_raw, raw_router
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import GoveeProtocolError, get_profile
 from custom_components.govee.const import (
@@ -43,6 +43,7 @@ from custom_components.govee.models.device import (
     INSTANCE_POWER,
 )
 from custom_components.govee.switch import GoveeNamedLightSwitchEntity
+from custom_components.govee import zone_state
 from custom_components.govee.zone_state import register_zone_switch
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
@@ -158,8 +159,8 @@ def _entity(coordinator: Any, instance: str, device: GoveeDevice | None = None) 
 def _fast_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
     """Recording client with the inter-repeat gap taken off the wall clock."""
     client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw_write, "LAN_WRITE_GAP_SECONDS", 0)
+    monkeypatch.setattr(lan_raw, "_CLIENT", client)
+    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
     return client
 
 
@@ -176,14 +177,14 @@ class TestFrames:
     async def test_golden_frame_per_zone(self, _fast_client, instance, on):
         entity = _entity(_coordinator(), instance)
 
-        assert await lan_raw_write.async_zone_power(entity, on=on) is True
+        assert await raw_router.async_zone_power(entity, on=on) is True
 
         hosts = {host for host, _frame in _fast_client.sends}
         frames = {frame.hex() for _host, frame in _fast_client.sends}
         assert hosts == {IP}
         assert frames == {GOLDEN[(instance, on)]}
 
-    @pytest.mark.parametrize("instance,zone_key", sorted(lan_raw_write.ZONE_KEY_BY_TOGGLE.items()))
+    @pytest.mark.parametrize("instance,zone_key", sorted(raw_router.ZONE_KEY_BY_TOGGLE.items()))
     def test_frame_zone_byte_comes_from_the_profile(self, instance, zone_key):
         zone_byte = get_profile("H60B0").zone(zone_key).zone_byte
         assert bytes.fromhex(GOLDEN[(instance, True)])[2] == zone_byte
@@ -201,7 +202,7 @@ class TestGates:
     async def test_option_off_is_a_noop(self, _fast_client):
         entity = _entity(_coordinator(enabled=False), "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio
@@ -210,14 +211,14 @@ class TestGates:
         coordinator.config_entry.options = {}
         entity = _entity(coordinator, "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio
     async def test_device_not_on_lan_falls_back(self, _fast_client):
         entity = _entity(_coordinator(on_lan=False), "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio
@@ -225,21 +226,21 @@ class TestGates:
         # The H6046 has a raw-LAN profile but no zone-power capability.
         entity = _entity(_coordinator(), "rippleLightToggle", _device(sku="H6046"))
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio
     async def test_sku_without_any_profile_falls_back(self, _fast_client):
         entity = _entity(_coordinator(), "rippleLightToggle", _device(sku="H1310"))
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio
     async def test_non_zone_toggle_falls_back(self, _fast_client):
         entity = _entity(_coordinator(), "mainLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio
@@ -255,7 +256,7 @@ class TestGates:
         coordinator._lan_writes_suppressed = MagicMock(return_value=True)
         entity = _entity(coordinator, "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
         assert _fast_client.sends == []
         coordinator._lan_writes_suppressed.assert_called_with(DEVICE_ID)
 
@@ -272,7 +273,7 @@ class TestGates:
         coordinator = _coordinator()
         coordinator._lan_writes_suppressed = MagicMock(return_value=True)
 
-        target = lan_raw_write.lan_target(coordinator, DEVICE_ID, "H60B0")
+        target = lan_raw.lan_target(coordinator, DEVICE_ID, "H60B0")
 
         assert target is not None
         ip, profile = target
@@ -286,11 +287,11 @@ class TestGates:
         suppressed = MagicMock(return_value=True)
         coordinator._lan_writes_suppressed = suppressed
         entity = _entity(coordinator, "rippleLightToggle")
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
 
         suppressed.return_value = False
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is True
+        assert await raw_router.async_zone_power(entity, on=True) is True
         assert {frame.hex() for _host, frame in _fast_client.sends} == {GOLDEN[("rippleLightToggle", True)]}
 
     @pytest.mark.asyncio
@@ -300,14 +301,14 @@ class TestGates:
         del coordinator._lan_writes_suppressed  # MagicMock: attribute now absent
         entity = _entity(coordinator, "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is True
+        assert await raw_router.async_zone_power(entity, on=True) is True
 
     @pytest.mark.asyncio
     async def test_send_failure_falls_back_without_touching_state(self, monkeypatch, _fast_client):
-        monkeypatch.setattr(lan_raw_write, "_CLIENT", _FakeRawClient(error=OSError("network unreachable")))
+        monkeypatch.setattr(lan_raw, "_CLIENT", _FakeRawClient(error=OSError("network unreachable")))
         entity = _entity(_coordinator(), "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
         assert entity.is_on is False
         entity.async_write_ha_state.assert_not_called()
 
@@ -324,10 +325,10 @@ class TestDelivery:
     async def test_frame_is_repeated(self, _fast_client):
         entity = _entity(_coordinator(), "bottomLightToggle")
 
-        await lan_raw_write.async_zone_power(entity, on=True)
+        await raw_router.async_zone_power(entity, on=True)
 
-        assert len(_fast_client.sends) == lan_raw_write.LAN_WRITE_REPEATS
-        assert lan_raw_write.LAN_WRITE_REPEATS in (2, 3)
+        assert len(_fast_client.sends) == lan_raw.LAN_WRITE_REPEATS
+        assert lan_raw.LAN_WRITE_REPEATS in (2, 3)
 
     @pytest.mark.asyncio
     async def test_a_partly_delivered_burst_still_counts_as_sent(self, _fast_client, monkeypatch):
@@ -338,21 +339,21 @@ class TestDelivery:
         with a second, contradictory command for something already commanded.
         """
         client = _FlakyRawClient(fail_after=1)
-        monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
+        monkeypatch.setattr(lan_raw, "_CLIENT", client)
         coordinator = _coordinator()
         entity = _entity(coordinator, "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is True
+        assert await raw_router.async_zone_power(entity, on=True) is True
         assert entity._is_on is True
         coordinator.async_control_device.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_wholly_failed_burst_falls_back(self, _fast_client, monkeypatch):
         client = _FlakyRawClient(fail_after=0)
-        monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
+        monkeypatch.setattr(lan_raw, "_CLIENT", client)
         entity = _entity(_coordinator(), "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is False
+        assert await raw_router.async_zone_power(entity, on=True) is False
 
     @pytest.mark.asyncio
     async def test_an_envelope_failure_is_not_a_transport_failure(self, _fast_client, monkeypatch):
@@ -362,23 +363,23 @@ class TestDelivery:
         integration bug to the network would stick for the life of the entry.
         """
         client = _FakeRawClient(error=GoveeProtocolError("cannot build envelope"))
-        monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
+        monkeypatch.setattr(lan_raw, "_CLIENT", client)
         coordinator = _coordinator()
         entity = _entity(coordinator, "rippleLightToggle")
 
         with patch.object(lan_udp_health, "note_failure") as note_failure:
-            assert await lan_raw_write.async_zone_power(entity, on=True) is False
+            assert await raw_router.async_zone_power(entity, on=True) is False
 
         note_failure.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_socket_failure_is_a_transport_failure(self, _fast_client, monkeypatch):
         client = _FakeRawClient(error=OSError("network unreachable"))
-        monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
+        monkeypatch.setattr(lan_raw, "_CLIENT", client)
         entity = _entity(_coordinator(), "rippleLightToggle")
 
         with patch.object(lan_udp_health, "note_failure") as note_failure:
-            assert await lan_raw_write.async_zone_power(entity, on=True) is False
+            assert await raw_router.async_zone_power(entity, on=True) is False
 
         note_failure.assert_called_once()
 
@@ -386,7 +387,7 @@ class TestDelivery:
     async def test_repeats_are_identical(self, _fast_client):
         entity = _entity(_coordinator(), "sideLightToggle")
 
-        await lan_raw_write.async_zone_power(entity, on=False)
+        await raw_router.async_zone_power(entity, on=False)
 
         assert len({send for send in _fast_client.sends}) == 1
 
@@ -404,7 +405,7 @@ class TestOptimisticState:
         coordinator = _coordinator()
         entity = _entity(coordinator, "rippleLightToggle")
 
-        assert await lan_raw_write.async_zone_power(entity, on=True) is True
+        assert await raw_router.async_zone_power(entity, on=True) is True
         assert entity.is_on is True
         entity.async_write_ha_state.assert_called()
         coordinator.async_control_device.assert_not_called()
@@ -414,7 +415,7 @@ class TestOptimisticState:
         entity = _entity(_coordinator(), "rippleLightToggle")
         entity._is_on = True
 
-        await lan_raw_write.async_zone_power(entity, on=False)
+        await raw_router.async_zone_power(entity, on=False)
 
         assert entity.is_on is False
 
@@ -427,7 +428,7 @@ class TestOptimisticState:
         """
         coordinator = _coordinator()
         device = _device()
-        entities = {instance: _entity(coordinator, instance, device) for instance in lan_raw_write.ZONE_KEY_BY_TOGGLE}
+        entities = {instance: _entity(coordinator, instance, device) for instance in raw_router.ZONE_KEY_BY_TOGGLE}
         for instance, entity in entities.items():
             entity._is_on = instance in lit
             register_zone_switch(entity)
@@ -439,7 +440,7 @@ class TestOptimisticState:
         # switching the downlight on drops the ripple inside the lamp.
         zones = self._lamp(lit=("rippleLightToggle", "sideLightToggle"))
 
-        await lan_raw_write.async_zone_power(zones["bottomLightToggle"], on=True)
+        await raw_router.async_zone_power(zones["bottomLightToggle"], on=True)
 
         assert zones["bottomLightToggle"].is_on is True
         assert zones["rippleLightToggle"].is_on is False
@@ -449,7 +450,7 @@ class TestOptimisticState:
     async def test_no_displacement_below_the_limit(self, _fast_client):
         zones = self._lamp(lit=("rippleLightToggle",))
 
-        await lan_raw_write.async_zone_power(zones["bottomLightToggle"], on=True)
+        await raw_router.async_zone_power(zones["bottomLightToggle"], on=True)
 
         assert zones["rippleLightToggle"].is_on is True
 
@@ -459,7 +460,7 @@ class TestOptimisticState:
         for entity in zones.values():
             entity._is_on = True
 
-        await lan_raw_write.async_zone_power(zones["bottomLightToggle"], on=False)
+        await raw_router.async_zone_power(zones["bottomLightToggle"], on=False)
 
         assert zones["rippleLightToggle"].is_on is True
         assert zones["sideLightToggle"].is_on is True
@@ -481,8 +482,8 @@ class TestOptimisticState:
         )
         lit = {"ripple", "ring"}
 
-        assert lan_raw_write._displaced_zone_keys(profile, "downlight", lit) == ["ripple"]
-        assert lan_raw_write._displaced_zone_keys(unconstrained, "downlight", lit) == []
+        assert zone_state.displaced_zone_keys(profile, "downlight", lit) == ["ripple"]
+        assert zone_state.displaced_zone_keys(unconstrained, "downlight", lit) == []
 
 
 # ==============================================================================
@@ -502,7 +503,7 @@ class TestSwitchHook:
 
         coordinator.async_control_device.assert_not_called()
         assert entity.is_on is True
-        assert len(_fast_client.sends) == lan_raw_write.LAN_WRITE_REPEATS
+        assert len(_fast_client.sends) == lan_raw.LAN_WRITE_REPEATS
 
     @pytest.mark.asyncio
     async def test_option_off_uses_the_cloud_command_unchanged(self, _fast_client):

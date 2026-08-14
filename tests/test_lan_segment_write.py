@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.govee.api import lan_raw_write
+from custom_components.govee.api import lan_raw, raw_router
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import (
     Capability,
@@ -104,8 +104,8 @@ class _FakeRawClient:
 @pytest.fixture(autouse=True)
 def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
     client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw_write, "LAN_WRITE_GAP_SECONDS", 0)
+    monkeypatch.setattr(lan_raw, "_CLIENT", client)
+    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
     return client
 
 
@@ -215,7 +215,7 @@ class TestFrames:
 
         await entity.async_turn_on(rgb_color=(255, 0, 0))
 
-        assert len(raw_client.envelopes) == lan_raw_write.LAN_WRITE_REPEATS
+        assert len(raw_client.envelopes) == lan_raw.LAN_WRITE_REPEATS
 
     def test_mask_bit_matches_the_segment_index(self):
         profile = get_profile(LAN_SKU)
@@ -467,7 +467,7 @@ class TestZoneOwnedSegments:
         coordinator = _coordinator()
         entity = _ring_entity(coordinator)
 
-        handled = await lan_raw_write.async_segment_color(
+        handled = await raw_router.async_segment_color(
             entity, (0, 255, 255), [4, 5, 6, 7], brightness=HA_BRIGHTNESS_32_PERCENT
         )
 
@@ -494,7 +494,7 @@ class TestZoneOwnedSegments:
         coordinator = _coordinator()
         entity = _ring_entity(coordinator)
 
-        handled = await lan_raw_write.async_segment_color(entity, (255, 0, 0), [], brightness=255)
+        handled = await raw_router.async_segment_color(entity, (255, 0, 0), [], brightness=255)
 
         assert handled is False
         assert raw_client.envelopes == []

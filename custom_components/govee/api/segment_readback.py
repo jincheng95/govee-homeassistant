@@ -80,7 +80,7 @@ HA_BRIGHTNESS_MAX: Final = 255
 def level_to_ha_brightness(level: int) -> int:
     """The wire's 0-100 level as HA's 0-255 brightness.
 
-    The exact inverse of :func:`..api.lan_raw_write.ha_to_percent` at every
+    The exact inverse of :func:`..api.protocol.ha_to_percent` at every
     level the write path can produce, which is what keeps a readback of our own
     write from looking like a change: 178 → 70 % → 178.
 

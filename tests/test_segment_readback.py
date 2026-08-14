@@ -149,7 +149,7 @@ class TestGoldenCapture:
         a change: whatever level we asked for comes back as the brightness we
         are already showing, so the no-churn check below actually fires.
         """
-        from custom_components.govee.api.lan_raw_write import ha_to_percent
+        from custom_components.govee.api.protocol import ha_to_percent
 
         for level in range(1, 101):
             assert ha_to_percent(level_to_ha_brightness(level)) == level

@@ -29,7 +29,7 @@ from ..const import SIGNAL_SEGMENT_READBACK, SUFFIX_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
-from ..api.lan_raw_write import async_segment_color  # fork: raw-LAN fast path
+from ..api.raw_router import async_segment_color  # fork: raw fast path
 
 _LOGGER = logging.getLogger(__name__)
 

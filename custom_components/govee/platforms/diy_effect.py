@@ -57,7 +57,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from ..api import lan_raw_write
+from ..api import lan_raw
 from ..api.protocol import (
     DIRECTIONS,
     MAX_DIY_COLORS,
@@ -603,7 +603,7 @@ class GoveeDiyApplyButton(GoveeEntity, ButtonEntity):
         return super().available and self._lan_target() is not None
 
     def _lan_target(self) -> tuple[str, DeviceProfile] | None:
-        return lan_raw_write.lan_target(
+        return lan_raw.lan_target(
             self.coordinator, self._device_id, self._device.sku
         )
 

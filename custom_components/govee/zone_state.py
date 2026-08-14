@@ -53,7 +53,7 @@ without the registry having to know about HA's state machine.
 
 Fork-maintenance note: the coordinator/entity internals reached into here are
 read in ONE place each (the accessor block at the bottom), the same discipline
-:mod:`.api.lan_nudge` and :mod:`.api.lan_raw_write` established.
+:mod:`.api.lan_nudge` and :mod:`.api.raw_router` established.
 """
 
 from __future__ import annotations

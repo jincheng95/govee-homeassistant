@@ -34,7 +34,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.govee import diy_state, services
-from custom_components.govee.api import lan_raw_write
+from custom_components.govee.api import lan_raw
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import (
     DiyZoneEffect,
@@ -113,8 +113,8 @@ class _FakeRawClient:
 def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
     """Recording client with the inter-repeat gap taken off the wall clock."""
     client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw_write, "LAN_WRITE_GAP_SECONDS", 0)
+    monkeypatch.setattr(lan_raw, "_CLIENT", client)
+    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
     return client
 
 

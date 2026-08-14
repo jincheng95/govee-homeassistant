@@ -44,7 +44,7 @@ state, the same contract as the LAN raw tier. A publish that the broker accepts
 is reported as success; nothing here waits for the lamp.
 
 Fork-maintenance note: the coordinator internals are read in ONE place each,
-the accessor block at the bottom — the discipline :mod:`.lan_raw_write` and
+the accessor block at the bottom — the discipline :mod:`.lan_raw` and
 :mod:`.lan_nudge` established.
 """
 

@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.govee.api import lan_raw_write, mqtt_raw_write
+from custom_components.govee.api import lan_raw, mqtt_raw_write
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import Transport, get_profile
 from custom_components.govee.const import (
@@ -66,8 +66,8 @@ class _FakeRawClient:
 @pytest.fixture(autouse=True)
 def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
     client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw_write, "LAN_WRITE_GAP_SECONDS", 0)
+    monkeypatch.setattr(lan_raw, "_CLIENT", client)
+    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
     return client
 
 

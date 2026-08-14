@@ -33,7 +33,7 @@ from .const import (
 )
 from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
-from .api.lan_raw_write import async_zone_power
+from .api.raw_router import async_zone_power
 from .zone_state import note_zone_power, register_zone_switch, zone_switch_suppressed
 from .models import (
     GoveeDevice,

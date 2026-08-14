@@ -37,7 +37,7 @@ CONF_ENABLE_LAN_NUDGE: Final = "enable_lan_nudge"
 # raw LAN frame instead of a cloud command, when the device is LAN-reachable and
 # its SKU profile declares the zone. Cuts a 1-3 s cloud round trip to a single
 # UDP datagram; everything the LAN path cannot express still goes via the cloud.
-# Off by default — see api/lan_raw_write.py for the gates and the optimistic state.
+# Off by default — see api/lan_raw.py for the gates and the optimistic state.
 CONF_ENABLE_LAN_RAW_WRITE: Final = "enable_lan_raw_write"
 
 # Send the same raw frames over an unencrypted BLE GATT link, for SKUs whose

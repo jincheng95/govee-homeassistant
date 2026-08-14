@@ -25,7 +25,7 @@ from ..const import SUFFIX_GROUPED_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
-from ..api.lan_raw_write import async_segment_color  # fork: raw-LAN fast path
+from ..api.raw_router import async_segment_color  # fork: raw fast path
 from ..segment_limit import segment_count as verified_segment_count  # fork: hardware segment cap
 
 _LOGGER = logging.getLogger(__name__)

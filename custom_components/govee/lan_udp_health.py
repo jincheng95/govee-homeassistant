@@ -3,7 +3,7 @@
 The integration already tracks four transports per device — ``cloud_api``,
 ``mqtt``, ``ble`` and ``lan`` — and surfaces them on the ``*_connectivity``
 binary sensor (as attributes, always) and as one opt-in entity per transport.
-The raw UDP write path added by :mod:`.api.lan_raw_write` is a fifth, and this module
+The raw UDP write path added by :mod:`.api.lan_raw` is a fifth, and this module
 is the only place that knows how to score it.
 
 What "available" honestly means here
@@ -16,7 +16,7 @@ be worse than reporting nothing.
 
 So ``lan_udp`` availability is defined as **a raw frame sent right now would
 have somewhere to go**. That is deliberately the same set of conditions
-:func:`~.api.lan_raw_write.lan_target` gates on, because a sensor that reads
+:func:`~.api.lan_raw.lan_target` gates on, because a sensor that reads
 "connected" for a device the writer refuses to write to is worse than no sensor
 at all:
 

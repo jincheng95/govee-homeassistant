@@ -55,8 +55,10 @@ from .errors import (
 )
 from .frames import (
     FRAME_LENGTH,
+    HA_BRIGHTNESS_MAX,
     build_frame,
     frame_to_base64,
+    ha_to_percent,
     ptreal_message,
     segment_mask,
     xor_checksum,
@@ -89,6 +91,7 @@ __all__ = [
     "DIRECTION_CW",
     "DIRECTION_REVERSE",
     "FRAME_LENGTH",
+    "HA_BRIGHTNESS_MAX",
     "LAN_COMMAND_PORT",
     "MAX_DIY_COLORS",
     "MODE_NONE",
@@ -118,6 +121,7 @@ __all__ = [
     "commit_frame",
     "frame_to_base64",
     "get_profile",
+    "ha_to_percent",
     "ptreal_message",
     "resolve_mode",
     "segment_mask",

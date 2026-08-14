@@ -87,7 +87,7 @@ The remaining coherence rules, all implemented here:
 What the zone lights still cannot do, and say so honestly: their colour and
 brightness attributes are "what this zone was last told", never a readback; and
 while the lamp is in music mode a zone colour write is accepted, echoed, and
-visibly ignored (see :mod:`..api.lan_raw_write`).
+visibly ignored (see :mod:`..api.lan_raw`).
 
 Transport and fallback
 ----------------------
@@ -130,9 +130,16 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from ..api import lan_raw_write
+from ..api import lan_raw
 from ..child_power import async_ensure_device_powered
-from ..api.protocol import Capability, DeviceProfile, GoveeCodec, GoveeProtocolError, ZoneSpec
+from ..api.protocol import (
+    Capability,
+    DeviceProfile,
+    GoveeCodec,
+    GoveeProtocolError,
+    ZoneSpec,
+    ha_to_percent,
+)
 from ..const import SUFFIX_ZONE, SUFFIX_ZONE_FLOW_RATE
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, ToggleCommand
@@ -323,7 +330,7 @@ class _GoveeZoneEntityBase(GoveeEntity):
 
     def _lan_target(self) -> tuple[str, DeviceProfile] | None:
         """``(ip, profile)`` for a raw write, or None when LAN is not usable."""
-        return lan_raw_write.lan_target(self.coordinator, self._device_id, self._device.sku)
+        return lan_raw.lan_target(self.coordinator, self._device_id, self._device.sku)
 
     async def _async_send(self, frames: list[bytes], *, what: str) -> bool:
         """Send frames to this device's LAN address. False when not sent."""
@@ -331,7 +338,7 @@ class _GoveeZoneEntityBase(GoveeEntity):
         if target is None:
             return False
         ip, _profile = target
-        return await lan_raw_write.async_send_frames(self.coordinator, self._device_id, ip, frames, what=what)
+        return await lan_raw.async_send_frames(self.coordinator, self._device_id, ip, frames, what=what)
 
 
 class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
@@ -545,7 +552,7 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
             frames.append(codec.color_temp(self._zone_key, int(kwargs[ATTR_COLOR_TEMP_KELVIN])))
 
         if ATTR_BRIGHTNESS in kwargs and Capability.ZONE_BRIGHTNESS in supported:
-            frames.append(codec.zone_brightness(self._zone_key, _ha_to_percent(kwargs[ATTR_BRIGHTNESS])))
+            frames.append(codec.zone_brightness(self._zone_key, ha_to_percent(kwargs[ATTR_BRIGHTNESS])))
 
         return frames
 
@@ -716,8 +723,3 @@ def _color_modes(zone: ZoneSpec) -> set[ColorMode]:
     if not modes:
         modes.add(ColorMode.ONOFF)
     return modes
-
-
-# The 0-255 -> 0-100 conversion lives with the raw writer, which does it for
-# the segment paints too; one definition, one rounding rule.
-_ha_to_percent = lan_raw_write.ha_to_percent

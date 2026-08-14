@@ -310,10 +310,10 @@ async def async_send_diy_effect(
         HomeAssistantError: If the document cannot be encoded, the device has
             no usable raw-LAN path, or the frames could not be sent.
     """
-    # Imported here rather than at module scope: lan_raw_write imports
-    # zone_state, and keeping the transport out of this module's import graph
-    # is what lets the store be unit-tested with no coordinator at all.
-    from .api import lan_raw_write
+    # Imported here rather than at module scope: lan_raw imports zone_state,
+    # and keeping the transport out of this module's import graph is what lets
+    # the store be unit-tested with no coordinator at all.
+    from .api import lan_raw
 
     try:
         frames = GoveeCodec(profile).diy_effect(effects)
@@ -322,7 +322,7 @@ async def async_send_diy_effect(
             f"{device.name}: cannot build this DIY effect ({err})"
         ) from err
 
-    target = lan_raw_write.lan_target(coordinator, device.device_id, device.sku)
+    target = lan_raw.lan_target(coordinator, device.device_id, device.sku)
     if target is None:
         raise HomeAssistantError(
             f"{device.name}: DIY effects can only be uploaded over the local network, and this device "
@@ -331,7 +331,7 @@ async def async_send_diy_effect(
         )
     ip, _profile = target
 
-    if not await lan_raw_write.async_send_frames(
+    if not await lan_raw.async_send_frames(
         coordinator, device.device_id, ip, frames, what="diy effect upload"
     ):
         raise HomeAssistantError(

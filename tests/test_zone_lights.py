@@ -35,7 +35,7 @@ from homeassistant.components.light import (  # type: ignore[attr-defined]
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from custom_components.govee.api import lan_raw_write
+from custom_components.govee.api import lan_raw
 from custom_components.govee.platforms import zone_light
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import Capability, UnknownEncodingError, get_profile
@@ -132,8 +132,8 @@ class _FakeRawClient:
 def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
     """Recording client with the inter-repeat gap taken off the wall clock."""
     client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw_write, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw_write, "LAN_WRITE_GAP_SECONDS", 0)
+    monkeypatch.setattr(lan_raw, "_CLIENT", client)
+    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
     return client
 
 
@@ -453,7 +453,7 @@ class TestFrames:
 
         await lights["ripple"].async_turn_on(rgb_color=(255, 0, 0))
 
-        assert len(raw_client.envelopes) == lan_raw_write.LAN_WRITE_REPEATS
+        assert len(raw_client.envelopes) == lan_raw.LAN_WRITE_REPEATS
         assert {tuple(f.hex() for f in frames) for _host, frames in raw_client.envelopes} == {
             (GOLDEN["ripple_on"], GOLDEN["ripple_red"])
         }

@@ -41,6 +41,9 @@ MASK_BYTES = 2
 
 MAX_SEGMENTS = MASK_BYTES * 8
 
+HA_BRIGHTNESS_MAX = 255
+"""Home Assistant's brightness scale. Levels on the wire are 0-100."""
+
 
 def xor_checksum(data: Iterable[int]) -> int:
     """XOR every byte together — the frame's trailing check byte."""
@@ -136,3 +139,13 @@ def rgb_bytes(rgb: tuple[int, int, int]) -> bytes:
 def clamp_percent(value: int) -> int:
     """Clamp a 0-100 percentage (brightness, flow rate)."""
     return max(0, min(100, int(value)))
+
+
+def ha_to_percent(ha_brightness: int) -> int:
+    """HA's 0-255 brightness as the 0-100 the frames carry.
+
+    Never rounds a lit entity down to 0: 0 is "off" on the wire, which is a
+    power intent, not a level. The inverse is
+    :func:`..segment_readback.level_to_ha_brightness`.
+    """
+    return max(1, min(100, round(int(ha_brightness) * 100 / HA_BRIGHTNESS_MAX)))
