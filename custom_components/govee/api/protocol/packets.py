@@ -12,10 +12,9 @@ separate commit frame::
 Packet 0 spends 3 of its 17 data bytes on that header, so effect data starts
 at the 4th data byte of packet 0.
 
-**UNTESTED AGAINST HARDWARE.** The chunking mechanism is transcribed from a
-captured DIY effect upload (and a working replay of it), but no effect
-*payload* encoder exists yet, so nothing here has been round-tripped against a
-lamp. Treat it as a mechanism, not a verified behaviour.
+The effect payloads it carries are built by :mod:`.diy` and assembled by
+:meth:`~.codec.GoveeCodec.diy_effect`. Chunk boundaries, the ``0xff``
+terminator and the commit frame are pinned by ``tests/test_protocol.py``.
 """
 
 from __future__ import annotations

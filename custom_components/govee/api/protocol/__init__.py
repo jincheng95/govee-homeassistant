@@ -16,7 +16,7 @@ Layering::
     profiles.py   what a SKU can do, and the byte constants that do it (data)
     encoders.py   frame layouts, named by the table (code)
     frames.py     20-byte frames, XOR checksum, masks, ptReal envelope
-    packets.py    0xA3 multipacket chunker (mechanism only, hardware-untested)
+    packets.py    0xA3 multipacket chunker + commit frame (effect uploads)
     diy.py        DIY effect payload records (0x50 form) riding the chunker
     codec.py      profile + intent -> frames
     client.py     write-only UDP send to :4003 (reads stay with devStatus)
