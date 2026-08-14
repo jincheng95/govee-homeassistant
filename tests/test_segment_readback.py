@@ -23,6 +23,7 @@ import pytest
 
 from custom_components.govee.api.auth import GoveeIotCredentials
 from custom_components.govee.api.mqtt import GoveeAwsIotClient
+from custom_components.govee.api.protocol import PROFILES
 from custom_components.govee.api.segment_readback import (
     SegmentReading,
     decode_frames,
@@ -327,6 +328,22 @@ class TestCoordinatorDispatch:
             )
 
         send.assert_not_called()
+
+    def test_a_profiled_sku_that_does_not_push_readback_dispatches_nothing(self):
+        """Having segments is not the same as pushing `aa a5` for them.
+
+        The H6076 is profiled and segmented, but `aa a5` is a BLE query answer
+        on that SKU — a push carrying those two bytes is something else.
+        """
+        coordinator = self._coordinator(_device(sku="H6076"))
+
+        with patch("custom_components.govee.coordinator.async_dispatcher_send") as send:
+            GoveeCoordinator._on_mqtt_raw_frames(coordinator, DEVICE_ID, CAPTURED_PAYLOAD)
+
+        send.assert_not_called()
+
+    def test_only_the_h6046_is_marked_as_pushing_readback(self):
+        assert [sku for sku, profile in PROFILES.items() if profile.segment_readback] == ["H6046"]
 
     def test_unknown_device_dispatches_nothing(self):
         coordinator = self._coordinator()

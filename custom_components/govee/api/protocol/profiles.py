@@ -295,6 +295,15 @@ class DeviceProfile:
     diy: DiyEffectSpec | None = None
     segment_zone: SegmentZoneSpec | None = None
     """Set when this SKU's segments are painted with the ZONE frame + a mask."""
+    segment_readback: bool = False
+    """Whether this SKU's cloud status pushes carry ``aa a5`` per-segment frames.
+
+    Reference §6.2. Only the H6046 has been seen to push them unsolicited; on
+    every other SKU the frame is a BLE query answer, so a push carrying that
+    header would be something else with the same first two bytes. Default False
+    means "not observed on this SKU", which keeps an unmarked profile
+    dispatching nothing rather than applying a guess to live entities.
+    """
     echo_lag_seconds: float = 0.0
     """How long this SKU keeps reporting its PRE-command state after a write.
 
@@ -612,6 +621,9 @@ H6046: Final = DeviceProfile(
         Capability.QUERY: CapabilitySpec("query"),
     },
     modes={"scene": 0x04},
+    # Observed live: this SKU's AWS IoT status pushes carry the §6.2 `aa a5`
+    # readback frames in `op.command`, unsolicited.
+    segment_readback=True,
 )
 
 H6076: Final = DeviceProfile(

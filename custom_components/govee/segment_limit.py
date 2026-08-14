@@ -63,6 +63,20 @@ def verified_segment_count(sku: str) -> int | None:
         return None
 
 
+def pushes_segment_readback(sku: str) -> bool:
+    """Whether ``sku``'s cloud status pushes carry §6.2 per-segment readback.
+
+    Args:
+        sku: The device model (``H6046``).
+
+    Returns:
+        True only for a profiled SKU whose table entry declares it. An
+        unprofiled or unmarked SKU is False, so nothing is dispatched for it.
+    """
+    profile = PROFILES.get(str(sku or "").upper())
+    return profile is not None and profile.segment_readback
+
+
 def segment_count(device: Any) -> int:
     """How many segment entities a device should actually get.
 

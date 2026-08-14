@@ -82,7 +82,7 @@ from .const import (
 
 # Fork: §6.2 per-segment readback riding the MQTT status push.
 from .api.segment_readback import decode_payload as decode_segment_payload
-from .segment_limit import verified_segment_count
+from .segment_limit import pushes_segment_readback, verified_segment_count
 
 from .models import (
     GoveeDevice,
@@ -2286,8 +2286,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device = self._devices.get(device_id)
         if device is None:
             return
-        # Segment knowledge is profile truth. An unprofiled SKU (or one with no
-        # segments) returns None and is left alone — no SKU branch here.
+        # Two profile gates, both table truth, no SKU branch here. Having
+        # segments is not the same as pushing readback for them: `aa a5` is a
+        # BLE query answer on every other SKU, so a push carrying that header
+        # from an unmarked SKU is something else wearing the same two bytes.
+        if not pushes_segment_readback(device.sku):
+            return
         count = verified_segment_count(device.sku)
         if not count:
             return
