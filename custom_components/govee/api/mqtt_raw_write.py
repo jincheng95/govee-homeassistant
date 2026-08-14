@@ -51,8 +51,9 @@ the accessor block at the bottom — the discipline :mod:`.lan_raw` and
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from ..const import (
     CONF_ENABLE_LAN_RAW_WRITE,
@@ -66,6 +67,12 @@ if TYPE_CHECKING:
     from ..coordinator import GoveeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+TOPIC_PATTERN: Final = re.compile(r"^G[AD]/[A-Za-z0-9:_\-./]{1,128}$")
+"""The shape of a Govee device command topic: ``GA/`` or ``GD/`` + an id."""
+
+MQTT_WILDCARDS: Final = ("#", "+")
+"""Never publishable. ``GA/#`` addresses every device on the account at once."""
 
 
 def mqtt_raw_enabled(coordinator: GoveeCoordinator) -> bool:
@@ -92,6 +99,27 @@ def mqtt_raw_target(coordinator: GoveeCoordinator, profile: DeviceProfile) -> bo
     if not profile.carries(Transport.MQTT_PTREAL):
         return False
     return _mqtt_connected(coordinator)
+
+
+def valid_topic(topic: str) -> bool:
+    """Whether ``topic`` is safe to publish a device command to.
+
+    The topic is coordinator-supplied and goes straight onto the wire, so it is
+    checked rather than trusted: a wildcard would broadcast a raw frame to
+    every device on the account, and a malformed one would publish into a topic
+    tree that is not ours at all.
+
+    Args:
+        topic: The topic the coordinator returned for this device.
+
+    Returns:
+        True when it matches :data:`TOPIC_PATTERN` and carries no wildcard.
+    """
+    if any(wildcard in topic for wildcard in MQTT_WILDCARDS):
+        # Redundant against TOPIC_PATTERN's character class, and deliberately
+        # so: widening that class later must not quietly admit a wildcard.
+        return False
+    return TOPIC_PATTERN.fullmatch(topic) is not None
 
 
 async def async_send_frames(
@@ -131,6 +159,9 @@ async def async_send_frames(
     topic = await _device_topic(coordinator, device_id)
     if not topic:
         _LOGGER.debug("Govee MQTT raw: no device topic for %s — falling through", device_id)
+        return False
+    if not valid_topic(topic):
+        _LOGGER.debug("Govee MQTT raw: refusing to publish %s to topic %r — falling through", device_id, topic)
         return False
 
     packets = [frame_to_base64(frame) for frame in frames]
@@ -175,8 +206,15 @@ def _mqtt_connected(coordinator: GoveeCoordinator) -> bool:
 
 
 async def _device_topic(coordinator: GoveeCoordinator, device_id: str) -> str | None:
-    """The device's MQTT command topic, fetched on demand by upstream."""
-    topic = await coordinator._ensure_device_topic(device_id)
+    """The device's MQTT command topic, fetched on demand by upstream.
+
+    Guarded like the other accessors here: an upstream rename must make this
+    tier report "not handled", not raise at an entity.
+    """
+    ensure = getattr(coordinator, "_ensure_device_topic", None)
+    if ensure is None:
+        return None
+    topic = await ensure(device_id)
     return str(topic) if topic else None
 
 

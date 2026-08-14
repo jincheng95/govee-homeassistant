@@ -202,6 +202,60 @@ class TestRoutingOrder:
         coordinator._mqtt_client.async_publish_ptreal.assert_not_awaited()
         coordinator.async_control_device.assert_awaited()
 
+    @pytest.mark.parametrize(
+        "topic",
+        [
+            "GA/#",  # every device on the account, in one publish
+            "GA/+",
+            "GA/topic/#",
+            "GB/1234/topic",  # not a Govee command-topic root
+            "1234/topic",
+            "GA/",  # root with no device part
+            "GA/topic with spaces",
+            "GA/topic\n",
+            "GA/" + "x" * 129,  # past the length bound
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_malformed_topic_publishes_nothing(self, raw_client, topic):
+        """The topic is coordinator-supplied and goes straight onto the wire."""
+        coordinator = _coordinator(on_lan=False, topic=topic)
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        coordinator._mqtt_client.async_publish_ptreal.assert_not_awaited()
+        coordinator.async_control_device.assert_awaited()
+
+    @pytest.mark.parametrize(
+        "topic",
+        ["GA/1234/topic", "GD/1234/topic", "GA/AA:BB:CC:DD:EE:FF", "GA/a_b-c.d/e"],
+    )
+    def test_a_well_formed_topic_is_accepted(self, topic):
+        assert mqtt_raw_write.valid_topic(topic) is True
+
+    @pytest.mark.asyncio
+    async def test_a_valid_topic_still_publishes(self, raw_client):
+        coordinator = _coordinator(on_lan=False, topic=TOPIC)
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        assert _published(coordinator).args[3] == TOPIC
+        coordinator.async_control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_renamed_topic_accessor_falls_through(self, raw_client):
+        """An upstream rename must report "not handled", not raise."""
+        coordinator = _coordinator(on_lan=False)
+        del coordinator._ensure_device_topic  # MagicMock: attribute now absent
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        coordinator._mqtt_client.async_publish_ptreal.assert_not_awaited()
+        coordinator.async_control_device.assert_awaited()
+
     @pytest.mark.asyncio
     async def test_the_sku_with_no_local_raw_pipe_reaches_mqtt(self, raw_client):
         """The H6046 ignores LAN raw frames — MQTT is its only raw tier here."""
