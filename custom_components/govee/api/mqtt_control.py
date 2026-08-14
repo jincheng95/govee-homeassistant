@@ -5,8 +5,7 @@ Maps domain command objects to Govee's native MQTT command payloads
 quirks. Pure functions — no I/O — so they are trivially unit-testable and
 free of aiohttp/mqtt dependencies (Clean Architecture: domain-adjacent).
 
-Reference: docs/govee-protocol-reference.md §3.5-3.8 and
-docs/_research/2026-06-04_mqtt-push-control-latency.md.
+Reference: docs/govee-protocol-reference.md §3.5-3.8.
 """
 
 from __future__ import annotations

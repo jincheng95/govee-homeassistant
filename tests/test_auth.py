@@ -1649,11 +1649,11 @@ class TestBffLeakDiscovery:
     @pytest.mark.asyncio
     async def test_h5059_discovered_and_mapped_to_hub(self):
         """An H5059 with sno+gatewayInfo is returned and linked to its H5044."""
-        hub = "07:23:5C:E7:53:5F:6F:0A"
+        hub = "11:22:33:44:55:66:50:44"
         devices = [
             {
                 "sku": "H5059",
-                "device": "03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C",
+                "device": "11:22:33:44:55:66:77:88:FF:FF:00:33:FF:FF:00:4C",
                 "deviceName": "dishwasher",
                 # Govee nests deviceExt as a JSON string.
                 "deviceExt": json.dumps(
@@ -1703,7 +1703,7 @@ class TestBffDeviceCensus:
             },
             {
                 "sku": "H5059",
-                "device": "03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C",
+                "device": "11:22:33:44:55:66:77:88:FF:FF:00:33:FF:FF:00:4C",
                 "deviceName": "dishwasher",
                 # deviceExt as a JSON string (Govee sometimes nests JSON as text).
                 "deviceExt": json.dumps(
@@ -1711,14 +1711,14 @@ class TestBffDeviceCensus:
                         "deviceSettings": {
                             "sno": 4,
                             "gatewayInfo": {
-                                "device": "07:23:5C:E7:53:5F:6F:0A",
+                                "device": "11:22:33:44:55:66:50:44",
                                 "sku": "H5044",
                             },
                         }
                     }
                 ),
             },
-            {"sku": "H5044", "device": "07:23:5C:E7:53:5F:6F:0A", "deviceName": "Hub"},
+            {"sku": "H5044", "device": "11:22:33:44:55:66:50:44", "deviceName": "Hub"},
         ]
         session = make_session_get(make_mock_response(200, _bff_response(devices)))
         client = GoveeAuthClient(session=session)
@@ -1785,7 +1785,7 @@ class TestBffResponseSkeleton:
         devices = [
             {
                 "sku": "H5059",
-                "device": "03:4E:CE:6D:FF:FF:FF:12:FF:FF:00:33:FF:FF:00:4C",
+                "device": "11:22:33:44:55:66:77:88:FF:FF:00:33:FF:FF:00:4C",
                 "deviceName": "dishwasher",
                 # JSON-encoded string — skeleton must recurse into it.
                 "deviceExt": json.dumps({"deviceSettings": {"sno": 4}}),
@@ -1844,7 +1844,7 @@ class TestBffDeviceValues:
         devices = [
             {
                 "sku": "H7152",
-                "device": "03:9C:DC:06:75:4B:10:7C",
+                "device": "AA:BB:CC:DD:EE:FF:11:22",
                 "deviceName": "Bedroom Dehumidifier",
                 "deviceExt": json.dumps(
                     {
@@ -1852,7 +1852,7 @@ class TestBffDeviceValues:
                             {
                                 "battery": 87,
                                 "wifiSoftVersion": "1.02.11",
-                                "address": "03:9C:DC:06:75:4B:10:7C",
+                                "address": "AA:BB:CC:DD:EE:FF:11:22",
                                 "ip": "192.168.1.50",
                             }
                         ),
@@ -1898,11 +1898,11 @@ class TestFetchWaterDetectorStates:
 
     @pytest.mark.asyncio
     async def test_parses_online_battery_last_time(self):
-        dev_id = "DA:BF:C0:D6:A5:FE:00:08:E8"
+        dev_id = "11:22:33:44:55:66:77:98:E8"
         devices = [
             {
                 "sku": "H5054",
-                "device": "DABFC0D6A5FE0008E8",
+                "device": "1122334455667798E8",
                 "deviceName": "Washing Machine",
                 "deviceExt": json.dumps(
                     {
@@ -1977,7 +1977,7 @@ class TestFetchLeakWarning:
         session = make_session_post([make_mock_response(200, data)])
         client = GoveeAuthClient(session=session)
 
-        assert await client.fetch_leak_warning("tok", "DABFC0D6A5FE0008E8", "H5054")
+        assert await client.fetch_leak_warning("tok", "1122334455667798E8", "H5054")
 
     @pytest.mark.asyncio
     async def test_read_alert_is_not_wet(self):

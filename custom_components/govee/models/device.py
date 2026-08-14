@@ -1264,10 +1264,10 @@ class GoveeLeakSensor:
     and receive real-time updates via MQTT multiSync messages.
     """
 
-    device_id: str  # Sensor MAC (e.g., "01:32:7A:C4:06:03:0D:0C")
+    device_id: str  # Sensor MAC (e.g., "11:22:33:44:55:66:51:00")
     name: str  # User-assigned name (e.g., "Kitchen sink")
     sku: str  # Model (e.g., "H5058")
-    hub_device_id: str  # Hub device ID (e.g., "09:C2:60:74:F4:64:AB:FA")
+    hub_device_id: str  # Hub device ID (e.g., "11:22:33:44:55:66:50:46")
     sno: int  # Sensor slot on hub (0-14), maps to MQTT packet byte 2
     hw_version: str = ""  # Hardware version
     sw_version: str = ""  # Software version

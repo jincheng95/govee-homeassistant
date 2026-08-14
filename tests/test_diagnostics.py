@@ -88,7 +88,7 @@ _MAC_RE = re.compile(r"\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5,7}\b")
 
 class TestMacDetection:
     def test_8_octet_mac_matches(self) -> None:
-        assert _looks_like_mac("03:9C:DC:06:75:4B:10:7C")
+        assert _looks_like_mac("AA:BB:CC:DD:EE:FF:11:22")
 
     def test_6_octet_mac_matches(self) -> None:
         assert _looks_like_mac("AA:BB:CC:DD:EE:FF")
@@ -111,21 +111,21 @@ class TestMacDetection:
 
 class TestAnonymizeDeviceId:
     def test_returns_stable_short_hash(self) -> None:
-        a = _anonymize_device_id("03:9C:DC:06:75:4B:10:7C")
-        b = _anonymize_device_id("03:9C:DC:06:75:4B:10:7C")
+        a = _anonymize_device_id("AA:BB:CC:DD:EE:FF:11:22")
+        b = _anonymize_device_id("AA:BB:CC:DD:EE:FF:11:22")
         assert a == b
         assert a.startswith("device_")
         assert len(a) == len("device_") + 8
 
     def test_different_macs_yield_different_hashes(self) -> None:
-        a = _anonymize_device_id("03:9C:DC:06:75:4B:10:7C")
-        b = _anonymize_device_id("03:9C:DC:06:75:4B:10:7D")
+        a = _anonymize_device_id("AA:BB:CC:DD:EE:FF:11:22")
+        b = _anonymize_device_id("AA:BB:CC:DD:EE:FF:11:23")
         assert a != b
 
 
 class TestAnonymizeDeviceKeys:
     def test_replaces_mac_keys(self) -> None:
-        out = _anonymize_device_keys({"03:9C:DC:06:75:4B:10:7C": {"sku": "H6601"}})
+        out = _anonymize_device_keys({"AA:BB:CC:DD:EE:FF:11:22": {"sku": "H6601"}})
         keys = list(out.keys())
         assert len(keys) == 1
         assert keys[0].startswith("device_")
@@ -138,7 +138,7 @@ class TestAnonymizeDeviceKeys:
 
     def test_preserves_values_verbatim(self) -> None:
         payload = {"sku": "H6601", "name": "Living Room"}
-        out = _anonymize_device_keys({"03:9C:DC:06:75:4B:10:7C": payload})
+        out = _anonymize_device_keys({"AA:BB:CC:DD:EE:FF:11:22": payload})
         assert next(iter(out.values())) == payload
 
 
@@ -162,7 +162,7 @@ class TestDiagnosticsOutput:
         renders a representative diagnostics payload and asserts it is clean.
         """
         # Build a coordinator stub with one MAC-keyed device + one group device
-        mac_id = "03:9C:DC:06:75:4B:10:7C"
+        mac_id = "AA:BB:CC:DD:EE:FF:11:22"
         group_id = "11825917"
 
         device_mac = MagicMock()
@@ -252,7 +252,7 @@ class TestDiagnosticsOutput:
         /device/state + MQTT payloads must appear, while the MAC inside their
         "device" field is redacted.
         """
-        mac_id = "03:9C:DC:06:75:4B:10:7C"
+        mac_id = "AA:BB:CC:DD:EE:FF:11:22"
 
         device = MagicMock()
         device.sku = "H5075"
@@ -319,7 +319,7 @@ class TestDiagnosticsOutput:
         status + response body so 'command accepted but device does nothing'
         reports are debuggable from a download alone.
         """
-        mac_id = "0A:B0:5C:E7:53:67:D4:6C"
+        mac_id = "11:22:33:44:55:66:00:AA"
 
         device = MagicMock()
         device.sku = "H60A6"
@@ -384,8 +384,8 @@ class TestLeakAndTransportDump:
 
     @pytest.mark.asyncio
     async def test_leak_sensors_and_transport_health(self) -> None:
-        sensor_mac = "01:32:7A:C4:06:03:0D:0C"
-        hub_mac = "09:C2:60:74:F4:64:AB:FA"
+        sensor_mac = "11:22:33:44:55:66:51:00"
+        hub_mac = "11:22:33:44:55:66:50:46"
 
         sensor = GoveeLeakSensor(
             device_id=sensor_mac,
@@ -482,7 +482,7 @@ class TestDeviceDiagnostics:
 
     @pytest.mark.asyncio
     async def test_regular_device_dump_is_mac_free(self) -> None:
-        mac_id = "03:9C:DC:06:75:4B:10:7C"
+        mac_id = "AA:BB:CC:DD:EE:FF:11:22"
         device = MagicMock(
             sku="H6601",
             name="Lamp",
@@ -517,8 +517,8 @@ class TestDeviceDiagnostics:
 
     @pytest.mark.asyncio
     async def test_leak_hub_device_includes_its_sensors(self) -> None:
-        hub_mac = "09:C2:60:74:F4:64:AB:FA"
-        sensor_mac = "01:32:7A:C4:06:03:0D:0C"
+        hub_mac = "11:22:33:44:55:66:50:46"
+        sensor_mac = "11:22:33:44:55:66:51:00"
         sensor = GoveeLeakSensor(
             device_id=sensor_mac,
             name="Sink",
@@ -561,7 +561,7 @@ class TestLanDiscoveryDiag:
                 return_value=[
                     {
                         "ip": "192.168.1.23",
-                        "device": "1F:80:C5:32:32:36:72:4E",
+                        "device": "11:22:33:44:55:66:61:8E",
                         "sku": "H6072",
                         "wifiVersionSoft": "1.02.03",
                     }
@@ -582,7 +582,7 @@ class TestLanDiscoveryDiag:
         assert device["device"] == "**REDACTED**"
         rendered = json.dumps(out, default=str)
         assert "192.168.1.23" not in rendered
-        assert "1F:80:C5:32:32:36:72:4E" not in rendered
+        assert "11:22:33:44:55:66:61:8E" not in rendered
 
     @pytest.mark.asyncio
     async def test_lan_scan_failure_is_isolated(self, monkeypatch) -> None:

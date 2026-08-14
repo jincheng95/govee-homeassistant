@@ -215,7 +215,7 @@ Commands use a flat structure (NOT nested):
   "requestId": "uuid",
   "payload": {
     "sku": "H601F",
-    "device": "03:9C:DC:06:75:4B:10:7C",
+    "device": "AA:BB:CC:DD:EE:FF:11:22",
     "capability": {
       "type": "devices.capabilities.on_off",
       "instance": "powerSwitch",
@@ -228,7 +228,7 @@ Commands use a flat structure (NOT nested):
 Reference: `docs/govee-protocol-reference.md`
 
 ### Device ID Detection
-- **Regular devices**: MAC address format `03:9C:DC:06:75:4B:10:7C`
+- **Regular devices**: MAC address format `AA:BB:CC:DD:EE:FF:11:22`
 - **Group devices**: Numeric-only IDs like `11825917`
 - Detection: `device_id.isdigit()` returns True for groups
 

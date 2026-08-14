@@ -38,7 +38,7 @@ from custom_components.govee.models.device import (
     INSTANCE_POWER,
 )
 
-DEVICE_ID = "12:37:DD:EE:FF:44:55:66"
+DEVICE_ID = "AA:BB:DD:EE:FF:44:55:66"
 IP = "10.0.0.5"
 SKU = "H60B0"
 

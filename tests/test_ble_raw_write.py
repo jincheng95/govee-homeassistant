@@ -34,9 +34,9 @@ from custom_components.govee.const import (
 from custom_components.govee.models import SegmentColorCommand
 from custom_components.govee.platforms.segment import GoveeSegmentEntity
 
-# The light bar, as it really is: 8-octet Govee id whose **last** six octets are
-# the BLE address (the real H6046 here, per HA's advertisement history).
-DEVICE_ID = "91:C4:AA:BB:CC:11:22:33"
+# Synthetic. The structural property under test: an 8-octet Govee id whose
+# **last** six octets are the BLE address.
+DEVICE_ID = "AA:BB:AA:BB:CC:11:22:33"
 BLE_MAC = "AA:BB:CC:11:22:33"
 SKU = "H6046"
 SEGMENTS = 10
@@ -367,9 +367,9 @@ class TestGates:
     @pytest.mark.parametrize(
         ("device_id", "expected"),
         [
-            ("91:C4:AA:BB:CC:11:22:33", "AA:BB:CC:11:22:33"),  # H6046 light bar
-            ("12:37:DD:EE:FF:44:55:66", "DD:EE:FF:44:55:66"),  # H60B0 uplighter
-            ("26:FC:77:88:99:AA:BB:CC", "77:88:99:AA:BB:CC"),  # H6076 lamp
+            ("AA:BB:AA:BB:CC:11:22:33", "AA:BB:CC:11:22:33"),  # H6046 light bar
+            ("AA:BB:DD:EE:FF:44:55:66", "DD:EE:FF:44:55:66"),  # H60B0 uplighter
+            ("AA:BB:77:88:99:AA:BB:CC", "77:88:99:AA:BB:CC"),  # H6076 lamp
         ],
     )
     def test_the_ble_address_matches_the_advertised_mac(self, device_id, expected):

@@ -39,7 +39,7 @@ def _cap(cap_type: str, instance: str, params: dict | None = None) -> GoveeCapab
 def _h6076() -> GoveeDevice:
     """Capability shape from the live LAN/API probe of 2026-08-13."""
     return GoveeDevice(
-        device_id="26:FC:77:88:99:AA:BB:CC",
+        device_id="AA:BB:77:88:99:AA:BB:CC",
         sku="H6076",
         name="Floor Lamp",
         device_type=DEVICE_TYPE_LIGHT,
@@ -56,7 +56,7 @@ def _h6076() -> GoveeDevice:
 def _h60b0() -> GoveeDevice:
     """The uplighter: named light toggles, but NO gradientToggle."""
     return GoveeDevice(
-        device_id="12:37:DD:EE:FF:44:55:66",
+        device_id="AA:BB:DD:EE:FF:44:55:66",
         sku="H60B0",
         name="Uplighter Floor Lamp",
         device_type=DEVICE_TYPE_LIGHT,
@@ -120,7 +120,7 @@ class TestSwitchPlatformWiring:
 
         blending = [e for e in added if type(e).__name__ == ENTITY]
         assert len(blending) == 1
-        assert blending[0]._attr_unique_id == "26:FC:77:88:99:AA:BB:CC_segment_blending"
+        assert blending[0]._attr_unique_id == "AA:BB:77:88:99:AA:BB:CC_segment_blending"
         assert blending[0]._attr_translation_key == "govee_segment_blending"
 
     @pytest.mark.asyncio
@@ -150,7 +150,7 @@ class TestCommands:
         await entity.async_turn_on()
 
         coordinator.async_control_device.assert_awaited_once_with(
-            "26:FC:77:88:99:AA:BB:CC",
+            "AA:BB:77:88:99:AA:BB:CC",
             ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=True),
         )
         assert entity.is_on is True
@@ -164,7 +164,7 @@ class TestCommands:
         await entity.async_turn_off()
 
         coordinator.async_control_device.assert_awaited_once_with(
-            "26:FC:77:88:99:AA:BB:CC",
+            "AA:BB:77:88:99:AA:BB:CC",
             ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=False),
         )
         assert entity.is_on is False

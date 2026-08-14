@@ -276,7 +276,7 @@ class TestGoveeDevice:
         color light entity. A socket with color capability must be a light.
         """
         device = GoveeDevice(
-            device_id="03:9C:DC:06:75:4B:10:7C",
+            device_id="AA:BB:CC:DD:EE:FF:11:22",
             sku="H5089",
             name="Smart Outlet Extender",
             device_type="devices.types.socket",

@@ -509,8 +509,7 @@ class GoveeAwsIotClient:
 
         H5059 (issue #87) reports wet in bytes 14/16. Earlier SKUs were decoded
         off byte 5; the wet check ORs both so no model loses detection (a leak
-        sensor must never under-report). See
-        docs/_research/2026-06-04_h5059-h5044-leak-sensor-support.md.
+        sensor must never under-report).
         """
         op = data.get("op", {})
         commands = op.get("command", [])

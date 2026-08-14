@@ -340,7 +340,7 @@ class TestSyntheticThermometer:
     def test_temp_only_sku_omits_humidity_capability(self):
         # H5310 pool thermometer has no hygrometer -> no humidity entity (#97).
         device = GoveeDevice.synthetic_thermometer(
-            device_id="03:55:01:25:00:00:00:0D", sku="H5310", name="Pool"
+            device_id="11:22:33:44:55:66:53:10", sku="H5310", name="Pool"
         )
         assert device.supports_temperature_sensor
         assert not device.supports_humidity_sensor
@@ -354,7 +354,7 @@ class TestSyntheticThermometer:
     def test_hub_device_id_propagates(self):
         # H5310 via H5044 -> hub_device_id carried for via_device linkage (#86).
         device = GoveeDevice.synthetic_thermometer(
-            device_id="03:55:01:25:00:00:00:0D",
+            device_id="11:22:33:44:55:66:53:10",
             sku="H5310",
             name="Pool",
             hub_device_id="11:22:33:44:55:66:77:88",
@@ -469,7 +469,7 @@ class TestThermoDeviceInfoViaDevice:
         from custom_components.govee.entity import GoveeEntity
 
         device = GoveeDevice.synthetic_thermometer(
-            device_id="03:55:01:25:00:00:00:0D",
+            device_id="11:22:33:44:55:66:53:10",
             sku="H5310",
             name="Pool",
             hub_device_id=hub_device_id,

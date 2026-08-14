@@ -118,13 +118,13 @@ def ble_address(device_id: str) -> str | None:
     ==========================  =====  ===================
     Device id                   SKU    Advertised address
     ==========================  =====  ===================
-    ``91:C4:AA:BB:CC:11:22:33``  H6046  ``AA:BB:CC:11:22:33``
-    ``12:37:DD:EE:FF:44:55:66``  H60B0  ``DD:EE:FF:44:55:66``
-    ``26:FC:77:88:99:AA:BB:CC``  H6076  ``77:88:99:AA:BB:CC``
+    ``AA:BB:AA:BB:CC:11:22:33``  H6046  ``AA:BB:CC:11:22:33``
+    ``AA:BB:DD:EE:FF:44:55:66``  H60B0  ``DD:EE:FF:44:55:66``
+    ``AA:BB:77:88:99:AA:BB:CC``  H6076  ``77:88:99:AA:BB:CC``
     ==========================  =====  ===================
 
     Args:
-        device_id: The Govee device id (``26:FC:77:88:99:AA:BB:CC``).
+        device_id: The Govee device id (``AA:BB:77:88:99:AA:BB:CC``).
 
     Returns:
         The BLE address in upper case, or None.

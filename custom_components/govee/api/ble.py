@@ -36,9 +36,6 @@ wiring code mirrors ``led_ble`` — the canonical HA core BLE light integration.
 The class exposes the same API surface as ``led-ble``'s ``LEDBLE`` so that if
 we later extract it to a ``govee-ble-lights`` PyPI package for an upstream HA
 core contribution the refactor is mechanical.
-
-See ``docs/_research/2026-04-08_ble-direct-support.md`` and
-``docs/_research/2026-04-08_ha-ble-integration-patterns.md`` for full context.
 """
 
 from __future__ import annotations
