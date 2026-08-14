@@ -474,10 +474,9 @@ async def _async_cleanup_orphaned_entities(
                 should_remove = True
                 removal_reason = "zone lights disabled"
             elif _is_diy_effect_suffix(suffix) and not enable_diy_effects:
-                # Fork: the DIY authoring controls need BOTH the zone-light
-                # option and the raw-LAN transport (zone_lights_enabled checks
-                # the pair), because a DIY effect has no cloud equivalent at
-                # all. Turning either off must take the entities with it.
+                # Fork: the DIY authoring controls follow the zone-light option
+                # — a DIY effect is a zone document with no cloud equivalent —
+                # so turning that option off must take them with it.
                 should_remove = True
                 removal_reason = "DIY effect controls disabled"
         else:

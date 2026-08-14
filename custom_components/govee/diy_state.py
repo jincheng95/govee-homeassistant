@@ -322,12 +322,14 @@ async def async_send_diy_effect(
             f"{device.name}: cannot build this DIY effect ({err})"
         ) from err
 
-    target = lan_raw.lan_target(coordinator, device.device_id, device.sku)
+    # require_option=False: this is the only pipe a DIY upload has.
+    target = lan_raw.lan_target(
+        coordinator, device.device_id, device.sku, require_option=False
+    )
     if target is None:
         raise HomeAssistantError(
             f"{device.name}: DIY effects can only be uploaded over the local network, and this device "
-            "is not currently reachable there (check the 'Control light zones over the local network' option "
-            "and the LAN UDP connectivity sensor)"
+            "is not currently reachable there (check the LAN UDP connectivity sensor)"
         )
     ip, _profile = target
 

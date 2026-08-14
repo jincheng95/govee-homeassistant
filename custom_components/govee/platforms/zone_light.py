@@ -329,8 +329,14 @@ class _GoveeZoneEntityBase(GoveeEntity):
         return GoveeCodec(self._profile)
 
     def _lan_target(self) -> tuple[str, DeviceProfile] | None:
-        """``(ip, profile)`` for a raw write, or None when LAN is not usable."""
-        return lan_raw.lan_target(self.coordinator, self._device_id, self._device.sku)
+        """``(ip, profile)`` for a raw write, or None when LAN is not usable.
+
+        ``require_option=False``: raw LAN is the only pipe a zone write has, so
+        it follows the zone-lights option that created this entity rather than
+        the transport option, which buys a fast path for writes the cloud can
+        also make.
+        """
+        return lan_raw.lan_target(self.coordinator, self._device_id, self._device.sku, require_option=False)
 
     async def _async_send(self, frames: list[bytes], *, what: str) -> bool:
         """Send frames to this device's LAN address. False when not sent."""

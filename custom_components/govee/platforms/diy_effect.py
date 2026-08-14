@@ -1,8 +1,8 @@
 """DIY-effect authoring entities for multi-zone lamps (fork feature).
 
-Gated by the same pair of options as the zone lights (``enable_zone_lights``
-*and* ``enable_lan_raw_write``, both default off) and built only for SKUs whose
-profile declares a DIY layout — today that is the H60B0 alone.
+Gated by the same option as the zone lights (``enable_zone_lights``, default
+off) and built only for SKUs whose profile declares a DIY layout — today that
+is the H60B0 alone.
 
 The shape of the control surface
 --------------------------------
@@ -603,8 +603,10 @@ class GoveeDiyApplyButton(GoveeEntity, ButtonEntity):
         return super().available and self._lan_target() is not None
 
     def _lan_target(self) -> tuple[str, DeviceProfile] | None:
+        # require_option=False: a DIY upload has no cloud equivalent at all,
+        # so it follows the zone-lights option, not the fast-path transport one.
         return lan_raw.lan_target(
-            self.coordinator, self._device_id, self._device.sku
+            self.coordinator, self._device_id, self._device.sku, require_option=False
         )
 
     async def async_press(self) -> None:

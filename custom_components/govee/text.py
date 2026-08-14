@@ -3,8 +3,8 @@
 Exists solely for the DIY-effect palettes in :mod:`.platforms.diy_effect`: an
 ordered list of one to sixteen colours has no representation in any other
 entity class, so it is edited as text. Every entity on this platform is gated
-by ``enable_zone_lights`` + ``enable_lan_raw_write``, so a default install adds
-this platform and creates nothing on it.
+by ``enable_zone_lights``, so a default install adds this platform and creates
+nothing on it.
 """
 
 from __future__ import annotations

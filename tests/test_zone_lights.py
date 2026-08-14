@@ -640,34 +640,53 @@ class TestFallback:
             await lights["ripple"].async_turn_on(**kwargs)
         assert raw_client.envelopes == []
 
-    def test_the_model_needs_the_raw_transport_option_too(self):
-        """Zone lights without the raw transport would leave no colour control.
+    def test_the_model_is_the_zone_option_alone(self):
+        """The transport option must not delete the zone entity model.
 
-        Every zone capability past on/off is a raw frame; the cloud cannot
-        address a zone at all. So with the transport off the zone-light model
-        must not be built — otherwise the whole-device light is stripped of
-        colour, colour temperature and effects and handed to entities that can
-        only raise, and the lamp ends up with no working colour anywhere.
+        Raw LAN is the only pipe a zone write has, so the zone entities use it
+        unconditionally. Coupling them to ``enable_lan_raw_write`` — an option
+        that buys a *fast path* for segment paints, which have a cloud
+        fallback — meant switching that fast path off deleted the zone lights,
+        their flow-rate numbers and their history.
         """
         coordinator = _coordinator(lan_raw_write_on=False)
-        entry = _entry(coordinator)  # zone lights ticked, transport off
+        entry = _entry(coordinator)  # zone lights ticked, transport option off
 
-        assert async_zone_light_entities(coordinator, entry) == []
-        assert async_zone_number_entities(coordinator, entry) == []
+        assert sorted(_lights(coordinator, entry)) == ["downlight", "ring", "ripple"]
+        assert async_zone_number_entities(coordinator, entry) != []
 
-    def test_the_master_is_not_demoted_without_the_raw_transport(self):
-        """The demotion and the zone entities must switch on together."""
+    def test_the_master_is_still_demoted_without_the_transport_option(self):
+        """The demotion and the zone entities switch on together, as before."""
         coordinator = _coordinator(lan_raw_write_on=False)
         master = _master(coordinator, _entry(coordinator))
 
         assert master._attr_name is None
-        assert ColorMode.RGB in (master.supported_color_modes or set())
+        assert ColorMode.RGB not in (master.supported_color_modes or set())
 
-    def test_the_zone_switches_survive_without_the_raw_transport(self):
-        """The switches must not disappear when nothing can replace them."""
+    def test_the_zone_switches_still_give_way_without_the_transport_option(self):
+        """Two entities for one zone is the thing the suppression prevents."""
         coordinator = _coordinator(lan_raw_write_on=False)
         entry = _entry(coordinator)
 
+        assert zone_switch_suppressed(entry, "H60B0", "rippleLightToggle") is True
+
+    @pytest.mark.asyncio
+    async def test_a_zone_paint_still_goes_out_without_the_transport_option(self, raw_client):
+        """The point of the split: the entities exist AND they still work."""
+        coordinator = _coordinator(lan_raw_write_on=False)
+        lights = _lights(coordinator, _entry(coordinator))
+
+        await lights["ripple"].async_turn_on(rgb_color=(255, 0, 0))
+
+        assert raw_client.envelopes != []
+
+    def test_the_model_is_gone_when_the_zone_option_is_off(self):
+        """The one option that does prune the model."""
+        coordinator = _coordinator()
+        entry = _entry(coordinator, zone_lights=False)
+
+        assert async_zone_light_entities(coordinator, entry) == []
+        assert async_zone_number_entities(coordinator, entry) == []
         assert zone_switch_suppressed(entry, "H60B0", "rippleLightToggle") is False
 
     @pytest.mark.asyncio

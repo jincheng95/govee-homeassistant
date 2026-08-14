@@ -237,6 +237,12 @@ class TestFallback:
 
     @pytest.mark.asyncio
     async def test_option_off_uses_the_cloud(self, raw_client):
+        """``enable_lan_raw_write`` still gates the segment fast path.
+
+        Zone and DIY writes stopped consulting it (their only pipe is this
+        transport), but a segment paint has an exact cloud equivalent, so the
+        option keeps meaning what its description says here.
+        """
         coordinator = _coordinator(enabled=False)
         entity = _segment_entity(coordinator)
 
@@ -245,6 +251,14 @@ class TestFallback:
         assert raw_client.envelopes == []
         command = coordinator.async_control_device.await_args_list[-1].args[1]
         assert isinstance(command, SegmentColorCommand)
+
+    def test_the_option_off_closes_the_segment_lan_target(self, raw_client):
+        """The gate lives in ``lan_target``'s default, not in the entity."""
+        coordinator = _coordinator(enabled=False)
+
+        assert lan_raw.lan_target(coordinator, DEVICE_ID, LAN_SKU) is None
+        # ...and the zone/DIY callers opt out of exactly that check.
+        assert lan_raw.lan_target(coordinator, DEVICE_ID, LAN_SKU, require_option=False) is not None
 
     @pytest.mark.asyncio
     async def test_device_not_on_lan_uses_the_cloud(self, raw_client):

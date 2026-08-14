@@ -264,13 +264,31 @@ class TestWiring:
         assert async_diy_text_entities(coordinator, entry) == []
         assert async_diy_button_entities(coordinator, entry) == []
 
-    def test_the_raw_lan_option_is_required_too(self):
-        """DIY has no cloud equivalent at all, so one checkbox is not enough."""
+    def test_the_transport_option_does_not_prune_them(self):
+        """DIY has no cloud equivalent, so it follows the zone-lights option.
+
+        ``enable_lan_raw_write`` buys a fast path for writes that *do* have a
+        cloud fallback; gating DIY on it too deleted these entities — and their
+        staged documents — whenever that fast path was switched off.
+        """
         coordinator = _coordinator(lan_raw_write_on=False)
         entry = _entry(coordinator, zone_lights=True, lan_raw_write_on=False)
 
-        assert async_diy_select_entities(coordinator, entry) == []
-        assert async_diy_button_entities(coordinator, entry) == []
+        assert async_diy_select_entities(coordinator, entry) != []
+        assert async_diy_button_entities(coordinator, entry) != []
+
+    @pytest.mark.asyncio
+    async def test_an_upload_still_goes_out_without_the_transport_option(self, raw_client):
+        coordinator = _coordinator(lan_raw_write_on=False)
+        controls = _controls(coordinator, _entry(coordinator, zone_lights=True, lan_raw_write_on=False))
+
+        await controls["modeselect.ripple"].async_select_option("Gradient")
+        await controls["palettetext.ripple"].async_set_value("#ff0000")
+
+        assert controls["apply"].available is True
+        await controls["apply"].async_press()
+
+        assert raw_client.envelopes != []
 
     def test_a_sku_with_no_diy_layout_gets_nothing(self):
         """H6076 is in the profile table but declares no DIY effect spec."""

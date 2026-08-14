@@ -69,12 +69,7 @@ from .api.protocol import (
     MaxSimultaneousZones,
     get_profile,
 )
-from .const import (
-    CONF_ENABLE_LAN_RAW_WRITE,
-    CONF_ENABLE_ZONE_LIGHTS,
-    DEFAULT_ENABLE_LAN_RAW_WRITE,
-    DEFAULT_ENABLE_ZONE_LIGHTS,
-)
+from .const import CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -127,17 +122,15 @@ def modelled_zone_keys(sku: str) -> tuple[str, ...]:
 def zone_lights_enabled(entry: ConfigEntry) -> bool:
     """Whether the zone-light entity model should be built for this entry.
 
-    **Both** options are required, not just ``enable_zone_lights``. Every zone
-    capability past on/off — colour, brightness, colour temperature, flow rate
-    — exists only as a raw frame; the cloud cannot address a single zone at
-    all. So with ``enable_lan_raw_write`` off, the zone-light model would strip
-    colour, colour temperature and the effect list off the whole-device light
-    and hand them to zone entities that can only ever raise: ticking one
-    checkbox would leave the lamp with no working colour control anywhere. The
-    two options are checked together here, in the one place that decides
-    whether the model exists, so the entity set can never reach that state.
+    ``enable_zone_lights`` alone decides. Every zone capability past on/off
+    exists only as a raw LAN frame — the cloud cannot address a single zone at
+    all — so the zone entities simply *use* that transport unconditionally
+    rather than asking a second option's permission for their only pipe.
+    ``enable_lan_raw_write`` gates the optional fast paths that do have a cloud
+    equivalent (segment paints); pairing it with this one meant switching a
+    fast path off deleted the zone and DIY entities, history included.
 
-    Strictly boolean checks, not truthiness ones. This option *removes*
+    Strictly a boolean check, not a truthiness one. This option *removes*
     entities when it is on, and the options flow only ever stores real bools —
     so anything else (a half-migrated entry, a stub) is treated as off. Failing
     towards "keep the switches" is the recoverable direction.
@@ -148,9 +141,7 @@ def zone_lights_enabled(entry: ConfigEntry) -> bool:
     Returns:
         True when zone lights should replace the zone switches.
     """
-    if entry.options.get(CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS) is not True:
-        return False
-    return entry.options.get(CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE) is True
+    return entry.options.get(CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS) is True
 
 
 def zone_switch_suppressed(entry: ConfigEntry, sku: str, toggle_instance: str) -> bool:

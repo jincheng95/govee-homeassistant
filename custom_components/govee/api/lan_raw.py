@@ -52,7 +52,13 @@ def lan_write_enabled(coordinator: GoveeCoordinator) -> bool:
     return bool(coordinator.config_entry.options.get(CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE))
 
 
-def lan_target(coordinator: GoveeCoordinator, device_id: str | None, sku: str) -> tuple[str, DeviceProfile] | None:
+def lan_target(
+    coordinator: GoveeCoordinator,
+    device_id: str | None,
+    sku: str,
+    *,
+    require_option: bool = True,
+) -> tuple[str, DeviceProfile] | None:
     """The ``(ip, profile)`` a raw write to this device would use, or None.
 
     None means one of the transport gates failed — the option is off, the SKU
@@ -64,11 +70,15 @@ def lan_target(coordinator: GoveeCoordinator, device_id: str | None, sku: str) -
         coordinator: The coordinator owning the device.
         device_id: The Govee device id, or None for an entity without one.
         sku: The device model, used to look the profile up.
+        require_option: Whether ``enable_lan_raw_write`` must be on. That
+            option buys an optional *fast path* for writes the cloud can also
+            make, so the zone and DIY paths — for which this is the only pipe
+            that exists — pass False and are gated by their own option.
 
     Returns:
         The LAN address and profile to write with, or None to fall back.
     """
-    if not lan_write_enabled(coordinator):
+    if require_option and not lan_write_enabled(coordinator):
         return None
     profile = profile_for(sku)
     if profile is None:

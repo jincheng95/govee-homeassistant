@@ -87,7 +87,7 @@
           "enable_mqtt_control": "Send power/brightness/color over MQTT (faster, experimental)",
           "lan_targets": "LAN device addresses / subnets (advanced)",
           "enable_lan_nudge": "Re-check device state locally after cloud updates",
-          "enable_lan_raw_write": "Control light zones over the local network",
+          "enable_lan_raw_write": "Send segment colours over the local network",
           "enable_ble_raw_write": "Control the light bar over Bluetooth",
           "enable_zone_lights": "Separate light entities for each zone of a multi-zone lamp"
         },
@@ -97,9 +97,9 @@
           "enable_mqtt_control": "Routes power/brightness/color commands through Govee's MQTT channel instead of the REST cloud API, reducing latency and bypassing REST rate limits. Requires email/password login (MQTT credentials). Falls back to REST automatically when MQTT is unavailable. Experimental — uses an undocumented channel; leave off if commands behave unexpectedly.",
           "lan_targets": "Only needed when LAN-enabled Govee devices are on a different subnet/VLAN than Home Assistant, so the local discovery scan can't reach them. Enter a comma-separated list of device IPs (10.20.0.51), broadcast addresses (10.20.0.255), and/or subnets in CIDR (10.20.0.0/24, /24 or smaller). Subnets are scanned device-by-device since most routers drop cross-VLAN broadcasts. Leave blank if all devices share Home Assistant's network.",
           "enable_lan_nudge": "When the cloud reports a change made outside Home Assistant, the device's real state is read over the local network instead of trusting the push. Locally discovered devices only.",
-          "enable_lan_raw_write": "Zone commands act immediately instead of taking Govee's cloud round trip. Works on locally discovered lamps with a supported model; others keep using the cloud. Zone state can't be read back, so entities show the last command sent.",
+          "enable_lan_raw_write": "Segment colour and brightness act immediately instead of taking Govee's cloud round trip. Works on locally discovered lamps with a supported model; others keep using the cloud. Segment state can't be read back, so entities show the last command sent. Zone lights do not need this option \u2014 they always use the local network.",
           "enable_ble_raw_write": "Segment colour and brightness on lamps that accept no local commands over Wi-Fi, sent straight to the lamp over Bluetooth instead of through Govee's cloud. Needs a Bluetooth adapter or an ESPHome Bluetooth proxy in range. Only one app can hold a Bluetooth connection at a time, so the Govee app may fail to connect for a few seconds after a command.",
-          "enable_zone_lights": "The zone switches become full lights (colour, brightness, flow rate) and the lamp's own entity becomes a power-and-brightness master. Requires \"Control light zones over the local network\". Automations that set an effect on the lamp entity must point at a zone instead."
+          "enable_zone_lights": "The zone switches become full lights (colour, brightness, flow rate) and the lamp's own entity becomes a power-and-brightness master. Zone commands go over the local network, so the lamp must be discovered there. Automations that set an effect on the lamp entity must point at a zone instead."
         }
       },
       "select_segment_devices": {
