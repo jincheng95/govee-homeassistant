@@ -85,16 +85,39 @@ async def async_route_frames(
     if not frames:
         return False
 
-    target = lan_raw.lan_target(coordinator, device_id, sku)
-    if target is not None:
-        ip, _profile = target
-        if await lan_raw.async_send_frames(coordinator, device_id, ip, frames, what=what):
-            return True
+    if await _async_lan_tier(coordinator, device_id, sku, frames, what):
+        return True
 
     if await ble_raw_write.async_send_frames(coordinator, device_id, sku, profile, frames, what=what):
         return True
 
     return await mqtt_raw_write.async_send_frames(coordinator, device_id, sku, profile, frames, what=what)
+
+
+async def _async_lan_tier(
+    coordinator: GoveeCoordinator,
+    device_id: str,
+    sku: str,
+    frames: Sequence[bytes],
+    what: str,
+) -> bool:
+    """The LAN tier of :func:`async_route_frames`. False means "not handled".
+
+    The issue #57 write-suppression cooldown is consulted **here and nowhere
+    above it**: the cooldown is a statement about upstream's LAN tier only, so
+    a device inside it must still be paintable over BLE and MQTT. Consulting it
+    before routing blacked out every raw pipe at once.
+    """
+    if _writes_suppressed(coordinator, device_id):
+        _LOGGER.debug(
+            "Govee raw router: LAN writes to %s are in upstream's cooldown — trying the remaining tiers", sku
+        )
+        return False
+    target = lan_raw.lan_target(coordinator, device_id, sku)
+    if target is None:
+        return False
+    ip, _profile = target
+    return await lan_raw.async_send_frames(coordinator, device_id, ip, frames, what=what)
 
 
 def raw_write_enabled(coordinator: GoveeCoordinator) -> bool:
@@ -207,7 +230,8 @@ async def async_segment_color(
     profile constant still UNKNOWN, an empty selection (an all-zero mask is
     silently ignored by the firmware), a mismatch between the segment count the
     entities index and the mask width the table declares, or no tier that could
-    carry the frames.
+    carry the frames. The LAN cooldown is *not* one of them — it is applied to
+    the LAN tier alone inside :func:`async_route_frames`.
 
     The cloud fallback is exact for the colour — ``SegmentColorCommand``
     expresses the same intent — so nothing is lost by refusing.
@@ -227,14 +251,6 @@ async def async_segment_color(
         return False
     profile = profile_for(sku)
     if profile is None or not raw_write_enabled(coordinator):
-        return False
-
-    if _writes_suppressed(coordinator, device_id):
-        # Cooldown (issue #57): segment colour has an exact cloud fallback
-        # (``SegmentColorCommand``), so honour the hold like zone power does.
-        _LOGGER.debug(
-            "Govee LAN write: writes to %s are in upstream's cooldown — routing segment colour via cloud", sku
-        )
         return False
 
     zone_key = profile.segment_zone_key
@@ -395,10 +411,12 @@ def _writes_suppressed(coordinator: GoveeCoordinator, device_id: str | None) -> 
     window — the same call upstream's ``_try_lan_command`` makes, so the fork
     and upstream's LAN tier come out of the cooldown together.
 
-    Consulted ONLY by intents with an exact cloud fallback (zone power,
-    segment colour). LAN-only writes (zone colour/CT/flow-rate, DIY uploads)
-    never consult it: for them standing down is a total outage, and the
-    cooldown is armed by confirm-misses on upstream's *verified* tier.
+    Consulted by the router's LAN tier and by zone power — the two places that
+    have somewhere else to go. It is a statement about upstream's LAN tier
+    only, so it never stands down BLE or MQTT, and the LAN-only writes (zone
+    colour/CT/flow-rate, DIY uploads) never consult it at all: for them
+    standing down is a total outage, and the cooldown is armed by
+    confirm-misses on upstream's *verified* tier.
 
     Strictly ``is True``: this reaches a private upstream method, and anything
     that is not a real ``True`` (a rename leaving None, a stub) must mean "not

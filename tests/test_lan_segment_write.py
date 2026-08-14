@@ -257,10 +257,10 @@ class TestFallback:
         coordinator.async_control_device.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_write_suppression_uses_the_cloud(self, raw_client):
-        """The #57 cooldown reroutes segment colour — it has an exact cloud
-        fallback (``SegmentColorCommand``), unlike the LAN-only zone writes
-        which ignore the flag (narrowed 2026-08-12)."""
+    async def test_write_suppression_skips_the_lan_tier(self, raw_client):
+        """The #57 cooldown stands the LAN tier down. With no other raw tier
+        enabled that means the cloud, which is the exact fallback for a segment
+        paint (``SegmentColorCommand``)."""
         coordinator = _coordinator()
         coordinator._lan_writes_suppressed = MagicMock(return_value=True)
         entity = _segment_entity(coordinator)
