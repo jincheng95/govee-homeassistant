@@ -270,7 +270,17 @@ class _ScanProtocol(asyncio.DatagramProtocol):
             return
         # Some firmwares omit "ip" in the body; fall back to the datagram source
         # address so every responder has a usable address (redacted downstream).
-        record.setdefault("ip", addr[0])
+        # Verified 2026-08-13: the H6076 (wifiVersionHard 4.01.00) answers the
+        # multicast scan with device/sku/versions and NO "ip" key at all, while
+        # an H60B0 and an H6046 on the same wire include it. Fork: an "ip" that
+        # is PRESENT BUT EMPTY took the same path as a good one (setdefault only
+        # fires on a missing key) and correlated the device to "" — an address
+        # nothing can be written to. Treat empty as absent. A non-empty parsed
+        # field always wins, even when it disagrees with the source address:
+        # the device is the authority on its own address, and a disagreement
+        # means NAT/relay, where the field is the routable one.
+        if not record.get("ip"):
+            record["ip"] = addr[0]
         # Dedupe by the device id (MAC) when present, else by IP.
         key = str(record.get("device") or record["ip"])
         self.responses[key] = record

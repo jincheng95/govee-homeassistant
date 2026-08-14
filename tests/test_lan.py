@@ -218,6 +218,78 @@ async def test_fills_ip_from_source_when_missing(monkeypatch):
     assert devices[0]["ip"] == "192.168.1.50"
 
 
+class TestScanReplyWithoutAnIp:
+    """The H6076's reply carries no address of its own (verified 2026-08-13).
+
+    Captured from the real lamp (wifiVersionHard 4.01.00) at 192.0.2.206::
+
+        {"msg": {"cmd": "scan", "data": {"bleVersionHard": "3.05.00",
+         "bleVersionSoft": "1.04.05", "device": "26:FC:77:88:99:AA:BB:CC",
+         "sku": "H6076", "wifiVersionHard": "4.01.00",
+         "wifiVersionSoft": "1.00.16"}}}
+
+    — no ``ip`` key at all, where an H60B0 and an H6046 on the same wire both
+    include one. The datagram's source address is the only address such a
+    device ever offers, so it has to stand in, all the way through to the
+    coordinator's device correlation.
+    """
+
+    SOURCE = "192.0.2.206"
+    MAC = "26:FC:77:88:99:AA:BB:CC"
+
+    def _h6076_reply(self, **overrides):
+        body = {
+            "device": self.MAC,
+            "sku": "H6076",
+            "wifiVersionHard": "4.01.00",
+            "wifiVersionSoft": "1.00.16",
+        }
+        body.update(overrides)
+        return _scan_response(**body)
+
+    def _record(self, reply, source=None):
+        proto = lan._ScanProtocol()
+        proto.datagram_received(json.dumps(reply).encode(), (source or self.SOURCE, 4002))
+        assert len(proto.responses) == 1
+        return next(iter(proto.responses.values()))
+
+    def test_a_missing_ip_becomes_the_source_address(self):
+        assert self._record(self._h6076_reply())["ip"] == self.SOURCE
+
+    def test_an_empty_ip_becomes_the_source_address(self):
+        # Present-but-empty is the same "no address" answer as absent, and it
+        # must not be allowed to correlate the device to "".
+        assert self._record(self._h6076_reply(ip=""))["ip"] == self.SOURCE
+
+    def test_a_reported_ip_wins_over_the_source_address(self):
+        record = self._record(self._h6076_reply(ip="192.0.2.206"), source="192.0.2.206")
+        assert record["ip"] == "192.0.2.206"
+
+    def test_a_disagreeing_pair_prefers_the_reported_field(self):
+        # Documented choice: the device is the authority on its own address.
+        # The two only disagree behind NAT / a relay, where the reported field
+        # is the routable one and the source address is the middlebox.
+        record = self._record(self._h6076_reply(ip="10.9.9.9"), source="192.0.2.206")
+        assert record["ip"] == "10.9.9.9"
+
+    def test_the_device_correlates_at_the_source_address(self):
+        # The end of the chain: a reply with no ip must still produce a
+        # LanDeviceInfo the control tier can write to.
+        from custom_components.govee.api.lan_client import correlate_scan
+
+        matched, unmatched = correlate_scan([self._record(self._h6076_reply())], [self.MAC], now=1.0)
+
+        assert unmatched == []
+        assert matched[self.MAC].ip == self.SOURCE
+
+    def test_an_empty_ip_never_reaches_correlation(self):
+        from custom_components.govee.api.lan_client import correlate_scan
+
+        matched, _ = correlate_scan([self._record(self._h6076_reply(ip=""))], [self.MAC], now=1.0)
+
+        assert matched[self.MAC].ip == self.SOURCE
+
+
 @pytest.mark.asyncio
 async def test_leaves_group_on_teardown(monkeypatch):
     _, sock = _install_fake_endpoint(monkeypatch, [])
