@@ -1413,16 +1413,19 @@ class TestBleAdvertisementHandling:
         assert len(coord._ble_devices) == 0
 
     def test_multiple_same_sku_uses_mac_tiebreaker(self, sample_capabilities):
-        """Multiple cloud devices with same SKU: MAC-prefix tiebreaker."""
+        """Multiple cloud devices with same SKU: MAC-suffix tiebreaker.
+
+        The advertised MAC is the device id's **last** six octets (2026-08-14).
+        """
         dev1 = GoveeDevice(
-            device_id="AA:BB:CC:DD:EE:FF:00:11",
+            device_id="00:11:AA:BB:CC:DD:EE:FF",
             sku="H6072",
             name="Living Room",
             device_type="devices.types.light",
             capabilities=sample_capabilities,
         )
         dev2 = GoveeDevice(
-            device_id="11:22:33:44:55:66:00:22",
+            device_id="00:22:11:22:33:44:55:66",
             sku="H6072",
             name="Bedroom",
             device_type="devices.types.light",
@@ -1430,20 +1433,20 @@ class TestBleAdvertisementHandling:
         )
         coord = self._make_coordinator_with_devices(
             {
-                "AA:BB:CC:DD:EE:FF:00:11": dev1,
-                "11:22:33:44:55:66:00:22": dev2,
+                "00:11:AA:BB:CC:DD:EE:FF": dev1,
+                "00:22:11:22:33:44:55:66": dev2,
             }
         )
         info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
 
         coord._handle_ble_advertisement(info)
 
-        # Should match dev1 (MAC prefix matches)
-        assert "AA:BB:CC:DD:EE:FF:00:11" in coord._ble_devices
-        assert "11:22:33:44:55:66:00:22" not in coord._ble_devices
+        # Should match dev1 (its id ends with the advertised MAC)
+        assert "00:11:AA:BB:CC:DD:EE:FF" in coord._ble_devices
+        assert "00:22:11:22:33:44:55:66" not in coord._ble_devices
 
     def test_multiple_same_sku_no_mac_match_skips(self, sample_capabilities):
-        """Multiple same-SKU devices with no MAC prefix match → skip."""
+        """Multiple same-SKU devices with no MAC suffix match → skip."""
         dev1 = GoveeDevice(
             device_id="AA:BB:CC:DD:EE:FF:00:11",
             sku="H6072",
@@ -1464,7 +1467,7 @@ class TestBleAdvertisementHandling:
                 "11:22:33:44:55:66:00:22": dev2,
             }
         )
-        # BLE MAC doesn't match either device's prefix
+        # BLE MAC doesn't match either device's suffix
         info = self._make_service_info("Govee_H6072_754B", "99:88:77:66:55:44")
 
         coord._handle_ble_advertisement(info)

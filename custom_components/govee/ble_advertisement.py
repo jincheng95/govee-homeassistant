@@ -126,7 +126,8 @@ class BleAdvertisementHandler:
           1. Extract SKU from the advertising name.
           2. Find cloud devices with that SKU (ignoring group devices).
           3. If exactly one match → unambiguous correlation.
-          4. If multiple same-SKU → MAC-prefix tiebreaker.
+          4. If multiple same-SKU → MAC-suffix tiebreaker (the device id ends
+             with the BLE MAC).
           5. If no match or ambiguous → skip.
         """
         coord = self._coord
@@ -146,9 +147,13 @@ class BleAdvertisementHandler:
         if len(candidates) == 1:
             matched_id = candidates[0][0]
         elif len(candidates) > 1:
+            # A Govee device id ends with the device's BLE MAC — the leading two
+            # of its eight octets are a device-class prefix. (This read
+            # ``startswith`` until 2026-08-14; on a tie it simply matched nothing,
+            # so the inversion stayed invisible. See ``api.ble_raw_write``.)
             ble_mac = service_info.address.upper()
             for did, _dev in candidates:
-                if did.upper().startswith(ble_mac):
+                if did.upper().endswith(ble_mac):
                     matched_id = did
                     break
 

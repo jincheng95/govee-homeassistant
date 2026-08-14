@@ -34,9 +34,10 @@ from custom_components.govee.const import (
 from custom_components.govee.models import SegmentColorCommand
 from custom_components.govee.platforms.segment import GoveeSegmentEntity
 
-# The light bar: 8-octet Govee id whose first six octets are the BLE address.
-DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:46"
-BLE_MAC = "AA:BB:CC:DD:EE:FF"
+# The light bar, as it really is: 8-octet Govee id whose **last** six octets are
+# the BLE address (the real H6046 here, per HA's advertisement history).
+DEVICE_ID = "91:C4:AA:BB:CC:11:22:33"
+BLE_MAC = "AA:BB:CC:11:22:33"
 SKU = "H6046"
 SEGMENTS = 10
 
@@ -356,10 +357,29 @@ class TestGates:
         assert ble_raw_write.ble_raw_target(coordinator, DEVICE_ID, get_profile("H6076")) is None
         assert get_profile("H6076").carries(Transport.BLE_PLAINTEXT) is False
 
-    def test_the_ble_address_is_the_first_six_octets(self):
+    def test_the_ble_address_is_the_last_six_octets(self):
         assert ble_raw_write.ble_address(DEVICE_ID) == BLE_MAC
+        # The leading two octets are a device-class prefix, never the MAC.
+        assert not ble_raw_write.ble_address(DEVICE_ID).startswith("91:C4")
         assert ble_raw_write.ble_address("11825917") is None
         assert ble_raw_write.ble_address("") is None
+
+    @pytest.mark.parametrize(
+        ("device_id", "expected"),
+        [
+            ("91:C4:AA:BB:CC:11:22:33", "AA:BB:CC:11:22:33"),  # H6046 light bar
+            ("12:37:DD:EE:FF:44:55:66", "DD:EE:FF:44:55:66"),  # H60B0 uplighter
+            ("26:FC:77:88:99:AA:BB:CC", "77:88:99:AA:BB:CC"),  # H6076 lamp
+        ],
+    )
+    def test_the_ble_address_matches_the_advertised_mac(self, device_id, expected):
+        """Pinned to HA's live advertisement tracker, read 2026-08-14.
+
+        All three lamps advertise the trailing six octets of their Govee id and
+        none advertise the leading six — the derivation this module used until
+        that day, which made every BLE attempt fall through.
+        """
+        assert ble_raw_write.ble_address(device_id) == expected
 
     @pytest.mark.asyncio
     async def test_lan_still_wins_where_a_device_has_both(self, ble_stack, raw_client):

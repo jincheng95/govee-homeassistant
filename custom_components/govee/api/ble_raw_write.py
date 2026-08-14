@@ -26,11 +26,14 @@ upstream's :mod:`.ble` does. That is what makes an **ESPHome Bluetooth proxy in
 active mode** work transparently: a connectable proxy near the light bar
 substitutes for a radio on the HA host, with no configuration here.
 
-The BLE address is the first six octets of the Govee device id — upstream's own
-correlation, the tiebreaker in ``ble_advertisement`` matches an advertisement to
-a device that way. If HA has not seen that address recently,
-``async_ble_device_from_address`` returns None and this tier reports "not
-handled" rather than blocking.
+The BLE address is the **last** six octets of the Govee device id; the leading
+two octets are a device-class prefix. (Until 2026-08-14 this module took the
+first six, copying the assumption baked into ``ble_advertisement``'s same-SKU
+tiebreaker — which only ever ran on a tie and failed by silently declining to
+match, so the mistake never surfaced there. Live advertisement history proved
+the trailing form; see :func:`ble_address`.) If HA has not seen that address
+recently, ``async_ble_device_from_address`` returns None and this tier reports
+"not handled" rather than blocking.
 
 Connection policy
 -----------------
@@ -107,9 +110,18 @@ _LINKS: dict[str, _PlaintextLink] = {}
 def ble_address(device_id: str) -> str | None:
     """The BLE MAC behind a Govee device id, or None when it is not MAC-shaped.
 
-    Govee device ids are eight colon-separated octets whose **first six** are
-    the BLE address — the same relationship ``ble_advertisement`` uses to match
-    an advertisement to a cloud device.
+    Govee device ids are eight colon-separated octets whose **last six** are the
+    BLE address; the leading two are a device-class prefix, not part of the MAC.
+    Confirmed against Home Assistant's own advertisement tracker on 2026-08-14 —
+    every lamp here advertises as the trailing six and none as the leading six:
+
+    ==========================  =====  ===================
+    Device id                   SKU    Advertised address
+    ==========================  =====  ===================
+    ``91:C4:AA:BB:CC:11:22:33``  H6046  ``AA:BB:CC:11:22:33``
+    ``12:37:DD:EE:FF:44:55:66``  H60B0  ``DD:EE:FF:44:55:66``
+    ``26:FC:77:88:99:AA:BB:CC``  H6076  ``77:88:99:AA:BB:CC``
+    ==========================  =====  ===================
 
     Args:
         device_id: The Govee device id (``26:FC:77:88:99:AA:BB:CC``).
@@ -118,9 +130,9 @@ def ble_address(device_id: str) -> str | None:
         The BLE address in upper case, or None.
     """
     parts = str(device_id or "").split(":")
-    if len(parts) < 6 or not all(len(part) == 2 for part in parts[:6]):
+    if len(parts) < 6 or not all(len(part) == 2 for part in parts[-6:]):
         return None
-    return ":".join(parts[:6]).upper()
+    return ":".join(parts[-6:]).upper()
 
 
 def ble_raw_enabled(coordinator: GoveeCoordinator) -> bool:
