@@ -17,13 +17,19 @@ SKU the table has never seen.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from custom_components.govee import segment_limit
 from custom_components.govee.api.protocol import get_profile
-from custom_components.govee.const import SUFFIX_SEGMENT
+from custom_components.govee.const import (
+    SEGMENT_MODE_GROUPED,
+    SEGMENT_MODE_INDIVIDUAL,
+    SUFFIX_GROUPED_SEGMENT,
+    SUFFIX_SEGMENT,
+    SUFFIX_SEGMENT_BLENDING,
+)
 from custom_components.govee.models import GoveeCapability, GoveeDevice
 from custom_components.govee.models.device import (
     CAPABILITY_COLOR_SETTING,
@@ -198,3 +204,80 @@ class TestPruning:
         assert _is_phantom_segment(coordinator, DEVICE_ID, f"{SUFFIX_SEGMENT}9") is True
         assert _is_phantom_segment(coordinator, DEVICE_ID, f"{SUFFIX_SEGMENT}3") is False
         assert _is_phantom_segment(coordinator, "unknown-device", f"{SUFFIX_SEGMENT}9") is False
+
+
+# ==============================================================================
+# 4. The `_segment_` prefix collision
+# ==============================================================================
+
+
+async def _cleanup_removals(segment_mode: str, unique_ids: list[str]) -> set[str]:
+    """Run the orphan cleanup over ``unique_ids``; return the pruned ones."""
+    from custom_components.govee import _async_cleanup_orphaned_entities
+
+    device = _device()
+    coordinator = _coordinator(device)
+    entry = _entry(coordinator)
+    entry.entry_id = "entry_1"
+    entry.options = {"segment_mode_by_device": {DEVICE_ID: segment_mode}}
+
+    entries = []
+    for unique_id in unique_ids:
+        registry_entry = MagicMock()
+        registry_entry.unique_id = unique_id
+        registry_entry.entity_id = f"switch.{unique_id}"
+        entries.append(registry_entry)
+
+    removed: set[str] = set()
+    entity_registry = MagicMock()
+    entity_registry.async_remove = MagicMock(side_effect=lambda entity_id: removed.add(entity_id))
+
+    with patch("custom_components.govee.er") as er_mod, patch("custom_components.govee.dr") as dr_mod:
+        er_mod.async_get.return_value = entity_registry
+        er_mod.async_entries_for_config_entry.return_value = entries
+        dr_mod.async_get.return_value = MagicMock()
+        dr_mod.async_entries_for_config_entry.return_value = []
+        await _async_cleanup_orphaned_entities(MagicMock(), entry, coordinator)
+
+    return {entity_id[len("switch.") :] for entity_id in removed}
+
+
+class TestBlendingSwitchSurvivesCleanup:
+    """``_segment_blending`` starts with ``_segment_`` but is not a segment.
+
+    A prefix-only match deleted the Segment Blending switch on every reload of a
+    device not in individual-segment mode, taking its history with it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_grouped_mode_keeps_the_blending_switch(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_GROUPED,
+            [f"{DEVICE_ID}{SUFFIX_SEGMENT_BLENDING}", f"{DEVICE_ID}{SUFFIX_GROUPED_SEGMENT}"],
+        )
+
+        assert removed == set()
+
+    @pytest.mark.asyncio
+    async def test_grouped_mode_still_prunes_individual_segments(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_GROUPED,
+            [f"{DEVICE_ID}{SUFFIX_SEGMENT_BLENDING}", f"{DEVICE_ID}{SUFFIX_SEGMENT}0"],
+        )
+
+        assert removed == {f"{DEVICE_ID}{SUFFIX_SEGMENT}0"}
+
+    @pytest.mark.asyncio
+    async def test_individual_mode_keeps_the_blending_switch(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_INDIVIDUAL,
+            [f"{DEVICE_ID}{SUFFIX_SEGMENT_BLENDING}", f"{DEVICE_ID}{SUFFIX_SEGMENT}0"],
+        )
+
+        assert removed == set()
+
+    def test_only_a_numeric_index_reads_as_a_segment(self):
+        assert segment_limit.is_individual_segment_suffix(f"{SUFFIX_SEGMENT}0") is True
+        assert segment_limit.is_individual_segment_suffix(f"{SUFFIX_SEGMENT}14") is True
+        assert segment_limit.is_individual_segment_suffix(SUFFIX_SEGMENT_BLENDING) is False
+        assert segment_limit.is_individual_segment_suffix(SUFFIX_GROUPED_SEGMENT) is False

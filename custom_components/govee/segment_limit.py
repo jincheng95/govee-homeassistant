@@ -88,6 +88,23 @@ def segment_count(device: Any) -> int:
     return verified
 
 
+def is_individual_segment_suffix(suffix: str) -> bool:
+    """Whether ``suffix`` names an individual segment entity.
+
+    The index must be checked, not just the ``_segment_`` prefix: other suffixes
+    share it (``_segment_blending``) and would otherwise be treated as segments.
+
+    Args:
+        suffix: The unique_id with the device id stripped (``_segment_11``).
+
+    Returns:
+        True only for ``_segment_<digits>``.
+    """
+    if not suffix.startswith(_SEGMENT_PREFIX):
+        return False
+    return suffix[len(_SEGMENT_PREFIX) :].isdigit()
+
+
 def is_phantom_segment_id(suffix: str, sku: str, advertised: int) -> bool:
     """Whether a segment unique-id suffix belongs to a segment that cannot exist.
 
@@ -103,11 +120,9 @@ def is_phantom_segment_id(suffix: str, sku: str, advertised: int) -> bool:
     Returns:
         True when the suffix names an individual segment above the cap.
     """
-    if not suffix.startswith(_SEGMENT_PREFIX):
+    if not is_individual_segment_suffix(suffix):
         return False
     index_text = suffix[len(_SEGMENT_PREFIX) :]
-    if not index_text.isdigit():
-        return False
     verified = verified_segment_count(sku)
     if verified is None:
         return False

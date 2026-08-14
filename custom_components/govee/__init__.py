@@ -54,11 +54,13 @@ from .const import (
     SUFFIX_DIY_SPEED,
     SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SCENE_SELECT,
-    SUFFIX_SEGMENT,
     SUFFIX_ZONE,
 )
 from .coordinator import GoveeCoordinator
-from .segment_limit import is_phantom_segment_id  # fork: hardware segment cap
+from .segment_limit import (  # fork: hardware segment cap
+    is_individual_segment_suffix,
+    is_phantom_segment_id,
+)
 from .zone_state import zone_lights_enabled
 from .services import (
     SERVICE_REFRESH_SCENES,
@@ -436,7 +438,10 @@ async def _async_cleanup_orphaned_entities(
                 if segment_mode != SEGMENT_MODE_GROUPED:
                     should_remove = True
                     removal_reason = "grouped segments disabled"
-            elif suffix.startswith(SUFFIX_SEGMENT):
+            elif is_individual_segment_suffix(suffix):
+                # Fork: match `_segment_<digits>` only. A bare startswith() also
+                # catches SUFFIX_SEGMENT_BLENDING, which deleted the blending
+                # switch of every device not in individual-segment mode.
                 if segment_mode != SEGMENT_MODE_INDIVIDUAL:
                     should_remove = True
                     removal_reason = "individual segments disabled"
