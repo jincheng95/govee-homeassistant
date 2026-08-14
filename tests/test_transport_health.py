@@ -35,6 +35,11 @@ def _bare_coordinator() -> GoveeCoordinator:
     # __init__ so the control path can run without an AttributeError.
     coord._lan_write_misses = {}
     coord._lan_write_suppressed_until = {}
+    # The deferred-confirm bookkeeping (command generation + who owns the
+    # pending power-off flag) is read on every control call, so a bypassed
+    # __init__ must provide it too.
+    coord._command_generation = {}
+    coord._deferred_power_off = set()
     return coord
 
 

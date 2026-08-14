@@ -305,6 +305,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # avoid racing with a concurrent device power-off (issue #16).
         self._pending_power_off: set[str] = set()
 
+        # Fork: devices whose _pending_power_off entry belongs to a deferred
+        # LAN confirm task rather than to the call that set it. The call's
+        # `finally` must not drop the flag while that task's cloud fallback is
+        # still to come.
+        self._deferred_power_off: set[str] = set()
+
+        # Fork: per-device command counter, bumped on every control call. A
+        # deferred LAN confirm captures it at send and abandons its cloud
+        # fallback if it has moved — the user issued something newer.
+        self._command_generation: dict[str, int] = {}
+
         # Track rate limit state to avoid spamming repair issues
         self._rate_limited: bool = False
 
@@ -2725,6 +2736,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if is_power_off:
             self._pending_power_off.add(device_id)
 
+        # Fork: every control call supersedes the ones before it for this
+        # device. Stamped before dispatch so a deferred confirm's captured
+        # value is the one the write it is confirming was sent under.
+        self._command_generation[device_id] = self._command_generation.get(device_id, 0) + 1
+
         try:
             # BLE-first dispatch: if a BLE transport is available for this
             # device, try it before the cloud REST API. BLE is ~10x faster
@@ -2760,7 +2776,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._record_transport_failure(device_id, "cloud_api", str(err))
             return False
         finally:
-            if is_power_off:
+            # Fork: a deferred LAN confirm may still have a cloud re-send to
+            # make for this power-off, and segment entities must keep seeing
+            # the flag until it concludes — that task discards it instead.
+            if is_power_off and device_id not in self._deferred_power_off:
                 self._pending_power_off.discard(device_id)
 
     async def _async_control_via_cloud(
@@ -3029,9 +3048,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         #     the entry's shutdown cancels them cleanly. Returning True here
         #     means "sent", not "confirmed" — see async_control_device's docs.
         if defer_confirm:
+            if isinstance(command, PowerCommand) and not command.power_on:
+                # Hand the _pending_power_off flag to the task: the caller's
+                # `finally` runs long before the deferred cloud fallback does.
+                self._deferred_power_off.add(device_id)
             self._config_entry.async_create_background_task(
                 self.hass,
-                self._async_confirm_lan_write_deferred(device_id, device, command, ip),
+                self._async_confirm_lan_write_deferred(
+                    device_id, device, command, ip, self._command_generation.get(device_id, 0)
+                ),
                 name="govee_lan_deferred_confirm",
             )
             return True
@@ -3044,16 +3069,30 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device: GoveeDevice,
         command: DeviceCommand,
         ip: str,
+        generation: int,
     ) -> None:
         """Run a deferred LAN confirm and, if it fails, the cloud fallback (fork).
 
-        Byte-for-byte the tail of an inline LAN write: the confirm is the same
-        call with the same miss-counting (issue #57 write suppression is
-        therefore unchanged), and an unconfirmed write still lands via MQTT/REST
-        — just off the caller's critical path instead of in front of it.
+        The tail of an inline LAN write: the confirm is the same call with the
+        same miss-counting (issue #57 write suppression is therefore
+        unchanged), and an unconfirmed write still lands via MQTT/REST — just
+        off the caller's critical path instead of in front of it.
+
+        Args:
+            generation: The device's command counter as it stood when this
+                write was sent. The fallback re-sends the ORIGINAL command, so
+                it must abort when the counter has moved: the user issued
+                something newer, and re-sending would override it (a deferred
+                power-on re-lighting a lamp just turned off).
         """
         try:
             if await self._async_confirm_lan_write(device_id, device, command, ip):
+                return
+            if self._command_generation.get(device_id, 0) != generation:
+                _LOGGER.debug(
+                    "Govee deferred LAN confirm failed for %s but a newer command superseded it — not re-sending",
+                    device_id,
+                )
                 return
             _LOGGER.debug(
                 "Govee deferred LAN confirm failed for %s — falling back to cloud",
@@ -3067,6 +3106,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.debug(
                 "Govee deferred LAN fallback for %s failed: %s", device_id, err
             )
+        finally:
+            if device_id in self._deferred_power_off:
+                self._deferred_power_off.discard(device_id)
+                self._pending_power_off.discard(device_id)
 
     async def _async_confirm_lan_write(
         self,

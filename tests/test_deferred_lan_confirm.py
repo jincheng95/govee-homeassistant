@@ -25,6 +25,7 @@ import pytest
 
 from custom_components.govee.api.protocol import profiles as profiles_mod
 from custom_components.govee.models import (
+    ColorCommand,
     GoveeCapability,
     GoveeDevice,
     GoveeDeviceState,
@@ -39,6 +40,7 @@ from custom_components.govee.models.device import (
 )
 
 DEVICE_ID = "AA:BB:DD:EE:FF:44:55:66"
+OTHER_DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
 IP = "10.0.0.5"
 SKU = "H60B0"
 
@@ -252,6 +254,93 @@ class TestTheConfirmStillHappens:
         # surface as an unhandled-task traceback.
         await asyncio.gather(*tasks)
         assert tasks[0].exception() is None
+
+
+class TestTheFallbackNeverOverridesANewerCommand:
+    """The deferred re-send carries the ORIGINAL command, so it must expire."""
+
+    @pytest.mark.asyncio
+    async def test_a_superseded_command_is_not_re_sent(self, slow_settle):
+        # The hazard: a deferred power-ON whose confirm fails re-lights a lamp
+        # the user turned off while the settle was still running.
+        coord, tasks = _ready_coord()
+        coord._lan_client = _SlowReadClient(read_reply=None)  # never confirms
+
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True), defer_lan_confirm=True)
+        # A newer command for the same device, issued during the settle. Colour
+        # has no LAN mapping, so it goes straight out over the cloud.
+        await coord.async_control_device(DEVICE_ID, ColorCommand(color=RGBColor(0, 0, 255)))
+
+        await asyncio.gather(*tasks)
+
+        # Only the newer command reached the cloud; the stale power-on did not.
+        sent = [call.args[2] for call in coord._api_client.control_device.await_args_list]
+        assert sent == [ColorCommand(color=RGBColor(0, 0, 255))]
+
+    @pytest.mark.asyncio
+    async def test_an_unsuperseded_command_still_re_sends(self, slow_settle):
+        # The generation guard must not disarm the fallback it guards.
+        coord, tasks = _ready_coord()
+        coord._lan_client = _SlowReadClient(read_reply=None)
+
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True), defer_lan_confirm=True)
+        await asyncio.gather(*tasks)
+
+        sent = [call.args[2] for call in coord._api_client.control_device.await_args_list]
+        assert sent == [PowerCommand(power_on=True)]
+
+    @pytest.mark.asyncio
+    async def test_a_command_for_another_device_does_not_expire_it(self, slow_settle):
+        # The counter is per device: unrelated traffic must not cancel a
+        # legitimate fallback.
+        coord, tasks = _ready_coord()
+        coord._lan_client = _SlowReadClient(read_reply=None)
+
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True), defer_lan_confirm=True)
+        coord._command_generation[OTHER_DEVICE_ID] = 99
+
+        await asyncio.gather(*tasks)
+
+        coord._api_client.control_device.assert_awaited_once()
+
+
+class TestPendingPowerOffOutlivesTheCaller:
+    """Segment entities read this flag to avoid racing a power-off (issue #16)."""
+
+    @pytest.mark.asyncio
+    async def test_the_flag_survives_until_the_deferred_path_concludes(self, slow_settle):
+        coord, tasks = _ready_coord()
+        coord._lan_client = _SlowReadClient(read_reply=None)
+
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=False), defer_lan_confirm=True)
+
+        # The caller has returned, but the cloud re-send is still to come.
+        assert coord.is_power_off_pending(DEVICE_ID) is True
+
+        await asyncio.gather(*tasks)
+
+        assert coord.is_power_off_pending(DEVICE_ID) is False
+        assert coord._deferred_power_off == set()
+
+    @pytest.mark.asyncio
+    async def test_a_confirmed_deferred_power_off_clears_the_flag(self, slow_settle):
+        coord, tasks = _ready_coord()
+        coord._lan_client = _SlowReadClient(read_reply=_status(on=False))
+
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=False), defer_lan_confirm=True)
+        await asyncio.gather(*tasks)
+
+        assert coord.is_power_off_pending(DEVICE_ID) is False
+
+    @pytest.mark.asyncio
+    async def test_the_inline_path_still_clears_it_itself(self, slow_settle):
+        coord, tasks = _ready_coord()
+        coord._lan_client = _SlowReadClient(read_reply=_status(on=False))
+
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=False))
+
+        assert coord.is_power_off_pending(DEVICE_ID) is False
+        assert tasks == []
 
 
 class TestChildPowerUsesIt:
