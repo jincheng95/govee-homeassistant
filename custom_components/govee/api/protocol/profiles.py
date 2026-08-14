@@ -100,6 +100,15 @@ class Transport(str, Enum):
     BLE_PLAINTEXT = "ble_plaintext"
     """Same characteristic and the same 20-byte frames, no handshake, no crypto."""
 
+    MQTT_PTREAL = "mqtt_ptreal"
+    """The same ``ptReal`` envelope, published to the device's cloud MQTT topic.
+
+    Govee's own app drives remote segment control this way, and the frames are
+    byte-identical to the LAN ones (reference §1.3: the layout is
+    transport-neutral). It is the slowest raw pipe (~300-500 ms, and it leaves
+    the house) but the only one that works when nothing local does.
+    """
+
 
 BLE_MANUFACTURER_MODERN: Final = 0x8843
 """Advertisement manufacturer id of the modern stack (LAN raw + encrypted BLE)."""
@@ -384,7 +393,7 @@ H60B0: Final = DeviceProfile(
     # Manufacturer claims 9000 K; above ~6500 K the firmware drops the zone
     # entirely, so 6500 K is a hard cap (verified on hardware).
     kelvin=KelvinRange(2000, 6500, verified=True, note="above ~6500 K the zone drops out"),
-    transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED),
+    transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED, Transport.MQTT_PTREAL),
     ble_manufacturer_id=BLE_MANUFACTURER_MODERN,
     zones=(
         ZoneSpec(
@@ -560,7 +569,7 @@ H6046: Final = DeviceProfile(
     # firmware — seven envelope shapes were tried with an independently
     # readable power-off frame and none of them did anything, while the same
     # frame worked first try on the H60B0. Do not add LAN_RAW here.
-    transports=(Transport.BLE_PLAINTEXT,),
+    transports=(Transport.BLE_PLAINTEXT, Transport.MQTT_PTREAL),
     ble_manufacturer_id=BLE_MANUFACTURER_LEGACY,
     zones=(
         ZoneSpec(
@@ -610,7 +619,7 @@ H6076: Final = DeviceProfile(
     goods_type=69,
     name="Floor lamp",
     kelvin=KelvinRange(2000, 9000, verified=False, note="generic base2light; ceiling UNVERIFIED"),
-    transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED),
+    transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED, Transport.MQTT_PTREAL),
     ble_manufacturer_id=BLE_MANUFACTURER_MODERN,
     zones=(
         ZoneSpec(

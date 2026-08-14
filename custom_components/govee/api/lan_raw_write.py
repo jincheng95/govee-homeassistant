@@ -35,6 +35,15 @@ Scope, in the order it grew:
     this form an explicit brightness rides along as a second frame
     (``ZONE_BRIGHTNESS`` + the same mask) in the same envelope.
 
+More than one pipe
+------------------
+The frames are transport-neutral, and this module is also where the *choice* of
+pipe lives: :func:`async_route_frames` tries LAN raw first and falls through to
+the cloud MQTT ``ptReal`` passthrough (:mod:`.mqtt_raw_write`) when there is no
+LAN target. The per-segment path routes that way; the zone and DIY paths stay
+LAN-only for now, because they were built against a SKU that always has one.
+The module keeps its name so the entity-side import lines do not move.
+
 What makes a LAN write safe
 ---------------------------
 Gates, all of which must pass, or the caller falls through to whatever it did
@@ -104,6 +113,7 @@ from .. import lan_udp_health
 from ..const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
 from ..segment_limit import segment_count
 from ..zone_state import ZONE_KEY_BY_TOGGLE, displaced_zone_keys, profile_for, registry
+from . import mqtt_raw_write
 from .protocol import (
     Capability,
     DeviceProfile,
@@ -400,10 +410,11 @@ async def async_segment_color(
     coordinator = _coordinator(entity)
     device_id = _device_id(entity)
     sku = _sku(entity)
-    target = lan_target(coordinator, device_id, sku)
-    if target is None or device_id is None:
+    if device_id is None:
         return False
-    ip, profile = target
+    profile = profile_for(sku)
+    if profile is None or not raw_write_enabled(coordinator):
+        return False
 
     if _writes_suppressed(coordinator, device_id):
         # Cooldown (issue #57): segment colour has an exact cloud fallback
@@ -421,7 +432,67 @@ async def async_segment_color(
     if not frames:
         return False
 
-    return await async_send_frames(coordinator, device_id, ip, frames, what=f"segments {list(segments)} -> {rgb}")
+    return await async_route_frames(
+        coordinator, device_id, sku, profile, frames, what=f"segments {list(segments)} -> {rgb}"
+    )
+
+
+async def async_route_frames(
+    coordinator: GoveeCoordinator,
+    device_id: str,
+    sku: str,
+    profile: DeviceProfile,
+    frames: Sequence[bytes],
+    *,
+    what: str = "frames",
+) -> bool:
+    """Send pre-built frames down the best raw pipe this device has right now.
+
+    The tiers, in order, each one gated by its own option and by the profile's
+    ``transports`` list:
+
+    1. **LAN raw** — one UDP datagram on the local subnet, ~30 ms. The default
+       for every SKU on the modern stack.
+    2. **MQTT ptReal** — the identical bytes published to the device's cloud
+       topic, ~300-500 ms. Covers a lamp with no LAN correlation, and every SKU
+       that has no local raw pipe at all.
+
+    Every tier that does not apply returns "not handled" and the next one is
+    tried; when none of them can, this returns False and the caller falls back
+    to whatever cloud *command* it had. No tier confirms — raw frames are
+    unacknowledged on all channels — so callers keep optimistic state.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device_id: The Govee device id.
+        sku: The device model.
+        profile: The SKU's profile (already looked up by the caller).
+        frames: The frames to deliver, in order.
+        what: Human-readable intent, for the debug log.
+
+    Returns:
+        True when some tier accepted the frames.
+    """
+    if not frames:
+        return False
+
+    target = lan_target(coordinator, device_id, sku)
+    if target is not None:
+        ip, _profile = target
+        if await async_send_frames(coordinator, device_id, ip, frames, what=what):
+            return True
+
+    return await mqtt_raw_write.async_send_frames(coordinator, device_id, sku, profile, frames, what=what)
+
+
+def raw_write_enabled(coordinator: GoveeCoordinator) -> bool:
+    """Whether the user opted into raw frames on any transport.
+
+    The entry gate for the raw path as a whole; each tier then applies its own
+    option (see :func:`async_route_frames`). With every raw option off this is
+    False and nothing below is even built.
+    """
+    return _option_enabled(coordinator) or mqtt_raw_write.mqtt_raw_enabled(coordinator)
 
 
 def _masked_segment_frames(
