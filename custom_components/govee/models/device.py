@@ -762,6 +762,24 @@ class GoveeDevice:
         return any(cap.is_dreamview for cap in self.capabilities)
 
     @property
+    def supports_segment_blending(self) -> bool:
+        """Check if device exposes the ``gradientToggle`` capability (fork).
+
+        Hardware-verified 2026-08-13 on the H6076 and H6046, the only two SKUs
+        in the test fleet that advertise it: the toggle controls whether a
+        subsequent *segment paint* blends its colours across segment boundaries
+        (on) or leaves them hard-edged (off). It is paint-time state — flipping
+        it alone changes nothing until the next segment write — and it is NOT a
+        gradual power-on ramp, which is what the upstream constant name
+        (:data:`INSTANCE_GRADUAL_ON`) suggests. The constant keeps its name to
+        stay merge-compatible; the entity is named for the behaviour.
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_TOGGLE and cap.instance == INSTANCE_GRADUAL_ON:
+                return True
+        return False
+
+    @property
     def supports_thermostat_toggle(self) -> bool:
         """Check if device supports thermostat (auto-stop) toggle."""
         return any(

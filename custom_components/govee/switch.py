@@ -27,6 +27,7 @@ from .const import (
     SUFFIX_NEBULA_LIGHT,
     SUFFIX_NIGHT_LIGHT,
     SUFFIX_RIPPLE_LIGHT,
+    SUFFIX_SEGMENT_BLENDING,
     SUFFIX_SIDE_LIGHT,
     SUFFIX_SOCKET,
 )
@@ -44,6 +45,7 @@ from .models import (
 )
 from .models.device import (
     INSTANCE_BACKGROUND_LIGHT_TOGGLE,
+    INSTANCE_GRADUAL_ON,
     INSTANCE_MAIN_LIGHT_TOGGLE,
     INSTANCE_THERMOSTAT_TOGGLE,
 )
@@ -230,6 +232,17 @@ async def async_setup_entry(
                 )
                 _LOGGER.debug(
                     "Created named light switch %s for %s", instance, device.name
+                )
+
+            # Segment blending (``gradientToggle``) — fork: capability-driven,
+            # so only the SKUs that actually advertise it (H6076 / H6046 in the
+            # test fleet) get the entity. No SKU list.
+            if device.supports_segment_blending:
+                entities.append(GoveeSegmentBlendingSwitchEntity(coordinator, device))
+                _LOGGER.debug(
+                    "Created segment blending switch for %s (%s)",
+                    device.name,
+                    device.sku,
                 )
 
     async_add_entities(entities)
@@ -532,6 +545,81 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
             self._is_on = False
             self.async_write_ha_state()
             note_zone_power(self, False)  # fork: hardware zone-displacement limit
+
+
+class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
+    """Segment-boundary colour blending (``gradientToggle``) — fork feature.
+
+    What the hardware does (verified 2026-08-13 on an H6076 and an H6046, the
+    only SKUs in the fleet that advertise the capability):
+
+    * **On** — a subsequent segment paint blends its colours across the
+      segment boundaries, so neighbouring segments fade into one another.
+    * **Off** — the same paint lands with hard boundaries.
+
+    **Toggling this alone does nothing visible.** It is paint-time state: the
+    lamp keeps showing whatever it was last painted until the next segment
+    write, which is when the new setting takes effect. Home Assistant has no
+    entity-description slot in ``strings.json``, so that caveat lives here, in
+    the ledger, and in the entity's name (it describes blending, not a mode
+    the lamp is "in").
+
+    The upstream constant is ``INSTANCE_GRADUAL_ON`` — a misnomer (it is not a
+    gradual power-on ramp). The constant is kept as-is for merge compatibility;
+    the entity is named for the measured behaviour.
+
+    Govee does not report this toggle back on poll, so state is optimistic and
+    restored across restarts via RestoreEntity — the same approach the named
+    light and light-zone switches take.
+    """
+
+    _attr_translation_key = "govee_segment_blending"
+    _attr_icon = "mdi:gradient-horizontal"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+    ) -> None:
+        """Initialize the segment blending switch entity."""
+        super().__init__(coordinator, device)
+
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_SEGMENT_BLENDING}"
+
+        # Optimistic state — the API returns nothing for this instance on poll.
+        self._is_on = False
+
+    async def async_added_to_hass(self) -> None:
+        """Restore optimistic state on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state:
+            self._is_on = last_state.state == "on"
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if segment paints blend across boundaries (optimistic)."""
+        return self._is_on
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Blend the next segment paint across segment boundaries."""
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=True),
+        )
+        if success:
+            self._is_on = True
+            self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Leave the next segment paint's boundaries hard-edged."""
+        success = await self.coordinator.async_control_device(
+            self._device_id,
+            ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=False),
+        )
+        if success:
+            self._is_on = False
+            self.async_write_ha_state()
 
 
 class GoveeMusicModeSwitchEntity(GoveeEntity, SwitchEntity):

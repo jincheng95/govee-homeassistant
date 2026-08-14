@@ -207,6 +207,9 @@
       },
       "govee_bottom_light": {
         "name": "Bottom Light"
+      },
+      "govee_segment_blending": {
+        "name": "Segment Blending"
       }
     },
     "sensor": {

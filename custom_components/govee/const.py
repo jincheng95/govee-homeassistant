@@ -250,6 +250,9 @@ SUFFIX_NEBULA_LIGHT: Final = "_nebula_light"
 SUFFIX_RIPPLE_LIGHT: Final = "_ripple_light"
 SUFFIX_SIDE_LIGHT: Final = "_side_light"
 SUFFIX_BOTTOM_LIGHT: Final = "_bottom_light"
+# Fork: the ``gradientToggle`` capability, exposed truthfully as segment
+# blending (see GoveeSegmentBlendingSwitchEntity for what the hardware does).
+SUFFIX_SEGMENT_BLENDING: Final = "_segment_blending"
 SUFFIX_MUSIC_MODE: Final = "_music_mode"
 SUFFIX_MUSIC_SENSITIVITY: Final = "_music_sensitivity"
 SUFFIX_DREAMVIEW: Final = "_dreamview"
