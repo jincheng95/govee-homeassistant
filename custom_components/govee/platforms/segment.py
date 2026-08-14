@@ -19,10 +19,13 @@ from homeassistant.components.light import (  # type: ignore[attr-defined]
     ColorMode,
     LightEntity,
 )
+from homeassistant.core import callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.restore_state import RestoreEntity
 
+from ..api.segment_readback import SegmentReading  # fork: §6.2 MQTT readback
 from ..child_power import async_ensure_device_powered  # fork: child -> master power
-from ..const import SUFFIX_SEGMENT
+from ..const import SIGNAL_SEGMENT_READBACK, SUFFIX_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
@@ -42,6 +45,14 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
     We use purely optimistic/local state that persists via RestoreEntity.
     This entity intentionally does NOT subscribe to coordinator updates
     to prevent API responses from overwriting local state.
+
+    Fork: it does subscribe to SIGNAL_SEGMENT_READBACK, and to nothing else.
+    That signal carries decoded `reference` §6.2 `aa a5` frames — the
+    hardware's own per-segment level and RGB, pushed over MQTT — which is a
+    genuine reading rather than an API response that does not know the answer.
+    The distinction the "no coordinator updates" rule is protecting is
+    optimism-versus-ignorance, not optimism-versus-any-input, so this one
+    channel is allowed in and the coordinator door stays shut.
     """
 
     _attr_translation_key = "govee_segment"
@@ -173,7 +184,7 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
-        """Restore previous state."""
+        """Restore previous state and subscribe to hardware segment readback."""
         await super().async_added_to_hass()
 
         last_state = await self.async_get_last_state()
@@ -185,3 +196,59 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
 
             if last_state.attributes.get("rgb_color"):
                 self._rgb_color = tuple(last_state.attributes["rgb_color"])
+
+        # Fork: the ONE correction path this entity accepts. Not a coordinator
+        # subscription — see the class docstring for why that stays shut — but
+        # a dedicated signal carrying decoded `reference` §6.2 `aa a5` frames,
+        # which are per-segment truth read back off the hardware.
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_SEGMENT_READBACK.format(device_id=self._device_id),
+                self._handle_segment_readback,
+            )
+        )
+
+    @callback
+    def _handle_segment_readback(self, readings: dict[int, SegmentReading]) -> None:
+        """Reconcile optimistic state with what the hardware reports.
+
+        The push arrives ~1-2 s after a write and reflects applied state, so it
+        is trusted over local optimism — which is the point: it also catches
+        paints made from the vendor app, and writes that never landed.
+
+        Writes nothing when the reading agrees with what this entity already
+        shows. Segment readback arrives on every status push, and a segment
+        that has not moved must not produce a state change each time.
+
+        An OFF reading updates on/off only. Off is expressed on the wire as
+        black (there is no per-segment power command), so adopting its RGB
+        would overwrite the colour this segment should return to when it is
+        turned back on with the black that means "off".
+        """
+        reading = readings.get(self._segment_index)
+        if reading is None:
+            return
+
+        if not reading.is_on:
+            if not self._is_on:
+                return
+            self._is_on = False
+            self.async_write_ha_state()
+            return
+
+        if self._is_on and self._rgb_color == reading.rgb and self._brightness == reading.brightness:
+            return
+
+        _LOGGER.debug(
+            "Segment %d of %s corrected from readback: on=%s rgb=%s brightness=%s",
+            self._segment_index,
+            self._device_id,
+            reading.is_on,
+            reading.rgb,
+            reading.brightness,
+        )
+        self._is_on = True
+        self._rgb_color = reading.rgb
+        self._brightness = reading.brightness
+        self.async_write_ha_state()

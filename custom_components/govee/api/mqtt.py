@@ -78,6 +78,12 @@ GiveUpCallback = Callable[[int, str], None]
 """Invoked when the reconnect loop exhausts MAX_RECONNECT_ATTEMPTS.
 Args: (attempts_made, last_error_message)."""
 
+# Fork: inbound payloads that carry an `op` object are handed on whole, so the
+# raw-frame decoders can read `reference` §6.2 read frames (per-segment state)
+# out of them without this transport growing a profile table.
+# Args: (device_id, parsed_payload).
+RawFrameCallback = Callable[[str, dict[str, Any]], None]
+
 
 class GoveeAwsIotClient:
     """AWS IoT MQTT client for real-time Govee device state updates.
@@ -102,6 +108,7 @@ class GoveeAwsIotClient:
         credentials: GoveeIotCredentials,
         on_state_update: StateUpdateCallback,
         on_give_up: GiveUpCallback | None = None,
+        on_raw_frames: RawFrameCallback | None = None,
     ) -> None:
         """Initialize the AWS IoT MQTT client.
 
@@ -111,10 +118,17 @@ class GoveeAwsIotClient:
             on_give_up: Optional callback fired when the reconnect loop
                 exhausts MAX_RECONNECT_ATTEMPTS. Use to surface a repair
                 issue so the user can intervene (e.g., reload integration).
+            on_raw_frames: Fork — optional callback(device_id, payload) fired
+                for every device-attributed inbound payload carrying an ``op``
+                object, before any message-type filtering. Lets a consumer
+                decode the raw 20-byte frames Govee rides on ``op.command``
+                (see api/segment_readback.py) without this client learning
+                what any of them mean.
         """
         self._credentials = credentials
         self._on_state_update = on_state_update
         self._on_give_up = on_give_up
+        self._on_raw_frames = on_raw_frames
         self._running = False
         self._connected = False
         self._task: asyncio.Task[None] | None = None
@@ -436,6 +450,16 @@ class GoveeAwsIotClient:
             # events (multiSync) count as activity, not just state updates.
             self._last_message_ts = datetime.now(timezone.utc)
             self._last_message_per_device[device_id] = self._last_message_ts
+
+            # Fork HOOK: hand raw-frame payloads on before any type filtering.
+            # The H6046's status push carries `reference` §6.2 read frames in
+            # op.command alongside `state`, and a multiSync carries them
+            # instead of one — both reach the consumer from here.
+            if self._on_raw_frames is not None and "op" in data:
+                try:
+                    self._on_raw_frames(device_id, data)
+                except Exception as err:  # pragma: no cover - defensive
+                    _LOGGER.error("Raw-frame callback failed for %s: %s", device_id, err)
 
             # Handle multiSync messages (leak sensor events)
             cmd = data.get("cmd")

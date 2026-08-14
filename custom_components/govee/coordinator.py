@@ -77,7 +77,13 @@ from .const import (
     LAN_WRITE_SUPPRESS_SECONDS,
     LAN_WRITE_SUPPRESS_THRESHOLD,
     OPTIMISTIC_GRACE_CAP_SECONDS,
+    SIGNAL_SEGMENT_READBACK,
 )
+
+# Fork: §6.2 per-segment readback riding the MQTT status push.
+from .api.segment_readback import decode_payload as decode_segment_payload
+from .segment_limit import verified_segment_count
+
 from .models import (
     GoveeDevice,
     GoveeDeviceState,
@@ -1363,6 +1369,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             credentials=self._iot_credentials,
             on_state_update=self._on_mqtt_state_update,
             on_give_up=self._on_mqtt_give_up,
+            on_raw_frames=self._on_mqtt_raw_frames,  # fork: §6.2 segment readback
         )
 
         if self._mqtt_client.available:
@@ -2246,6 +2253,49 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         )
         async_dispatcher_send(self.hass, f"{DOMAIN}_leak_update")
         self._bff_poll_task = self.hass.async_create_task(self._poll_bff_leak_state())
+
+    @callback
+    def _on_mqtt_raw_frames(self, device_id: str, payload: dict[str, Any]) -> None:
+        """Fork: reconcile segment entities from the push's `aa a5` frames.
+
+        The H6046 light bar's status pushes carry `reference` §6.2 per-segment
+        readback in ``op.command``. It arrives ~1-2 s after our own writes and
+        reports what the hardware is genuinely doing, so it is applied rather
+        than filtered — which is also what makes it correct drift caused by the
+        vendor app, a scene, or a write that never landed.
+
+        Fans out on a dedicated dispatcher signal (SIGNAL_SEGMENT_READBACK)
+        rather than through coordinator data: segment entities are optimistic
+        and do not subscribe to the coordinator, and this must not change that.
+
+        Args:
+            device_id: The device the payload was attributed to.
+            payload: The parsed inbound message, ``op`` object included.
+        """
+        device = self._devices.get(device_id)
+        if device is None:
+            return
+        # Segment knowledge is profile truth. An unprofiled SKU (or one with no
+        # segments) returns None and is left alone — no SKU branch here.
+        count = verified_segment_count(device.sku)
+        if not count:
+            return
+
+        readings = decode_segment_payload(payload, segment_count=count)
+        if not readings:
+            return
+
+        _LOGGER.debug(
+            "Segment readback for %s (%s): %s",
+            device.name,
+            device_id,
+            {index: (r.level, r.rgb) for index, r in readings.items()},
+        )
+        async_dispatcher_send(
+            self.hass,
+            SIGNAL_SEGMENT_READBACK.format(device_id=device_id),
+            readings,
+        )
 
     @callback
     def _on_mqtt_state_update(self, device_id: str, state_data: dict[str, Any]) -> None:

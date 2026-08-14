@@ -224,6 +224,17 @@ CONFIG_VERSION: Final = 2
 KEY_IOT_CREDENTIALS: Final = "iot_credentials"
 KEY_IOT_LOGIN_FAILED: Final = "iot_login_failed"
 
+# Fork: dispatcher signal carrying decoded per-segment readback for ONE device
+# (`reference` §6.2 `aa a5`, pushed over MQTT). Format with the device id.
+#
+# It is a dispatcher signal rather than a coordinator update on purpose. The
+# segment entities are optimistic by design and deliberately do not subscribe
+# to the coordinator (see platforms/segment.py) — routing this correction
+# through the coordinator would either re-open that door or need the entities
+# to filter coordinator updates for the one field they trust. A dedicated
+# signal keeps the exception to exactly this payload.
+SIGNAL_SEGMENT_READBACK: Final = DOMAIN + "_segment_readback_{device_id}"
+
 # Entity unique_id suffixes
 # Used in entity creation and orphan cleanup to keep patterns consistent
 SUFFIX_SEGMENT: Final = "_segment_"
