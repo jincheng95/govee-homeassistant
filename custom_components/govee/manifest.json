@@ -10,7 +10,7 @@
   ],
   "codeowners": ["@jincheng95", "@lasswellt"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http"],
   "documentation": "https://github.com/jincheng95/govee-homeassistant/blob/master/README.md",
   "homekit": {},
   "integration_type": "hub",

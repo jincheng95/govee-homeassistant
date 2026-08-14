@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Final
 from homeassistant.components.button import ButtonEntity
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.components.select import SelectEntity
+from homeassistant.components.sensor import SensorEntity
 from homeassistant.components.text import TextEntity, TextMode
 from homeassistant.const import EntityCategory
 from homeassistant.exceptions import HomeAssistantError
@@ -72,8 +73,10 @@ from ..const import (
     SUFFIX_DIY_FLOW_RATE,
     SUFFIX_DIY_MODE,
     SUFFIX_DIY_PALETTE,
+    SUFFIX_DIY_PREVIEW,
     SUFFIX_DIY_SPEED,
 )
+from ..diy_previews import preview_map, preview_url  # fork: shipped mode artwork
 from ..diy_state import async_send_diy_effect, diy_spec_for, store, zone_lights_enabled
 from ..entity import GoveeEntity
 from ..models import GoveeDevice
@@ -202,6 +205,31 @@ def async_diy_button_entities(
         entities.append(GoveeDiyApplyButton(coordinator, device, resolved[0]))
     if entities:
         _LOGGER.debug("Created %d Govee DIY apply buttons", len(entities))
+    return entities
+
+
+def async_diy_preview_entities(
+    coordinator: GoveeCoordinator, entry: ConfigEntry
+) -> list[SensorEntity]:
+    """Build the per-zone DIY mode preview sensors.
+
+    One per DIY zone the profile declares, driven entirely by the table — the
+    H60B0's ripple and ring today, and any zone a future profile adds, with no
+    SKU named here.
+
+    Args:
+        coordinator: The coordinator owning the devices.
+        entry: The config entry (carries the gate the DIY controls share).
+
+    Returns:
+        The sensors to add, empty when DIY authoring is gated off.
+    """
+    entities: list[SensorEntity] = []
+    for device in _diy_devices(coordinator, entry):
+        for profile, zone in diy_zones(device):
+            entities.append(GoveeDiyModePreviewSensor(coordinator, device, profile, zone))
+    if entities:
+        _LOGGER.debug("Created %d Govee DIY preview sensors", len(entities))
     return entities
 
 
@@ -639,17 +667,97 @@ def format_palette(colors: tuple[tuple[int, int, int], ...]) -> str:
     return " ".join(f"#{r:02x}{g:02x}{b:02x}" for r, g, b in colors)
 
 
+class GoveeDiyModePreviewSensor(GoveeEntity, SensorEntity):
+    """The preview artwork URL for this zone's currently staged DIY mode.
+
+    Reads the same store the mode select writes, so it follows the picker with
+    no wiring between the two entities. Its state is the URL of one image; the
+    ``previews`` attribute is the whole zone's map, so a dashboard can render
+    the current mode, a gallery of all of them, or both, from this one entity.
+
+    Diagnostic, and not a RestoreEntity: every field is derived from the store
+    and the profile table, both of which are available the moment the entity is
+    added. Restoring a URL would only risk showing a stale one.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:image-multiple"
+    _attr_translation_key = "diy_mode_preview"
+
+    def __init__(
+        self,
+        coordinator: GoveeCoordinator,
+        device: GoveeDevice,
+        profile: DeviceProfile,
+        zone: DiyZoneSpec,
+    ) -> None:
+        """Bind the preview to one DIY zone of one device."""
+        super().__init__(coordinator, device)
+        self._profile = profile
+        self._zone = zone
+        self._zone_key = zone.zone_key
+        self._zone_name = diy_zone_display_name(zone)
+        self._attr_unique_id = f"{device.device_id}{SUFFIX_DIY_PREVIEW}{zone.zone_key}"
+        self._attr_translation_placeholders = {"zone_name": self._zone_name}
+        # Mode int -> the table's spelling of its name, so the store's int can
+        # be turned back into the key the artwork map is filed under.
+        self._name_by_mode = {code: name for name, code in zone.modes.items()}
+        self._previews = preview_map(zone)
+
+    @property
+    def _store(self) -> Any:
+        """The coordinator's staged-DIY store."""
+        return store(self.coordinator)
+
+    @property
+    def _mode_name(self) -> str | None:
+        """The staged mode's name, or None for a raw int the table cannot name."""
+        return self._name_by_mode.get(self._store.mode(self._device_id, self._zone_key))
+
+    @property
+    def native_value(self) -> str | None:
+        """URL path of the staged mode's preview.
+
+        An unset or unnameable mode previews as the zone's "none" placeholder
+        rather than going unknown: there is always something true to show, and
+        "none" is what the lamp does with that zone.
+        """
+        return preview_url(self._zone_key, self._mode_name)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Zone provenance, the staged mode's name, and the full artwork map."""
+        attrs = dict(super().extra_state_attributes)
+        attrs["diy_zone"] = self._zone_key
+        attrs["mode"] = self._mode_name
+        attrs["previews"] = dict(self._previews)
+        return attrs
+
+    async def async_added_to_hass(self) -> None:
+        """Follow the zone's staged record."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._store.register(self._device_id, self._zone_key, self._on_store_change)
+        )
+
+    def _on_store_change(self) -> None:
+        """Store callback — the mode select (or the service) moved this zone."""
+        self.async_write_ha_state()
+
+
 __all__ = [
     "MODE_NONE",
     "PALETTE_PATTERN",
     "GoveeDiyApplyButton",
     "GoveeDiyDirectionSelect",
     "GoveeDiyFlowRateNumber",
+    "GoveeDiyModePreviewSensor",
     "GoveeDiyModeSelect",
     "GoveeDiyPaletteText",
     "GoveeDiySpeedNumber",
     "async_diy_button_entities",
     "async_diy_number_entities",
+    "async_diy_preview_entities",
     "async_diy_select_entities",
     "async_diy_text_entities",
     "format_palette",

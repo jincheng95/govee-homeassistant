@@ -1,0 +1,162 @@
+"""DIY mode preview artwork, served from the integration (fork feature).
+
+The problem
+-----------
+The DIY composer's mode selects (``platforms/diy_effect.py``) offer bare names
+— ``twinkle``, ``gradient``, ``jumping`` — and a name does not tell anyone what
+the lamp will actually do. Govee's own app shows a moving preview beside each
+one. HA select entities cannot render an image in their options, so the
+previews have to reach the dashboard some other way: as a URL a picture card
+can point at, and as an attribute map a template can iterate.
+
+What is shipped
+---------------
+``diy_mode_previews/`` holds the vendor's own preview stills, probed from
+``app2.govee.com/bff-app/v1/diy/gif/effects?goodsType=301&sku=H60B0`` (no auth)
+and copied into the integration so it stands alone — nothing here fetches from
+Govee or from anywhere else at runtime.
+
+Only the modes the selects actually offer are shipped: the six ripple previews
+and the eleven ring previews, one per entry in the H60B0 profile's two DIY mode
+tables. The vendor's third block (ten "Simple" images, ~21 MB) is authoring aid
+for a mode the integration does not expose, and is deliberately absent.
+
+The filename map below is the join between two independently-sourced things —
+the profile table's mode names and the probed artwork — so it is asserted both
+ways in the tests: every mode in every zone's table has a file, and every
+shipped file is claimed by a mode. A mode added to the profile without artwork
+fails the suite rather than shipping a dead URL.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Final
+
+from homeassistant.core import HomeAssistant
+
+from .api.protocol import DiyZoneSpec
+from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
+
+PREVIEW_DIR_NAME: Final = "diy_mode_previews"
+"""Directory under the integration holding the shipped PNGs."""
+
+URL_BASE: Final = "/govee_diy_previews"
+"""Stable URL prefix the artwork is served under.
+
+Deliberately not under ``/api/`` — these are static images with no secrets in
+them, and a dashboard card must be able to render one without a bearer token.
+"""
+
+_REGISTERED_KEY: Final = f"{DOMAIN}_diy_previews_registered"
+"""hass.data flag: the static path is per-HA, not per-config-entry."""
+
+# mode name (as the profile table spells it) -> shipped filename, per DIY zone.
+# The numeric prefixes are the vendor's gifIds and are kept so a file can be
+# traced back to reference/diy-mode-gifs/index.json, which carries the
+# provenance and evidence level for each identification.
+PREVIEW_FILES: Final[dict[str, dict[str, str]]] = {
+    "ripple": {
+        "none": "16_ripple_none.png",
+        "gradient": "11_ripple_gradient.png",
+        "breathe": "12_ripple_breathe.png",
+        "rainbow": "13_ripple_rainbow.png",
+        "twinkle": "14_ripple_twinkle.png",
+        "jumping": "15_ripple_jumping.png",
+    },
+    "ring": {
+        "none": "27_ring_none.png",
+        "gradient": "17_ring_gradient.png",
+        "breathe": "18_ring_breathe.png",
+        "twinkle": "19_ring_twinkle.png",
+        "rainbow": "20_ring_rainbow.png",
+        "graffiti": "21_ring_graffiti.png",
+        "flow": "22_ring_flow.png",
+        "alternate": "23_ring_alternate.png",
+        "gleam": "24_ring_gleam.png",
+        "cover": "25_ring_cover.png",
+        "colorful": "26_ring_colorful.png",
+    },
+}
+
+FALLBACK_MODE: Final = "none"
+"""What an unknown or unset mode previews as: the zone's "off" placeholder."""
+
+
+def preview_dir() -> Path:
+    """Absolute path of the shipped artwork directory."""
+    return Path(__file__).parent / PREVIEW_DIR_NAME
+
+
+def preview_url(zone_key: str, mode_name: str | None) -> str | None:
+    """The URL path of one mode's preview.
+
+    Args:
+        zone_key: DIY zone key (``ripple`` / ``ring``).
+        mode_name: The mode's name as the profile table spells it. ``None``,
+            an empty string, or a name with no artwork (the ripple accepts
+            ring-enum ints the table does not bind) all fall back to the
+            zone's "none" placeholder.
+
+    Returns:
+        A URL path, or ``None`` for a zone with no artwork at all.
+    """
+    files = PREVIEW_FILES.get(zone_key)
+    if not files:
+        return None
+    filename = files.get(mode_name or "") or files.get(FALLBACK_MODE)
+    if filename is None:  # pragma: no cover - every zone ships a "none"
+        return None
+    return f"{URL_BASE}/{filename}"
+
+
+def preview_map(zone: DiyZoneSpec) -> dict[str, str]:
+    """Every mode in ``zone``'s table mapped to its preview URL.
+
+    Ordered as the table is (the app's display order, "None" first), so a
+    dashboard rendering the whole map gets the picker's own order for free.
+
+    Args:
+        zone: The DIY zone spec whose mode table to walk.
+
+    Returns:
+        Mode name → URL path. Empty for a zone with no shipped artwork.
+    """
+    files = PREVIEW_FILES.get(zone.zone_key)
+    if not files:
+        return {}
+    return {name: f"{URL_BASE}/{files[name]}" for name in zone.modes if name in files}
+
+
+async def async_register_previews(hass: HomeAssistant) -> None:
+    """Serve the shipped artwork under :data:`URL_BASE`.
+
+    Idempotent and per-HA rather than per-entry: the path is a constant and
+    registering it twice raises. A second config entry, or a reload, finds the
+    flag already set and does nothing.
+
+    Args:
+        hass: The Home Assistant instance.
+    """
+    if hass.data.get(_REGISTERED_KEY):
+        return
+
+    # Imported here, not at module scope: `http` is a soft dependency of this
+    # integration and the import should not run during a manifest-only load.
+    from homeassistant.components.http import StaticPathConfig
+
+    await hass.http.async_register_static_paths(
+        [
+            StaticPathConfig(
+                URL_BASE,
+                str(preview_dir()),
+                # The artwork is immutable — it ships with the version.
+                cache_headers=True,
+            )
+        ]
+    )
+    hass.data[_REGISTERED_KEY] = True
+    _LOGGER.debug("Serving Govee DIY mode previews at %s", URL_BASE)

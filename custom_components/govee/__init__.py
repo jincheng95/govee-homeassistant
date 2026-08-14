@@ -50,6 +50,7 @@ from .const import (
     SUFFIX_DIY_FLOW_RATE,
     SUFFIX_DIY_MODE,
     SUFFIX_DIY_PALETTE,
+    SUFFIX_DIY_PREVIEW,
     SUFFIX_DIY_SCENE_SELECT,
     SUFFIX_DIY_SPEED,
     SUFFIX_GROUPED_SEGMENT,
@@ -58,6 +59,7 @@ from .const import (
     SUFFIX_ZONE,
 )
 from .coordinator import GoveeCoordinator
+from .diy_previews import async_register_previews  # fork: DIY mode artwork
 from .segment_limit import is_phantom_segment_id  # fork: hardware segment cap
 from .zone_state import zone_lights_enabled
 from .services import (
@@ -248,6 +250,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
     # local transport enhancement — no user configuration needed).
     for unsub in coordinator.setup_ble_subscriptions():
         entry.async_on_unload(unsub)
+
+    # Fork: serve the shipped DIY mode preview artwork before the platforms
+    # come up, so the preview sensors' URLs resolve from their first state.
+    # Idempotent across entries and reloads.
+    await async_register_previews(hass)
 
     # Set up platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -608,5 +615,6 @@ def _is_diy_effect_suffix(suffix: str) -> bool:
             SUFFIX_DIY_DIRECTION,
             SUFFIX_DIY_FLOW_RATE,
             SUFFIX_DIY_PALETTE,
+            SUFFIX_DIY_PREVIEW,
         )
     )

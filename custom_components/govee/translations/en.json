@@ -262,6 +262,9 @@
       },
       "ieee_address": {
         "name": "IEEE Address"
+      },
+      "diy_mode_preview": {
+        "name": "{zone_name} DIY mode preview"
       }
     },
     "binary_sensor": {

@@ -262,6 +262,10 @@ SUFFIX_DIY_DIRECTION: Final = "_diy_direction_"
 SUFFIX_DIY_FLOW_RATE: Final = "_diy_flow_rate_"
 SUFFIX_DIY_PALETTE: Final = "_diy_palette_"
 SUFFIX_DIY_APPLY: Final = "_diy_apply"
+# Fork: one preview sensor per DIY zone, carrying the artwork URL of the mode
+# staged on SUFFIX_DIY_MODE. Same namespace and the same gate as the staging
+# controls, so it is pruned with them.
+SUFFIX_DIY_PREVIEW: Final = "_diy_preview_"
 SUFFIX_SOCKET: Final = "_socket_"
 SUFFIX_MAIN_LIGHT: Final = "_main_light"
 SUFFIX_BACKGROUND_LIGHT: Final = "_background_light"

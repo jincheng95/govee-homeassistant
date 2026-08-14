@@ -41,6 +41,9 @@ from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .models import GoveeDevice
 from .models.device import GoveeLeakSensor, leak_sensor_device_info
+from .platforms.diy_effect import (  # fork: DIY mode preview artwork
+    async_diy_preview_entities,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,6 +121,10 @@ async def async_setup_entry(
         if sensor.hub_device_id and sensor.hub_device_id not in seen_hubs:
             seen_hubs.add(sensor.hub_device_id)
             entities.append(GoveeLeakHubAddressSensor(sensor.hub_device_id))
+
+    # Fork: one preview sensor per DIY zone, carrying the shipped artwork URL
+    # for the mode staged on that zone's select.
+    entities.extend(async_diy_preview_entities(coordinator, entry))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee sensor entities", len(entities))
