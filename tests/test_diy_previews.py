@@ -45,7 +45,7 @@ from custom_components.govee.platforms.diy_effect import (
     async_diy_select_entities,
 )
 
-DEVICE_ID = "12:37:DD:EE:FF:44:55:66"  # synthetic; H60B0 prefix
+DEVICE_ID = "AA:BB:DD:EE:FF:44:55:66"  # synthetic; H60B0 prefix
 
 
 def _device(sku: str = "H60B0") -> GoveeDevice:

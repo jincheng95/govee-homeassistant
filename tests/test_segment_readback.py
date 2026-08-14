@@ -39,7 +39,7 @@ from custom_components.govee.models.device import (
 )
 from custom_components.govee.platforms.segment import GoveeSegmentEntity
 
-DEVICE_ID = "91:C4:AA:BB:CC:11:22:33"  # synthetic; H6046 prefix
+DEVICE_ID = "AA:BB:AA:BB:CC:11:22:33"  # synthetic; H6046 prefix
 
 # Captured live 2026-08-14 off the H6046 light bar, seconds after painting the
 # segment at index 1 magenta at 70 %. Five frames ride one op.command array:
@@ -332,7 +332,7 @@ class TestCoordinatorDispatch:
         coordinator = self._coordinator()
 
         with patch("custom_components.govee.coordinator.async_dispatcher_send") as send:
-            GoveeCoordinator._on_mqtt_raw_frames(coordinator, "99:99:00:00:00:00:00:99", CAPTURED_PAYLOAD)
+            GoveeCoordinator._on_mqtt_raw_frames(coordinator, "99:99:99:99:99:99:99:99", CAPTURED_PAYLOAD)
 
         send.assert_not_called()
 
