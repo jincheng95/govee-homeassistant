@@ -17,6 +17,23 @@ Deliberately one-directional: a child turning **off** must never power the lamp
 off, because the other children may still be lit and nothing reports per-child
 power back (see roadmap 1.5).
 
+Send, not confirm
+-----------------
+The child's own (raw-LAN) frames only need the power datagram to have LEFT the
+host before they follow — the lamp processes them in arrival order, and the
+power write takes ~30 ms to hit the wire. What they do **not** need is the
+answer to "did the lamp confirm it?", which on an H60B0 costs the SKU's ~1.5 s
+echo settle plus the confirm read (see :mod:`.lan_confirm`). Awaiting the whole
+pipeline pushed the first zone frame from ~0.5 s after the trigger to ~1.6 s —
+a delay the user sees, spent waiting for a fact nothing here consumes.
+
+So the power-on is dispatched with ``defer_lan_confirm=True``: the send is
+inline, and the settle + confirm — including its MQTT/REST re-send when the
+confirm genuinely fails, and the issue-#57 miss counting that arms the write
+cooldown — run in a coordinator-owned background task. Nothing about the
+confirm's *semantics* changes; it simply stops being on the caller's critical
+path.
+
 The latch
 ---------
 The "is the lamp off?" question is answered from ``coordinator.get_state``, and
@@ -118,4 +135,7 @@ async def async_ensure_device_powered(coordinator: GoveeCoordinator, device_id: 
     # the second one through while the first is suspended.
     _latch(coordinator, device_id)
     _LOGGER.debug("Govee child power sync: powering %s on for a child turn_on", device_id)
-    await coordinator.async_control_device(device_id, PowerCommand(power_on=True))
+    # Send-blocking, not confirm-blocking: see the module docstring.
+    await coordinator.async_control_device(
+        device_id, PowerCommand(power_on=True), defer_lan_confirm=True
+    )

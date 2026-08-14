@@ -2642,15 +2642,27 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self,
         device_id: str,
         command: DeviceCommand,
+        defer_lan_confirm: bool = False,  # fork: send-blocking only
     ) -> bool:
         """Send control command to device with optimistic update.
 
         Args:
             device_id: Device identifier.
             command: Command to execute.
+            defer_lan_confirm: Fork option. When the write takes the LAN tier,
+                return as soon as the datagram has been SENT (~30 ms) and run
+                the echo settle + verify-by-read confirm — including its
+                MQTT/REST fallback on a failed confirm — in a coordinator-owned
+                background task. For a caller whose own work only needs the
+                datagram to be on the wire ahead of it (see
+                :mod:`.child_power`), waiting out a ~1.5 s settle is latency
+                the user sees for nothing. Has no effect on any other tier.
 
         Returns:
-            True if command succeeded.
+            True if command succeeded. With ``defer_lan_confirm`` a LAN write
+            returns True on a successful SEND — confirmation is no longer part
+            of the answer, which is precisely the trade the caller is asking
+            for.
         """
         device = self._devices.get(device_id)
         if not device:
@@ -2682,10 +2694,44 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # back. A confirmed write returns True here; an unreachable /
             # unconfirmed / value-mismatched write returns False and falls
             # through to MQTT -> REST, so a device is never stranded.
-            if await self._try_lan_command(device_id, device, command):
+            if await self._try_lan_command(
+                device_id, device, command, defer_lan_confirm  # fork: send-only
+            ):
                 return True
             # LAN unavailable / unconfirmed — fall through to MQTT/REST.
 
+            return await self._async_control_via_cloud(device_id, device, command)
+
+        except GoveeAuthError as err:
+            self._record_transport_failure(device_id, "cloud_api", "auth_failed")
+            raise ConfigEntryAuthFailed("Invalid API key") from err
+        except GoveeApiError as err:
+            _LOGGER.error("Control command failed: %s", err)
+            self._record_transport_failure(device_id, "cloud_api", str(err))
+            return False
+        finally:
+            if is_power_off:
+                self._pending_power_off.discard(device_id)
+
+    async def _async_control_via_cloud(
+        self,
+        device_id: str,
+        device: GoveeDevice,
+        command: DeviceCommand,
+    ) -> bool:
+        """Deliver ``command`` over the tiers below LAN: MQTT, then REST.
+
+        Extracted from :meth:`async_control_device` (fork) so a LAN write whose
+        confirm was deferred can take exactly the same fallback from its
+        background task as the inline path takes when the confirm fails —
+        rather than re-entering ``async_control_device`` and retrying LAN.
+
+        Keeps upstream's error handling verbatim: a ``GoveeAuthError`` becomes
+        ``ConfigEntryAuthFailed`` and a ``GoveeApiError`` becomes ``False``. The
+        ``_pending_power_off`` bookkeeping stays with
+        :meth:`async_control_device`, which owns the whole call.
+        """
+        try:
             # MQTT-native control tier: when enabled and connected, push
             # power/brightness/color over the AWS IoT channel (~50ms) instead
             # of the REST cloud API (~500ms). Group devices and non-capable
@@ -2745,9 +2791,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             _LOGGER.error("Control command failed: %s", err)
             self._record_transport_failure(device_id, "cloud_api", str(err))
             return False
-        finally:
-            if is_power_off:
-                self._pending_power_off.discard(device_id)
 
     def _maybe_schedule_humidity_verification(
         self, device_id: str, device: GoveeDevice, command: DeviceCommand
@@ -2838,6 +2881,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device_id: str,
         device: GoveeDevice,
         command: DeviceCommand,
+        defer_confirm: bool = False,  # fork: hand the confirm to a background task
     ) -> bool:
         """Attempt a LAN (UDP) control write, verified by reading the device back.
 
@@ -2927,6 +2971,74 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         #     confirm read blocks for up to LAN_WRITE_CONFIRM_TIMEOUT.
         self._apply_optimistic_update(device_id, command)
         self.async_set_updated_data(self._states)
+
+        # [7.5] Fork: the caller asked for the SEND only. The datagram is on the
+        #     wire, which is all a follow-up raw write needs to be ordered behind
+        #     it; the settle + confirm (and, on a failed confirm, the very same
+        #     MQTT/REST fallback) run in a coordinator-owned background task so
+        #     the entry's shutdown cancels them cleanly. Returning True here
+        #     means "sent", not "confirmed" — see async_control_device's docs.
+        if defer_confirm:
+            self._config_entry.async_create_background_task(
+                self.hass,
+                self._async_confirm_lan_write_deferred(device_id, device, command, ip),
+                name="govee_lan_deferred_confirm",
+            )
+            return True
+
+        return await self._async_confirm_lan_write(device_id, device, command, ip)
+
+    async def _async_confirm_lan_write_deferred(
+        self,
+        device_id: str,
+        device: GoveeDevice,
+        command: DeviceCommand,
+        ip: str,
+    ) -> None:
+        """Run a deferred LAN confirm and, if it fails, the cloud fallback (fork).
+
+        Byte-for-byte the tail of an inline LAN write: the confirm is the same
+        call with the same miss-counting (issue #57 write suppression is
+        therefore unchanged), and an unconfirmed write still lands via MQTT/REST
+        — just off the caller's critical path instead of in front of it.
+        """
+        try:
+            if await self._async_confirm_lan_write(device_id, device, command, ip):
+                return
+            _LOGGER.debug(
+                "Govee deferred LAN confirm failed for %s — falling back to cloud",
+                device_id,
+            )
+            await self._async_control_via_cloud(device_id, device, command)
+        except (ConfigEntryAuthFailed, GoveeApiError) as err:
+            # Nobody is awaiting this task, so an exception would only surface as
+            # an unhandled-task traceback. The transport failure is already
+            # recorded by the tier that raised.
+            _LOGGER.debug(
+                "Govee deferred LAN fallback for %s failed: %s", device_id, err
+            )
+
+    async def _async_confirm_lan_write(
+        self,
+        device_id: str,
+        device: GoveeDevice,
+        command: DeviceCommand,
+        ip: str,
+    ) -> bool:
+        """Confirm a just-sent LAN write by reading the device back.
+
+        Split out of :meth:`_try_lan_command` (fork) so the settle + read can
+        either block the caller (upstream's behaviour, unchanged) or run in a
+        background task. Everything below this line is upstream's step [8]
+        verbatim.
+
+        Returns:
+            ``True`` only when the readback matches the sent value.
+        """
+        if self._lan_client is None:
+            # Only reachable if LAN was torn down between the send and a
+            # deferred confirm; the write already went out, so nothing to count.
+            return False
 
         # [8] Verify-by-read: a LAN write is unacked, so read the device back and
         #     require the reported value to match what we sent. Fork hook: some
