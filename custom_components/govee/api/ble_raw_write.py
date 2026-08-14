@@ -111,6 +111,11 @@ BLE_CONNECT_ATTEMPTS: Final = 3
 # not inherit a link that pins its predecessor's coordinator.
 _LINKS: dict[tuple[str, str], _PlaintextLink] = {}
 
+_ID_OCTETS: Final = 8
+"""Octets in a Govee device id: two device-class, then the six BLE address."""
+
+_HEX_DIGITS: Final = frozenset("0123456789abcdefABCDEF")
+
 
 def _entry_id(coordinator: GoveeCoordinator) -> str:
     """The config entry id owning ``coordinator`` ("" when it has none)."""
@@ -121,8 +126,13 @@ def _entry_id(coordinator: GoveeCoordinator) -> str:
 def ble_address(device_id: str) -> str | None:
     """The BLE MAC behind a Govee device id, or None when it is not MAC-shaped.
 
-    Govee device ids are eight colon-separated octets whose **last six** are the
-    BLE address; the leading two are a device-class prefix, not part of the MAC.
+    MAC-shaped means **exactly eight** colon-separated two-hex-digit octets,
+    whose **last six** are the BLE address; the leading two are a device-class
+    prefix, not part of the MAC. Any other shape — a 16-octet extended
+    identifier, a non-hex octet — returns None rather than being truncated to
+    six: an address guessed out of an id form we have never seen would open a
+    GATT link to whatever else answers there.
+
     Confirmed against Home Assistant's own advertisement tracker on 2026-08-14 —
     every lamp here advertises as the trailing six and none as the leading six:
 
@@ -141,7 +151,9 @@ def ble_address(device_id: str) -> str | None:
         The BLE address in upper case, or None.
     """
     parts = str(device_id or "").split(":")
-    if len(parts) < 6 or not all(len(part) == 2 for part in parts[-6:]):
+    if len(parts) != _ID_OCTETS:
+        return None
+    if not all(len(part) == 2 and all(char in _HEX_DIGITS for char in part) for part in parts):
         return None
     return ":".join(parts[-6:]).upper()
 

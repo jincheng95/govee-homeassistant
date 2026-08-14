@@ -441,6 +441,23 @@ class TestGates:
         assert ble_raw_write.ble_address("") is None
 
     @pytest.mark.parametrize(
+        "device_id",
+        [
+            "AA:BB:CC:DD:EE:FF",  # six octets — no device-class prefix
+            "AA:BB:CC:DD:EE:FF:00",  # seven
+            "AA:BB:CC:DD:EE:FF:00:11:22",  # nine
+            "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",  # extended id
+            "AA:BB:CC:DD:EE:FF:00:GG",  # non-hex octet
+            "AA:BB:CC:DD:EE:FF:00:1z",  # non-hex digit
+            "ZZ:BB:CC:DD:EE:FF:00:11",  # non-hex in the class prefix
+            "AA:BB:CC:DD:EE:FF:0:11",  # one-digit octet
+        ],
+    )
+    def test_an_id_that_is_not_eight_hex_octets_is_not_handled(self, device_id):
+        """Truncating an unfamiliar id shape would target an unrelated radio."""
+        assert ble_raw_write.ble_address(device_id) is None
+
+    @pytest.mark.parametrize(
         ("device_id", "expected"),
         [
             ("AA:BB:AA:BB:CC:11:22:33", "AA:BB:CC:11:22:33"),  # H6046 light bar
