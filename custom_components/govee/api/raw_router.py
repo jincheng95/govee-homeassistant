@@ -66,10 +66,11 @@ async def async_route_frames(
        topic, ~300-500 ms. Covers a lamp with no LAN correlation, and every SKU
        that has no usable local raw pipe.
 
-    Every tier that does not apply returns "not handled" and the next one is
-    tried; when none of them can, this returns False and the caller falls back
-    to whatever cloud *command* it had. No tier confirms — raw frames are
-    unacknowledged on all channels — so callers keep optimistic state.
+    Every tier that does not apply — or raises — returns "not handled" and the
+    next one is tried; when none of them can, this returns False and the caller
+    falls back to whatever cloud *command* it had. Nothing here propagates an
+    exception to the entity. No tier confirms — raw frames are unacknowledged
+    on all channels — so callers keep optimistic state.
 
     Args:
         coordinator: The coordinator owning the device.
@@ -88,10 +89,36 @@ async def async_route_frames(
     if await _async_lan_tier(coordinator, device_id, sku, frames, what):
         return True
 
-    if await ble_raw_write.async_send_frames(coordinator, device_id, sku, profile, frames, what=what):
+    if await _async_tier("BLE", ble_raw_write.async_send_frames, coordinator, device_id, sku, profile, frames, what):
         return True
 
-    return await mqtt_raw_write.async_send_frames(coordinator, device_id, sku, profile, frames, what=what)
+    return await _async_tier(
+        "MQTT", mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, frames, what
+    )
+
+
+async def _async_tier(
+    tier: str,
+    send: Any,
+    coordinator: GoveeCoordinator,
+    device_id: str,
+    sku: str,
+    profile: DeviceProfile,
+    frames: Sequence[bytes],
+    what: str,
+) -> bool:
+    """Run one tier, swallowing anything it raises. False means "not handled".
+
+    A tier that raises would propagate out of the entity's service call and
+    hide every tier under it, so an unexpected error is a fall-through like any
+    other refusal — the same contract the ble/mqtt tiers already keep
+    internally, applied here so it holds however a tier is written.
+    """
+    try:
+        return bool(await send(coordinator, device_id, sku, profile, frames, what=what))
+    except Exception as err:  # noqa: BLE001 - a tier must never raise at an entity
+        _LOGGER.debug("Govee raw router: the %s tier for %s raised (%s) — trying the next tier", tier, device_id, err)
+        return False
 
 
 async def _async_lan_tier(
@@ -117,7 +144,11 @@ async def _async_lan_tier(
     if target is None:
         return False
     ip, _profile = target
-    return await lan_raw.async_send_frames(coordinator, device_id, ip, frames, what=what)
+    try:
+        return await lan_raw.async_send_frames(coordinator, device_id, ip, frames, what=what)
+    except Exception as err:  # noqa: BLE001 - a tier must never raise at an entity
+        _LOGGER.debug("Govee raw router: the LAN tier for %s raised (%s) — trying the next tier", device_id, err)
+        return False
 
 
 def raw_write_enabled(coordinator: GoveeCoordinator) -> bool:

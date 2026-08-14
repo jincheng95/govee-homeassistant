@@ -1,7 +1,12 @@
 """Tier selection in :mod:`custom_components.govee.api.raw_router`.
 
-The issue #57 LAN write-suppression cooldown stands down the LAN tier and
-nothing else: BLE and MQTT carry the same frames and know nothing about it.
+Two properties the router owes its callers, both about the tiers *below* the
+one that declined:
+
+* the issue #57 LAN write-suppression cooldown stands down the LAN tier and
+  nothing else — BLE and MQTT carry the same frames and know nothing about it;
+* no tier may raise. An unexpected error is a fall-through like every other
+  "not handled" answer, or it would hide the tiers under it.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from custom_components.govee.const import (
     CONF_ENABLE_LAN_RAW_WRITE,
     CONF_ENABLE_MQTT_CONTROL,
 )
+from custom_components.govee.models import SegmentColorCommand
 from custom_components.govee.platforms.segment import GoveeSegmentEntity
 
 # Synthetic id whose last six octets are the BLE address.
@@ -172,3 +178,40 @@ class TestCooldownGatesOnlyTheLanTier:
 
         assert raw_client.envelopes == []
         coordinator._mqtt_client.async_publish_ptreal.assert_awaited()
+
+
+class TestNoTierRaises:
+    """A tier that raises would mask every tier below it."""
+
+    @pytest.mark.asyncio
+    async def test_a_raising_udp_client_falls_through_to_mqtt(self, monkeypatch, ble_stack):
+        monkeypatch.setattr(lan_raw, "_CLIENT", _FakeRawClient(error=RuntimeError("transport closed")))
+        monkeypatch.setattr(ble_raw_write, "_resolve", lambda coordinator, address: None)
+        coordinator = _coordinator(device_id=LAN_DEVICE_ID, sku=LAN_SKU, on_lan=True)
+        entity = _segment_entity(coordinator, device_id=LAN_DEVICE_ID, sku=LAN_SKU, count=LAN_SEGMENTS)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        coordinator._mqtt_client.async_publish_ptreal.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_raising_ble_tier_falls_through_to_mqtt(self, monkeypatch, ble_stack):
+        monkeypatch.setattr(ble_raw_write, "async_send_frames", AsyncMock(side_effect=RuntimeError("bleak internals")))
+        coordinator = _coordinator()
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        coordinator._mqtt_client.async_publish_ptreal.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_raising_mqtt_tier_falls_through_to_the_cloud(self, monkeypatch, ble_stack):
+        monkeypatch.setattr(ble_raw_write, "_resolve", lambda coordinator, address: None)
+        coordinator = _coordinator()
+        coordinator._ensure_device_topic = AsyncMock(side_effect=RuntimeError("topic fetch exploded"))
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        command = coordinator.async_control_device.await_args_list[-1].args[1]
+        assert isinstance(command, SegmentColorCommand)
