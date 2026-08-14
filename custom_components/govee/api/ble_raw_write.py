@@ -57,9 +57,13 @@ invisible to ``devStatus``.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
+
+from homeassistant.core import CALLBACK_TYPE
+from homeassistant.helpers.event import async_call_later
 
 # Guarded exactly like the coordinator's own BLE import: an HA install without
 # Bluetooth (or without bleak) must load the integration normally and simply
@@ -102,9 +106,16 @@ user-visible regression on the phone.
 BLE_CONNECT_ATTEMPTS: Final = 3
 """Retries inside bleak-retry-connector before this tier gives up and falls through."""
 
-# One link per BLE address, module-wide: two entities on the same light bar
-# must share the connection, not race for the radio.
-_LINKS: dict[str, _PlaintextLink] = {}
+# One link per (config entry, BLE address): two entities on the same light bar
+# must share the connection, not race for the radio — but a reloaded entry must
+# not inherit a link that pins its predecessor's coordinator.
+_LINKS: dict[tuple[str, str], _PlaintextLink] = {}
+
+
+def _entry_id(coordinator: GoveeCoordinator) -> str:
+    """The config entry id owning ``coordinator`` ("" when it has none)."""
+    entry = getattr(coordinator, "config_entry", None)
+    return str(getattr(entry, "entry_id", "") or "")
 
 
 def ble_address(device_id: str) -> str | None:
@@ -201,9 +212,10 @@ async def async_send_frames(
     if address is None:
         return False
 
-    link = _LINKS.get(address)
+    key = (_entry_id(coordinator), address)
+    link = _LINKS.get(key)
     if link is None:
-        link = _LINKS[address] = _PlaintextLink(coordinator, address)
+        link = _LINKS[key] = _PlaintextLink(coordinator, address)
 
     if not await link.async_write(frames):
         return False
@@ -220,11 +232,18 @@ async def async_send_frames(
     return True
 
 
-async def async_disconnect_all() -> None:
-    """Drop every held link (entry unload, and the tests' reset)."""
-    for link in list(_LINKS.values()):
-        await link.async_disconnect()
-    _LINKS.clear()
+async def async_disconnect_all(entry_id: str | None = None) -> None:
+    """Drop held links and forget them.
+
+    Args:
+        entry_id: Drop only the links owned by this config entry (unload).
+            None drops every link this integration holds.
+    """
+    keys = [key for key in _LINKS if entry_id is None or key[0] == entry_id]
+    for key in keys:
+        link = _LINKS.pop(key, None)
+        if link is not None:
+            await link.async_disconnect()
 
 
 class _PlaintextLink:
@@ -235,10 +254,15 @@ class _PlaintextLink:
         self._address = address
         self._client: Any | None = None
         self._lock = asyncio.Lock()
-        self._idle: asyncio.TimerHandle | None = None
+        self._idle: CALLBACK_TYPE | None = None
 
     async def async_write(self, frames: Sequence[bytes]) -> bool:
-        """Connect if needed, write every frame in order, then arm the idle timer."""
+        """Connect if needed, write every frame in order, then arm the idle timer.
+
+        The idle timer is cancelled before the lock is taken, so a disconnect
+        cannot fire while this write waits behind another one.
+        """
+        self._cancel_idle_timer()
         async with self._lock:
             try:
                 client = await self._async_connect()
@@ -284,23 +308,40 @@ class _PlaintextLink:
         self._client = None
 
     def _arm_idle_timer(self) -> None:
-        """(Re)start the hold window; when it expires the link is dropped."""
+        """(Re)start the hold window; when it expires the link is dropped.
+
+        ``async_call_later`` is what makes the disconnect *tracked*: Home
+        Assistant owns the resulting task, so it cannot be garbage-collected
+        mid-flight the way a bare ``ensure_future`` can, and it is cancelled
+        with the entry.
+        """
         self._cancel_idle_timer()
-        loop = asyncio.get_running_loop()
-        self._idle = loop.call_later(
+        self._idle = async_call_later(
+            self._coordinator.hass,
             BLE_IDLE_DISCONNECT_SECONDS,
-            lambda: asyncio.ensure_future(self.async_disconnect()),
+            functools.partial(self._async_idle_disconnect),
         )
 
     def _cancel_idle_timer(self) -> None:
-        if self._idle is not None:
-            self._idle.cancel()
-            self._idle = None
+        """Disarm the hold window if it is armed (idempotent)."""
+        unsub, self._idle = self._idle, None
+        if unsub is not None:
+            unsub()
+
+    async def _async_idle_disconnect(self, _now: Any = None) -> None:
+        """``async_call_later`` target: the hold window expired."""
+        self._idle = None
+        await self.async_disconnect()
 
     async def async_disconnect(self) -> None:
-        """Close the link if it is open (idempotent)."""
+        """Close the link if it is open (idempotent).
+
+        Takes the same lock ``async_write`` holds: the idle drop and a write
+        must never overlap, or the write lands on a client being torn down.
+        """
         self._cancel_idle_timer()
-        await self._async_drop_client()
+        async with self._lock:
+            await self._async_drop_client()
 
     async def _async_drop_client(self) -> None:
         client, self._client = self._client, None

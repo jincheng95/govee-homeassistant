@@ -19,10 +19,13 @@ has to hold:
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.govee.api import ble_raw_write, lan_raw
 from custom_components.govee.api.protocol import Transport, get_profile
@@ -40,6 +43,7 @@ DEVICE_ID = "AA:BB:AA:BB:CC:11:22:33"
 BLE_MAC = "AA:BB:CC:11:22:33"
 SKU = "H6046"
 SEGMENTS = 10
+ENTRY_ID = "entry_one"
 
 # reference §3.2 "segment 1 red", and the level frame that rides with it.
 GOLDEN_SEG0_RED = "33051501ff0000000000000001000000000000dc"
@@ -82,8 +86,16 @@ def ble_stack(monkeypatch: pytest.MonkeyPatch) -> _FakeClient:
     monkeypatch.setattr(ble_raw_write, "_resolve", lambda coordinator, address: MagicMock(address=address))
     monkeypatch.setattr(ble_raw_write, "close_stale_connections_by_address", AsyncMock())
     monkeypatch.setattr(ble_raw_write, "establish_connection", AsyncMock(return_value=client))
-    monkeypatch.setattr(ble_raw_write, "BLE_IDLE_DISCONNECT_SECONDS", 0.01)
     return client
+
+
+async def _expire_idle_window(hass: Any) -> None:
+    """Fire the idle-disconnect timer on the loop's clock, not the wall's."""
+    async_fire_time_changed(
+        hass,
+        dt_util.utcnow() + timedelta(seconds=ble_raw_write.BLE_IDLE_DISCONNECT_SECONDS + 1),
+    )
+    await hass.async_block_till_done()
 
 
 class _FakeRawClient:
@@ -102,9 +114,12 @@ def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
     return client
 
 
-def _coordinator(*, ble: bool = True, lan_raw: bool = False, mqtt: bool = False) -> Any:
+def _coordinator(hass: Any = None, *, ble: bool = True, lan_raw: bool = False, mqtt: bool = False) -> Any:
     coordinator = MagicMock()
     coordinator._govee_zone_state_registry = None
+    if hass is not None:
+        coordinator.hass = hass
+    coordinator.config_entry.entry_id = ENTRY_ID
     coordinator.config_entry.options = {
         CONF_ENABLE_BLE_RAW_WRITE: ble,
         CONF_ENABLE_LAN_RAW_WRITE: lan_raw,
@@ -211,25 +226,86 @@ class TestLifecycle:
         assert len(ble_stack.hexes) == 2
 
     @pytest.mark.asyncio
-    async def test_the_link_drops_after_the_idle_window(self, ble_stack):
-        coordinator = _coordinator()
+    async def test_the_link_drops_after_the_idle_window(self, hass, ble_stack):
+        coordinator = _coordinator(hass)
 
         await _send(coordinator, [bytes.fromhex(GOLDEN_SEG0_RED)])
         assert ble_stack.disconnects == 0
 
-        await asyncio.sleep(ble_raw_write.BLE_IDLE_DISCONNECT_SECONDS * 4)
+        await _expire_idle_window(hass)
 
         assert ble_stack.disconnects == 1
 
     @pytest.mark.asyncio
-    async def test_a_write_after_the_idle_window_reconnects(self, ble_stack):
-        coordinator = _coordinator()
+    async def test_a_write_after_the_idle_window_reconnects(self, hass, ble_stack):
+        coordinator = _coordinator(hass)
 
         await _send(coordinator, [bytes.fromhex(GOLDEN_SEG0_RED)])
-        await asyncio.sleep(ble_raw_write.BLE_IDLE_DISCONNECT_SECONDS * 4)
+        await _expire_idle_window(hass)
         await _send(coordinator, [bytes.fromhex(GOLDEN_SEG0_RED)])
 
         assert ble_raw_write.establish_connection.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_new_write_disarms_the_pending_idle_disconnect(self, hass, ble_stack):
+        """A burst spread over more than one call must not lose its link mid-way."""
+        coordinator = _coordinator(hass)
+
+        await _send(coordinator, [bytes.fromhex(GOLDEN_SEG0_RED)])
+        link = ble_raw_write._LINKS[(ENTRY_ID, BLE_MAC)]
+
+        armed = MagicMock()
+        link._idle = armed
+        await _send(coordinator, [bytes.fromhex(GOLDEN_SEG0_LEVEL_32)])
+
+        # Disarmed on entry, then re-armed on the way out.
+        armed.assert_called_once_with()
+        assert link._idle is not armed
+        assert ble_stack.disconnects == 0
+
+    @pytest.mark.asyncio
+    async def test_an_idle_disconnect_cannot_land_inside_a_write(self, hass, ble_stack):
+        """The drop takes the write lock, so it waits for the frames in flight."""
+        coordinator = _coordinator(hass)
+        await _send(coordinator, [bytes.fromhex(GOLDEN_SEG0_RED)])
+        link = ble_raw_write._LINKS[(ENTRY_ID, BLE_MAC)]
+
+        gate = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def _blocking_write(uuid: str, frame: bytes, response: bool = True) -> None:
+            entered.set()
+            await gate.wait()
+            ble_stack.writes.append((uuid, bytes(frame)))
+
+        ble_stack.write_gatt_char = _blocking_write
+        writing = asyncio.create_task(link.async_write([bytes.fromhex(GOLDEN_SEG0_RED)]))
+        await entered.wait()
+
+        dropping = asyncio.create_task(link.async_disconnect())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        # Queued behind the lock, not applied to a client mid-write.
+        assert ble_stack.disconnects == 0
+        assert link._client is not None
+
+        gate.set()
+        assert await writing is True
+        await dropping
+        assert ble_stack.disconnects == 1
+
+    @pytest.mark.asyncio
+    async def test_unloading_an_entry_drops_only_its_own_links(self, hass, ble_stack):
+        other = _coordinator(hass)
+        other.config_entry.entry_id = "entry_two"
+
+        await _send(_coordinator(hass), [bytes.fromhex(GOLDEN_SEG0_RED)])
+        await _send(other, [bytes.fromhex(GOLDEN_SEG0_RED)])
+        assert set(ble_raw_write._LINKS) == {(ENTRY_ID, BLE_MAC), ("entry_two", BLE_MAC)}
+
+        await ble_raw_write.async_disconnect_all(ENTRY_ID)
+
+        assert set(ble_raw_write._LINKS) == {("entry_two", BLE_MAC)}
 
     @pytest.mark.asyncio
     async def test_stale_handles_are_cleared_before_connecting(self, ble_stack):

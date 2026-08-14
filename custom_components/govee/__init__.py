@@ -25,6 +25,7 @@ from .api import (
     GoveeIotCredentials,
 )
 from .api.auth import GoveeAuthClient, _derive_client_id
+from .api.ble_raw_write import async_disconnect_all  # fork: plaintext BLE tier
 from .const import (
     CONF_API_KEY,
     CONFIG_VERSION,
@@ -341,6 +342,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bo
         # Shutdown coordinator
         coordinator = entry.runtime_data
         await coordinator.async_shutdown()
+
+        # fork: release this entry's held BLE links. They are held in a
+        # module-global keyed by entry, so without this a reload leaks a
+        # connection and pins the old coordinator.
+        await async_disconnect_all(entry.entry_id)
 
         # IoT-cred storage moved to entry.data in v2 schema; no per-entry
         # hass.data sub-entries to clean up. Tear down services and clear
