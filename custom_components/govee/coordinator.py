@@ -173,6 +173,19 @@ WATER_DETECTOR_POLL_INTERVAL = 120  # 2 minutes
 HUMIDITY_VERIFICATION_DELAY_SECONDS = 8
 
 
+def command_kind(command: DeviceCommand) -> str:
+    """Supersede key for a command (fork): its capability, not its device.
+
+    Two commands share a kind when a newer one genuinely overrides the older —
+    i.e. they drive the same capability + instance. Commands of different kinds
+    are independent, so one must never cancel another's deferred fallback.
+    """
+    try:
+        return f"{command.capability_type}:{command.instance}"
+    except Exception:  # pragma: no cover - defensive, properties are constants
+        return type(command).__name__
+
+
 @dataclasses.dataclass
 class _LanReadOverlay:
     """Device-native LAN ``devStatus`` shaped for ``update_from_lan`` (issue #57).
@@ -311,10 +324,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # still to come.
         self._deferred_power_off: set[str] = set()
 
-        # Fork: per-device command counter, bumped on every control call. A
-        # deferred LAN confirm captures it at send and abandons its cloud
-        # fallback if it has moved — the user issued something newer.
-        self._command_generation: dict[str, int] = {}
+        # Fork: per-(device, command kind) counter, bumped on every control
+        # call. A deferred LAN confirm captures its own kind's value at send and
+        # abandons its cloud fallback if it has moved — the user issued a newer
+        # command of the SAME kind. Keying on the kind and not just the device
+        # is what keeps an unrelated follow-up (a segment paint behind a
+        # deferred power-on) from cancelling a fallback it does not supersede.
+        self._command_generation: dict[tuple[str, str], int] = {}
 
         # Track rate limit state to avoid spamming repair issues
         self._rate_limited: bool = False
@@ -2737,10 +2753,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if is_power_off:
             self._pending_power_off.add(device_id)
 
-        # Fork: every control call supersedes the ones before it for this
-        # device. Stamped before dispatch so a deferred confirm's captured
+        # Fork: a control call supersedes the earlier ones of the SAME kind for
+        # this device. Stamped before dispatch so a deferred confirm's captured
         # value is the one the write it is confirming was sent under.
-        self._command_generation[device_id] = self._command_generation.get(device_id, 0) + 1
+        gen_key = (device_id, command_kind(command))
+        self._command_generation[gen_key] = self._command_generation.get(gen_key, 0) + 1
 
         try:
             # BLE-first dispatch: if a BLE transport is available for this
@@ -3059,7 +3076,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._config_entry.async_create_background_task(
                 self.hass,
                 self._async_confirm_lan_write_deferred(
-                    device_id, device, command, ip, self._command_generation.get(device_id, 0), sent_at
+                    device_id,
+                    device,
+                    command,
+                    ip,
+                    self._command_generation.get((device_id, command_kind(command)), 0),
+                    sent_at,
                 ),
                 name="govee_lan_deferred_confirm",
             )
@@ -3084,20 +3106,22 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         off the caller's critical path instead of in front of it.
 
         Args:
-            generation: The device's command counter as it stood when this
-                write was sent. The fallback re-sends the ORIGINAL command, so
-                it must abort when the counter has moved: the user issued
-                something newer, and re-sending would override it (a deferred
-                power-on re-lighting a lamp just turned off).
+            generation: The (device, command-kind) counter as it stood when
+                this write was sent. The fallback re-sends the ORIGINAL
+                command, so it must abort when the counter has moved: a newer
+                command of the same kind would be overridden (a deferred
+                power-on re-lighting a lamp just turned off). A command of a
+                different kind bumps a different key and is left alone.
             sent_at: When the datagram left, for the echo window.
         """
         try:
             if await self._async_confirm_lan_write(device_id, device, command, ip, sent_at):
                 return
-            if self._command_generation.get(device_id, 0) != generation:
+            if self._command_generation.get((device_id, command_kind(command)), 0) != generation:
                 _LOGGER.debug(
-                    "Govee deferred LAN confirm failed for %s but a newer command superseded it — not re-sending",
+                    "Govee deferred LAN confirm failed for %s but a newer %s command superseded it — not re-sending",
                     device_id,
+                    command_kind(command),
                 )
                 return
             _LOGGER.debug(

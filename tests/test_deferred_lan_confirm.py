@@ -276,22 +276,62 @@ class TestTheFallbackNeverOverridesANewerCommand:
     """The deferred re-send carries the ORIGINAL command, so it must expire."""
 
     @pytest.mark.asyncio
-    async def test_a_superseded_command_is_not_re_sent(self, slow_settle):
+    async def test_a_newer_command_of_the_same_kind_supersedes(self, slow_settle):
         # The hazard: a deferred power-ON whose confirm fails re-lights a lamp
         # the user turned off while the settle was still running.
         coord, tasks = _ready_coord()
         coord._lan_client = _SlowReadClient(read_reply=None)  # never confirms
 
         await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True), defer_lan_confirm=True)
-        # A newer command for the same device, issued during the settle. Colour
-        # has no LAN mapping, so it goes straight out over the cloud.
+        # A newer power command, issued during the settle. Its own (inline,
+        # unconfirmed) write falls back to the cloud in the usual way.
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=False))
+
+        await asyncio.gather(*tasks)
+
+        # Only the newer power command reached the cloud; the stale power-on
+        # was abandoned rather than re-lighting the lamp.
+        sent = [call.args[2] for call in coord._api_client.control_device.await_args_list]
+        assert sent == [PowerCommand(power_on=False)]
+
+    @pytest.mark.asyncio
+    async def test_a_command_of_a_different_kind_does_not_supersede(self, slow_settle):
+        # The guard is keyed per (device, capability): a follow-up that drives a
+        # DIFFERENT capability — a segment/colour paint chasing the power-on the
+        # zone entity just issued — does not override the power-on, so it must
+        # not cancel the power-on's cloud fallback and leave the lamp dark.
+        coord, tasks = _ready_coord()
+        coord._lan_client = _SlowReadClient(read_reply=None)  # never confirms
+
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True), defer_lan_confirm=True)
+        # Colour has no LAN mapping, so it goes straight out over the cloud.
         await coord.async_control_device(DEVICE_ID, ColorCommand(color=RGBColor(0, 0, 255)))
 
         await asyncio.gather(*tasks)
 
-        # Only the newer command reached the cloud; the stale power-on did not.
         sent = [call.args[2] for call in coord._api_client.control_device.await_args_list]
-        assert sent == [ColorCommand(color=RGBColor(0, 0, 255))]
+        assert PowerCommand(power_on=True) in sent
+        assert ColorCommand(color=RGBColor(0, 0, 255)) in sent
+
+    @pytest.mark.asyncio
+    async def test_a_segment_paint_does_not_cancel_a_deferred_power_on(self, slow_settle):
+        # The concrete C3 regression: child_power defers a PowerCommand, the
+        # zone/segment write follows immediately, and the power-on's fallback
+        # must still run.
+        from custom_components.govee.models import SegmentColorCommand
+
+        coord, tasks = _ready_coord()
+        coord._lan_client = _SlowReadClient(read_reply=None)
+
+        await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True), defer_lan_confirm=True)
+        await coord.async_control_device(
+            DEVICE_ID, SegmentColorCommand(segment_indices=(1, 2), color=RGBColor(255, 0, 0))
+        )
+
+        await asyncio.gather(*tasks)
+
+        sent = [call.args[2] for call in coord._api_client.control_device.await_args_list]
+        assert PowerCommand(power_on=True) in sent
 
     @pytest.mark.asyncio
     async def test_an_unsuperseded_command_still_re_sends(self, slow_settle):
@@ -307,13 +347,15 @@ class TestTheFallbackNeverOverridesANewerCommand:
 
     @pytest.mark.asyncio
     async def test_a_command_for_another_device_does_not_expire_it(self, slow_settle):
-        # The counter is per device: unrelated traffic must not cancel a
+        # The counter is per (device, kind): unrelated traffic must not cancel a
         # legitimate fallback.
+        from custom_components.govee.coordinator import command_kind
+
         coord, tasks = _ready_coord()
         coord._lan_client = _SlowReadClient(read_reply=None)
 
         await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True), defer_lan_confirm=True)
-        coord._command_generation[OTHER_DEVICE_ID] = 99
+        coord._command_generation[(OTHER_DEVICE_ID, command_kind(PowerCommand(power_on=True)))] = 99
 
         await asyncio.gather(*tasks)
 
