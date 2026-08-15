@@ -37,14 +37,12 @@ set_segment_color:
         color_rgb:
 
 apply_diy_effect:
-  name: Apply DIY Effect
+  name: Apply DIY effect
   description: >-
-    Compose and upload a DIY effect to a multi-zone lamp (H60B0). Requires the
-    "zone lights" and "send advanced commands over LAN" options. Target exactly
-    one lamp - either the device or any one of its entities. A zone whose fields
-    are all omitted is switched off in the uploaded effect; within a zone that is
-    used, every omitted field falls back to its fixed default rather than to
-    whatever the DIY config entities currently show.
+    Composes and uploads a DIY effect to one multi-zone lamp. Target exactly one
+    device. A zone with every field empty (or mode "none") is switched off; an
+    omitted field uses its fixed default, not the currently staged value.
+    Requires the per-zone lights option.
   target:
     device:
       integration: govee
@@ -59,10 +57,9 @@ apply_diy_effect:
         ripple_mode:
           name: Ripple mode
           description: >-
-            Effect mode for the ripple zone. Pick a name, or type a raw number
-            0-255 - the ripple's mode table is known to be incomplete and the
-            lamp also accepts the ring's mode numbers here. "none" (or omitting
-            every ripple field) switches the zone off.
+            Effect mode for the ripple zone. Pick a name, or enter a number
+            0-255. "none" - or leaving every ripple field empty - switches the
+            zone off.
           required: false
           example: twinkle
           selector:
@@ -100,8 +97,8 @@ apply_diy_effect:
         ripple_direction:
           name: Ripple direction
           description: >-
-            Diffuser direction for the ripple zone. Default cw. The ring zone
-            has no direction field on the wire, so none is offered for it.
+            Motion of the ripple effect: cw, ccw, or reverse (a back-and-forth
+            sweep).
           required: false
           default: cw
           example: ccw

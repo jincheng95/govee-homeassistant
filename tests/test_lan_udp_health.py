@@ -327,10 +327,10 @@ class TestTranslations:
         return data["entity"]["binary_sensor"]
 
     def test_present_in_strings(self):
-        assert self._block("strings.json")["lan_udp_connectivity"] == {"name": "LAN UDP"}
+        assert self._block("strings.json")["lan_udp_connectivity"] == {"name": "LAN (raw)"}
 
     def test_present_in_en_json(self):
-        assert self._block("translations/en.json")["lan_udp_connectivity"] == {"name": "LAN UDP"}
+        assert self._block("translations/en.json")["lan_udp_connectivity"] == {"name": "LAN (raw)"}
 
     def test_identical_across_files(self):
         assert (

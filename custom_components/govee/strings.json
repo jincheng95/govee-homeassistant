@@ -88,8 +88,8 @@
           "lan_targets": "LAN device addresses / subnets (advanced)",
           "enable_lan_nudge": "Re-check device state locally after cloud updates",
           "enable_lan_raw_write": "Send segment colours over the local network",
-          "enable_ble_raw_write": "Control the light bar over Bluetooth",
-          "enable_zone_lights": "Separate light entities for each zone of a multi-zone lamp"
+          "enable_ble_raw_write": "Send segment colours over Bluetooth",
+          "enable_zone_lights": "Split a multi-zone lamp into per-zone lights"
         },
         "data_description": {
           "api_temperature_unit": "Auto (default) converts known Fahrenheit-reporting thermometers (e.g. H5179, H5109, H5110, H5111, H5075, H5100) automatically. Choose Fahrenheit if another thermometer reads about 1.8× too high (e.g. 74 instead of 23), or Celsius to force no conversion. Govee's API omits unit metadata, so the value can't always be auto-detected.",
@@ -98,8 +98,8 @@
           "lan_targets": "Only needed when LAN-enabled Govee devices are on a different subnet/VLAN than Home Assistant, so the local discovery scan can't reach them. Enter a comma-separated list of device IPs (10.20.0.51), broadcast addresses (10.20.0.255), and/or subnets in CIDR (10.20.0.0/24, /24 or smaller). Subnets are scanned device-by-device since most routers drop cross-VLAN broadcasts. Leave blank if all devices share Home Assistant's network.",
           "enable_lan_nudge": "When the cloud reports a change made outside Home Assistant, the device's real state is read over the local network instead of trusting the push. Locally discovered devices only.",
           "enable_lan_raw_write": "Segment colour and brightness act immediately instead of taking Govee's cloud round trip. Works on locally discovered lamps with a supported model; others keep using the cloud. Segment state can't be read back, so entities show the last command sent. Zone lights do not need this option \u2014 they always use the local network.",
-          "enable_ble_raw_write": "Segment colour and brightness on lamps that accept no local commands over Wi-Fi, sent straight to the lamp over Bluetooth instead of through Govee's cloud. Needs a Bluetooth adapter or an ESPHome Bluetooth proxy in range. Only one app can hold a Bluetooth connection at a time, so the Govee app may fail to connect for a few seconds after a command.",
-          "enable_zone_lights": "The zone switches become full lights (colour, brightness, flow rate) and the lamp's own entity becomes a power-and-brightness master. Zone commands go over the local network, so the lamp must be discovered there. Automations that set an effect on the lamp entity must point at a zone instead."
+          "enable_ble_raw_write": "For lamps with no local Wi-Fi control. Needs a Bluetooth adapter or an active Bluetooth proxy in range. While a command is being sent, the Govee phone app may briefly be unable to connect.",
+          "enable_zone_lights": "Each zone becomes its own light and the lamp's own entity becomes a dimmable master. Automations that set an effect on the lamp entity must target a zone or the scene selector instead. Zone state shows the last command sent \u2014 the device cannot report it back."
         }
       },
       "select_segment_devices": {
@@ -211,7 +211,7 @@
         "name": "Bottom Light"
       },
       "govee_segment_blending": {
-        "name": "Segment Blending"
+        "name": "Segment blending"
       }
     },
     "sensor": {
@@ -299,7 +299,7 @@
         "name": "Internet"
       },
       "lan_udp_connectivity": {
-        "name": "LAN UDP"
+        "name": "LAN (raw)"
       }
     },
     "fan": {
@@ -386,8 +386,8 @@
       }
     },
     "apply_diy_effect": {
-      "name": "Apply DIY Effect",
-      "description": "Compose and upload a DIY effect to a multi-zone lamp (H60B0). Target exactly one lamp, either the device or any one of its entities. A zone whose fields are all omitted is switched off in the uploaded effect.",
+      "name": "Apply DIY effect",
+      "description": "Composes and uploads a DIY effect to one multi-zone lamp. Target exactly one device. A zone with every field empty (or mode \"none\") is switched off; an omitted field uses its fixed default, not the currently staged value. Requires the per-zone lights option.",
       "fields": {
         "ripple_mode": {
           "name": "Ripple mode",

@@ -80,6 +80,7 @@ from ..diy_previews import preview_map, preview_url
 from ..diy_state import async_send_diy_effect, diy_spec_for, store, zone_lights_enabled
 from ..entity import GoveeEntity
 from ..models import GoveeDevice
+from .zone_light import zone_display_name
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -232,13 +233,13 @@ def async_diy_preview_entities(
 
 
 def diy_zone_display_name(zone: DiyZoneSpec) -> str:
-    """Human name for a DIY zone, from its profile key ("ripple" -> "Ripple")."""
-    return zone.zone_key.replace("_", " ").title()
+    """Human name for a DIY zone — the one zone name source, see zone_light."""
+    return zone_display_name(zone)
 
 
 def mode_label(name: str) -> str:
-    """Display label for a mode name from the profile table ("none" -> "None")."""
-    return name.replace("_", " ").title()
+    """Sentence-case label for a mode name from the profile table."""
+    return name.replace("_", " ").capitalize()
 
 
 # Entities

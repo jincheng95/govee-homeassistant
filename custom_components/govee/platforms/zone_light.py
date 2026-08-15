@@ -137,9 +137,16 @@ def async_zone_number_entities(coordinator: GoveeCoordinator, entry: ConfigEntry
     return entities
 
 
-def zone_display_name(zone: ZoneSpec) -> str:
-    """Human name for a zone, derived from its profile key ("ripple" -> "Ripple")."""
-    return zone.key.replace("_", " ").title()
+def zone_display_name(zone: Any) -> str:
+    """Sentence-case display name for a zone, from its profile key.
+
+    The single name source for everything built around a zone — the zone light,
+    its flow rate, its segments and the DIY staging entities — so one piece of
+    hardware never gets two names. Accepts a :class:`ZoneSpec` or a
+    :class:`~..api.protocol.profiles.DiyZoneSpec`.
+    """
+    key = getattr(zone, "key", None) or getattr(zone, "zone_key", "")
+    return str(key).replace("_", " ").capitalize()
 
 
 def _segmented_zone(device: GoveeDevice) -> ZoneSpec | None:
