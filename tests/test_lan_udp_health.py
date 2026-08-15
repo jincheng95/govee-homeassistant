@@ -12,9 +12,12 @@ Two entity-level requirements and one honesty requirement:
   timestamp and nothing more.
 
 The honesty requirement is the one with teeth. The sensor must agree with the
-writer's own gates, so the cases that matter are the ones where a device looks
-perfectly healthy on the LAN and still cannot be written to: the option is off,
-or the model is on a stack that ignores raw frames over LAN.
+writer's own gates — the LINK gates, i.e. ``lan_target(require_option=False)``,
+which is what the zone and DIY paths use. So the cases that matter are the ones
+where a device looks perfectly healthy on the LAN and still cannot be written
+to (the model is on a stack that ignores raw frames over LAN), and the converse:
+``enable_lan_raw_write`` off must NOT read as a dead link, because zone and DIY
+writes go out over it regardless.
 """
 
 from __future__ import annotations
@@ -200,19 +203,20 @@ class TestSemantics:
         assert health.is_available is False
         assert health.last_failure_reason == lan_udp_health.REASON_NO_RAW_PROFILE
 
-    def test_transport_disabled_is_unavailable(self):
-        """The option defaults to off; the sensor must not read "connected".
+    def test_the_transport_option_off_still_reports_available(self):
+        """The zone/DIY paths use this link with the option off.
 
-        With the raw transport off, `lan_target` refuses every device — so a
-        green sensor beside a writer that never writes is a lie, and it is the
-        DEFAULT configuration.
+        `enable_lan_raw_write` buys an optional fast path for writes the cloud
+        can also make; zone and DIY writes call `lan_target(require_option=
+        False)` and use the link regardless. Reporting the link down while it is
+        carrying those writes is the lie, not the other way round.
         """
         coordinator = _coordinator(raw_write=False)
         lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
-        assert health.is_available is False
-        assert health.last_failure_reason == lan_udp_health.REASON_TRANSPORT_DISABLED
+        assert health.is_available is True
+        assert health.last_failure_reason is None
 
     def test_a_sku_that_ignores_lan_raw_frames_is_unavailable(self):
         """Profiled and reachable is not enough — the pipe has to be right.
@@ -234,17 +238,37 @@ class TestSemantics:
 
         assert coordinator.get_transport_health(DEVICE_ID, "lan_udp").is_available is True
 
-    def test_turning_the_option_on_clears_the_gate_reason(self):
+    def test_regaining_lan_presence_clears_the_gate_reason(self):
         """Gate reasons are this pass's to clear; a send failure is not."""
-        coordinator = _coordinator(raw_write=False)
+        coordinator = _coordinator(on_lan=False)
         lan_udp_health.refresh(coordinator)
-        coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: True}
+        assert coordinator.get_transport_health(DEVICE_ID, "lan_udp").last_failure_reason is not None
+        coordinator._lan_devices[DEVICE_ID] = object()
 
         lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is True
         assert health.last_failure_reason is None
+
+    def test_zone_lights_on_and_the_raw_option_off_reports_available(self):
+        """The C9 boundary, stated as a state the sensor must report.
+
+        Zone lights on + `enable_lan_raw_write` off is the shipped default
+        combination for a multi-zone lamp, and every zone write in it goes over
+        this link. The sensor has to agree with `lan_target(require_option=
+        False)`, which is what those writes call.
+        """
+        from custom_components.govee.api import lan_raw
+        from custom_components.govee.const import CONF_ENABLE_ZONE_LIGHTS
+
+        coordinator = _coordinator(raw_write=False)
+        coordinator.config_entry.options[CONF_ENABLE_ZONE_LIGHTS] = True
+        lan_udp_health.refresh(coordinator)
+
+        assert coordinator.get_transport_health(DEVICE_ID, "lan_udp").is_available is True
+        # ...and that is not a guess: the writer agrees.
+        assert lan_raw.lan_target(coordinator, DEVICE_ID, "H60B0", require_option=False) is not None
 
     def test_a_send_stamps_a_time_but_never_availability(self):
         """A UDP datagram into the void proves nothing about the device."""
@@ -304,13 +328,13 @@ class TestSemantics:
         lan_udp_health.refresh(coordinator)
         lan_udp_health.note_failure(coordinator, DEVICE_ID)
         lan_udp_health.note_send(coordinator, DEVICE_ID)
-        coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: False}
+        coordinator._lan_devices.clear()
 
         lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
         assert health.is_available is False
-        assert health.last_failure_reason == lan_udp_health.REASON_TRANSPORT_DISABLED
+        assert health.last_failure_reason == lan_udp_health.REASON_NO_LAN_PRESENCE
 
 
 # ==============================================================================

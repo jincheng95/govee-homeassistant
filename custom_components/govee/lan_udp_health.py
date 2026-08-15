@@ -3,9 +3,10 @@
 Scores ``lan_udp`` as a fifth transport beside ``cloud_api``, ``mqtt``, ``ble``
 and ``lan``. Availability cannot mean "a write landed" — nothing on the raw
 channel is acknowledged — so it means "a frame sent now would have somewhere to
-go", gated on exactly the conditions :func:`~.api.lan_raw.lan_target` gates on.
-Sends stamp ``last_send_ts`` without establishing availability; ``send_failed``
-latches until the next accepted send; ``last_success_ts`` is never stamped here.
+go": the link gates of :func:`~.api.lan_raw.lan_target` with
+``require_option=False``, which is what the zone and DIY paths use. Sends stamp
+``last_send_ts`` without establishing availability; ``send_failed`` latches
+until the next accepted send; ``last_success_ts`` is never stamped here.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final
 
 from .api.protocol import Transport
-from .const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
 from .models.transport import TransportHealth
 from .zone_state import profile_for
 
@@ -27,7 +27,6 @@ _LOGGER = logging.getLogger(__name__)
 TRANSPORT_LAN_UDP: Final = "lan_udp"
 """Transport kind for the raw write-only UDP path (see models/transport.py)."""
 
-REASON_TRANSPORT_DISABLED: Final = "transport_disabled"
 REASON_NO_LAN_PRESENCE: Final = "no_lan_presence"
 REASON_NO_RAW_PROFILE: Final = "no_raw_profile"
 REASON_NO_LAN_RAW_TRANSPORT: Final = "no_lan_raw_transport"
@@ -38,7 +37,6 @@ REASON_SEND_FAILED: Final = "send_failed"
 # socket is a hard negative, and nothing observed by this pass disproves it.
 # It latches — see `refresh` and `note_send`.
 _GATE_REASONS: Final = (
-    REASON_TRANSPORT_DISABLED,
     REASON_NO_LAN_PRESENCE,
     REASON_NO_RAW_PROFILE,
     REASON_NO_LAN_RAW_TRANSPORT,
@@ -61,13 +59,12 @@ def refresh(coordinator: GoveeCoordinator) -> None:
     Args:
         coordinator: The coordinator whose devices should be re-scored.
     """
-    enabled = _option_enabled(coordinator)
     lan_active = _lan_active_ids(coordinator)
     for device_id, device in _devices(coordinator).items():
         health = _health(coordinator, device_id)
         if health is None:
             continue
-        reason = _gate_reason(device, enabled=enabled, on_lan=device_id in lan_active)
+        reason = _gate_reason(device, on_lan=device_id in lan_active)
         if reason is not None:
             health.is_available = False
             health.last_failure_reason = reason
@@ -79,19 +76,21 @@ def refresh(coordinator: GoveeCoordinator) -> None:
             health.last_failure_reason = None
 
 
-def _gate_reason(device: Any, *, enabled: bool, on_lan: bool) -> str | None:
+def _gate_reason(device: Any, *, on_lan: bool) -> str | None:
     """Why a raw frame to ``device`` could not go out, or None when it could.
+
+    ``enable_lan_raw_write`` is deliberately NOT a gate here: it buys an
+    optional fast path for writes the cloud can also make, while the zone and
+    DIY paths use this link with ``require_option=False``. Gating on it made the
+    sensor report "unavailable" for a link those paths were actively using.
 
     Args:
         device: The coordinator's device record.
-        enabled: Whether the raw-write option is on.
         on_lan: Whether the device is currently correlated to a LAN address.
 
     Returns:
         A failure-reason string, or None when every gate passes.
     """
-    if not enabled:
-        return REASON_TRANSPORT_DISABLED
     if not on_lan:
         return REASON_NO_LAN_PRESENCE
     profile = profile_for(_sku(device))
@@ -152,16 +151,3 @@ def _lan_active_ids(coordinator: GoveeCoordinator) -> set[str]:
 def _sku(device: Any) -> str:
     """A device's model string."""
     return str(getattr(device, "sku", "") or "")
-
-
-def _option_enabled(coordinator: GoveeCoordinator) -> bool:
-    """Whether the user turned the raw-LAN transport on.
-
-    Read defensively: this runs on the coordinator's staleness timer, which can
-    fire against a coordinator that has not been bound to a config entry yet.
-    No entry means no option, which means the default (off).
-    """
-    entry = getattr(coordinator, "config_entry", None)
-    if entry is None:
-        return bool(DEFAULT_ENABLE_LAN_RAW_WRITE)
-    return bool(entry.options.get(CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE))

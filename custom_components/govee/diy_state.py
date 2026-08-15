@@ -303,7 +303,7 @@ async def async_send_diy_effect(
     if target is None:
         raise HomeAssistantError(
             f"{device.name}: DIY effects can only be uploaded over the local network, and this device "
-            "is not currently reachable there (check the LAN UDP connectivity sensor)"
+            "is not currently reachable there (see the device's 'LAN (raw)' connectivity sensor)"
         )
     ip, _profile = target
 

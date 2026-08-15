@@ -209,14 +209,13 @@ data:
 
 On a multi‑zone lamp (H60B0 today) a **DIY effect** is not a setting you toggle — it's a small document you author: each zone gets an effect mode, a transition speed, a colour palette, and (on the ripple zone only) a diffuser direction and flow rate. The whole thing is uploaded to the lamp in one shot over the local network.
 
-Two options in ⚙️ Configure gate the feature, because a DIY upload has no cloud equivalent at all:
+One option in ⚙️ Configure gates the feature, because a DIY upload has no cloud equivalent at all:
 
 | Option | Needed for |
 |---|---|
-| **Separate light entities for each zone of a multi‑zone lamp** | The per‑zone entities and the DIY authoring controls |
-| **Control light zones over the local network** | The upload itself — the lamp must be reachable on your LAN |
+| **Split a multi‑zone lamp into per‑zone lights** | The per‑zone entities, the DIY authoring controls and the upload |
 
-With both on, each zone gets staging controls (mode / speed / palette / direction / flow rate) plus an **Apply DIY effect** button. Nothing leaves the house until you press it.
+The upload itself needs no extra option — it always uses the local network, so the lamp has to be reachable there (its **LAN (raw)** connectivity sensor says whether it is). With the option on, each zone gets staging controls (mode / speed / palette / direction / flow rate) plus an **Apply DIY effect** button. Nothing leaves the house until you press it.
 
 ### `govee.apply_diy_effect`
 
