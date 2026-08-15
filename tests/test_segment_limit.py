@@ -20,10 +20,13 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.govee import segment_limit
 from custom_components.govee.api.protocol import get_profile
 from custom_components.govee.const import (
+    DOMAIN,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
     SUFFIX_GROUPED_SEGMENT,
@@ -204,6 +207,40 @@ class TestPruning:
         assert _is_phantom_segment(coordinator, DEVICE_ID, f"{SUFFIX_SEGMENT}9") is True
         assert _is_phantom_segment(coordinator, DEVICE_ID, f"{SUFFIX_SEGMENT}3") is False
         assert _is_phantom_segment(coordinator, "unknown-device", f"{SUFFIX_SEGMENT}9") is False
+
+    @pytest.mark.asyncio
+    async def test_a_phantom_is_gone_from_the_real_registry_after_cleanup(self, hass):
+        """End to end, against Home Assistant's own registry — nothing mocked.
+
+        The predicate tests above prove what the cap *says*; this proves the
+        entity is actually removed, which is the only thing a user sees.
+        """
+        from custom_components.govee import _async_cleanup_orphaned_entities
+
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            options={"segment_mode_by_device": {DEVICE_ID: SEGMENT_MODE_INDIVIDUAL}},
+        )
+        entry.add_to_hass(hass)
+
+        registry = er.async_get(hass)
+        real = registry.async_get_or_create(
+            "light", DOMAIN, f"{DEVICE_ID}{SUFFIX_SEGMENT}3", config_entry=entry
+        )
+        phantom = registry.async_get_or_create(
+            "light", DOMAIN, f"{DEVICE_ID}{SUFFIX_SEGMENT}9", config_entry=entry
+        )
+        blending = registry.async_get_or_create(
+            "switch", DOMAIN, f"{DEVICE_ID}{SUFFIX_SEGMENT_BLENDING}", config_entry=entry
+        )
+
+        await _async_cleanup_orphaned_entities(hass, entry, _coordinator(_device()))
+
+        # Segment 9 does not exist on a 7-segment lamp.
+        assert registry.async_get(phantom.entity_id) is None
+        assert registry.async_get(real.entity_id) is not None
+        # And the `_segment_` prefix collision stays fixed (issue C1).
+        assert registry.async_get(blending.entity_id) is not None
 
 
 # ==============================================================================
