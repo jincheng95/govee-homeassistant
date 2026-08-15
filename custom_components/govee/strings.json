@@ -193,22 +193,22 @@
         "name": "Outlet {socket}"
       },
       "govee_main_light": {
-        "name": "Main Light"
+        "name": "Main light"
       },
       "govee_background_light": {
-        "name": "Background Light"
+        "name": "Background light"
       },
       "govee_nebula_light": {
-        "name": "Nebula Light"
+        "name": "Nebula light"
       },
       "govee_ripple_light": {
-        "name": "Ripple Light"
+        "name": "Ripple light"
       },
       "govee_side_light": {
-        "name": "Side Light"
+        "name": "Side light"
       },
       "govee_bottom_light": {
-        "name": "Bottom Light"
+        "name": "Bottom light"
       },
       "govee_segment_blending": {
         "name": "Segment blending"
@@ -391,35 +391,35 @@
       "fields": {
         "ripple_mode": {
           "name": "Ripple mode",
-          "description": "Effect mode for the ripple zone: a name, or a raw number 0-255. \"none\" (or omitting every ripple field) switches the zone off."
+          "description": "Effect mode for the ripple zone. Pick a name, or enter a number 0-255. \"none\" - or leaving every ripple field empty - switches the zone off."
         },
         "ripple_speed": {
           "name": "Ripple speed",
-          "description": "Transition speed for the ripple zone, 1-100. Default 50."
+          "description": "Transition speed for the ripple zone. Default 50."
         },
         "ripple_colors": {
           "name": "Ripple colors",
-          "description": "Ripple palette as a list of [R, G, B] triplets, 1-16 colors."
+          "description": "Palette for the ripple zone as a list of [R, G, B] triplets, in the order the effect cycles them (1-16 colors). Required whenever the zone is used with a mode other than \"none\"."
         },
         "ripple_direction": {
           "name": "Ripple direction",
-          "description": "Diffuser direction for the ripple zone: cw, ccw or reverse. Default cw."
+          "description": "Motion of the ripple effect: cw, ccw, or reverse (a back-and-forth sweep)."
         },
         "ripple_flow_rate": {
           "name": "Ripple flow rate",
-          "description": "Water flow rate for the ripple zone, 1-100. Default 50."
+          "description": "Water flow rate for the ripple zone. Default 50."
         },
         "ring_mode": {
           "name": "Ring mode",
-          "description": "Effect mode for the ring zone: a name, or a raw number 0-255. \"none\" (or omitting every ring field) switches the zone off."
+          "description": "Effect mode for the ring zone. Pick a name or type a raw number 0-255. \"none\" (or omitting every ring field) switches the zone off."
         },
         "ring_speed": {
           "name": "Ring speed",
-          "description": "Transition speed for the ring zone, 1-100. Default 50."
+          "description": "Transition speed for the ring zone. Default 50."
         },
         "ring_colors": {
           "name": "Ring colors",
-          "description": "Ring palette as a list of [R, G, B] triplets, 1-16 colors."
+          "description": "Palette for the ring zone as a list of [R, G, B] triplets, in the order the effect cycles them (1-16 colors). Required whenever the zone is used with a mode other than \"none\"."
         }
       },
       "sections": {
