@@ -16,8 +16,9 @@ Organised around the properties the path has to have:
 from __future__ import annotations
 
 import base64
+import time
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -38,7 +39,10 @@ from custom_components.govee.models.device import (
     DEVICE_TYPE_LIGHT,
     INSTANCE_POWER,
 )
-from custom_components.govee.platforms.segment import GoveeSegmentEntity
+from custom_components.govee.platforms.segment import (
+    READBACK_WRITE_GRACE_SECONDS,
+    GoveeSegmentEntity,
+)
 
 DEVICE_ID = "AA:BB:AA:BB:CC:11:22:33"  # synthetic; H6046 prefix
 
@@ -272,6 +276,44 @@ class TestEntityCorrection:
         entity._handle_segment_readback(decode_payload(CAPTURED_PAYLOAD, segment_count=H6046_SEGMENTS))
 
         entity.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_push_racing_a_fresh_paint_does_not_revert_it(self):
+        """Inside the echo window the bar still reports its pre-paint colour."""
+        entity = _segment_entity(1)
+        entity._rgb_color = (0, 255, 0)
+        entity._written_at = time.monotonic()
+
+        entity._handle_segment_readback(decode_payload(CAPTURED_PAYLOAD, segment_count=H6046_SEGMENTS))
+
+        assert entity.rgb_color == (0, 255, 0)
+        entity.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_push_after_the_grace_window_applies(self):
+        entity = _segment_entity(1)
+        entity._rgb_color = (0, 255, 0)
+        entity._written_at = time.monotonic() - (READBACK_WRITE_GRACE_SECONDS + 0.1)
+
+        entity._handle_segment_readback(decode_payload(CAPTURED_PAYLOAD, segment_count=H6046_SEGMENTS))
+
+        assert entity.rgb_color == MAGENTA
+        entity.async_write_ha_state.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_paint_stamps_the_grace_window(self):
+        entity = _segment_entity(1)
+        entity.coordinator.async_control_device = AsyncMock(return_value=True)
+        assert entity._written_at == 0.0
+
+        with patch("custom_components.govee.platforms.segment.async_segment_color", AsyncMock(return_value=True)):
+            with patch(
+                "custom_components.govee.platforms.segment.async_ensure_device_powered",
+                AsyncMock(),
+            ):
+                await entity.async_turn_on(rgb_color=MAGENTA)
+
+        assert entity._written_at > 0.0
 
     @pytest.mark.asyncio
     async def test_a_reading_for_another_segment_is_not_this_entity_s(self):

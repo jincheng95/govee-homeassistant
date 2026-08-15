@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+import time
+from typing import Any, Final
 
 # mypy --strict: HA's `light` module re-exports without __all__, so
 # `--no-implicit-reexport` raises attr-defined for each member. The
@@ -34,6 +35,16 @@ from ..api.raw_router import async_segment_color  # fork: raw fast path
 _LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
+
+READBACK_WRITE_GRACE_SECONDS: Final = 1.5
+"""How long after our own write a readback for that segment is ignored.
+
+The hardware keeps reporting its PRE-command state for well over a second
+after a write (the same echo lag the profile table records, §2.1: "do not read
+back sooner than ~1.5 s"). A status push landing inside that window carries
+the colour the segment had *before* the paint, so applying it would revert the
+paint the user just made. The next push, outside the window, corrects for real.
+"""
 
 
 class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
@@ -91,6 +102,8 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         self._is_on = True
         self._brightness = 255
         self._rgb_color: tuple[int, int, int] = (255, 255, 255)
+        # ``time.monotonic()`` of this segment's last write, 0.0 for never.
+        self._written_at: float = 0.0
 
     @property
     def available(self) -> bool:
@@ -146,6 +159,7 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
             )
 
         self._is_on = True
+        self._written_at = time.monotonic()  # fork: opens the readback grace
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
@@ -181,6 +195,7 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
             )
 
         self._is_on = False
+        self._written_at = time.monotonic()  # fork: opens the readback grace
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
@@ -225,9 +240,24 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         black (there is no per-segment power command), so adopting its RGB
         would overwrite the colour this segment should return to when it is
         turned back on with the black that means "off".
+
+        A reading arriving within :data:`READBACK_WRITE_GRACE_SECONDS` of this
+        segment's own write is dropped: inside that window the hardware is
+        still reporting its pre-command state, so applying it would revert the
+        paint the user just made.
         """
         reading = readings.get(self._segment_index)
         if reading is None:
+            return
+
+        # The `_written_at` truth test matters: monotonic() counts from boot,
+        # so on a freshly-booted host 0.0 is inside every window.
+        if self._written_at and (time.monotonic() - self._written_at) < READBACK_WRITE_GRACE_SECONDS:
+            _LOGGER.debug(
+                "Ignoring readback for segment %d of %s — write still in flight",
+                self._segment_index,
+                self._device_id,
+            )
             return
 
         if not reading.is_on:
