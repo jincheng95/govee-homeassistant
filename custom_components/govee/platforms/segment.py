@@ -24,6 +24,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.restore_state import RestoreEntity
 
+from ..api.protocol import ha_to_percent  # fork: level-space churn guard
 from ..api.segment_readback import SegmentReading  # fork: §6.2 MQTT readback
 from ..child_power import async_ensure_device_powered  # fork: child -> master power
 from ..const import SIGNAL_SEGMENT_READBACK, SUFFIX_SEGMENT
@@ -267,7 +268,11 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
             self.async_write_ha_state()
             return
 
-        if self._is_on and self._rgb_color == reading.rgb and self._brightness == reading.brightness:
+        # Compared in LEVEL space, not brightness space: the wire quantises 255
+        # values into 101, so a readback of our own write comes back snapped to
+        # a neighbouring brightness (179 -> 70 % -> 178). Comparing brightness
+        # would read that snap as a change and churn the entity on every push.
+        if self._is_on and self._rgb_color == reading.rgb and ha_to_percent(self._brightness) == reading.level:
             return
 
         _LOGGER.debug(

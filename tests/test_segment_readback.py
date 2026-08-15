@@ -147,13 +147,8 @@ class TestGoldenCapture:
             CAPTURED_PAYLOAD, segment_count=H6046_SEGMENTS
         )
 
-    def test_level_scaling_round_trips_with_the_write_path(self):
-        """A level converted to HA and back is the same level.
-
-        This is what keeps the readback of our *own* write from registering as
-        a change: whatever level we asked for comes back as the brightness we
-        are already showing, so the no-churn check below actually fires.
-        """
+    def test_a_level_converted_to_ha_and_back_is_the_same_level(self):
+        """Level -> HA -> level is exact; that direction has no information loss."""
         from custom_components.govee.api.protocol import ha_to_percent
 
         for level in range(1, 101):
@@ -161,6 +156,29 @@ class TestGoldenCapture:
 
         assert level_to_ha_brightness(100) == 255
         assert level_to_ha_brightness(0) == 0
+
+    def test_a_brightness_converted_to_the_wire_and_back_is_quantised(self):
+        """The other direction is lossy — 255 values do not fit in 101.
+
+        This is why the entity's no-churn check compares levels, not
+        brightnesses: 179 comes back as 178, which brightness-space equality
+        would read as a change on every single push.
+        """
+        from custom_components.govee.api.protocol import ha_to_percent
+
+        assert level_to_ha_brightness(ha_to_percent(179)) == 178
+        assert level_to_ha_brightness(ha_to_percent(179)) != 179
+
+        # Exactly the brightnesses that are not themselves images of a level.
+        exact = {level_to_ha_brightness(level) for level in range(1, 101)}
+        lossy = [ha for ha in range(1, 256) if level_to_ha_brightness(ha_to_percent(ha)) != ha]
+        assert len(lossy) == 255 - len(exact)
+        assert lossy
+
+        # But every one of them agrees in level space, which is what the guard
+        # compares.
+        for ha in lossy:
+            assert ha_to_percent(level_to_ha_brightness(ha_to_percent(ha))) == ha_to_percent(ha)
 
 
 class TestPhantomIndices:
@@ -267,6 +285,31 @@ class TestEntityCorrection:
         entity._handle_segment_readback(decode_payload(CAPTURED_PAYLOAD, segment_count=H6046_SEGMENTS))
 
         entity.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_readback_of_our_own_write_is_not_a_change(self):
+        """179 is one of the 155 brightnesses the wire cannot carry exactly."""
+        entity = _segment_entity(1)
+        entity._is_on = True
+        entity._rgb_color = MAGENTA
+        entity._brightness = 179  # writes as level 70, reads back as 178
+
+        entity._handle_segment_readback(decode_payload(CAPTURED_PAYLOAD, segment_count=H6046_SEGMENTS))
+
+        assert entity.brightness == 179
+        entity.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_level_change_still_applies(self):
+        entity = _segment_entity(1)
+        entity._is_on = True
+        entity._rgb_color = MAGENTA
+        entity._brightness = 255  # level 100, the bar reports 70
+
+        entity._handle_segment_readback(decode_payload(CAPTURED_PAYLOAD, segment_count=H6046_SEGMENTS))
+
+        assert entity.brightness == 178
+        entity.async_write_ha_state.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_agreement_on_an_off_segment_writes_nothing(self):

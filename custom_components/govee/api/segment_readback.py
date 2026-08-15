@@ -80,9 +80,10 @@ HA_BRIGHTNESS_MAX: Final = 255
 def level_to_ha_brightness(level: int) -> int:
     """The wire's 0-100 level as HA's 0-255 brightness.
 
-    The exact inverse of :func:`..api.protocol.ha_to_percent` at every
-    level the write path can produce, which is what keeps a readback of our own
-    write from looking like a change: 178 → 70 % → 178.
+    Not an inverse of :func:`..api.protocol.ha_to_percent`: the wire quantises
+    255 values into 101, so a round trip snaps to the nearest of the ~2.55
+    HA values that share a level (179 → 70 % → 178). Comparisons that must not
+    see that snap as a change belong in level space, not brightness space.
 
     Args:
         level: Segment level 0-100 as the frame reports it.
