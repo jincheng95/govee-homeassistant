@@ -2,6 +2,9 @@
 # Coverage configuration for Govee integration
 
 source = custom_components.govee
+# Branch coverage: a line that only ever runs one way through an `if` is not
+# covered in any sense the gate should accept.
+branch = True
 omit =
     */tests/*
     */test_*.py
@@ -18,8 +21,8 @@ show_missing = True
 skip_covered = False
 sort = Cover
 
-# Fail if coverage is below threshold
-fail_under = 25
+# Fail if coverage is below threshold (branch coverage, see [run])
+fail_under = 70
 
 exclude_lines =
     # Standard pragma
