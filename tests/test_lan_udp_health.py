@@ -275,7 +275,8 @@ class TestSemantics:
         assert health.is_available is False
         assert health.last_failure_reason == lan_udp_health.REASON_SEND_FAILED
 
-    def test_refresh_clears_a_stale_gate_reason_but_not_a_send_failure(self):
+    def test_a_send_failure_survives_the_gate_re_score(self):
+        """Never available *and* carrying a failure reason — that pair is a lie."""
         coordinator = _coordinator()
         lan_udp_health.refresh(coordinator)
         lan_udp_health.note_failure(coordinator, DEVICE_ID)
@@ -283,10 +284,33 @@ class TestSemantics:
         lan_udp_health.refresh(coordinator)
 
         health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
-        # Reachability is restored (that is what refresh scores), but the last
-        # hard failure stays on the record.
-        assert health.is_available is True
+        assert health.is_available is False
         assert health.last_failure_reason == lan_udp_health.REASON_SEND_FAILED
+
+    def test_an_accepted_send_clears_the_send_failure(self):
+        """The socket accepting a datagram is what disproves 'the socket refused'."""
+        coordinator = _coordinator()
+        lan_udp_health.refresh(coordinator)
+        lan_udp_health.note_failure(coordinator, DEVICE_ID)
+
+        lan_udp_health.note_send(coordinator, DEVICE_ID)
+
+        health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
+        assert health.is_available is True
+        assert health.last_failure_reason is None
+
+    def test_a_gate_still_wins_over_a_cleared_send_failure(self):
+        coordinator = _coordinator()
+        lan_udp_health.refresh(coordinator)
+        lan_udp_health.note_failure(coordinator, DEVICE_ID)
+        lan_udp_health.note_send(coordinator, DEVICE_ID)
+        coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: False}
+
+        lan_udp_health.refresh(coordinator)
+
+        health = coordinator.get_transport_health(DEVICE_ID, "lan_udp")
+        assert health.is_available is False
+        assert health.last_failure_reason == lan_udp_health.REASON_TRANSPORT_DISABLED
 
 
 # ==============================================================================

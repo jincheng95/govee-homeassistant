@@ -40,11 +40,16 @@ produce).
 
 Directionality
 --------------
-Sends stamp ``last_send_ts`` *without* touching ``is_available``. The tracker's
-``mark_send`` sets availability as a side effect, which is right for MQTT (a
-publish that returns proves the broker took it) and wrong here (a UDP datagram
-into the void proves nothing about the device). The distinction is deliberate;
-see the recording-asymmetry note in :mod:`.transport_health`.
+Sends stamp ``last_send_ts`` *without* establishing ``is_available``. The
+tracker's ``mark_send`` sets availability as a side effect, which is right for
+MQTT (a publish that returns proves the broker took it) and wrong here (a UDP
+datagram into the void proves nothing about the device). The distinction is
+deliberate; see the recording-asymmetry note in :mod:`.transport_health`.
+
+``send_failed`` latches: it survives the gate re-score, because nothing that
+pass observes disproves a datagram the socket refused, and it is cleared by the
+next accepted send — the one thing that does. The sensor is therefore never
+available with a failure reason still standing.
 
 ``last_success_ts`` is never stamped for ``lan_udp``. There is no receive
 direction on this transport — the reads belong to ``lan``.
@@ -78,6 +83,7 @@ REASON_SEND_FAILED: Final = "send_failed"
 # Reasons this pass owns, and therefore may clear when they stop applying.
 # `send_failed` is NOT one of them: a datagram that could not be handed to the
 # socket is a hard negative, and nothing observed by this pass disproves it.
+# It latches — see `refresh` and `note_send`.
 _GATE_REASONS: Final = (
     REASON_TRANSPORT_DISABLED,
     REASON_NO_LAN_PRESENCE,
@@ -93,6 +99,12 @@ def refresh(coordinator: GoveeCoordinator) -> None:
     cadence as the ``lan`` transport it derives from and needs no timer of its
     own.
 
+    A standing ``send_failed`` is left alone, availability included. This pass
+    scores the gates; it observes nothing that disproves a datagram the socket
+    refused, so re-reporting the transport as available would produce the one
+    state the sensor must never show — available, with a failure reason still
+    on the record. Only :func:`note_send` clears that latch.
+
     Args:
         coordinator: The coordinator whose devices should be re-scored.
     """
@@ -106,6 +118,8 @@ def refresh(coordinator: GoveeCoordinator) -> None:
         if reason is not None:
             health.is_available = False
             health.last_failure_reason = reason
+            continue
+        if health.last_failure_reason == REASON_SEND_FAILED:
             continue
         health.is_available = True
         if health.last_failure_reason in _GATE_REASONS:
@@ -136,11 +150,21 @@ def _gate_reason(device: Any, *, enabled: bool, on_lan: bool) -> str | None:
 
 
 def note_send(coordinator: GoveeCoordinator, device_id: str) -> None:
-    """Stamp an outbound raw frame. Deliberately does NOT set availability."""
+    """Stamp an outbound raw frame, and clear a standing ``send_failed``.
+
+    Deliberately does NOT *establish* availability: a datagram into the void
+    proves nothing about the device. It does clear the ``send_failed`` latch,
+    which is a claim about the socket, and a datagram the socket accepted is
+    exactly the evidence that disproves it — so the state it set is undone with
+    it, and the gates go back to owning availability.
+    """
     health = _health(coordinator, device_id)
     if health is None:
         return
     health.last_send_ts = datetime.now(timezone.utc)
+    if health.last_failure_reason == REASON_SEND_FAILED:
+        health.last_failure_reason = None
+        health.is_available = True
 
 
 def note_failure(coordinator: GoveeCoordinator, device_id: str, reason: str = REASON_SEND_FAILED) -> None:
