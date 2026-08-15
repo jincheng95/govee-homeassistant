@@ -172,8 +172,12 @@ class TestCommands:
     @pytest.mark.asyncio
     async def test_a_failed_command_does_not_move_the_optimistic_state(self):
         entity, coordinator = self._entity()
+        # Start from ON — the opposite of the entity's initial state — so the
+        # assertion can only hold if the failed turn_off left it alone.
+        await entity.async_turn_on()
+        assert entity.is_on is True
         coordinator.async_control_device = AsyncMock(return_value=False)
 
-        await entity.async_turn_on()
+        await entity.async_turn_off()
 
-        assert entity.is_on is False
+        assert entity.is_on is True

@@ -9,6 +9,7 @@ read "off" and, without a latch, both send a whole-device power-on.
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +18,13 @@ from custom_components.govee import child_power
 from custom_components.govee.models import PowerCommand
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
+
+
+def _fake_monotonic(monkeypatch, start: float = 1000.0) -> dict[str, float]:
+    """Drive the clock the latch actually reads, returning a mutable ``{"now"}``."""
+    clock = {"now": start}
+    monkeypatch.setattr(child_power.time, "monotonic", lambda: clock["now"])
+    return clock
 
 
 class _Coordinator:
@@ -77,13 +85,14 @@ class TestPowerLatch:
     """The latch that keeps a stale snapshot from duplicating the power-on."""
 
     @pytest.mark.asyncio
-    async def test_two_zone_turn_ons_100ms_apart_send_one_power_command(self):
+    async def test_two_zone_turn_ons_100ms_apart_send_one_power_command(self, monkeypatch):
         coord = _Coordinator()
+        clock = _fake_monotonic(monkeypatch)
 
         # Zone 1 lights the lamp; the lamp is still echoing "off" 100 ms later
         # when zone 2 asks the same question.
         await child_power.async_ensure_device_powered(coord, DEVICE_ID)
-        await asyncio.sleep(0.1)
+        clock["now"] += 0.1
         await child_power.async_ensure_device_powered(coord, DEVICE_ID)
 
         assert coord.commands == [PowerCommand(power_on=True)]
@@ -105,8 +114,7 @@ class TestPowerLatch:
     @pytest.mark.asyncio
     async def test_latch_expires_so_a_failed_power_on_is_retried(self, monkeypatch):
         coord = _Coordinator()
-        clock = {"now": 1000.0}
-        monkeypatch.setattr(child_power.time, "monotonic", lambda: clock["now"])
+        clock = _fake_monotonic(monkeypatch)
 
         await child_power.async_ensure_device_powered(coord, DEVICE_ID)
         clock["now"] += child_power.POWER_LATCH_SECONDS + 0.01
@@ -136,14 +144,32 @@ class TestPowerLatch:
         assert second.commands == [PowerCommand(power_on=True)]
 
     @pytest.mark.asyncio
-    async def test_latch_uses_the_monotonic_clock(self, monkeypatch):
-        # A wall-clock step must not release (or extend) the latch.
+    async def test_a_wall_clock_jump_forward_does_not_release_the_latch(self, monkeypatch):
+        """An NTP/DST step of the wall clock leaves the latch window intact."""
         coord = _Coordinator()
-        monkeypatch.setattr(child_power.time, "time", lambda: 0.0, raising=False)
+        clock = _fake_monotonic(monkeypatch)
+        wall = {"now": 1_700_000_000.0}
+        monkeypatch.setattr(time, "time", lambda: wall["now"])
 
         await child_power.async_ensure_device_powered(coord, DEVICE_ID)
-        deadline = getattr(coord, child_power._LATCH_ATTR)[DEVICE_ID]
+        # An hour of wall clock, and not one millisecond of monotonic time.
+        wall["now"] += 3600.0
+        await child_power.async_ensure_device_powered(coord, DEVICE_ID)
 
-        assert deadline == pytest.approx(child_power.time.monotonic() + child_power.POWER_LATCH_SECONDS, abs=0.5)
-        # A monotonic deadline is nowhere near a POSIX timestamp.
-        assert deadline < 1_000_000_000
+        assert coord.commands == [PowerCommand(power_on=True)]
+        assert clock["now"] == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_a_wall_clock_jump_backward_does_not_extend_the_latch(self, monkeypatch):
+        """A backward wall-clock step does not hold the latch past its window."""
+        coord = _Coordinator()
+        clock = _fake_monotonic(monkeypatch)
+        wall = {"now": 1_700_000_000.0}
+        monkeypatch.setattr(time, "time", lambda: wall["now"])
+
+        await child_power.async_ensure_device_powered(coord, DEVICE_ID)
+        wall["now"] -= 3600.0
+        clock["now"] += child_power.POWER_LATCH_SECONDS + 0.01
+        await child_power.async_ensure_device_powered(coord, DEVICE_ID)
+
+        assert coord.commands == [PowerCommand(power_on=True), PowerCommand(power_on=True)]

@@ -6,9 +6,11 @@ writes are unverifiable at runtime (the lamps never answer a raw frame), so
 these fixtures ARE the verification: if a refactor changes a single byte, a
 golden test fails.
 
-Each fixture is checked three ways — the captured hex, the captured base64, and
-an independently recomputed XOR checksum — so a transcription slip cannot
-quietly become the expected value.
+Each fixture carries two independently transcribed captures of the same frame —
+hex and base64 — and both must agree with the bytes the codec produces and with
+each other. The trailing checksum byte is then re-derived inside the test by
+XOR-ing the captured body, without calling the production helper, so a
+transcription slip cannot quietly become this suite's expected value.
 
 No test here opens a socket; the client tests inject a fake endpoint factory.
 """
@@ -215,15 +217,20 @@ class TestGoldenFrames:
     def test_spec_table_is_self_consistent(
         self, name: str, _intent: Callable[[], bytes], expected_hex: str, expected_b64: str
     ) -> None:
-        """The captured hex, base64 and checksum must agree with each other.
+        """The two captures agree, and the captured trailing byte is the XOR of the captured body.
 
-        Guards against a transcription error in the capture notes silently
-        becoming this suite's expected value.
+        The checksum is recomputed here rather than taken from the production
+        helper, so the capture is corroborated by something outside the code
+        under test.
         """
         raw = bytes.fromhex(expected_hex.replace(" ", ""))
         assert len(raw) == frames_mod.FRAME_LENGTH
         assert base64.b64encode(raw).decode() == expected_b64
-        assert raw[-1] == xor_checksum(raw[:-1])
+
+        checksum = 0
+        for byte in raw[:-1]:
+            checksum ^= byte
+        assert raw[-1] == checksum, name
 
     def test_every_frame_is_twenty_bytes(self) -> None:
         for name, intent, _hexstr, _b64 in GOLDEN_FRAMES:
@@ -757,10 +764,30 @@ class TestClient:
         assert sender.closed is True
 
     @pytest.mark.asyncio
-    async def test_client_never_reads(self) -> None:
-        """The raw path is write-only by design — see the module docstring."""
-        client, _opened, _sender = self._client()
-        assert not [name for name in dir(client) if "recv" in name or "read" in name]
+    async def test_default_endpoint_listens_on_nothing_and_drops_inbound_data(self) -> None:
+        """The default endpoint binds no local port and its protocol keeps no received datagram."""
+        from custom_components.govee.api.protocol import client as client_mod
+
+        calls: list[dict[str, object]] = []
+        transport = _FakeSender()
+
+        class _FakeLoop:
+            async def create_datagram_endpoint(self, protocol_factory, **kwargs):  # type: ignore[no-untyped-def]
+                calls.append({"protocol_factory": protocol_factory, **kwargs})
+                return transport, protocol_factory()
+
+        with patch.object(client_mod.asyncio, "get_running_loop", return_value=_FakeLoop()):
+            sender = await client_mod._default_endpoint_factory("192.0.2.205", 4003)
+
+        assert sender is transport
+        (call,) = calls
+        assert call["remote_addr"] == ("192.0.2.205", 4003)
+        assert "local_addr" not in call  # nothing is bound, so nothing can be listened on
+
+        protocol = call["protocol_factory"]()  # type: ignore[operator]
+        # Every inbound callback is a no-op: a stray reply is dropped, not surfaced.
+        assert protocol.datagram_received(b"\x33\x01\x01", ("192.0.2.205", 4002)) is None
+        assert protocol.error_received(OSError("icmp unreachable")) is None
 
     def test_default_port_is_the_command_port(self) -> None:
         from custom_components.govee.api.protocol.client import LAN_COMMAND_PORT

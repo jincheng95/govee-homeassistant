@@ -242,17 +242,33 @@ class TestTheConfirmStillHappens:
 
     @pytest.mark.asyncio
     async def test_a_cloud_failure_in_the_background_does_not_escape(self, slow_settle):
-        from custom_components.govee.api.exceptions import GoveeApiError
+        # GoveeAuthError, not GoveeApiError: the cloud tier converts it to
+        # ConfigEntryAuthFailed and re-raises, so this is the one fallback
+        # failure that actually reaches the background task's own handler.
+        from homeassistant.exceptions import ConfigEntryAuthFailed
+
+        from custom_components.govee.api.exceptions import GoveeAuthError
 
         coord, tasks = _ready_coord()
         coord._lan_client = _SlowReadClient(read_reply=None)
-        coord._api_client.control_device = AsyncMock(side_effect=GoveeApiError("boom"))
+        coord._api_client.control_device = AsyncMock(side_effect=GoveeAuthError("bad key"))
 
         await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True), defer_lan_confirm=True)
 
         # Nothing awaits this task, so an escaping exception would only ever
-        # surface as an unhandled-task traceback.
-        await asyncio.gather(*tasks)
+        # surface as an unhandled-task traceback — gather it non-fatally and
+        # look at what came back rather than letting it fail the test as an error.
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # The raising path was genuinely taken...
+        coord._api_client.control_device.assert_awaited_once()
+        # ...and it raises ConfigEntryAuthFailed rather than being swallowed
+        # by the cloud tier, so the task's handler is what contained it.
+        with pytest.raises(ConfigEntryAuthFailed):
+            await coord._async_control_via_cloud(
+                DEVICE_ID, coord._devices[DEVICE_ID], PowerCommand(power_on=True)
+            )
+        assert results == [None]
         assert tasks[0].exception() is None
 
 

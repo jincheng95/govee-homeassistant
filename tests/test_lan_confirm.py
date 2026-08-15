@@ -13,7 +13,7 @@ from __future__ import annotations
 import dataclasses
 import time
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -311,10 +311,14 @@ class TestScenePipelineDoesNotArmTheCooldown:
         # later as a second, visible brightness step. A confirmed one is not.
         coord = _h60b0_coord()
         coord._lan_client = _EchoingLamp()
+        coord._api_client.control_device = AsyncMock(return_value=True)
 
-        confirmed = await coord._try_lan_command(DEVICE_ID, coord._devices[DEVICE_ID], PowerCommand(power_on=True))
+        # The whole dispatch, not just the LAN tier: only async_control_device
+        # can fall through to MQTT/REST, so only it can be shown not to.
+        confirmed = await coord.async_control_device(DEVICE_ID, PowerCommand(power_on=True))
 
         assert confirmed is True
+        coord._api_client.control_device.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_lamp_that_never_confirms_still_arms_the_cooldown(self):
