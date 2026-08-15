@@ -339,12 +339,31 @@ class TestFrames:
     """The exact bytes a zone command puts on the wire."""
 
     @pytest.mark.asyncio
-    async def test_plain_turn_on_sends_zone_power(self, raw_client):
+    @pytest.mark.parametrize(
+        ("zone", "kwargs", "golden"),
+        [
+            ("ripple", {}, "ripple_on"),
+            ("ripple", {"rgb_color": (255, 0, 0)}, "ripple_red"),
+            # The 8-segment mask (ff 00) is in the frame; the ripple's is not.
+            ("ring", {"rgb_color": (0, 0, 255)}, "ring_blue"),
+            ("ring", {"brightness": 128}, "ring_bright_50"),
+            # ...and the white-only downlight's brightness carries no mask.
+            ("downlight", {"brightness": 128}, "downlight_bright_50"),
+            ("downlight", {"color_temp_kelvin": 4000}, "downlight_4000k"),
+        ],
+        ids=["ripple power", "ripple red", "ring blue", "ring 50%", "downlight 50%", "downlight 4000K"],
+    )
+    async def test_a_turn_on_ends_with_its_golden_attribute_frame(self, raw_client, zone, kwargs, golden):
+        """Power leads, then exactly the attribute frames the zone declares."""
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
-        await lights["ripple"].async_turn_on()
+        await lights[zone].async_turn_on(**kwargs)
 
-        assert raw_client.hexes == [GOLDEN["ripple_on"]]
+        assert raw_client.hexes[-1] == GOLDEN[golden]
+        # Power always leads: 33 30 <zone> 01. An unlit zone has never been
+        # seen to accept an attribute frame.
+        power = bytes.fromhex(raw_client.hexes[0])
+        assert (power[0], power[1], power[3]) == (0x33, 0x30, 0x01)
 
     @pytest.mark.asyncio
     async def test_turn_off_sends_zone_power_off(self, raw_client):
@@ -353,47 +372,6 @@ class TestFrames:
         await lights["downlight"].async_turn_off()
 
         assert raw_client.hexes == [GOLDEN["downlight_off"]]
-
-    @pytest.mark.asyncio
-    async def test_colour_frame_for_an_rgb_zone(self, raw_client):
-        lights = _lights(_coordinator(), _entry(_coordinator()))
-
-        await lights["ripple"].async_turn_on(rgb_color=(255, 0, 0))
-
-        assert raw_client.hexes == [GOLDEN["ripple_on"], GOLDEN["ripple_red"]]
-
-    @pytest.mark.asyncio
-    async def test_segmented_zone_paints_every_segment(self, raw_client):
-        lights = _lights(_coordinator(), _entry(_coordinator()))
-
-        await lights["ring"].async_turn_on(rgb_color=(0, 0, 255))
-
-        # The 8-segment mask (ff 00) is in the frame; the ripple's is not.
-        assert raw_client.hexes[-1] == GOLDEN["ring_blue"]
-
-    @pytest.mark.asyncio
-    async def test_brightness_frame_uses_percent(self, raw_client):
-        lights = _lights(_coordinator(), _entry(_coordinator()))
-
-        await lights["ring"].async_turn_on(brightness=128)
-
-        assert raw_client.hexes[-1] == GOLDEN["ring_bright_50"]
-
-    @pytest.mark.asyncio
-    async def test_downlight_brightness_has_no_mask(self, raw_client):
-        lights = _lights(_coordinator(), _entry(_coordinator()))
-
-        await lights["downlight"].async_turn_on(brightness=128)
-
-        assert raw_client.hexes[-1] == GOLDEN["downlight_bright_50"]
-
-    @pytest.mark.asyncio
-    async def test_colour_temp_frame(self, raw_client):
-        lights = _lights(_coordinator(), _entry(_coordinator()))
-
-        await lights["downlight"].async_turn_on(color_temp_kelvin=4000)
-
-        assert raw_client.hexes[-1] == GOLDEN["downlight_4000k"]
 
     @pytest.mark.asyncio
     async def test_kelvin_is_clamped_through_the_profile(self, raw_client):

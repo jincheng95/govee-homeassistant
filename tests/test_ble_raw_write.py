@@ -57,6 +57,7 @@ class _FakeClient:
 
     def __init__(self) -> None:
         self.writes: list[tuple[str, bytes]] = []
+        self.responses: list[bool] = []
         self.is_connected = True
         self.disconnects = 0
         self.error: Exception | None = None
@@ -65,6 +66,7 @@ class _FakeClient:
         if self.error is not None:
             raise self.error
         self.writes.append((uuid, bytes(frame)))
+        self.responses.append(response)
 
     async def disconnect(self) -> None:
         self.disconnects += 1
@@ -78,7 +80,6 @@ class _FakeClient:
 @pytest.fixture(autouse=True)
 def ble_stack(monkeypatch: pytest.MonkeyPatch) -> _FakeClient:
     """A resolvable BLE device, a fake client, and no held links from before."""
-    asyncio.get_event_loop_policy()  # no-op; keeps the fixture ordering explicit
     ble_raw_write._LINKS.clear()
 
     client = _FakeClient()
@@ -186,9 +187,9 @@ class TestFrames:
         """Plain write-with-response is what the channel accepts (reference §6)."""
         coordinator = _coordinator()
 
-        await _send(coordinator, [bytes.fromhex(GOLDEN_SEG0_RED)])
+        await _send(coordinator, [bytes.fromhex(GOLDEN_SEG0_RED), bytes.fromhex(GOLDEN_SEG0_LEVEL_32)])
 
-        assert ble_stack.writes
+        assert ble_stack.responses == [True, True]
 
 
 # ==============================================================================

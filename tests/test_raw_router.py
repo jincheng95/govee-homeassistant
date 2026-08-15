@@ -125,6 +125,13 @@ def _coordinator(*, enabled: bool = True, on_lan: bool = True, sku: str = "H60B0
     return coordinator
 
 
+def _no_options_coordinator() -> Any:
+    """A coordinator whose entry has no options at all (the install default)."""
+    coordinator = _coordinator()
+    coordinator.config_entry.options = {}
+    return coordinator
+
+
 def _entity(coordinator: Any, instance: str, device: GoveeDevice | None = None) -> GoveeNamedLightSwitchEntity:
     entity = GoveeNamedLightSwitchEntity(
         coordinator,
@@ -179,48 +186,29 @@ class TestGates:
     """Every reason a raw write is refused, each falling back to the cloud."""
 
     @pytest.mark.asyncio
-    async def test_option_off_is_a_noop(self, _fast_client):
-        entity = _entity(_coordinator(enabled=False), "rippleLightToggle")
-
-        assert await raw_router.async_zone_power(entity, on=True) is False
-        assert _fast_client.sends == []
-
-    @pytest.mark.asyncio
-    async def test_option_defaults_off(self, _fast_client):
-        coordinator = _coordinator()
-        coordinator.config_entry.options = {}
-        entity = _entity(coordinator, "rippleLightToggle")
-
-        assert await raw_router.async_zone_power(entity, on=True) is False
-        assert _fast_client.sends == []
-
-    @pytest.mark.asyncio
-    async def test_device_not_on_lan_falls_back(self, _fast_client):
-        entity = _entity(_coordinator(on_lan=False), "rippleLightToggle")
-
-        assert await raw_router.async_zone_power(entity, on=True) is False
-        assert _fast_client.sends == []
-
-    @pytest.mark.asyncio
-    async def test_sku_without_zone_power_falls_back(self, _fast_client):
-        # The H6046 has a raw-LAN profile but no zone-power capability.
-        entity = _entity(_coordinator(), "rippleLightToggle", _device(sku="H6046"))
-
-        assert await raw_router.async_zone_power(entity, on=True) is False
-        assert _fast_client.sends == []
-
-    @pytest.mark.asyncio
-    async def test_sku_without_any_profile_falls_back(self, _fast_client):
-        entity = _entity(_coordinator(), "rippleLightToggle", _device(sku="H1310"))
-
-        assert await raw_router.async_zone_power(entity, on=True) is False
-        assert _fast_client.sends == []
-
-    @pytest.mark.asyncio
-    async def test_non_zone_toggle_falls_back(self, _fast_client):
-        entity = _entity(_coordinator(), "mainLightToggle")
-
-        assert await raw_router.async_zone_power(entity, on=True) is False
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda: _entity(_coordinator(enabled=False), "rippleLightToggle"),
+            lambda: _entity(_no_options_coordinator(), "rippleLightToggle"),
+            lambda: _entity(_coordinator(on_lan=False), "rippleLightToggle"),
+            # The H6046 has a raw-LAN profile but no zone-power capability.
+            lambda: _entity(_coordinator(), "rippleLightToggle", _device(sku="H6046")),
+            lambda: _entity(_coordinator(), "rippleLightToggle", _device(sku="H1310")),
+            lambda: _entity(_coordinator(), "mainLightToggle"),
+        ],
+        ids=[
+            "option off",
+            "option unset (defaults off)",
+            "device not on the LAN",
+            "SKU with no zone-power capability",
+            "SKU with no profile at all",
+            "toggle that is not a zone",
+        ],
+    )
+    async def test_a_refused_write_puts_nothing_on_the_wire(self, _fast_client, build):
+        """Every gate answers "not handled" and leaves the socket alone."""
+        assert await raw_router.async_zone_power(build(), on=True) is False
         assert _fast_client.sends == []
 
     @pytest.mark.asyncio

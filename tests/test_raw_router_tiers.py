@@ -11,6 +11,7 @@ one that declined:
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -158,6 +159,40 @@ class TestCooldownGatesOnlyTheLanTier:
 
         assert raw_client.envelopes == []
         coordinator._mqtt_client.async_publish_ptreal.assert_awaited()
+
+
+class TestTheBytesAreIdenticalOnEveryTier:
+    """The frames are transport-neutral; only the envelope around them differs."""
+
+    @pytest.mark.asyncio
+    async def test_the_same_paint_produces_the_same_frame_on_lan_ble_and_mqtt(
+        self, monkeypatch, ble_stack, raw_client
+    ):
+        """One paint, three pipes, one set of bytes.
+
+        Each tier's own test file pins this frame for that tier alone, which
+        cannot catch a tier that drifts: the property is that all three carry
+        byte-identical frames, so it is asserted across them here.
+        """
+        # LAN: the H6076 has a raw LAN pipe and is correlated to an IP.
+        lan_coordinator = _coordinator(device_id=LAN_DEVICE_ID, sku=LAN_SKU, on_lan=True)
+        lan_entity = _segment_entity(lan_coordinator, device_id=LAN_DEVICE_ID, sku=LAN_SKU, count=LAN_SEGMENTS)
+        await lan_entity.async_turn_on(rgb_color=(255, 0, 0))
+        lan_frames = [frame.hex() for frame in raw_client.envelopes[0][1]]
+
+        # BLE: the H6046 has no LAN pipe at all, so the plaintext tier takes it.
+        ble_coordinator = _coordinator()
+        await _segment_entity(ble_coordinator).async_turn_on(rgb_color=(255, 0, 0))
+        ble_frames = [frame.hex() for frame in ble_stack.writes]
+
+        # MQTT: same device, no radio in range, so the passthrough takes it.
+        monkeypatch.setattr(ble_raw_write, "_resolve", lambda coordinator, address: None)
+        mqtt_coordinator = _coordinator()
+        await _segment_entity(mqtt_coordinator).async_turn_on(rgb_color=(255, 0, 0))
+        packets = mqtt_coordinator._mqtt_client.async_publish_ptreal.await_args.args[2]
+        mqtt_frames = [base64.b64decode(packet).hex() for packet in packets]
+
+        assert lan_frames == ble_frames == mqtt_frames == [GOLDEN_SEG0_RED]
 
 
 class TestNoTierRaises:
