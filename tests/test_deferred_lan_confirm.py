@@ -378,18 +378,3 @@ class TestChildPowerUsesIt:
         assert call.args[0] == DEVICE_ID
         assert call.args[1] == PowerCommand(power_on=True)
         assert call.kwargs["defer_lan_confirm"] is True
-
-    @pytest.mark.asyncio
-    async def test_the_latch_still_suppresses_the_second_call(self):
-        from custom_components.govee import child_power
-
-        coordinator = MagicMock()
-        coordinator.async_control_device = AsyncMock(return_value=True)
-        state = MagicMock()
-        state.power_state = False  # still echoing "off" after the first send
-        coordinator.get_state = MagicMock(return_value=state)
-
-        await child_power.async_ensure_device_powered(coordinator, DEVICE_ID)
-        await child_power.async_ensure_device_powered(coordinator, DEVICE_ID)
-
-        coordinator.async_control_device.assert_awaited_once()

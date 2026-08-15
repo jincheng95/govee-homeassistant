@@ -44,7 +44,6 @@ from custom_components.govee.models.device import (
 )
 from custom_components.govee.switch import GoveeNamedLightSwitchEntity
 from custom_components.govee import zone_state
-from custom_components.govee.zone_state import register_zone_switch
 from tests.conftest import FakeRawClient
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
@@ -366,7 +365,12 @@ class TestDelivery:
 
 
 class TestOptimisticState:
-    """State applied without an echo, including displaced siblings."""
+    """State applied without an echo.
+
+    Displacement itself is pinned by ``test_zone_lights``' truth-table tests
+    against :func:`zone_state.displaced_zone_keys`; only the router's read of
+    the profile constraint is asserted here.
+    """
 
     @pytest.mark.asyncio
     async def test_state_set_without_any_cloud_call(self, _fast_client):
@@ -386,52 +390,6 @@ class TestOptimisticState:
         await raw_router.async_zone_power(entity, on=False)
 
         assert entity.is_on is False
-
-    def _lamp(self, lit: tuple[str, ...] = ()) -> dict[str, GoveeNamedLightSwitchEntity]:
-        """All three zone switches of one lamp, joined by the zone registry.
-
-        Siblings are found through :mod:`custom_components.govee.zone_state`,
-        not through ``entity.platform.entities`` — that lookup only ever saw the
-        same platform, so it could never correct a zone light.
-        """
-        coordinator = _coordinator()
-        device = _device()
-        entities = {instance: _entity(coordinator, instance, device) for instance in raw_router.ZONE_KEY_BY_TOGGLE}
-        for instance, entity in entities.items():
-            entity._is_on = instance in lit
-            register_zone_switch(entity)
-        return entities
-
-    @pytest.mark.asyncio
-    async def test_third_zone_displaces_the_first(self, _fast_client):
-        # MaxSimultaneousZones(limit=2) on the H60B0: with ripple and ring lit,
-        # switching the downlight on drops the ripple inside the lamp.
-        zones = self._lamp(lit=("rippleLightToggle", "sideLightToggle"))
-
-        await raw_router.async_zone_power(zones["bottomLightToggle"], on=True)
-
-        assert zones["bottomLightToggle"].is_on is True
-        assert zones["rippleLightToggle"].is_on is False
-        assert zones["sideLightToggle"].is_on is True
-
-    @pytest.mark.asyncio
-    async def test_no_displacement_below_the_limit(self, _fast_client):
-        zones = self._lamp(lit=("rippleLightToggle",))
-
-        await raw_router.async_zone_power(zones["bottomLightToggle"], on=True)
-
-        assert zones["rippleLightToggle"].is_on is True
-
-    @pytest.mark.asyncio
-    async def test_turning_off_never_displaces(self, _fast_client):
-        zones = self._lamp()
-        for entity in zones.values():
-            entity._is_on = True
-
-        await raw_router.async_zone_power(zones["bottomLightToggle"], on=False)
-
-        assert zones["rippleLightToggle"].is_on is True
-        assert zones["sideLightToggle"].is_on is True
 
     def test_constraint_is_read_from_the_profile(self):
         # The displacement above must be derived, not hardcoded: same call with
