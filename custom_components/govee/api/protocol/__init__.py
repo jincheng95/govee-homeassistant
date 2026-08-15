@@ -1,34 +1,11 @@
-"""Raw Govee device protocol — frames, per-SKU profiles, and a write-only
-LAN sender.
+"""Raw Govee device protocol — frames, per-SKU profiles, and a LAN sender.
 
-A self-contained library layer with **zero Home Assistant imports**: plain
-Python, unit-testable on its own. It adds nothing to the integration by itself
-— no entities, no coordinator hooks, no config flow. Those live in later
-layers that call into it.
-
-Why it exists: the cloud/OpenAPI path cannot express per-zone colour, ripple
-flow rate, or downlight colour temperature. The raw 20-byte protocol can, and
-this package builds those frames from declared per-SKU knowledge instead of
-guesswork.
-
-Layering::
-
-    profiles.py   what a SKU can do, and the byte constants that do it (data)
-    encoders.py   frame layouts, named by the table (code)
-    frames.py     20-byte frames, XOR checksum, masks, ptReal envelope
-    packets.py    0xA3 multipacket chunker + commit frame (effect uploads)
-    diy.py        DIY effect payload records (0x50 form) riding the chunker
-    codec.py      profile + intent -> frames
-    client.py     write-only UDP send to :4003 (reads stay with devStatus)
-
-Despite the package name, only :mod:`.client` is LAN-specific. The frames are
-transport-agnostic — the identical bytes travel over LAN UDP, BLE GATT and
-Govee's cloud MQTT — so a future transport reuses everything above the client.
-
-Every byte constant here was derived from captures against the three SKUs in
-:mod:`.profiles` and is pinned byte-for-byte by the golden-frame tests;
-anything not confirmed on hardware is marked UNKNOWN and refused rather than
-guessed.
+A self-contained library layer with zero Home Assistant imports. Layering:
+``profiles`` (what a SKU can do, and the bytes that do it) -> ``encoders``
+(frame layouts named by the table) -> ``frames`` (20-byte frames, XOR checksum,
+masks, ``ptReal`` envelope) -> ``packets`` / ``diy`` (multipacket effect uploads)
+-> ``codec`` (profile + intent -> frames) -> ``client`` (write-only UDP to 4003).
+Only ``client`` is transport-specific; the frames themselves are neutral.
 """
 
 from __future__ import annotations

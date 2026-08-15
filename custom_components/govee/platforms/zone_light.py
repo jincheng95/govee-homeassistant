@@ -1,113 +1,12 @@
 """Per-zone light entities for multi-zone lamps (fork feature, OVERRIDE).
 
-Gated by ``enable_zone_lights``, **default off**. With the option off nothing in
-this module runs and the zone on/off switches in ``switch.py`` behave exactly as
-they always have.
-
-What this replaces
-------------------
-The H60B0 uplighter has three physically different zones, exposed today as
-three identical on/off switches. They are not remotely symmetric:
-
-* **ripple** (zone 1) — colour + brightness, plus a flow rate with no
-  light-entity analogue (it becomes a ``number``).
-* **ring** (zone 2) — colour + brightness across 8 addressable segments.
-* **downlight** (zone 3) — **white only**: colour temperature + brightness, no
-  RGB at all.
-
-So this module does not force one entity class onto all three. Every zone's
-supported colour modes, its kelvin range and its very existence are read out of
-the profile table in :mod:`..api.protocol.profiles`; there is not one SKU name,
-zone byte or kelvin constant in this file.
-
-The design question: what does the whole-device light mean now?
----------------------------------------------------------------
-The device already has a whole-device ``light`` entity that the coordinator
-refreshes from real cloud state (power, brightness, colour). Three optimistic
-zone lights sitting beside it would visibly contradict it, so its meaning has to
-be settled rather than left to chance.
-
-**Decision: the whole-device entity becomes a WLED-style master — power and
-brightness only.** When zone lights exist, colour, colour temperature and the
-effect list are stripped from it and belong to the zones, exactly as WLED puts
-colour and effects on segments and keeps the master as a level control.
-
-Why that is the right split on this hardware, not just an analogy:
-
-1. **The protocol says so.** Whole-device power (``33 01 <00|01>``) and
-   whole-device brightness (``33 04 <0-100>``) are genuine device-level
-   operations. Colour and colour temperature are not: on this lamp they are
-   only meaningful *per zone*, which is precisely why a master carrying them
-   produces the contradiction — a master colour repaints zones that each claim
-   their own colour.
-2. **Nothing measured is thrown away.** Power and brightness are the two fields
-   the cloud (and upstream's LAN read) actually report, and the master keeps
-   both. The capabilities removed are the ones with no per-zone feedback
-   anyway.
-3. **The master stays the only working power control.** A zone cannot be lit
-   while the lamp has no power.
-
-Scope of the demotion, deliberately narrow:
-
-* It happens **only when the zone-lights option is on** and **only for devices
-  the profile table actually models with zones**. With the option off, the
-  whole-device entity keeps every capability it has today, unchanged.
-* The master keeps ``name = None`` — upstream's marker for "this entity *is*
-  the device". That marker is load-bearing in the frontend: the device page
-  lists nameless entities first and draws a divider between them and the named
-  ones, so the master stays visually separated from the zones and everything
-  else exactly as the whole-device light was before the demotion. (An earlier
-  revision renamed it to "<device> Master", which silently erased that divider
-  — a name is not free.) WLED draws the same line: master nameless, segments
-  named.
-* **The effect list moves off the master.** Upstream already exposes the same
-  scenes on a separate ``select`` entity, so no capability is lost — but a
-  ``light.turn_on`` call with ``effect:`` aimed at the master stops working and
-  must be repointed at that select.
-
-Transport for the master is upstream's own: its LAN control tier already routes
-whole-device power and brightness over the local network *with verify-by-read*,
-which is strictly better than the unconfirmable raw frames used for zones. No
-raw-frame path is added for the master; there is no gap to fill.
-
-The remaining coherence rules, all implemented here:
-
-* **Reported power outranks optimistic zone state.** A zone light reports
-  ``off`` whenever the device's reported ``power_state`` is off, whatever the
-  zone registry last recorded. This is the direction in which ground truth
-  exists, so the contradiction is resolved in its favour and can never be seen.
-* **Turning a zone on turns the lamp on.** If the device is reported off, a
-  zone ``turn_on`` first sends a whole-device ``PowerCommand`` over the normal
-  path — deliberately not a raw LAN power frame, because that path is the one
-  the master's own state is derived from, so its state stays correct.
-* **The hardware's two-of-three limit is applied below the transport**, in
-  :mod:`..zone_state`, so a zone displaced by another — over LAN *or* over the
-  cloud — has its entity corrected either way.
-
-What the zone lights still cannot do, and say so honestly: their colour and
-brightness attributes are "what this zone was last told", never a readback; and
-while the lamp is in music mode a zone colour write is accepted, echoed, and
-visibly ignored (see :mod:`..api.lan_raw`).
-
-Transport and fallback
-----------------------
-Zone **power** has a cloud equivalent (the ``…LightToggle`` capability), so it
-falls back to the cloud when the LAN path is unavailable.
-
-Zone **colour, brightness, colour temperature and flow rate** have **no cloud
-equivalent at zone granularity** — the cloud can only paint the whole lamp.
-There is nothing to fall back to, so:
-
-* a colour/brightness/kelvin write with no LAN path raises
-  :class:`HomeAssistantError` (an honest, visible failure) rather than silently
-  doing nothing or repainting the whole lamp behind the user's back;
-* the flow-rate ``number``, whose *only* capability is LAN-only, reports itself
-  **unavailable** when the LAN path is not usable.
-
-Fork-maintenance note: this module is additive. ``light.py`` carries one
-import line and three call sites (the zone lights, the master demotion, and
-the zone-derived segment names); ``number.py`` carries one import and one
-line.
+Gated by ``enable_zone_lights`` (default off): with it off nothing here runs and
+the zone switches in ``switch.py`` are unchanged. Each zone's colour modes,
+kelvin range and existence come from the profile table — no SKU knowledge here.
+When zone lights exist the whole-device light is demoted to a nameless
+power+brightness master, so ``light.turn_on`` with ``effect:`` must be repointed
+at the scene select. Reported device power outranks optimistic zone state, and a
+zone write with no LAN path raises rather than repainting the whole lamp.
 """
 
 from __future__ import annotations
@@ -167,9 +66,7 @@ ATTR_ZONE_ON: Final = "zone_on"
 TOGGLE_BY_ZONE_KEY: Final[dict[str, str]] = {zone: toggle for toggle, zone in ZONE_KEY_BY_TOGGLE.items()}
 
 
-# ==========================================================================
 # Platform wiring
-# ==========================================================================
 
 
 def zone_specs(device: GoveeDevice) -> tuple[tuple[DeviceProfile, ZoneSpec], ...]:
@@ -303,9 +200,7 @@ def as_zone_named_segment(entity: LightEntity, entry: ConfigEntry) -> LightEntit
     return entity
 
 
-# ==========================================================================
 # Entities
-# ==========================================================================
 
 
 class _GoveeZoneEntityBase(GoveeEntity):
@@ -738,9 +633,7 @@ class GoveeZoneFlowRateNumber(_GoveeZoneEntityBase, NumberEntity, RestoreEntity)
                 self._value = None
 
 
-# ==========================================================================
 # Helpers
-# ==========================================================================
 
 
 def _color_modes(zone: ZoneSpec) -> set[ColorMode]:

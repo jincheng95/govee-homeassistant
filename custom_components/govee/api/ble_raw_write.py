@@ -1,57 +1,10 @@
 """Plaintext BLE raw transport (fork feature, roadmap 2.1).
 
-Why this exists
----------------
-The H6046 light bar is on Govee's legacy stack: it accepts the JSON LAN API for
-power/brightness/colour and **ignores raw frames over LAN entirely** (seven
-envelope shapes tried, none had any effect), and it never answers the encrypted
-BLE handshake. Its raw pipe — the only way to address its ten segments — is an
-*unencrypted* BLE GATT link that takes the same 20-byte frames with no
-handshake and no crypto (reference §6). Until this module the bar had no local
-path at all beyond upstream's cloud control.
-
-What the channel is (reference §6)
-----------------------------------
-* write characteristic ``…2b11``, notify ``…2b10``, under service ``…1910`` —
-  the same UUIDs upstream's :mod:`.ble` already uses
-* the identical 20-byte frames the LAN and MQTT tiers carry, in the clear
-* plain write-with-response is accepted
-* reads are answered too (14/16 queries) — not used here; this module writes
-
-Radio, and why nothing new was plumbed
---------------------------------------
-Device resolution goes through Home Assistant's Bluetooth helpers
-(``async_ble_device_from_address``) and ``bleak-retry-connector``, exactly as
-upstream's :mod:`.ble` does. That is what makes an **ESPHome Bluetooth proxy in
-active mode** work transparently: a connectable proxy near the light bar
-substitutes for a radio on the HA host, with no configuration here.
-
-The BLE address is the **last** six octets of the Govee device id; the leading
-two octets are a device-class prefix. (Until 2026-08-14 this module took the
-first six, copying the assumption baked into ``ble_advertisement``'s same-SKU
-tiebreaker — which only ever ran on a tie and failed by silently declining to
-match, so the mistake never surfaced there. Live advertisement history proved
-the trailing form; see :func:`ble_address`.) If HA has not seen that address
-recently, ``async_ble_device_from_address`` returns None and this tier reports
-"not handled" rather than blocking.
-
-Connection policy
------------------
-**BLE is a one-central link: while we hold it, the Govee app cannot connect.**
-So the link is opened on demand for a write burst, held for
-:data:`BLE_IDLE_DISCONNECT_SECONDS` (so a burst of frames — a scene painting
-several segments — reuses one connection), and then dropped. Nothing here
-polls: reading state would mean holding the link, which is precisely what locks
-the user's phone out (reference §2.3 / §6).
-
-Failure contract
-----------------
-Every failure path returns ``False`` — "I did not handle it, do what you did
-before". Nothing raises at the caller, and a failed connect never blocks: the
-next tier (MQTT ptReal, then the cloud command) runs immediately.
-
-State is optimistic, as on every raw pipe: the frames are unacknowledged and
-invisible to ``devStatus``.
+The raw tier for SKUs on Govee's legacy stack, which ignore raw LAN frames: the
+same 20-byte frames over an unencrypted GATT write (service ``…1910``, write
+characteristic ``…2b11``), resolved through HA's Bluetooth helpers so an active
+ESPHome proxy works transparently. BLE is a one-central link, so it is opened on
+demand, held briefly for a burst, then dropped. Every failure path returns False.
 """
 
 from __future__ import annotations
@@ -365,9 +318,7 @@ class _PlaintextLink:
             _LOGGER.debug("Govee BLE raw: disconnect from %s failed (%s)", self._address, err)
 
 
-# ----------------------------------------------------------------------
 # HA internals, read in exactly one place each.
-# ----------------------------------------------------------------------
 
 
 def _resolve(coordinator: GoveeCoordinator, address: str) -> Any:

@@ -1,55 +1,13 @@
 """Declarative per-SKU capability table.
 
-The whole point of this module is that **adding a SKU is adding one table
-entry**. Nothing in this package branches on ``sku ==``; the codec looks a
-device up once and then works entirely off the profile.
-
-What is data and what is code
------------------------------
-Data (here): zone bytes, segment counts, kelvin ranges, hardware constraints,
-and the per-capability constant block — the sub-mode byte, the attribute byte,
-and the segment-mask offset (which differs *by attribute*, so it is table
-data, never an encoder literal). Code (:mod:`.encoders`): the frame layouts.
-Each capability *names* an encoder; anything algorithmic (masks, checksums,
-clamping) stays in code.
-
-UNKNOWN
--------
-The table can say "I do not know this byte": :data:`UNKNOWN` in a constant
-block makes the codec raise :class:`~.errors.UnknownEncodingError` rather than
-guess. Guessing is never safe — a wrong sub-mode byte is *silently ignored* by
-the firmware, which is indistinguishable from a dead network, and the byte
-differs per SKU (``0x2c`` on the H60B0, ``0x15`` on the H6046/H6076).
-
-Transports
-----------
-Which *pipe* accepts a raw frame is a property of the SKU, not of the frame.
-The frames themselves are transport-agnostic — the same 20 bytes travel over
-LAN UDP, BLE GATT and cloud MQTT — but the lamps do not all listen on all
-three, so every profile declares a non-empty :class:`Transport` tuple. It is a
-**permission set, not a preference order**: only membership is ever read, via
-:meth:`DeviceProfile.carries`; the tier order lives in
-:mod:`..raw_router`, which is where the latency trade-off actually is.
-Measured, not assumed:
-
-* **H60B0, H6076** take raw frames over LAN UDP (and over encrypted BLE).
-* **H6046** *ignores raw LAN frames entirely.* Seven envelope shapes were tried
-  against it with a power-off frame whose effect is independently readable, and
-  none of them changed anything, while the same frame worked first try on the
-  H60B0. It is not an envelope problem: this SKU is on an older stack that
-  carries raw frames only over an unencrypted BLE link.
-
-The split is predictable from the BLE advertisement's manufacturer id, which a
-scanner can read before connecting: :data:`BLE_MANUFACTURER_MODERN` (``0x8843``)
-is the modern stack, :data:`BLE_MANUFACTURER_LEGACY` (``0x8803``) the legacy
-one. That is why :attr:`DeviceProfile.ble_manufacturer_id` is table data.
-
-**The transport list is a gate, not a hint.** A raw sender cannot detect a
-mismatch — it has no SKU, sends fire-and-forget, and reads no reply — so a
-frame posted to a SKU that does not carry it leaves the socket, changes
-nothing, and is indistinguishable from success. Callers must check
-:meth:`DeviceProfile.carries` before sending and fall back to whatever cloud
-path they had.
+Adding a SKU is adding one table entry: nothing in this package branches on
+``sku ==``. Data lives here — zone bytes, segment counts, kelvin ranges, hardware
+constraints, and the per-capability constant block (sub-mode byte, attribute
+byte, and the segment-mask offset, which differs **by attribute**); frame layouts
+live in :mod:`.encoders`. :data:`UNKNOWN` makes the codec raise rather than
+guess. ``transports`` is a permission set, not a preference order, and a gate no
+raw sender can detect a mismatch on — callers must check
+:meth:`DeviceProfile.carries` before sending.
 """
 
 from __future__ import annotations
@@ -345,14 +303,7 @@ class DeviceProfile:
         :attr:`segment_zone`, else the one carrying ``SEGMENT_COLOR``) states
         it, and the codec builds masks of exactly that width.
 
-        It exists as a property because the cloud over-reports: Govee's
-        platform API declares 15 segments for the H6046 (10 real) and for the
-        H6076 (7 real, verified 2026-08-14 against the live openapi devices
-        endpoint). A consumer that creates one entity per advertised segment
-        gets phantom entities that can never light anything, and — worse — a
-        count that disagrees with the mask width, which the raw-write path
-        reads as "the table describes different hardware" and refuses. So the
-        table's width is also the entity-count cap.
+        It is also the entity-count cap; see :mod:`...segment_limit`.
 
         Returns:
             The physical segment count, or None for a SKU whose profile
@@ -396,16 +347,14 @@ class DeviceProfile:
         return capability in self.zone(zone).capabilities
 
 
-# ==========================================================================
 # The table
-# ==========================================================================
 
 H60B0: Final = DeviceProfile(
     sku="H60B0",
     goods_type=301,
     name="Uplighter",
     # Manufacturer claims 9000 K; above ~6500 K the firmware drops the zone
-    # entirely, so 6500 K is a hard cap (verified on hardware).
+    # entirely, so 6500 K is a hard cap.
     kelvin=KelvinRange(2000, 6500, verified=True, note="above ~6500 K the zone drops out"),
     transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED, Transport.MQTT_PTREAL),
     ble_manufacturer_id=BLE_MANUFACTURER_MODERN,
@@ -500,10 +449,8 @@ H60B0: Final = DeviceProfile(
         zones=(
             DiyZoneSpec(
                 zone_key="ripple",
-                # Bound from owner-saved DIYs with known settings. NOT the
-                # app's display order, and NOT the ring enum: twinkle is 11
-                # here and 3 there. `3` is unbound on this zone (appears in
-                # factory blobs via the app's Simple mode, name unknown).
+                # Not the app's display order, and NOT the ring enum:
+                # twinkle is 11 here and 3 there. `3` is unbound on this zone.
                 modes={
                     "none": 0,
                     "gradient": 1,
@@ -518,7 +465,7 @@ H60B0: Final = DeviceProfile(
             ),
             DiyZoneSpec(
                 zone_key="ring",
-                # Complete and fully bound: 1-10 in the app's display order.
+                # Complete: 1-10, in the app's display order.
                 modes={
                     "none": 0,
                     "gradient": 1,
@@ -537,12 +484,9 @@ H60B0: Final = DeviceProfile(
         ),
         note="0x50-form payload: 0d + ripple record + ring record; commit 33 05 0a <idx> 00 58",
     ),
-    # This SKU has no SEGMENT_COLOR capability at all: the 8 addressable LEDs
-    # are the ring zone's, and a segment paint is `33 05 2c 02 01 <RGB> <K K>
-    # <mask0 mask1>` — the zone-colour frame with the mask filled in (verified,
-    # `reference` §3.1 "ring, seg 3 only yellow"). Brightness is the same shape
-    # under attribute 0x02, where the mask sits at a different offset; both
-    # offsets are already table data on the two capabilities.
+    # No SEGMENT_COLOR capability at all: the addressable LEDs are the ring
+    # zone's, and a segment paint is the zone-colour frame with the mask filled
+    # in. Both mask offsets are already table data on the two capabilities.
     segment_zone=SegmentZoneSpec(
         zone_key="ring",
         note="segments are the ring zone's; painted with ZONE_COLOR/ZONE_BRIGHTNESS + mask",
@@ -550,22 +494,14 @@ H60B0: Final = DeviceProfile(
     constraints=(
         MaxSimultaneousZones(
             limit=2,
-            # Weakest first. Established on hardware across every transition:
-            # the newly enabled zone always survives, and of the two incumbents
-            # the lower-ranked one goes dark. The ring is never displaced; the
-            # downlight yields to anything. Order is what makes this correct --
-            # an earlier ("ripple", "ring", "downlight") predicted the ring
-            # would drop where the lamp actually dropped the downlight.
+            # Weakest first: the newly enabled zone always survives, and of
+            # the two incumbents the lower-ranked one goes dark.
             displacement_order=("downlight", "ripple", "ring"),
             note="at most 2 zones lit; yield order downlight -> ripple -> ring",
         ),
     ),
-    # Measured on hardware (2026-08-12, instrumented flicker investigation): a
-    # devStatus poll answers in ~28 ms and repeats the PRE-command state for
-    # well over a second after a write — a power-on confirm read taken 28 ms
-    # later still reported `onOff: 0`. §2.1's "do not read back sooner than
-    # ~1.5 s" is the rule this number comes from; worst write→visible latency
-    # observed on this SKU was 1.09 s, so 1.5 s carries margin.
+    # This SKU repeats its PRE-command state for well over a second after a
+    # write, so a confirm read taken sooner than this can only fail.
     echo_lag_seconds=1.5,
 )
 
@@ -573,16 +509,12 @@ H6046: Final = DeviceProfile(
     sku="H6046",
     goods_type=112,
     name="Light bar",
-    # Verified on hardware: unlike the H60B0, this SKU really does reach
-    # 9000 K — a colorwc sweep 2700->9000 K was accepted at every step, with
-    # devStatus echoing each requested value and the lamp staying lit. Kelvin
-    # ceilings are per-firmware and never carry across SKUs.
+    # Unlike the H60B0, this SKU really does reach 9000 K. Kelvin ceilings are
+    # per-firmware and never carry across SKUs.
     kelvin=KelvinRange(2000, 9000, verified=True, note="9000 K confirmed by colorwc sweep + devStatus readback"),
     # Legacy stack: raw frames reach this SKU ONLY over an unencrypted BLE
     # link. Raw LAN frames are accepted by the socket and ignored by the
-    # firmware — seven envelope shapes were tried with an independently
-    # readable power-off frame and none of them did anything, while the same
-    # frame worked first try on the H60B0. Do not add LAN_RAW here.
+    # firmware, which is indistinguishable from success. Do not add LAN_RAW here.
     transports=(Transport.BLE_PLAINTEXT, Transport.MQTT_PTREAL),
     ble_manufacturer_id=BLE_MANUFACTURER_LEGACY,
     zones=(
@@ -592,9 +524,8 @@ H6046: Final = DeviceProfile(
             zone_byte=None,
             segments=10,
             capabilities=frozenset({Capability.SEGMENT_COLOR, Capability.SEGMENT_BRIGHTNESS}),
-            # The cloud API declares 15 segments for this SKU; the hardware has
-            # 10 (2 bars x 5) and segments 11-15 are phantom. Confirmed by
-            # per-segment readback. Trust this number, not the cloud's.
+            # The cloud declares more segments than this SKU has. Trust this
+            # number, not the cloud's.
             note="2 bars x 5 segments; no zone byte, segments are addressed by mask alone",
         ),
     ),
@@ -608,26 +539,18 @@ H6046: Final = DeviceProfile(
         ),
         Capability.SEGMENT_BRIGHTNESS: CapabilitySpec(
             "segment_level_v2",
-            # Attribute 0x02 is brightness and the mask follows the level byte
-            # immediately: `33 05 15 02 <level> <mask0 mask1>`. Settled by a
-            # closed-loop test — write the frame, read the segments back — in
-            # which one masked segment moved from level 100 to level 25 with
-            # its colour untouched. The earlier probe that "had no effect" was
-            # sent over LAN, which this SKU ignores (see `transports` above).
-            #
             # mask_offset counts from proType as byte 0, so it differs BY
             # ATTRIBUTE: the colour body runs to index 11 and masks at 12, the
             # brightness body runs to index 4 and masks at 5. Reusing 12 here
-            # would write the mask into dead padding and the frame would be a
-            # silent no-op.
+            # would write the mask into dead padding — a silent no-op.
             {"sub_mode": 0x15, "attribute": 0x02, "mask_offset": 5},
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
     },
     modes={"scene": 0x04},
-    # Observed live: this SKU's AWS IoT status pushes carry the §6.2 `aa a5`
-    # readback frames in `op.command`, unsolicited.
+    # This SKU's AWS IoT status pushes carry the `aa a5` readback frames in
+    # `op.command`, unsolicited.
     segment_readback=True,
 )
 
@@ -651,20 +574,15 @@ H6076: Final = DeviceProfile(
     capabilities={
         Capability.POWER: CapabilitySpec("whole_power"),
         Capability.BRIGHTNESS: CapabilitySpec("whole_brightness"),
-        # This SKU shares the whole 0x15 SubModeColorV2 body with the H6046; the
-        # two differ only in transport and segment count. The guess that a
-        # "newer" RGBIC sub-mode would apply here was wrong: the lamp reports
-        # its live sub-mode as 0x15, and a closed-loop paint test (write, then
-        # read the segments back) reddened exactly the masked segment, while the
-        # mask-straight-after-RGB and H60B0 zone forms both did nothing.
+        # Shares the whole 0x15 SubModeColorV2 body with the H6046; the two
+        # differ only in transport and segment count.
         Capability.SEGMENT_COLOR: CapabilitySpec(
             "segment_color_v2",
             {"sub_mode": 0x15, "attribute": 0x01, "mask_offset": 12},
         ),
         Capability.SEGMENT_BRIGHTNESS: CapabilitySpec(
             "segment_level_v2",
-            # Same body as the H6046, confirmed independently on this SKU: a
-            # level+mask frame moved exactly the two masked segments.
+            # Same body as the H6046.
             {"sub_mode": 0x15, "attribute": 0x02, "mask_offset": 5},
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),

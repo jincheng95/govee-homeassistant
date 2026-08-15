@@ -51,8 +51,8 @@ from .models import (
 from .models.device import INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
 from .platforms.segment import GoveeSegmentEntity
-from .segment_limit import segment_count  # fork: hardware segment cap
-from .platforms.zone_light import (  # fork: zone lights
+from .segment_limit import segment_count
+from .platforms.zone_light import (
     as_master_light,
     as_zone_named_segment,
     async_zone_light_entities,
@@ -89,7 +89,7 @@ async def async_setup_entry(
         # appear as a light bulb (issue #54).
         if device.is_light_device and device.supports_power:
             entities.append(
-                as_master_light(  # fork: WLED-style master when zone lights are on
+                as_master_light(
                     GoveeLightEntity(coordinator, device, enable_scenes), entry
                 )
             )
@@ -106,8 +106,6 @@ async def async_setup_entry(
             # Use per-device mode if set, otherwise default to individual
             segment_mode = device_modes.get(device.device_id, DEFAULT_SEGMENT_MODE)
 
-            # fork: the cloud over-reports segments (15 advertised for a
-            # 7-segment H6076). Create as many as the hardware has.
             hardware_segment_count = segment_count(device)
 
             _LOGGER.debug(
@@ -125,7 +123,7 @@ async def async_setup_entry(
                     device.name,
                 )
                 entities.append(
-                    as_zone_named_segment(  # fork: zone lights name segments after their zone
+                    as_zone_named_segment(
                         GoveeGroupedSegmentEntity(
                             coordinator=coordinator,
                             device=device,
@@ -139,9 +137,9 @@ async def async_setup_entry(
                     hardware_segment_count,
                     device.name,
                 )
-                for segment_index in range(hardware_segment_count):  # fork: hardware cap
+                for segment_index in range(hardware_segment_count):
                     entities.append(
-                        as_zone_named_segment(  # fork: zone lights name segments after their zone
+                        as_zone_named_segment(
                             GoveeSegmentEntity(
                                 coordinator=coordinator,
                                 device=device,
@@ -151,7 +149,7 @@ async def async_setup_entry(
                         )
                     )
 
-    entities.extend(async_zone_light_entities(coordinator, entry))  # fork: zone lights
+    entities.extend(async_zone_light_entities(coordinator, entry))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee light entities", len(entities))

@@ -213,7 +213,7 @@ async def async_setup_entry(
             # #126). Govee returns "" for these on poll, so they are
             # optimistic + RestoreEntity like the zones.
             for instance in device.named_light_toggle_instances:
-                if zone_switch_suppressed(entry, device.sku, instance):  # fork: zone lights own these
+                if zone_switch_suppressed(entry, device.sku, instance):
                     continue
                 spec = NAMED_LIGHT_TOGGLE_SPECS.get(instance)
                 if spec is None:
@@ -513,7 +513,7 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
         last_state = await self.async_get_last_state()
         if last_state:
             self._is_on = last_state.state == "on"
-        self.async_on_remove(register_zone_switch(self))  # fork: zone-state registry
+        self.async_on_remove(register_zone_switch(self))
 
     @property
     def is_on(self) -> bool:
@@ -522,7 +522,7 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light zone on."""
-        if await async_zone_power(self, on=True):  # fork: raw-LAN fast path
+        if await async_zone_power(self, on=True):
             return
         success = await self.coordinator.async_control_device(
             self._device_id,
@@ -531,11 +531,11 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
         if success:
             self._is_on = True
             self.async_write_ha_state()
-            note_zone_power(self, True)  # fork: hardware zone-displacement limit
+            note_zone_power(self, True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light zone off."""
-        if await async_zone_power(self, on=False):  # fork: raw-LAN fast path
+        if await async_zone_power(self, on=False):
             return
         success = await self.coordinator.async_control_device(
             self._device_id,
@@ -544,14 +544,13 @@ class GoveeNamedLightSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
         if success:
             self._is_on = False
             self.async_write_ha_state()
-            note_zone_power(self, False)  # fork: hardware zone-displacement limit
+            note_zone_power(self, False)
 
 
 class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity):
     """Segment-boundary colour blending (``gradientToggle``) — fork feature.
 
-    What the hardware does (verified 2026-08-13 on an H6076 and an H6046, the
-    only SKUs in the fleet that advertise the capability):
+    What the hardware does, on the SKUs that advertise the capability:
 
     * **On** — a subsequent segment paint blends its colours across the
       segment boundaries, so neighbouring segments fade into one another.
@@ -565,8 +564,8 @@ class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity)
     the lamp is "in").
 
     The upstream constant is ``INSTANCE_GRADUAL_ON`` — a misnomer (it is not a
-    gradual power-on ramp). The constant is kept as-is for merge compatibility;
-    the entity is named for the measured behaviour.
+    gradual power-on ramp), kept as-is for merge compatibility; the entity is
+    named for the behaviour.
 
     Govee does not report this toggle back on poll, so state is optimistic and
     restored across restarts via RestoreEntity — the same approach the named

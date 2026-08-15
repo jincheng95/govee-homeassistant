@@ -166,6 +166,14 @@ When making changes:
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture.
 
+### Fork modules
+
+Fork-only modules (the raw-protocol layer) are additive: upstream files carry a
+hook line, never a body of fork logic, and coordinator/entity internals reached
+into from a fork module are read in **one accessor each**, collected at the
+bottom of that module — so an upstream refactor of those attributes is a
+one-line fix rather than a scattered merge conflict.
+
 ---
 
 ## Bug Reports

@@ -1,58 +1,12 @@
 """Per-segment state decoded from the MQTT status push (fork feature).
 
-What this is
-------------
-The `reference` §6.2 read frame ``aa a5 <idx>`` reports four segments' live
-brightness and colour, four bytes each::
-
-    aa a5 <idx> | <L R G B> <L R G B> <L R G B> <L R G B> | pad | xor
-
-``idx`` is 1-based and echoes back in byte 2, so ``idx 1`` carries segments
-1-4, ``idx 2`` segments 5-8, and so on. ``L`` is the segment's level 0-100,
-then its RGB.
-
-Until 2026-08-14 that frame was believed to be a BLE-only answer to an
-explicit query. It is not: the H6046 light bar's **AWS IoT status pushes carry
-the same frames unsolicited**, base64-encoded in ``op.command`` alongside the
-ordinary ``state`` object. Observed live, a bar with segment index 1 painted
-magenta at 70 %::
-
-    ["qgUVAAAAAAAAAAAAAAAAAAAAALo=",   # aa 05 — active sub-mode
-     "qqUBZAAAAEb/AP9kAAAAZAAAACw=",   # aa a5 01 — segments 1-4
-     "qqUCZAAAAGQAAABkAAAAZAAAAA0=",   # aa a5 02 — segments 5-8
-     "qqUDZAAAAGQAAABkZEZkAGRkZEo=",   # aa a5 03 — segments 9-12 (10 real)
-     "qhEAHg8PAAAAAAAAAAAAAAAAAKU="]   # aa 11 — settings
-
-The second frame's second group is ``46 ff 00 ff``: level 0x46 = 70, RGB
-magenta. That is the segment the user had just painted, read back off the
-hardware ~1-2 s later.
-
-Why it matters
---------------
-Segment entities are optimistic by necessity — the cloud returns empty strings
-for segment colours, so ``platforms/segment.py`` keeps local state and
-deliberately does not subscribe to coordinator updates. Optimism drifts: a
-paint from the vendor app, a scene, or a failed write all leave HA showing
-something the bar is not doing. This frame is the correction, on a channel the
-integration already subscribes to and at zero extra radio cost.
-
-Scope of this module
---------------------
-Decode only. Nothing here imports Home Assistant, knows about entities, or
-decides what to do with a reading — the caller supplies the segment count and
-routes the result. That keeps the phantom-index rule (below) a caller policy
-backed by the profile table rather than a constant hidden in a parser.
-
-**Trust boundary.** Input arrives on Govee's cloud-authenticated MQTT channel;
-this module trusts that channel and nothing more. The XOR checksum is an
-integrity check against a corrupted frame, never an authenticity one — anything
-that can publish on the topic can compute it.
-
-**Phantom indices.** The frames always come in whole groups of four, so a
-10-segment bar reports 12 segments and the last two are whatever the firmware
-left in the buffer (in the capture above: level 100 RGB ``64 46 64`` and level
-0 RGB ``64 64 64`` — neither a colour anything is showing). Readings at or
-above the profile's verified segment count are dropped, never surfaced.
+The ``aa a5 <idx>`` frame carries four segments' level and RGB, four bytes each,
+with a 1-based ``idx`` echoed in byte 2. Some SKUs push it unsolicited on the AWS
+IoT status channel, base64 in ``op.command`` — the only readback the otherwise
+optimistic segment entities get. Decode only: no HA imports, and the caller
+supplies the segment count. Frames always arrive in whole groups of four, so
+readings at or above the profile's verified count are phantom padding and are
+dropped. The XOR checksum is an integrity check, never an authenticity one.
 """
 
 from __future__ import annotations

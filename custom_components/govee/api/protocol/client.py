@@ -1,22 +1,10 @@
 """Write-only UDP sender for raw ``ptReal`` frames (port 4003).
 
-**This client is deliberately write-only. Do not add reads to it.** Two
-measured facts make reads pointless here:
-
-1. **Devices ignore the source port** and always reply to ``:4002``. Binding
-   4002 would collide with the integration's existing :class:`GoveeLanClient`
-   for no gain, so this client binds nothing and never listens.
-
-2. **Raw ``ptReal`` queries get no reply at all.** Every ``0xAA`` query type
-   tried against all three profiled lamps produced zero datagrams on any
-   port; the LAN firmware accepts ``aa`` frames and drops them.
-
-The raw path is therefore fire-and-forget. Reads stay with upstream's
-``devStatus`` code (``api/lan.py`` / ``api/lan_client.py``), which returns the
-only four fields LAN exposes: ``onOff``, ``brightness``, ``color``,
-``colorTemInKelvin``. Zone power, per-segment colour and the active effect are
-readable by nothing, cloud included — consumers must track intent client-side
-and behave optimistically.
+**Deliberately write-only — do not add reads.** Devices ignore the source port
+and reply to 4002, which upstream's ``GoveeLanClient`` owns, and a solicited raw
+``0xAA`` query over LAN draws no reply at all. Reads stay with ``devStatus``; the
+one raw readback that exists arrives unsolicited on the MQTT status push (see
+:mod:`..segment_readback`), not here.
 """
 
 from __future__ import annotations

@@ -1,16 +1,10 @@
 """Frame encoders, named by the profile table.
 
-Every encoder is a pure function of ``(constants, **intent)`` where
-``constants`` is the per-capability constant block from
-:mod:`.profiles` — the sub-mode byte, the attribute byte, the segment-mask
-offset. Nothing here branches on SKU; a new SKU is a new table entry pointing
-at an existing encoder (or, if its layout is genuinely new, at a new function
-added here and named by the table).
-
-Where the data/code line sits: byte *positions* and byte *constants* are data;
-anything algorithmic (packing RGB, deriving a mask from segment indices,
-clamping, the checksum) is code. A byte-level DSL was explicitly rejected —
-several encodings will never fit a table.
+Every encoder is a pure function of ``(constants, **intent)``, where
+``constants`` is the per-capability constant block from :mod:`.profiles`. Nothing
+here branches on SKU: a new SKU is a table entry pointing at an existing encoder,
+or at a new function added here and named by the table. Byte positions and byte
+constants are data; anything algorithmic is code.
 """
 
 from __future__ import annotations
@@ -51,9 +45,7 @@ def constant(constants: Mapping[str, Any], key: str) -> int:
     return value
 
 
-# --------------------------------------------------------------------------
 # whole-device
-# --------------------------------------------------------------------------
 
 
 def whole_power(constants: Mapping[str, Any], *, on: bool) -> bytes:
@@ -109,9 +101,7 @@ def mode_select(
     return build_frame(body)
 
 
-# --------------------------------------------------------------------------
 # sub-mode operate, zone-addressed (H60B0 family, sub_mode 0x2c)
-# --------------------------------------------------------------------------
 
 
 def zone_color(
@@ -181,9 +171,7 @@ def zone_kelvin(constants: Mapping[str, Any], *, zone_byte: int, kelvin: int) ->
     return build_frame(body)
 
 
-# --------------------------------------------------------------------------
 # SubModeColorV2 (H6046 legacy pact_tvlightv3 stack, sub_mode 0x15)
-# --------------------------------------------------------------------------
 
 
 def segment_color_v2(

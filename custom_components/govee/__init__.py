@@ -25,7 +25,7 @@ from .api import (
     GoveeIotCredentials,
 )
 from .api.auth import GoveeAuthClient, _derive_client_id
-from .api.ble_raw_write import async_disconnect_all  # fork: plaintext BLE tier
+from .api.ble_raw_write import async_disconnect_all
 from .const import (
     CONF_API_KEY,
     CONFIG_VERSION,
@@ -58,8 +58,8 @@ from .const import (
     SUFFIX_ZONE,
 )
 from .coordinator import GoveeCoordinator
-from .diy_previews import async_register_previews  # fork: DIY mode artwork
-from .segment_limit import (  # fork: hardware segment cap
+from .diy_previews import async_register_previews
+from .segment_limit import (
     is_individual_segment_suffix,
     is_phantom_segment_id,
 )
@@ -458,10 +458,6 @@ async def _async_cleanup_orphaned_entities(
                     should_remove = True
                     removal_reason = "individual segments disabled"
                 elif _is_phantom_segment(coordinator, device_id, suffix):
-                    # Fork: Govee's API over-reports segments (15 advertised
-                    # for a 7-segment H6076), so entities above the hardware
-                    # count exist in registries created before the cap. They
-                    # can never light anything — prune them on reload.
                     should_remove = True
                     removal_reason = "segment above the hardware count"
             elif unique_id.endswith(SUFFIX_SCENE_SELECT) and not enable_scenes:
@@ -586,9 +582,8 @@ def _is_phantom_segment(
 ) -> bool:
     """Whether a segment unique-id names a segment the hardware does not have.
 
-    Fork: the per-SKU profile table carries the physical segment count (the
-    mask width the codec builds from); the cloud advertises more on the RGBIC
-    family. Everything at or above the hardware count is a phantom entity.
+    Fork: everything at or above the hardware count (see :mod:`.segment_limit`)
+    is a phantom entity.
 
     Args:
         coordinator: The coordinator holding the discovered devices.

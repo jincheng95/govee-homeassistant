@@ -1,51 +1,10 @@
 """Raw frames over the cloud MQTT ``ptReal`` passthrough (fork feature).
 
-Why this exists
----------------
-The 20-byte frame layout is transport-neutral: the identical bytes travel over
-LAN ``ptReal``, over BLE, and inside Govee's cloud MQTT passthrough (reference
-§1.3). The fork's AWS IoT client already publishes ``ptReal`` envelopes for
-upstream's music-mode / DreamView / DIY-scene packets, so a codec-built frame
-needs no new plumbing — only a decision about *when* the cloud pipe is the
-right one.
-
-It is the last raw tier, below LAN and BLE:
-
-* it is the slowest (~300-500 ms, and the bytes leave the house), and
-* it is the only one that works when nothing local does — a lamp with no LAN
-  correlation, an ESPHome proxy that is out of range, or an H6046 whose BLE
-  option is off.
-
-Gating — deliberately no new option
------------------------------------
-The tier is active when **both** existing options are on:
-
-* ``enable_mqtt_control`` — the user's opt-in to sending commands over Govee's
-  MQTT channel at all (an undocumented channel; the option's description
-  already says so), and
-* ``enable_lan_raw_write`` — the user's opt-in to *raw frames*, which are
-  unconfirmable and therefore leave entity state optimistic.
-
-A third checkbox would ask the user a question they have already answered
-twice, and neither existing option alone implies the other's risk. The
-trade-off is that a user who wants raw frames over MQTT but not upstream's
-MQTT-native power/brightness path cannot express that; nobody has asked for it,
-and the combination is easy to add later without moving anything here.
-
-The profile table still decides *which SKUs* may use the pipe
-(:attr:`~.protocol.profiles.Transport.MQTT_PTREAL` in ``transports``), exactly
-as it does for LAN.
-
-No confirmation
----------------
-There is no ACK on any channel (reference §2.1), and a raw write is invisible
-to ``devStatus`` regardless, so this path is fire-and-forget with optimistic
-state, the same contract as the LAN raw tier. A publish that the broker accepts
-is reported as success; nothing here waits for the lamp.
-
-Fork-maintenance note: the coordinator internals are read in ONE place each,
-the accessor block at the bottom — the discipline :mod:`.lan_raw` and
-:mod:`.lan_nudge` established.
+The last raw tier: the same 20-byte frames published to the device's command
+topic, for devices with no usable local raw pipe. Active only when both
+``enable_mqtt_control`` and ``enable_lan_raw_write`` are on, and only for SKUs
+whose profile declares ``Transport.MQTT_PTREAL``. Fire-and-forget with optimistic
+state; every failure path returns False.
 """
 
 from __future__ import annotations
@@ -184,9 +143,7 @@ async def async_send_frames(
     return True
 
 
-# ----------------------------------------------------------------------
 # Coordinator internals, read in exactly one place each.
-# ----------------------------------------------------------------------
 
 
 def _options(coordinator: GoveeCoordinator) -> Any:

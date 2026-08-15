@@ -41,7 +41,7 @@ from .coordinator import GoveeCoordinator
 from .entity import GoveeEntity
 from .models import GoveeDevice
 from .models.device import GoveeLeakSensor, leak_sensor_device_info
-from .platforms.diy_effect import (  # fork: DIY mode preview artwork
+from .platforms.diy_effect import (
     async_diy_preview_entities,
 )
 

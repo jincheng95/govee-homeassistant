@@ -1,54 +1,11 @@
 """Child-entity power sync to the whole-device light (fork feature).
 
-Zones and segments are *children* of one lamp: neither has any power of its
-own, and lighting one while the lamp is reported off produces a child entity
-that says "on" above a device that says "off" — the exact state the zone
-lights were fixed to avoid.
-
-The zone lights have always resolved this by powering the lamp on the **normal
-transport** before their own (raw-LAN) write goes out: the whole-device power
-command is the only one with real state behind it, so it goes through
-``coordinator.async_control_device`` (BLE > LAN > MQTT > REST, with upstream's
-optimistic update) rather than as a raw frame. The segment entities did not,
-so painting a segment left the master off. This module is that one rule,
-extracted so both platforms call the same code.
-
-Deliberately one-directional: a child turning **off** must never power the lamp
-off, because the other children may still be lit and nothing reports per-child
-power back (see roadmap 1.5).
-
-Send, not confirm
------------------
-The child's own (raw-LAN) frames only need the power datagram to have LEFT the
-host before they follow — the lamp processes them in arrival order, and the
-power write takes ~30 ms to hit the wire. What they do **not** need is the
-answer to "did the lamp confirm it?", which on an H60B0 costs the SKU's ~1.5 s
-echo settle plus the confirm read (see :mod:`.lan_confirm`). Awaiting the whole
-pipeline pushed the first zone frame from ~0.5 s after the trigger to ~1.6 s —
-a delay the user sees, spent waiting for a fact nothing here consumes.
-
-So the power-on is dispatched with ``defer_lan_confirm=True``: the send is
-inline, and the settle + confirm — including its MQTT/REST re-send when the
-confirm genuinely fails, and the issue-#57 miss counting that arms the write
-cooldown — run in a coordinator-owned background task. Nothing about the
-confirm's *semantics* changes; it simply stops being on the caller's critical
-path.
-
-The latch
----------
-The "is the lamp off?" question is answered from ``coordinator.get_state``, and
-that snapshot is subject to the same echo lag the LAN confirm read is (see
-:mod:`.lan_confirm`): on the H60B0 the lamp keeps reporting ``onOff: 0`` for
-~1.5 s after it has been told to switch on. A scene that lights two zones back
-to back therefore asks the question twice and gets "off" both times, and the
-second call sends a whole-device power-on the lamp is already executing.
-
-So a send is remembered for :data:`POWER_LATCH_SECONDS` per device and any
-further call inside that window stands down *regardless of the state snapshot*.
-The latch is deliberately the shorter half of the rule: it never sends a power
-command that was not going to be sent anyway, it only skips a duplicate. If the
-first command genuinely failed, the latch expires in two seconds and the next
-child turn_on re-sends it.
+A zone or segment has no power of its own, so turning one on first powers the
+lamp over the NORMAL transport (``coordinator.async_control_device``), never as a
+raw frame — that path is what the master's own state is derived from. One
+directional only: a child turning off never powers the lamp off. The power write
+is dispatched with ``defer_lan_confirm=True``, and a per-device latch suppresses
+a duplicate inside the SKU's echo lag, where the snapshot still reports off.
 """
 
 from __future__ import annotations

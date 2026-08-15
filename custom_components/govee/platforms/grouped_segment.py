@@ -20,13 +20,13 @@ from homeassistant.components.light import (  # type: ignore[attr-defined]
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from ..child_power import async_ensure_device_powered  # fork: child -> master power
+from ..child_power import async_ensure_device_powered
 from ..const import SUFFIX_GROUPED_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
-from ..api.raw_router import async_segment_color  # fork: raw fast path
-from ..segment_limit import segment_count  # fork: hardware segment cap
+from ..api.raw_router import async_segment_color
+from ..segment_limit import segment_count
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class GoveeGroupedSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         self._device = device
 
         # Segment indices for all segments (0 to segment_count-1)
-        self._segment_indices = tuple(range(segment_count(device)))  # fork: hardware cap
+        self._segment_indices = tuple(range(segment_count(device)))
 
         # Unique ID for grouped segments
         self._attr_unique_id = f"{device.device_id}{SUFFIX_GROUPED_SEGMENT}"
@@ -125,9 +125,9 @@ class GoveeGroupedSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
             color=color,
         )
 
-        await async_ensure_device_powered(self.coordinator, self._device_id)  # fork: child -> master power
+        await async_ensure_device_powered(self.coordinator, self._device_id)
 
-        if not await async_segment_color(  # fork: raw-LAN
+        if not await async_segment_color(
             self, self._rgb_color, self._segment_indices, brightness=kwargs.get(ATTR_BRIGHTNESS)
         ):
             await self.coordinator.async_control_device(
@@ -159,7 +159,7 @@ class GoveeGroupedSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
                 segment_indices=self._segment_indices,
                 color=RGBColor(r=0, g=0, b=0),
             )
-            if not await async_segment_color(self, (0, 0, 0), self._segment_indices):  # fork: raw-LAN
+            if not await async_segment_color(self, (0, 0, 0), self._segment_indices):
                 await self.coordinator.async_control_device(self._device_id, command)
         else:
             _LOGGER.debug(

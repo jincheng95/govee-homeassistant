@@ -22,7 +22,7 @@ from .entity import GoveeEntity
 from .models import GoveeDevice
 from .platforms.diy_effect import (
     async_diy_button_entities,
-)  # fork: DIY effect authoring
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ async def async_setup_entry(
         if not device.is_group and device.supports_water_full_event:
             entities.append(GoveeClearWaterFullButton(coordinator, device))
 
-    entities.extend(async_diy_button_entities(coordinator, entry))  # fork: DIY effect
+    entities.extend(async_diy_button_entities(coordinator, entry))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee button entities", len(entities))

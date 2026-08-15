@@ -1,33 +1,13 @@
 """DIY effect payload encoder — the ``0x50``-form blob the H60B0 takes.
 
-A DIY effect is per-zone: each zone gets a *record* carrying an effect mode
-int, a transition speed, a colour palette, and (ripple only) a diffuser
-direction and water flow rate. The records are concatenated in the wire order
-the profile declares, prefixed with a constant lead byte, and the whole
-payload rides an ``0xA3`` multipacket upload followed by a DIY commit frame
-(:mod:`.packets`).
-
-Verified layout (three independent samples — two cloud-fetched user DIYs with
-ground-truth settings, one BLE wire capture)::
-
-    payload   0d <record> <record>
-    record    <mode> <recLen> <recLen bytes>            recLen = 0 -> zone off
-    body      <modeParam> <speed> <colorCount> <RGB>xN [direction flowRate]
-
-- ``recLen`` counts the bytes that FOLLOW it within the record.
-- A zone set to "None" is ``mode = 0, recLen = 0`` — a two-byte empty record.
-  Both records are always present, in fixed order; a zone is never omitted.
-- ``modeParam`` is ``0x00`` in every sample except ring mode 9 "cover"
-  (``0x01``) — an unexplained per-mode option, defaulted to zero here.
-- Direction and flow rate exist ONLY on zones whose
-  :class:`~.profiles.DiyZoneSpec` declares them (the ripple); the ring record
-  has no tail at all.
-
-Effect modes are per-zone integers with no shared enum (ripple twinkle is 11,
-ring twinkle is 3). The bound name→int tables live in the profile; raw ints
-are accepted everywhere because the ripple demonstrably tolerates ring-enum
-values (the app's "Simple" authoring mode writes the ring int into both
-records).
+A DIY effect is per-zone: each zone gets a record of ``<mode> <recLen> <body>``,
+where the body is ``<modeParam> <speed> <colorCount> <RGB>xN`` plus, on zones
+whose :class:`~.profiles.DiyZoneSpec` declares them, a direction and flow rate.
+``recLen`` counts the bytes after it; ``recLen = 0`` is a zone switched off. Both
+records are always present, in the profile's declared order, behind a constant
+lead byte; the payload rides an ``0xA3`` multipacket upload and a commit frame
+(:mod:`.packets`). Effect modes are per-zone ints with no shared enum — the
+name-to-int tables live in the profile, and raw ints are accepted everywhere.
 """
 
 from __future__ import annotations

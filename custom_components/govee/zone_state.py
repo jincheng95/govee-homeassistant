@@ -1,59 +1,13 @@
 """Transport-independent zone state for multi-zone lamps (fork feature).
 
-Why this module exists
-----------------------
-No *local* channel reports per-zone state. The LAN ``devStatus`` read carries
-only whole-device fields, and a raw query is never answered at all, so a lamp
-driven locally says nothing about what its zones are doing. Zone controls are
-therefore *optimistic*: locally, the only truth available is "what we last
-told it".
-
-The cloud is the exception, and this module does not yet exploit it: the
-platform API's device-state call does return the three zone toggles, and they
-follow a local zone write within a few seconds. So these entities *can* be
-reconciled against the poll the coordinator already runs — worth doing, since
-it would let a zone corrected by the lamp itself (see the constraint below) or
-changed from the vendor app find its way back to the truth.
-
-That truth has to live somewhere both zone platforms can see. The H60B0's zones
-are driven from two different entity platforms (the on/off switches in
-``switch.py`` and, when the zone-lights option is on, the light entities in
-``platforms/zone_light.py``), and the hardware constraint below couples them. An earlier
-attempt kept the state on the entities and walked ``entity.platform.entities``
-to find siblings, which silently only ever saw the *same* platform — a light
-could never correct a switch. This registry is the fix: one per coordinator,
-keyed by ``(device_id, zone_key)``, with entities subscribing to the zones they
-represent.
-
-The hardware constraint, applied once for every transport
----------------------------------------------------------
-The H60B0 can light at most two of its three zones at once: switching one on
-knocks another off *inside the lamp*, silently. The limit is declared in the
-profile table as :class:`~.api.protocol.profiles.MaxSimultaneousZones`, whose
-``displacement_order`` lists zones **weakest first** — the first one still lit
-is the one the lamp drops.
-
-Which zone yields is a fixed ranking, not a recency rule: the zone just turned
-on always survives, and of the two already lit the lower-ranked one goes dark,
-whichever order they were enabled in. Nothing about any specific SKU is encoded
-here; the ranking lives in the table.
-
-Crucially the constraint is applied in :meth:`ZoneStateRegistry.apply`, which
-sits *below* the choice of transport. A zone turned on over raw LAN and the
-same zone turned on over the cloud both land here, so the displaced zone's UI
-is corrected either way. Before this module the correction existed only on the
-LAN path and a cloud toggle left the displaced zone's entity lying.
-
-Restore
--------
-The registry holds no persistence of its own. Zone entities are
-:class:`RestoreEntity` instances; each seeds the registry with its restored
-value when it registers, so a restart rebuilds the same optimistic picture
-without the registry having to know about HA's state machine.
-
-Fork-maintenance note: the coordinator/entity internals reached into here are
-read in ONE place each (the accessor block at the bottom), the same discipline
-:mod:`.api.lan_nudge` and :mod:`.api.raw_router` established.
+No channel reports per-zone state, and one lamp's zones are driven from two
+entity platforms (``switch.py`` and ``platforms/zone_light.py``) that cannot see
+each other, so the optimistic truth lives in one registry per coordinator, keyed
+``(device_id, zone_key)``, with entities subscribing to the zones they show.
+:meth:`ZoneStateRegistry.apply` also enforces the profile's
+:class:`~.api.protocol.profiles.MaxSimultaneousZones` — a fixed weakest-first
+displacement ranking, applied below the choice of transport so a zone the lamp
+drops is corrected whether the write went out over LAN or over the cloud.
 """
 
 from __future__ import annotations
@@ -267,9 +221,7 @@ def _constraints_for(profile: DeviceProfile, zone_key: str) -> tuple[MaxSimultan
     return tuple(constraint for constraint in profile.constraints if zone_key in constraint.displacement_order)
 
 
-# ----------------------------------------------------------------------
 # Entry points used by the platforms
-# ----------------------------------------------------------------------
 
 
 def registry(coordinator: GoveeCoordinator) -> ZoneStateRegistry:
@@ -322,10 +274,8 @@ def register_zone_switch(entity: Any) -> Callable[[], None]:
     return store.register(device_id, zone_key, _set)
 
 
-# ----------------------------------------------------------------------
 # Coordinator / entity internals, read in exactly one place each. An upstream
 # rename of any of these is a one-line fix in this block.
-# ----------------------------------------------------------------------
 
 
 def _coordinator(entity: Any) -> GoveeCoordinator:

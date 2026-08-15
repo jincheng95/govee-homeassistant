@@ -1,58 +1,11 @@
 """Health for the raw LAN UDP write path (fork feature).
 
-The integration already tracks four transports per device — ``cloud_api``,
-``mqtt``, ``ble`` and ``lan`` — and surfaces them on the ``*_connectivity``
-binary sensor (as attributes, always) and as one opt-in entity per transport.
-The raw UDP write path added by :mod:`.api.lan_raw` is a fifth, and this module
-is the only place that knows how to score it.
-
-What "available" honestly means here
-------------------------------------
-**Not** "a write landed". It cannot mean that. Raw ``ptReal`` frames are
-write-only by measurement: devices answer no raw query and produce no cloud
-status push in response to a raw command, so there is no acknowledgement of any
-kind to wait for. Inventing a health signal the protocol cannot provide would
-be worse than reporting nothing.
-
-So ``lan_udp`` availability is defined as **a raw frame sent right now would
-have somewhere to go**. That is deliberately the same set of conditions
-:func:`~.api.lan_raw.lan_target` gates on, because a sensor that reads
-"connected" for a device the writer refuses to write to is worse than no sensor
-at all:
-
-* the user turned the raw-write transport on (it defaults to off), **and**
-* the device answered LAN discovery / ``devStatus`` and is currently correlated
-  to an IP (exactly the same evidence the existing ``lan`` transport uses),
-  **and**
-* its SKU has an entry in the raw-protocol profile table, so a frame can be
-  built for it at all, **and**
-* that SKU actually *carries* raw frames over LAN. Some models are on an older
-  stack whose raw pipe is BLE: they answer LAN discovery perfectly and discard
-  every raw frame, so LAN presence alone would be a lie for them.
-
-Failure reasons are correspondingly narrow: ``transport_disabled`` (the option
-is off), ``no_lan_presence`` (never answered discovery, or dropped out of the
-LAN map), ``no_raw_profile`` (reachable, but this integration has no frame
-layout for the model), ``no_lan_raw_transport`` (reachable and profiled, but
-this model ignores raw frames on this pipe), ``send_failed`` (the datagram
-itself could not be handed to the socket — the one hard negative the path can
-produce).
-
-Directionality
---------------
-Sends stamp ``last_send_ts`` *without* establishing ``is_available``. The
-tracker's ``mark_send`` sets availability as a side effect, which is right for
-MQTT (a publish that returns proves the broker took it) and wrong here (a UDP
-datagram into the void proves nothing about the device). The distinction is
-deliberate; see the recording-asymmetry note in :mod:`.transport_health`.
-
-``send_failed`` latches: it survives the gate re-score, because nothing that
-pass observes disproves a datagram the socket refused, and it is cleared by the
-next accepted send — the one thing that does. The sensor is therefore never
-available with a failure reason still standing.
-
-``last_success_ts`` is never stamped for ``lan_udp``. There is no receive
-direction on this transport — the reads belong to ``lan``.
+Scores ``lan_udp`` as a fifth transport beside ``cloud_api``, ``mqtt``, ``ble``
+and ``lan``. Availability cannot mean "a write landed" — nothing on the raw
+channel is acknowledged — so it means "a frame sent now would have somewhere to
+go", gated on exactly the conditions :func:`~.api.lan_raw.lan_target` gates on.
+Sends stamp ``last_send_ts`` without establishing availability; ``send_failed``
+latches until the next accepted send; ``last_success_ts`` is never stamped here.
 """
 
 from __future__ import annotations
@@ -176,10 +129,8 @@ def note_failure(coordinator: GoveeCoordinator, device_id: str, reason: str = RE
     _LOGGER.debug("Govee LAN UDP: %s marked unavailable (%s)", device_id, reason)
 
 
-# ----------------------------------------------------------------------
 # Coordinator internals, read in exactly one place each. An upstream rename of
 # any of these is a one-line fix in this block.
-# ----------------------------------------------------------------------
 
 
 def _health(coordinator: GoveeCoordinator, device_id: str) -> TransportHealth | None:

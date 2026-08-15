@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import GoveeCoordinator
-from .platforms.diy_effect import async_diy_text_entities  # fork: DIY effect authoring
+from .platforms.diy_effect import async_diy_text_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ async def async_setup_entry(
     coordinator: GoveeCoordinator = entry.runtime_data
 
     entities: list[TextEntity] = []
-    entities.extend(async_diy_text_entities(coordinator, entry))  # fork: DIY palettes
+    entities.extend(async_diy_text_entities(coordinator, entry))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee text entities", len(entities))

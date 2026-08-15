@@ -25,13 +25,13 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from ..api.protocol import ha_to_percent  # fork: level-space churn guard
-from ..api.segment_readback import SegmentReading  # fork: §6.2 MQTT readback
-from ..child_power import async_ensure_device_powered  # fork: child -> master power
+from ..api.segment_readback import SegmentReading
+from ..child_power import async_ensure_device_powered
 from ..const import SIGNAL_SEGMENT_READBACK, SUFFIX_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
-from ..api.raw_router import async_segment_color  # fork: raw fast path
+from ..api.raw_router import async_segment_color
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -149,9 +149,9 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
             color=color,
         )
 
-        await async_ensure_device_powered(self.coordinator, self._device_id)  # fork: child -> master power
+        await async_ensure_device_powered(self.coordinator, self._device_id)
 
-        if not await async_segment_color(  # fork: raw-LAN
+        if not await async_segment_color(
             self, self._rgb_color, (self._segment_index,), brightness=kwargs.get(ATTR_BRIGHTNESS)
         ):
             await self.coordinator.async_control_device(
@@ -184,7 +184,7 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
                 segment_indices=(self._segment_index,),
                 color=RGBColor(r=0, g=0, b=0),
             )
-            if not await async_segment_color(self, (0, 0, 0), (self._segment_index,)):  # fork: raw-LAN
+            if not await async_segment_color(self, (0, 0, 0), (self._segment_index,)):
                 await self.coordinator.async_control_device(self._device_id, command)
         else:
             _LOGGER.debug(

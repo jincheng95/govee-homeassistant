@@ -19,8 +19,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, SUFFIX_HEATER_TEMPERATURE, SUFFIX_MUSIC_SENSITIVITY
 from .coordinator import GoveeCoordinator
 from .models import GoveeDevice, MusicModeCommand, TemperatureSettingCommand
-from .platforms.diy_effect import async_diy_number_entities  # fork: DIY effect
-from .platforms.zone_light import async_zone_number_entities  # fork: per-zone flow rate
+from .platforms.diy_effect import async_diy_number_entities
+from .platforms.zone_light import async_zone_number_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,8 +73,8 @@ async def async_setup_entry(
                 temp_range,
             )
 
-    entities.extend(async_zone_number_entities(coordinator, entry))  # fork: zone flow rate
-    entities.extend(async_diy_number_entities(coordinator, entry))  # fork: DIY effect
+    entities.extend(async_zone_number_entities(coordinator, entry))
+    entities.extend(async_diy_number_entities(coordinator, entry))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee number entities", len(entities))

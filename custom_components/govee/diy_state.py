@@ -1,35 +1,11 @@
 """Staged DIY-effect parameters for multi-zone lamps (fork feature).
 
-Why this module exists
-----------------------
-A DIY effect is not a command, it is a *document*: two zone records, each with
-a mode, a speed, a palette of up to sixteen colours and (on the ripple) a
-direction and a flow rate, uploaded as one multipacket blob and then committed
-(see :mod:`.api.protocol.diy`). There is no partial write — the lamp takes the
-whole payload or nothing — and the LAN path is write-only, so the device can
-never be asked what its current DIY looks like.
-
-That shape rules out the obvious entity design. A ``select`` that uploaded a
-DIY the moment its option changed would have to invent every other field, and
-picking "twinkle" before choosing any colours would fail on the wire. So the
-controls are *staging* controls: each writes one field of a per-zone record
-held here, nothing leaves the house, and a single button (or the
-``govee.apply_diy_effect`` service) uploads the assembled document.
-
-The registry is per coordinator and keyed ``(device_id, zone_key)``, cached on
-the coordinator exactly like :mod:`.zone_state`'s — same rationale: the
-entities that share a record live on four different platforms (``select``,
-``number``, ``text``, ``button``) and cannot see each other, so the state has
-to sit below all of them. Listeners exist for the same reason: when the service
-applies an effect it writes these records, and the config entities have to
-repaint to show what was actually sent.
-
-Restore
--------
-No persistence of its own. The staging entities are ``RestoreEntity``
-instances and seed their field back in on ``async_added_to_hass``, which is why
-:meth:`DiyStateStore.seed` deliberately does not notify — the value came *from*
-the entity that is about to write its own state anyway.
+A DIY effect is a document, not a command: two zone records uploaded as one
+multipacket blob and then committed, with no partial write and no way to read the
+lamp's current one back. So the ``select`` / ``number`` / ``text`` entities stage
+fields into a per-``(device_id, zone_key)`` record held here, and a button (or
+``govee.apply_diy_effect``) uploads the assembled document. One store per
+coordinator, with listeners so the staging entities repaint after a service call.
 """
 
 from __future__ import annotations
@@ -259,9 +235,7 @@ class DiyStateStore:
         }
 
 
-# ----------------------------------------------------------------------
 # Entry points used by the platforms and the service
-# ----------------------------------------------------------------------
 
 
 def store(coordinator: GoveeCoordinator) -> DiyStateStore:

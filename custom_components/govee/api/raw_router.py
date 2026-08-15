@@ -38,9 +38,7 @@ _LOGGER = logging.getLogger(__name__)
 SEGMENT_ZONE_KEY: Final = "segments"
 
 
-# ----------------------------------------------------------------------
 # Routing
-# ----------------------------------------------------------------------
 
 
 async def async_route_frames(
@@ -165,9 +163,7 @@ def raw_write_enabled(coordinator: GoveeCoordinator) -> bool:
     )
 
 
-# ----------------------------------------------------------------------
 # Zone power (the switch entities in switch.py)
-# ----------------------------------------------------------------------
 
 
 async def async_zone_power(entity: Any, *, on: bool) -> bool:
@@ -237,9 +233,7 @@ def zone_power_supported(profile: DeviceProfile, zone_key: str) -> bool:
     return profile.supports(Capability.ZONE_POWER, zone=zone_key)
 
 
-# ----------------------------------------------------------------------
 # Per-segment colour (the segment light entities)
-# ----------------------------------------------------------------------
 
 
 async def async_segment_color(
@@ -393,10 +387,8 @@ def _segment_count_matches(entity: Any, profile: DeviceProfile, zone_key: str) -
     return bool(zone.segments) and zone.segments == _segment_count(entity)
 
 
-# ----------------------------------------------------------------------
 # Coordinator / entity internals, read in exactly one place each. An upstream
 # rename of any of these is a one-line fix in this block.
-# ----------------------------------------------------------------------
 
 
 def _coordinator(entity: Any) -> GoveeCoordinator:
@@ -415,12 +407,7 @@ def _sku(entity: Any) -> str:
 
 
 def _segment_count(entity: Any) -> int:
-    """How many segments the device actually has (drives the entity indices).
-
-    The cloud's advertised count capped at the profile's verified one, which
-    is what ``light.py`` creates entities from — so the comparison against the
-    mask width sees the same number the entities index by.
-    """
+    """How many segments the device has, capped per :mod:`..segment_limit`."""
     return segment_count(getattr(entity, "_device", None))
 
 

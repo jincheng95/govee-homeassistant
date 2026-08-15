@@ -76,7 +76,7 @@ from ..const import (
     SUFFIX_DIY_PREVIEW,
     SUFFIX_DIY_SPEED,
 )
-from ..diy_previews import preview_map, preview_url  # fork: shipped mode artwork
+from ..diy_previews import preview_map, preview_url
 from ..diy_state import async_send_diy_effect, diy_spec_for, store, zone_lights_enabled
 from ..entity import GoveeEntity
 from ..models import GoveeDevice
@@ -114,9 +114,7 @@ LABEL_BY_DIRECTION: Final[dict[int, str]] = {
 }
 
 
-# ==========================================================================
 # Platform wiring
-# ==========================================================================
 
 
 def diy_zones(device: GoveeDevice) -> tuple[tuple[DeviceProfile, DiyZoneSpec], ...]:
@@ -243,9 +241,7 @@ def mode_label(name: str) -> str:
     return name.replace("_", " ").title()
 
 
-# ==========================================================================
 # Entities
-# ==========================================================================
 
 
 class _GoveeDiyZoneEntityBase(GoveeEntity, RestoreEntity):
@@ -619,9 +615,7 @@ class GoveeDiyApplyButton(GoveeEntity, ButtonEntity):
         await async_send_diy_effect(self.coordinator, self._device, profile, effects)
 
 
-# ==========================================================================
 # Palette parsing
-# ==========================================================================
 
 
 def parse_palette(value: str, device_name: str) -> tuple[tuple[int, int, int], ...]:

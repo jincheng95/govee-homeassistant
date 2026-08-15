@@ -1,20 +1,13 @@
 """20-byte Govee protocol frames, the ``ptReal`` envelope and base64 packing.
 
-Everything in this module is pure: bytes in, bytes out, no sockets, no clock,
-no Home Assistant.
-
-A frame is exactly 20 bytes::
+Pure: bytes in, bytes out. A frame is exactly 20 bytes::
 
     [0]     proType    0x33 write/set, 0xAA query/read, 0xA3 multipacket chunk
     [1]     commandType
     [2:19]  payload, zero-padded
     [19]    checksum = XOR of bytes[0..18]
 
-The frame itself is transport-agnostic: the identical 20 bytes travel over LAN
-UDP (base64 inside the ``ptReal`` JSON envelope), over BLE GATT (wrapped in
-AES-128-ECB + RC4 under a session key), and over Govee's cloud MQTT (also as
-``ptReal``). Only the envelope helpers at the bottom of this module are
-LAN/cloud-specific.
+The frame is transport-agnostic; only the envelope helpers below are not.
 """
 
 from __future__ import annotations

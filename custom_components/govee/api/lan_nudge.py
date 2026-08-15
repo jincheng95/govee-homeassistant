@@ -1,46 +1,11 @@
 """Cloud push as a nudge for a LAN read (fork feature).
 
-Govee's MQTT/IoT channel pushes a state payload whenever a device changes,
-including changes made outside Home Assistant (the app, a physical remote, a
-Govee-side scene). That push is the only near-realtime signal we get — but its
-*payload* is the fragile part: the schema is undocumented, SKU-dependent, and
-has broken repeatedly.
-
-This module treats the push as a **content-free change signal** instead: "device
-X changed, go look". The look is a LAN ``devStatus`` read, which stays
-authoritative for the four fields LAN can report (on / brightness / color /
-color temperature — see :mod:`.lan_client`). The cloud payload is still
-applied by the coordinator as before; the LAN read simply lands on top of it a
-fraction of a second later.
-
-Properties that fall out of that split:
-
-- Decoupled from the cloud state schema for LAN-reachable devices: a payload
-  Govee changes tomorrow can no longer desync a device we can read directly.
-- Degrades to plain interval polling when the cloud is unavailable (no pushes =
-  no nudges = the existing ``_refresh_lan_reads`` timer), and to cloud-only
-  behaviour when the device is not on the LAN.
-- Because reactions no longer wait for the poll timer, the poll interval can be
-  raised safely. This module does NOT change the default.
-
-Four gates keep the nudge from becoming a UDP amplifier for a chatty broker:
-
-1. **LAN-capable only** — a device with no live LAN correlation is a no-op.
-2. **Coalesce** — pushes arriving while a read is already scheduled (or inside
-   :data:`NUDGE_DEBOUNCE_SECONDS` of the last accepted one) collapse into that
-   one read. Per device, never global.
-3. **Self-echo suppression** — our own writes come back as pushes. A nudge
-   within :data:`NUDGE_ECHO_SUPPRESS_SECONDS` of a locally-issued command to
-   that device is dropped; the optimistic state is already correct, and the
-   write tier does its own verify-by-read.
-4. **Cooldown** — a hard per-device floor of :data:`NUDGE_COOLDOWN_SECONDS`
-   between nudge-driven reads.
-
-Fork-maintenance note: everything lives here so ``coordinator.py`` carries only
-a hook line in ``_on_mqtt_state_update`` and a cancel line in
-``async_shutdown``. The coordinator internals this module reaches into are read
-in ONE place each (see the accessors below), so an upstream refactor of those
-attributes is a one-line fix here rather than a scattered merge conflict.
+Treats the MQTT/IoT push as a content-free "device X changed, go look" signal and
+answers it with a LAN ``devStatus`` read, so a LAN-reachable device does not
+depend on the cloud payload schema. Degrades to interval polling when the cloud
+is unavailable, and to cloud-only when the device is not on the LAN. Four gates
+keep it from amplifying a chatty broker: LAN-capable devices only, per-device
+coalescing, self-echo suppression after a local write, and a per-device cooldown.
 """
 
 from __future__ import annotations
@@ -235,10 +200,8 @@ class LanNudgeManager:
         age = (dt_util.utcnow() - last_sent).total_seconds()
         return bool(0 <= age < NUDGE_ECHO_SUPPRESS_SECONDS)
 
-    # ------------------------------------------------------------------
     # Coordinator internals, read in exactly one place each. An upstream
     # rename of any of these is a one-line fix in this block.
-    # ------------------------------------------------------------------
 
     def _is_lan_reachable(self, device_id: str) -> bool:
         """Whether the device currently has a live LAN correlation."""

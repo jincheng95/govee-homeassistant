@@ -1,31 +1,11 @@
 """DIY mode preview artwork, served from the integration (fork feature).
 
-The problem
------------
-The DIY composer's mode selects (``platforms/diy_effect.py``) offer bare names
-— ``twinkle``, ``gradient``, ``jumping`` — and a name does not tell anyone what
-the lamp will actually do. Govee's own app shows a moving preview beside each
-one. HA select entities cannot render an image in their options, so the
-previews have to reach the dashboard some other way: as a URL a picture card
-can point at, and as an attribute map a template can iterate.
-
-What is shipped
----------------
-``diy_mode_previews/`` holds the vendor's own preview stills, probed from
-``app2.govee.com/bff-app/v1/diy/gif/effects?goodsType=301&sku=H60B0`` (no auth)
-and copied into the integration so it stands alone — nothing here fetches from
-Govee or from anywhere else at runtime.
-
-Only the modes the selects actually offer are shipped: the six ripple previews
-and the eleven ring previews, one per entry in the H60B0 profile's two DIY mode
-tables. The vendor's third block (ten "Simple" images, ~21 MB) is authoring aid
-for a mode the integration does not expose, and is deliberately absent.
-
-The filename map below is the join between two independently-sourced things —
-the profile table's mode names and the probed artwork — so it is asserted both
-ways in the tests: every mode in every zone's table has a file, and every
-shipped file is claimed by a mode. A mode added to the profile without artwork
-fails the suite rather than shipping a dead URL.
+HA ``select`` entities cannot render an image in their options, so the vendor's
+preview stills are shipped in ``diy_mode_previews/`` and served as URLs a picture
+card can point at — deliberately outside ``/api/``, since they hold no secrets
+and a card has no bearer token. Nothing fetches at runtime. The mode-name to
+filename map below is asserted both ways by the tests, so a mode added to a
+profile without artwork fails the suite rather than shipping a dead URL.
 """
 
 from __future__ import annotations

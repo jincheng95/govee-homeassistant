@@ -192,9 +192,7 @@ async def _async_send_repeated(ip: str, frames: Sequence[bytes]) -> int:
     return sent
 
 
-# ----------------------------------------------------------------------
 # Coordinator internals, read in exactly one place each.
-# ----------------------------------------------------------------------
 
 
 def _lan_ip(coordinator: GoveeCoordinator, device_id: str | None) -> str | None:

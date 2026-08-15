@@ -121,8 +121,8 @@ from .models.device import (
 )
 from .models.device import GoveeLeakSensor, GoveeLeakSensorState
 from .api.lan_nudge import async_cancel_nudges, async_note_cloud_push
-from . import lan_udp_health  # fork: raw LAN UDP write path
-from . import lan_confirm  # fork: per-SKU echo-lag awareness for the confirm read
+from . import lan_udp_health
+from . import lan_confirm
 from .scene_cache import SceneCacheManager
 from .repairs import (
     async_create_auth_issue,
@@ -606,7 +606,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         already stamped success and the device is not falsely marked stale.
         """
         self._transport.refresh_lan_staleness(self._devices, set(self._lan_devices))
-        lan_udp_health.refresh(self)  # fork: raw LAN UDP write path
+        lan_udp_health.refresh(self)
 
     @property
     def states(self) -> dict[str, GoveeDeviceState]:
@@ -1380,7 +1380,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             credentials=self._iot_credentials,
             on_state_update=self._on_mqtt_state_update,
             on_give_up=self._on_mqtt_give_up,
-            on_raw_frames=self._on_mqtt_raw_frames,  # fork: §6.2 segment readback
+            on_raw_frames=self._on_mqtt_raw_frames,
         )
 
         if self._mqtt_client.available:
@@ -2714,14 +2714,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         Args:
             device_id: Device identifier.
             command: Command to execute.
-            defer_lan_confirm: Fork option. When the write takes the LAN tier,
-                return as soon as the datagram has been SENT (~30 ms) and run
-                the echo settle + verify-by-read confirm — including its
-                MQTT/REST fallback on a failed confirm — in a coordinator-owned
-                background task. For a caller whose own work only needs the
-                datagram to be on the wire ahead of it (see
-                :mod:`.child_power`), waiting out a ~1.5 s settle is latency
-                the user sees for nothing. Has no effect on any other tier.
+            defer_lan_confirm: Fork option. When the write takes the LAN
+                tier, return once the datagram has been SENT and run the echo
+                settle, the verify-by-read confirm and its MQTT/REST fallback
+                in a coordinator-owned background task. No effect on any other
+                tier.
 
         Returns:
             True if command succeeded. With ``defer_lan_confirm`` a LAN write
@@ -2765,7 +2762,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # unconfirmed / value-mismatched write returns False and falls
             # through to MQTT -> REST, so a device is never stranded.
             if await self._try_lan_command(
-                device_id, device, command, defer_lan_confirm  # fork: send-only
+                device_id, device, command, defer_lan_confirm
             ):
                 return True
             # LAN unavailable / unconfirmed — fall through to MQTT/REST.

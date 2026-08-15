@@ -1,32 +1,10 @@
 """Hardware-verified segment counts (fork feature).
 
-Why this exists
----------------
-Govee's platform API over-reports how many segments an RGBIC lamp has. Live
-evidence 2026-08-14: the devices endpoint advertises **15** segments for the
-H6076 (``segmentedColorRgb``'s ``elementRange``) while the lamp physically has
-**7**; the H6046 is advertised as 15 and has 10 (2 bars x 5). Only the H60B0
-(8) is reported exactly. The over-report costs twice:
-
-* **Phantom entities.** ``Segment 8`` .. ``Segment 15`` on a 7-segment lamp are
-  lights that can never light anything.
-* **A refused fast path.** The raw-write path compares the entity segment count
-  against the profile's mask width and refuses when they disagree — the table
-  describing different hardware is the dangerous case, since a mask built for
-  the wrong width lights the wrong LEDs. Fed the cloud's 15 against a mask
-  width of 7, that gate did exactly what it should and sent every dining-room
-  segment paint back over the cloud.
-
-So the fix belongs at entity creation, not at the gate: create as many segment
-entities as the hardware has. The count comes from the profile table's mask
-width (:attr:`~.api.protocol.profiles.DeviceProfile.verified_segment_count`),
-which is the same number the codec builds masks from — one source of truth, no
-second constant to drift.
-
-A SKU with no profile keeps the cloud's count untouched: this module only ever
-*lowers* a count it has hardware knowledge about, and never raises one (a lamp
-reporting fewer segments than the table expects is a different hardware
-revision, which the raw-write gate still refuses).
+Govee's platform API over-reports how many segments an RGBIC lamp has, which
+creates entities that can never light anything and trips the raw-write gate
+comparing the entity count against the profile's mask width. The cap is that mask
+width — the same number the codec builds masks from. This module owns that rule:
+it only ever lowers a count for a profiled SKU, and never raises one.
 """
 
 from __future__ import annotations
