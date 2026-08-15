@@ -17,7 +17,7 @@ import asyncio
 import logging
 import time
 
-from .zone_state import profile_for
+from .api.protocol import GoveeProtocolError, get_profile
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,8 +33,9 @@ def echo_lag_seconds(sku: str) -> float:
         profile or its profile has not declared one — in which case every
         caller here becomes a no-op and upstream's behaviour is unchanged.
     """
-    profile = profile_for(sku)
-    if profile is None:
+    try:
+        profile = get_profile(sku)
+    except GoveeProtocolError:
         return 0.0
     return max(0.0, float(profile.echo_lag_seconds))
 
