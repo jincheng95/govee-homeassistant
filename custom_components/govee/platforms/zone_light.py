@@ -172,27 +172,13 @@ def _segmented_zone(device: GoveeDevice) -> ZoneSpec | None:
 def as_zone_named_segment(entity: LightEntity, entry: ConfigEntry) -> LightEntity:
     """Name a segment entity after the zone its segments live on, in place.
 
-    Upstream names RGBIC segments "Segment N", which is fine when the segments
-    span the whole device — but on a multi-zone lamp it hides which light they
-    address. On the H60B0 every addressable segment is on the ring, so
-    "Segment 3" becomes "Ring segment 3" and the grouped entity "Ring
-    segments".
-
-    The label comes from :func:`zone_display_name`, the same function the zone
-    light and flow-rate entities use, so a segment is always named after the
-    entity it belongs to. An earlier revision derived it from ``zone.name``
-    (the vendor app's word for the part, "SIDE") and produced "Side light
-    segment 3" sitting under a zone light called "Ring" — two names for one
-    piece of hardware. One source, one name.
-
-    The zone membership cannot be discovered at runtime: the cloud's
-    ``segmentedColorRgb`` capability is a bare index range with no zone
-    linkage. The join lives in the profile table — the same per-SKU source the
-    zone entities are already built from — via :func:`_segmented_zone`.
-
-    Gated exactly like every other rename in this module: a no-op unless the
-    zone-lights option is on, so with the option off upstream's names are
-    untouched. Returns the same entity, so the caller stays a one-liner.
+    "Segment 3" becomes "Ring segment 3", the grouped entity "Ring segments".
+    The label comes from :func:`zone_display_name` — the same function the zone
+    light and flow-rate entities use, so one piece of hardware has one name.
+    Zone membership is not discoverable at runtime (``segmentedColorRgb`` is a
+    bare index range), so the join comes from the profile table via
+    :func:`_segmented_zone`. A no-op unless the zone-lights option is on;
+    returns the same entity so the caller stays a one-liner.
     """
     if not zone_lights_enabled(entry):
         return entity

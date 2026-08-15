@@ -1,14 +1,12 @@
 """Raw frames over the LAN ``ptReal`` UDP datagram (fork feature).
 
 The fastest raw tier (~30 ms) and the only pipe the zone and DIY paths have.
-Write-only: nothing on this channel is acknowledged and a raw write is invisible
-to ``devStatus``, so callers keep optimistic state and every frame goes out
-:data:`LAN_WRITE_REPEATS` times — the frames are absolute, so a replay can never
-invert a state the way a "toggle" frame would.
-
-Nothing here raises at the caller: every failure path returns False, meaning
-"I did not handle it, do what you did before". Tier selection lives in
-:mod:`.raw_router`; coordinator internals are read in one place each below.
+Write-only: nothing here is acknowledged and a raw write is invisible to
+``devStatus``, so callers keep optimistic state and every frame goes out
+:data:`LAN_WRITE_REPEATS` times — the frames are absolute, so a replay cannot
+invert state the way a "toggle" frame would. Every failure path returns False
+("not handled, do what you did before"); nothing raises at the caller. Tier
+selection lives in :mod:`.raw_router`.
 """
 
 from __future__ import annotations

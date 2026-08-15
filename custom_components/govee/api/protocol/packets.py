@@ -9,12 +9,8 @@ separate commit frame::
     last      a3 ff                              | remaining data      | xor
     commit    33 05 <submode> <idxLo> <idxHi> [marker]   submode 0x0a for DIY
 
-Packet 0 spends 3 of its 17 data bytes on that header, so effect data starts
-at the 4th data byte of packet 0.
-
-The effect payloads it carries are built by :mod:`.diy` and assembled by
-:meth:`~.codec.GoveeCodec.diy_effect`. Chunk boundaries, the ``0xff``
-terminator and the commit frame are pinned by ``tests/test_protocol.py``.
+Packet 0 spends 3 of its 17 data bytes on that header, so effect data starts at
+its 4th data byte. Payloads come from :mod:`.diy`.
 """
 
 from __future__ import annotations

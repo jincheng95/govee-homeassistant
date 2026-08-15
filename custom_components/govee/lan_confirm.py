@@ -1,14 +1,11 @@
 """Echo-lag awareness for the LAN verify-by-read confirm (fork feature).
 
 Some SKUs keep reporting their PRE-command state for a while after a write (the
-H60B0 for ~1.5 s, protocol reference §2.1), so a confirm read taken immediately
-can only fail — which armed issue #57's write-suppression cooldown on hardware
-behaving exactly as documented.
-
+H60B0 for ~1.5 s), so a confirm read taken immediately can only fail.
 :func:`async_settle` waits that lag out before the read; :func:`counts_as_miss`
 refuses to count a readback that still landed inside it. Both measure from the
 SEND, which callers must pass in. A SKU whose profile declares no lag gets 0.0
-and every function here becomes a no-op, i.e. upstream's semantics exactly.
+and every function here becomes a no-op — upstream's semantics exactly.
 """
 
 from __future__ import annotations

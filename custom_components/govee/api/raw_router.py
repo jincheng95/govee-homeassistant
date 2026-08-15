@@ -1,15 +1,12 @@
 """Which raw pipe a frame takes, and the entry points entities call (fork).
 
-The 20-byte frames are transport-neutral, so the choice of pipe is a routing
-decision, not a codec one: :func:`async_route_frames` tries LAN raw, then
-plaintext BLE, then the cloud MQTT ``ptReal`` passthrough, and reports False
-when no tier accepted — which means "not handled, use the cloud command you
-had". No tier confirms anything, so callers keep optimistic state.
-
-Also home to the per-segment paint (:func:`async_segment_color`), which picks
-its wire form from the profile rather than from a SKU branch, and to zone power
-(:func:`async_zone_power`). Entity and coordinator internals are read in one
-place each in the accessor block at the bottom.
+The 20-byte frames are transport-neutral, so the pipe is a routing decision, not
+a codec one: :func:`async_route_frames` tries LAN raw, then plaintext BLE, then
+the cloud MQTT ``ptReal`` passthrough, and reports False when no tier accepted
+("not handled, use the cloud command you had"). No tier raises at the entity and
+no tier confirms, so callers keep optimistic state. Also home to the per-segment
+paint (:func:`async_segment_color`), which picks its wire form from the profile,
+and to zone power (:func:`async_zone_power`).
 """
 
 from __future__ import annotations

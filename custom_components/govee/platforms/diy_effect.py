@@ -1,45 +1,13 @@
 """DIY-effect authoring entities for multi-zone lamps (fork feature).
 
-Gated by the same option as the zone lights (``enable_zone_lights``, default
-off) and built only for SKUs whose profile declares a DIY layout — today that
-is the H60B0 alone.
-
-The shape of the control surface
---------------------------------
-A DIY effect is uploaded as one indivisible document (see :mod:`..diy_state`
-for why), so these entities do not command anything. They *stage*:
-
-======================  ==========================================
-``select``  DIY mode    the zone's effect, by the name the app uses
-``number``  DIY speed   transition speed, 1-100
-``select``  direction   ripple only — cw / ccw / reverse
-``number``  flow rate   ripple only, and NOT the live flow-rate number
-``text``    palette     up to 16 ``#rrggbb`` colours
-``button``  apply       one per device: assemble, encode, upload
-======================  ==========================================
-
-Every staging entity is :class:`~homeassistant.const.EntityCategory.CONFIG`
-and writes nothing to the device: setting one touches the store and the state
-machine only. That is what makes a half-built effect harmless — "twinkle" with
-no colours yet is a legal *draft*, and only the button turns a draft into
-frames (and refuses, with a readable message, when the draft is not sendable).
-
-Two consequences worth stating, because both were deliberate:
-
-* **Only the button's availability depends on the LAN.** The staging entities
-  stay usable while the lamp is off the network; there is nothing for them to
-  fail to send. The button is the one control that needs a route, so it is the
-  one that goes unavailable without it.
-* **The DIY flow rate is a separate entity from the live zone flow rate** in
-  :mod:`.zone_light`. They carry the same units and the same range but they are
-  not the same value: one is a property of the running lamp, the other a field
-  of a document that has not been sent yet. Merging them would make editing a
-  draft change the lamp.
-
-Nothing here names a zone, a mode or a direction. The zones, their mode tables
-(the ripple's and the ring's do not share an enum), and whether a zone even has
-a direction or flow-rate field all come out of
-:class:`~..api.protocol.profiles.DiyEffectSpec`.
+Gated by ``enable_zone_lights`` (default off), and only for SKUs whose profile
+declares a DIY layout. These entities STAGE a draft and write nothing to the
+device; only the apply button encodes and uploads, so a half-built effect is
+harmless and the button is the one control whose availability needs a LAN
+route. The DIY flow rate is a separate entity from :mod:`.zone_light`'s live
+one — a field of an unsent document, not a property of the running lamp. Zones,
+mode tables and which fields exist come from
+:class:`~..api.protocol.profiles.DiyEffectSpec`; no zone or mode is named here.
 """
 
 from __future__ import annotations
