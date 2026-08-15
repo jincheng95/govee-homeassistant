@@ -757,13 +757,39 @@ class TestFallback:
         assert isinstance(command, ToggleCommand)
 
     @pytest.mark.asyncio
-    async def test_a_failed_send_raises_for_attributes(self, raw_client):
+    async def test_a_failed_send_falls_back_to_cloud_power_even_with_attributes(self, raw_client, caplog):
+        """The power command already went out; raising now would strand a lit lamp."""
         coordinator = _coordinator()
         lights = _lights(coordinator, _entry(coordinator))
         raw_client.error = OSError("network unreachable")
 
-        with pytest.raises(HomeAssistantError):
-            await lights["ripple"].async_turn_on(rgb_color=(1, 2, 3))
+        await lights["ripple"].async_turn_on(rgb_color=(1, 2, 3))
+
+        command = coordinator.async_control_device.await_args_list[-1].args[1]
+        assert isinstance(command, ToggleCommand)
+        assert command.enabled is True
+        assert "colour and brightness not applied" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_lan_target_lost_across_the_power_await_falls_back(self, raw_client, monkeypatch):
+        """The power await yields; the correlation can expire inside it."""
+        coordinator = _coordinator()
+        light = _lights(coordinator, _entry(coordinator))["ripple"]
+
+        calls: list[int] = []
+        real_target = light._lan_target
+
+        def _target_once():
+            calls.append(1)
+            return real_target() if len(calls) == 1 else None
+
+        monkeypatch.setattr(light, "_lan_target", _target_once)
+
+        await light.async_turn_on()
+
+        assert raw_client.envelopes == []
+        command = coordinator.async_control_device.await_args_list[-1].args[1]
+        assert isinstance(command, ToggleCommand)
 
     def test_flow_rate_is_unavailable_without_lan(self):
         coordinator = _coordinator(on_lan=False)

@@ -487,17 +487,29 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
         # the normal path first.
         await self._async_ensure_device_powered()
 
+        # That await yields, and the LAN correlation can expire across it. The
+        # target is re-read rather than trusted, so the branch taken below and
+        # the target `_async_send` resolves for itself are the same one.
+        if target is not None and self._lan_target() is None:
+            target = None
+
         if target is None:
-            await self._async_cloud_power(True)
+            await self._async_cloud_power_after_power(True)
             return
 
         if not await self._async_send(frames, what=f"zone {self._zone_key} on"):
-            if wants_attributes:
-                raise HomeAssistantError(
-                    f"{self._device.name}: the local-network write to the "
-                    f"{zone_display_name(self._zone)} zone could not be sent"
-                )
-            await self._async_cloud_power(True)
+            # Past the power command the lamp is lit. Raising here would leave
+            # the user a lit lamp, an unlit zone and an error — strictly worse
+            # than switching the zone on over the cloud and saying so. The
+            # attributes are simply not applied; that is the honest degradation.
+            _LOGGER.warning(
+                "Govee zone lights: the local-network write to %s's %s zone was not sent — "
+                "falling back to cloud power%s",
+                self._device.name,
+                zone_display_name(self._zone),
+                " (colour and brightness not applied)" if wants_attributes else "",
+            )
+            await self._async_cloud_power_after_power(True)
             return
 
         self._apply_optimistic(True, **kwargs)
@@ -611,6 +623,24 @@ class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):
         if success:
             registry(self.coordinator).apply(self._device_id, self._device.sku, self._zone_key, on)
         self.async_write_ha_state()
+
+    async def _async_cloud_power_after_power(self, on: bool) -> None:
+        """:meth:`_async_cloud_power`, but never raising.
+
+        Only for fallbacks taken *after* the whole-lamp power command has gone
+        out. A zone with no cloud equivalent is a real failure, but by this
+        point raising it produces a lit lamp, an unlit zone and an error — so
+        it is logged instead.
+        """
+        try:
+            await self._async_cloud_power(on)
+        except HomeAssistantError as err:
+            _LOGGER.warning(
+                "Govee zone lights: %s's %s zone could not be switched over the cloud either (%s)",
+                self._device.name,
+                zone_display_name(self._zone),
+                err,
+            )
 
     # -- lifecycle ----------------------------------------------------------
 
