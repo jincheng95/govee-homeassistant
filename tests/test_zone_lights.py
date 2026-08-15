@@ -85,6 +85,7 @@ IP = "10.20.0.51"
 # edit cannot silently repaint these expectations.
 GOLDEN = {
     "ripple_on": "3330010100000000000000000000000000000003",
+    "ring_on": "3330020100000000000000000000000000000000",
     "ripple_off": "3330010000000000000000000000000000000002",
     "downlight_on": "3330030100000000000000000000000000000001",
     "downlight_off": "3330030000000000000000000000000000000000",
@@ -342,28 +343,29 @@ class TestFrames:
     @pytest.mark.parametrize(
         ("zone", "kwargs", "golden"),
         [
-            ("ripple", {}, "ripple_on"),
-            ("ripple", {"rgb_color": (255, 0, 0)}, "ripple_red"),
+            ("ripple", {}, ["ripple_on"]),
+            ("ripple", {"rgb_color": (255, 0, 0)}, ["ripple_on", "ripple_red"]),
             # The 8-segment mask (ff 00) is in the frame; the ripple's is not.
-            ("ring", {"rgb_color": (0, 0, 255)}, "ring_blue"),
-            ("ring", {"brightness": 128}, "ring_bright_50"),
+            ("ring", {"rgb_color": (0, 0, 255)}, ["ring_on", "ring_blue"]),
+            ("ring", {"brightness": 128}, ["ring_on", "ring_bright_50"]),
             # ...and the white-only downlight's brightness carries no mask.
-            ("downlight", {"brightness": 128}, "downlight_bright_50"),
-            ("downlight", {"color_temp_kelvin": 4000}, "downlight_4000k"),
+            ("downlight", {"brightness": 128}, ["downlight_on", "downlight_bright_50"]),
+            ("downlight", {"color_temp_kelvin": 4000}, ["downlight_on", "downlight_4000k"]),
         ],
         ids=["ripple power", "ripple red", "ring blue", "ring 50%", "downlight 50%", "downlight 4000K"],
     )
-    async def test_a_turn_on_ends_with_its_golden_attribute_frame(self, raw_client, zone, kwargs, golden):
-        """Power leads, then exactly the attribute frames the zone declares."""
+    async def test_a_turn_on_sends_exactly_its_golden_frames(self, raw_client, zone, kwargs, golden):
+        """Power leads, then exactly the attribute frames the zone declares.
+
+        Whole-list equality, not endpoints: an extra frame between the power
+        frame and the attribute frame is precisely the kind of regression an
+        endpoint assertion cannot see.
+        """
         lights = _lights(_coordinator(), _entry(_coordinator()))
 
         await lights[zone].async_turn_on(**kwargs)
 
-        assert raw_client.hexes[-1] == GOLDEN[golden]
-        # Power always leads: 33 30 <zone> 01. An unlit zone has never been
-        # seen to accept an attribute frame.
-        power = bytes.fromhex(raw_client.hexes[0])
-        assert (power[0], power[1], power[3]) == (0x33, 0x30, 0x01)
+        assert raw_client.hexes == [GOLDEN[key] for key in golden]
 
     @pytest.mark.asyncio
     async def test_turn_off_sends_zone_power_off(self, raw_client):
