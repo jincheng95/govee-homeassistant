@@ -5,8 +5,9 @@ the zone switches in ``switch.py`` are unchanged. Each zone's colour modes,
 kelvin range and existence come from the profile table — no SKU knowledge here.
 When zone lights exist the whole-device light is demoted to a nameless
 power+brightness master, so ``light.turn_on`` with ``effect:`` must be repointed
-at the scene select. Reported device power outranks optimistic zone state, and a
-zone write with no LAN path raises rather than repainting the whole lamp.
+at the scene select. Reported device power outranks optimistic zone state. With
+no LAN path a zone write raises only when attributes were requested; a bare
+on/off falls back to cloud power rather than repainting the whole lamp.
 """
 
 from __future__ import annotations
