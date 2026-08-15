@@ -220,6 +220,34 @@ class TestNoTierRaises:
         coordinator._mqtt_client.async_publish_ptreal.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_coordinator_without_lan_devices_falls_through_to_mqtt(self, monkeypatch, ble_stack):
+        """`lan_target` reads private coordinator state — an upstream rename must
+        degrade the LAN tier to "not handled", not raise at the entity."""
+        monkeypatch.setattr(ble_raw_write, "_resolve", lambda coordinator, address: None)
+        coordinator = _coordinator(device_id=LAN_DEVICE_ID, sku=LAN_SKU, on_lan=True)
+        del coordinator._lan_devices  # as an upstream rename would leave it
+        entity = _segment_entity(coordinator, device_id=LAN_DEVICE_ID, sku=LAN_SKU, count=LAN_SEGMENTS)
+
+        await entity.async_turn_on(rgb_color=(255, 0, 0))
+
+        coordinator._mqtt_client.async_publish_ptreal.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_zone_power_without_lan_devices_reroutes_instead_of_raising(self, ble_stack):
+        """The other unguarded `lan_target` call site: zone power."""
+        from custom_components.govee.api import raw_router
+
+        coordinator = _coordinator(device_id=LAN_DEVICE_ID, sku=LAN_SKU, on_lan=True)
+        del coordinator._lan_devices
+        entity = MagicMock()
+        entity.coordinator = coordinator
+        entity._device_id = LAN_DEVICE_ID
+        entity._device.sku = LAN_SKU
+        entity._toggle_instance = next(iter(raw_router.ZONE_KEY_BY_TOGGLE))
+
+        assert await raw_router.async_zone_power(entity, on=True) is False
+
+    @pytest.mark.asyncio
     async def test_a_raising_mqtt_tier_falls_through_to_the_cloud(self, monkeypatch, ble_stack):
         monkeypatch.setattr(ble_raw_write, "_resolve", lambda coordinator, address: None)
         coordinator = _coordinator()

@@ -138,7 +138,7 @@ async def _async_lan_tier(
             "Govee raw router: LAN writes to %s are in upstream's cooldown — trying the remaining tiers", sku
         )
         return False
-    target = lan_raw.lan_target(coordinator, device_id, sku)
+    target = _lan_target(coordinator, device_id, sku)
     if target is None:
         return False
     ip, _profile = target
@@ -186,7 +186,7 @@ async def async_zone_power(entity: Any, *, on: bool) -> bool:
 
     device_id = _device_id(entity)
     sku = _sku(entity)
-    target = lan_raw.lan_target(coordinator, device_id, sku)
+    target = _lan_target(coordinator, device_id, sku)
     if target is None:
         return False
     ip, profile = target
@@ -420,6 +420,21 @@ def _set_state(entity: Any, on: bool) -> None:
     """Write a zone switch's optimistic state and notify HA."""
     entity._is_on = on
     entity.async_write_ha_state()
+
+
+def _lan_target(coordinator: GoveeCoordinator, device_id: str | None, sku: str) -> tuple[str, DeviceProfile] | None:
+    """:func:`lan_raw.lan_target`, degraded to "no target" if it raises.
+
+    It reaches private coordinator state (``_lan_devices``), so an upstream
+    rename must show up here as "this tier does not apply" and let the next one
+    run — never as an exception at the entity, which is the contract the tier
+    wrapper keeps for everything else.
+    """
+    try:
+        return lan_raw.lan_target(coordinator, device_id, sku)
+    except Exception as err:  # noqa: BLE001 - a tier must never raise at an entity
+        _LOGGER.debug("Govee raw router: the LAN target for %s could not be resolved (%s)", device_id, err)
+        return None
 
 
 def _writes_suppressed(coordinator: GoveeCoordinator, device_id: str | None) -> bool:
