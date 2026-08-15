@@ -43,6 +43,11 @@ decides what to do with a reading — the caller supplies the segment count and
 routes the result. That keeps the phantom-index rule (below) a caller policy
 backed by the profile table rather than a constant hidden in a parser.
 
+**Trust boundary.** Input arrives on Govee's cloud-authenticated MQTT channel;
+this module trusts that channel and nothing more. The XOR checksum is an
+integrity check against a corrupted frame, never an authenticity one — anything
+that can publish on the topic can compute it.
+
 **Phantom indices.** The frames always come in whole groups of four, so a
 10-segment bar reports 12 segments and the last two are whatever the firmware
 left in the buffer (in the capture above: level 100 RGB ``64 46 64`` and level
@@ -75,6 +80,17 @@ _QUAD_OFFSET: Final = 3
 
 HA_BRIGHTNESS_MAX: Final = 255
 """HA's brightness scale. The wire carries 0-100."""
+
+MAX_COMMANDS: Final = 64
+"""Most ``op.command`` entries decoded from one payload; the rest are dropped.
+
+A real push carries five. A 10-segment bar needs three readback frames, and a
+40-segment one would need ten, so this is far above anything the hardware
+produces and far below anything worth spending time decoding.
+"""
+
+MAX_COMMAND_CHARS: Final = 1024
+"""Longest ``op.command`` entry decoded; a 20-byte frame is 28 base64 chars."""
 
 
 def level_to_ha_brightness(level: int) -> int:
@@ -214,8 +230,15 @@ def decode_payload(
         return {}
 
     frames: list[bytes] = []
-    for encoded in commands:
+    # Bounded before decoding: `op.command` is remote input, and a base64
+    # string decodes to ~3/4 its length in memory. A real payload carries a
+    # handful of 20-byte frames, so both caps are orders of magnitude clear of
+    # anything the hardware sends.
+    for encoded in commands[:MAX_COMMANDS]:
         if not isinstance(encoded, str):
+            continue
+        if len(encoded) > MAX_COMMAND_CHARS:
+            _LOGGER.debug("Skipping an oversized op.command entry (%d chars)", len(encoded))
             continue
         try:
             frames.append(base64.b64decode(encoded))

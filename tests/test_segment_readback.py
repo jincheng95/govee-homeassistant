@@ -26,6 +26,8 @@ from custom_components.govee.api.auth import GoveeIotCredentials
 from custom_components.govee.api.mqtt import GoveeAwsIotClient
 from custom_components.govee.api.protocol import PROFILES
 from custom_components.govee.api.segment_readback import (
+    MAX_COMMAND_CHARS,
+    MAX_COMMANDS,
     SegmentReading,
     decode_frames,
     decode_payload,
@@ -236,6 +238,38 @@ class TestFrameFiltering:
         readings = decode_payload(payload, segment_count=H6046_SEGMENTS)
 
         assert readings[1].rgb == MAGENTA
+
+
+class TestRemoteInputIsBounded:
+    """`op.command` is remote input; decoding it is capped before it runs."""
+
+    def test_only_the_first_entries_are_decoded(self):
+        good = base64.b64encode(_frame(0xAA, 0xA5, 1, 70, 255, 0, 255)).decode()
+        payload = {"op": {"command": ["A" * 4] * MAX_COMMANDS + [good]}}
+
+        # The one real frame sits past the cap, so nothing is decoded.
+        assert decode_payload(payload, segment_count=H6046_SEGMENTS) == {}
+
+    def test_an_entry_at_the_cap_is_still_decoded(self):
+        good = base64.b64encode(_frame(0xAA, 0xA5, 1, 70, 255, 0, 255)).decode()
+        payload = {"op": {"command": ["A" * 4] * (MAX_COMMANDS - 1) + [good]}}
+
+        assert decode_payload(payload, segment_count=H6046_SEGMENTS)[0].rgb == MAGENTA
+
+    def test_an_oversized_entry_is_skipped_without_decoding_it(self):
+        good = base64.b64encode(_frame(0xAA, 0xA5, 1, 70, 255, 0, 255)).decode()
+        payload = {"op": {"command": ["A" * (MAX_COMMAND_CHARS + 4), good]}}
+
+        # Skipped, and its neighbours still decode.
+        assert decode_payload(payload, segment_count=H6046_SEGMENTS)[0].rgb == MAGENTA
+
+    def test_an_entry_at_the_length_cap_is_still_decoded(self):
+        padding = base64.b64encode(b"\x00" * (MAX_COMMAND_CHARS // 4 * 3)).decode()
+        assert len(padding) <= MAX_COMMAND_CHARS
+        good = base64.b64encode(_frame(0xAA, 0xA5, 1, 70, 255, 0, 255)).decode()
+        payload = {"op": {"command": [padding, good]}}
+
+        assert decode_payload(payload, segment_count=H6046_SEGMENTS)[0].rgb == MAGENTA
 
 
 class TestEntityCorrection:
