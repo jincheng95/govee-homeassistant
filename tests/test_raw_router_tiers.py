@@ -26,6 +26,7 @@ from custom_components.govee.const import (
 )
 from custom_components.govee.models import SegmentColorCommand
 from custom_components.govee.platforms.segment import GoveeSegmentEntity
+from tests.conftest import FakeRawClient
 
 # Synthetic id whose last six octets are the BLE address.
 DEVICE_ID = "AA:BB:AA:BB:CC:11:22:33"
@@ -63,27 +64,6 @@ def ble_stack(monkeypatch: pytest.MonkeyPatch) -> _FakeBleClient:
     monkeypatch.setattr(ble_raw_write, "close_stale_connections_by_address", AsyncMock())
     monkeypatch.setattr(ble_raw_write, "establish_connection", AsyncMock(return_value=client))
     monkeypatch.setattr(ble_raw_write, "BLE_IDLE_DISCONNECT_SECONDS", 0.01)
-    return client
-
-
-class _FakeRawClient:
-    """The UDP client, optionally raising something the LAN tier never catches."""
-
-    def __init__(self, error: Exception | None = None) -> None:
-        self.envelopes: list[tuple[str, list[bytes]]] = []
-        self.error = error
-
-    async def async_send_frames(self, host: str, frames: list[bytes]) -> None:
-        if self.error is not None:
-            raise self.error
-        self.envelopes.append((host, list(frames)))
-
-
-@pytest.fixture(autouse=True)
-def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
-    client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
     return client
 
 
@@ -185,7 +165,7 @@ class TestNoTierRaises:
 
     @pytest.mark.asyncio
     async def test_a_raising_udp_client_falls_through_to_mqtt(self, monkeypatch, ble_stack):
-        monkeypatch.setattr(lan_raw, "_CLIENT", _FakeRawClient(error=RuntimeError("transport closed")))
+        monkeypatch.setattr(lan_raw, "_CLIENT", FakeRawClient(error=RuntimeError("transport closed")))
         monkeypatch.setattr(ble_raw_write, "_resolve", lambda coordinator, address: None)
         coordinator = _coordinator(device_id=LAN_DEVICE_ID, sku=LAN_SKU, on_lan=True)
         entity = _segment_entity(coordinator, device_id=LAN_DEVICE_ID, sku=LAN_SKU, count=LAN_SEGMENTS)

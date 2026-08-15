@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.govee.api import lan_raw, mqtt_raw_write
+from custom_components.govee.api import mqtt_raw_write
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import Transport, get_profile
 from custom_components.govee.const import (
@@ -47,28 +47,6 @@ GOLDEN_SEG0_RED_B64 = "MwUVAf8AAAAAAAAAAQAAAAAAANw="
 # ptReal envelope, base64-encoded.
 REFERENCE_FRAME = "33300101000000000000000000000000000000 03".replace(" ", "")
 REFERENCE_B64 = "MzABAQAAAAAAAAAAAAAAAAAAAAM="
-
-
-class _FakeRawClient:
-    def __init__(self) -> None:
-        self.envelopes: list[tuple[str, list[bytes]]] = []
-
-    async def async_send_frames(self, host: str, frames: list[bytes]) -> None:
-        self.envelopes.append((host, list(frames)))
-
-    @property
-    def hexes(self) -> list[str]:
-        if not self.envelopes:
-            return []
-        return [frame.hex() for frame in self.envelopes[0][1]]
-
-
-@pytest.fixture(autouse=True)
-def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
-    client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
-    return client
 
 
 def _coordinator(

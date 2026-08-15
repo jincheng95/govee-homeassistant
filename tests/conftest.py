@@ -13,6 +13,7 @@ from custom_components.govee.api import (
     GoveeApiClient,
     GoveeIotCredentials,
 )
+from custom_components.govee.api import lan_raw
 from custom_components.govee.models import (
     GoveeCapability,
     GoveeDevice,
@@ -77,6 +78,58 @@ def enable_event_loop_debug() -> Generator[None, None, None]:
         if created:
             asyncio.set_event_loop(None)
             loop.close()
+
+
+class FakeRawClient:
+    """Records raw LAN datagrams instead of putting them on a socket.
+
+    One shared stand-in for every raw-write test file. Sends are recorded
+    *before* ``error`` is raised, so a test can assert both what went out and
+    that the failure was handled.
+
+    Attributes:
+        envelopes: ``(host, frames)`` for each ``async_send_frames`` call.
+        error: Raised at the end of every send; None never raises.
+    """
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.envelopes: list[tuple[str, list[bytes]]] = []
+        self.error = error
+
+    async def async_send_frames(self, host: str, frames: list[bytes]) -> None:
+        """Record one envelope, then raise ``error`` if this client has one."""
+        self.envelopes.append((host, list(frames)))
+        if self.error is not None:
+            raise self.error
+
+    async def async_send_frame(self, host: str, frame: bytes) -> None:
+        """One frame, as its own envelope."""
+        await self.async_send_frames(host, [frame])
+
+    @property
+    def sends(self) -> list[tuple[str, bytes]]:
+        """``(host, frame)`` for every frame sent, flattened across envelopes."""
+        return [(host, frame) for host, frames in self.envelopes for frame in frames]
+
+    @property
+    def hexes(self) -> list[str]:
+        """The first envelope's frames as hex, in order ([] when nothing was sent)."""
+        if not self.envelopes:
+            return []
+        return [frame.hex() for frame in self.envelopes[0][1]]
+
+
+@pytest.fixture(autouse=True)
+def raw_client(monkeypatch: pytest.MonkeyPatch) -> FakeRawClient:
+    """A recording LAN client, with the inter-repeat gap off the wall clock.
+
+    Autouse suite-wide: no test should reach a real socket, and the gap is a
+    transport detail that only ever cost the suite wall time.
+    """
+    client = FakeRawClient()
+    monkeypatch.setattr(lan_raw, "_CLIENT", client)
+    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
+    return client
 
 
 # Capability constants for test devices

@@ -45,6 +45,7 @@ from custom_components.govee.models.device import (
 from custom_components.govee.switch import GoveeNamedLightSwitchEntity
 from custom_components.govee import zone_state
 from custom_components.govee.zone_state import register_zone_switch
+from tests.conftest import FakeRawClient
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
 IP = "10.20.0.51"
@@ -69,24 +70,7 @@ TOGGLE_SUFFIXES = {
 }
 
 
-class _FakeRawClient:
-    """Records datagrams instead of sending them."""
-
-    def __init__(self, error: Exception | None = None) -> None:
-        self.sends: list[tuple[str, bytes]] = []
-        self.error = error
-
-    async def async_send_frames(self, host: str, frames: list[bytes]) -> None:
-        for frame in frames:
-            self.sends.append((host, frame))
-        if self.error is not None:
-            raise self.error
-
-    async def async_send_frame(self, host: str, frame: bytes) -> None:
-        await self.async_send_frames(host, [frame])
-
-
-class _FlakyRawClient(_FakeRawClient):
+class _FlakyRawClient(FakeRawClient):
     """Accepts the first ``fail_after`` copies of a burst, then raises OSError."""
 
     def __init__(self, *, fail_after: int) -> None:
@@ -98,8 +82,7 @@ class _FlakyRawClient(_FakeRawClient):
         self._calls += 1
         if self._calls > self._fail_after:
             raise OSError("network unreachable")
-        for frame in frames:
-            self.sends.append((host, frame))
+        await super().async_send_frames(host, frames)
 
 
 def _cap(cap_type: str, instance: str) -> GoveeCapability:
@@ -155,13 +138,10 @@ def _entity(coordinator: Any, instance: str, device: GoveeDevice | None = None) 
     return entity
 
 
-@pytest.fixture(autouse=True)
-def _fast_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
-    """Recording client with the inter-repeat gap taken off the wall clock."""
-    client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
-    return client
+@pytest.fixture
+def _fast_client(raw_client: FakeRawClient) -> FakeRawClient:
+    """Local alias for the suite-wide recording client (see tests/conftest.py)."""
+    return raw_client
 
 
 # ==============================================================================
@@ -305,7 +285,7 @@ class TestGates:
 
     @pytest.mark.asyncio
     async def test_send_failure_falls_back_without_touching_state(self, monkeypatch, _fast_client):
-        monkeypatch.setattr(lan_raw, "_CLIENT", _FakeRawClient(error=OSError("network unreachable")))
+        monkeypatch.setattr(lan_raw, "_CLIENT", FakeRawClient(error=OSError("network unreachable")))
         entity = _entity(_coordinator(), "rippleLightToggle")
 
         assert await raw_router.async_zone_power(entity, on=True) is False
@@ -362,7 +342,7 @@ class TestDelivery:
         `refresh` never clears a hard send failure, so attributing an
         integration bug to the network would stick for the life of the entry.
         """
-        client = _FakeRawClient(error=GoveeProtocolError("cannot build envelope"))
+        client = FakeRawClient(error=GoveeProtocolError("cannot build envelope"))
         monkeypatch.setattr(lan_raw, "_CLIENT", client)
         coordinator = _coordinator()
         entity = _entity(coordinator, "rippleLightToggle")
@@ -374,7 +354,7 @@ class TestDelivery:
 
     @pytest.mark.asyncio
     async def test_a_socket_failure_is_a_transport_failure(self, _fast_client, monkeypatch):
-        client = _FakeRawClient(error=OSError("network unreachable"))
+        client = FakeRawClient(error=OSError("network unreachable"))
         monkeypatch.setattr(lan_raw, "_CLIENT", client)
         entity = _entity(_coordinator(), "rippleLightToggle")
 

@@ -105,38 +105,6 @@ GOLDEN = {
 # ==============================================================================
 
 
-class _FakeRawClient:
-    """Records envelopes instead of sending them."""
-
-    def __init__(self) -> None:
-        self.envelopes: list[tuple[str, list[bytes]]] = []
-        self.error: Exception | None = None
-
-    async def async_send_frames(self, host: str, frames: list[bytes]) -> None:
-        self.envelopes.append((host, list(frames)))
-        if self.error is not None:
-            raise self.error
-
-    async def async_send_frame(self, host: str, frame: bytes) -> None:
-        await self.async_send_frames(host, [frame])
-
-    @property
-    def hexes(self) -> list[str]:
-        """Every distinct frame hex from the first envelope, in order."""
-        if not self.envelopes:
-            return []
-        return [frame.hex() for frame in self.envelopes[0][1]]
-
-
-@pytest.fixture(autouse=True)
-def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
-    """Recording client with the inter-repeat gap taken off the wall clock."""
-    client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
-    return client
-
-
 def _cap(cap_type: str, instance: str) -> GoveeCapability:
     return GoveeCapability(type=cap_type, instance=instance, parameters={})
 

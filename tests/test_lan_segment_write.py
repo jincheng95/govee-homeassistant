@@ -84,31 +84,6 @@ HA_BRIGHTNESS_100_PERCENT = 255
 HA_BRIGHTNESS_32_PERCENT = 82
 
 
-class _FakeRawClient:
-    def __init__(self) -> None:
-        self.envelopes: list[tuple[str, list[bytes]]] = []
-
-    async def async_send_frames(self, host: str, frames: list[bytes]) -> None:
-        self.envelopes.append((host, list(frames)))
-
-    async def async_send_frame(self, host: str, frame: bytes) -> None:
-        await self.async_send_frames(host, [frame])
-
-    @property
-    def hexes(self) -> list[str]:
-        if not self.envelopes:
-            return []
-        return [frame.hex() for frame in self.envelopes[0][1]]
-
-
-@pytest.fixture(autouse=True)
-def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
-    client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
-    return client
-
-
 def _coordinator(*, enabled: bool = True, on_lan: bool = True) -> Any:
     coordinator = MagicMock()
     coordinator._govee_zone_state_registry = None

@@ -27,7 +27,7 @@ import pytest
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
-from custom_components.govee.api import ble_raw_write, lan_raw
+from custom_components.govee.api import ble_raw_write
 from custom_components.govee.api.protocol import Transport, get_profile
 from custom_components.govee.const import (
     CONF_ENABLE_BLE_RAW_WRITE,
@@ -96,22 +96,6 @@ async def _expire_idle_window(hass: Any) -> None:
         dt_util.utcnow() + timedelta(seconds=ble_raw_write.BLE_IDLE_DISCONNECT_SECONDS + 1),
     )
     await hass.async_block_till_done()
-
-
-class _FakeRawClient:
-    def __init__(self) -> None:
-        self.envelopes: list[tuple[str, list[bytes]]] = []
-
-    async def async_send_frames(self, host: str, frames: list[bytes]) -> None:
-        self.envelopes.append((host, list(frames)))
-
-
-@pytest.fixture(autouse=True)
-def raw_client(monkeypatch: pytest.MonkeyPatch) -> _FakeRawClient:
-    client = _FakeRawClient()
-    monkeypatch.setattr(lan_raw, "_CLIENT", client)
-    monkeypatch.setattr(lan_raw, "LAN_WRITE_GAP_SECONDS", 0)
-    return client
 
 
 def _coordinator(hass: Any = None, *, ble: bool = True, lan_raw: bool = False, mqtt: bool = False) -> Any:
