@@ -289,7 +289,6 @@ vol.Optional(CONF_POLL_INTERVAL, default=...): vol.All(vol.Coerce(int), vol.Rang
 vol.Optional(CONF_ENABLE_GROUPS, default=...): bool,
 vol.Optional(CONF_ENABLE_SCENES, default=...): bool,
 vol.Optional(CONF_ENABLE_DIY_SCENES, default=...): bool,
-vol.Optional(CONF_ENABLE_SEGMENTS, default=...): bool,
 ```
 
 ### Translations

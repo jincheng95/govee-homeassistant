@@ -30,38 +30,78 @@ custom_components/govee/
 ├── coordinator.py           # DataUpdateCoordinator with MQTT integration
 ├── entity.py                # Base entity class (GoveeEntity)
 ├── light.py                 # Light platform
-├── scene.py                 # Scene platform
-├── switch.py                # Switch platform (plugs, night light)
+├── switch.py                # Switch platform (plugs, night light, zones)
 ├── sensor.py                # Sensor platform (rate limit, MQTT status)
-├── button.py                # Button platform (refresh scenes)
+├── binary_sensor.py         # Connectivity / per-transport binary sensors
+├── select.py                # Select platform (scenes, modes)
+├── number.py                # Number platform
+├── text.py                  # Text platform
+├── button.py                # Button platform (refresh scenes, apply DIY)
+├── event.py                 # Event platform
+├── fan.py                   # Fan platform
+├── humidifier.py            # Humidifier platform
 ├── services.py              # Custom services
 ├── repairs.py               # Repairs framework integration
 ├── diagnostics.py           # Diagnostics for troubleshooting
 ├── const.py                 # Constants
+├── scene_cache.py           # Cached scene catalogue
+├── segment_limit.py         # Segment-count cap (profile vs cloud)
+├── transport_health.py      # Per-transport health tracker
+├── ble_advertisement.py     # Passive BLE advertisement decoding
+├── ble_passthrough.py       # BLE packets over the cloud passthrough
 ├── manifest.json            # Integration metadata
 ├── strings.json             # UI strings
+├── icons.json               # Entity icons
 ├── services.yaml            # Service definitions
 ├── quality_scale.yaml       # Quality scale tracking
 ├── translations/
 │   └── en.json              # English translations
 ├── models/                  # Domain models (frozen dataclasses)
-│   ├── __init__.py
 │   ├── device.py            # GoveeDevice, GoveeCapability
 │   ├── state.py             # GoveeDeviceState, RGBColor
-│   └── commands.py          # Command pattern implementations
+│   ├── commands.py          # Command pattern implementations
+│   └── transport.py         # TransportHealth, TransportKind
 ├── platforms/
-│   ├── __init__.py
-│   └── segment.py           # Segment light entities (RGBIC)
+│   ├── segment.py           # Segment light entities (RGBIC)
+│   ├── grouped_segment.py   # One entity for all segments
+│   ├── zone_light.py        # FORK: per-zone light entities
+│   └── diy_effect.py        # FORK: DIY-effect authoring entities
 ├── protocols/               # Protocol interfaces
-│   ├── __init__.py
 │   ├── api.py               # IApiClient, IAuthProvider
 │   └── state.py             # IStateProvider, IStateObserver
+├── zone_state.py            # FORK: zone registry + profile lookup
+├── diy_state.py             # FORK: staged DIY document + upload
+├── diy_previews.py          # FORK: palette previews
+├── child_power.py           # FORK: whole-lamp power behind a child entity
+├── lan_confirm.py           # FORK: echo-lag-aware LAN confirm
+├── lan_udp_health.py        # FORK: health for the raw LAN UDP link
 └── api/                     # API layer
-    ├── __init__.py
     ├── client.py            # GoveeApiClient (REST)
     ├── auth.py              # GoveeAuthClient (account login)
     ├── mqtt.py              # GoveeAwsIotClient (real-time MQTT)
-    └── exceptions.py        # Exception hierarchy
+    ├── mqtt_control.py      # Power/brightness/colour over MQTT
+    ├── openapi_events.py    # Official-API event stream
+    ├── lan.py               # LAN discovery
+    ├── lan_client.py        # LAN UDP client (devStatus reads)
+    ├── lan_control.py       # Upstream's LAN control mapping
+    ├── lan_nudge.py         # LAN state nudge
+    ├── ble.py               # BLE transport
+    ├── ble_packet.py        # BLE packet builders
+    ├── segment_readback.py  # Segment state readback
+    ├── exceptions.py        # Exception hierarchy
+    ├── raw_router.py        # FORK: raw tier selection (see below)
+    ├── lan_raw.py           # FORK: raw tier 1 — LAN UDP ptReal
+    ├── ble_raw_write.py     # FORK: raw tier 2 — plaintext BLE
+    ├── mqtt_raw_write.py    # FORK: raw tier 3 — cloud MQTT ptReal
+    └── protocol/            # FORK: the codec package
+        ├── profiles.py      # Per-SKU hardware truth table
+        ├── codec.py         # GoveeCodec (frame assembly)
+        ├── encoders.py      # Per-capability byte encoders
+        ├── frames.py        # 20-byte frame primitives
+        ├── packets.py       # 0xA3 multipacket chunker
+        ├── diy.py           # DIY effect payloads
+        ├── client.py        # LanUdpClient (the only LAN-specific piece)
+        └── errors.py        # GoveeProtocolError hierarchy
 ```
 
 ---
@@ -200,6 +240,7 @@ UI updated immediately
 |---------|-------------|
 | `govee.refresh_scenes` | Refresh scene list from API |
 | `govee.set_segment_color` | Set color for RGBIC segments |
+| `govee.apply_diy_effect` | **Fork.** Compose and upload a DIY effect to one multi-zone lamp |
 
 ---
 
@@ -239,20 +280,20 @@ Frames are **transport-neutral**: the identical bytes travel over LAN UDP, BLE G
 and Govee's cloud MQTT. Only `client.py` is LAN-specific, so a new transport reuses
 everything above it.
 
-### `api/raw_router.py` — four-tier dispatch
+### `api/raw_router.py` — three-tier dispatch
 
 `async_route_frames()` hands a frame sequence to the best pipe the device has right
-now, in order:
+now, in order. Each tier lives in its own module:
 
-1. **LAN raw** — one `ptReal` UDP datagram on the local subnet; the default for SKUs
-   on the modern stack.
-2. **BLE plaintext** — the same bytes over an unencrypted GATT write, for SKUs whose
-   only raw pipe that is. BLE is a one-central link, so it is tried second and held
-   only briefly.
-3. **MQTT `ptReal`** — the same bytes published to the device's cloud topic. Covers a
-   lamp with no LAN correlation and every SKU with no usable local raw pipe.
-4. **Cloud command** — not a tier of the router: when the router returns `False`, the
-   caller falls back to whatever ordinary cloud capability command it had.
+| # | Tier | Module | Notes |
+|---|------|--------|-------|
+| 1 | LAN raw | `api/lan_raw.py` | One `ptReal` UDP datagram on the local subnet; the default for SKUs on the modern stack |
+| 2 | BLE plaintext | `api/ble_raw_write.py` | The same bytes over an unencrypted GATT write, for SKUs whose only raw pipe that is. A one-central link, so it is tried second and held only briefly |
+| 3 | MQTT `ptReal` | `api/mqtt_raw_write.py` | The same bytes published to the device's cloud topic. Covers a lamp with no LAN correlation and every SKU with no usable local raw pipe |
+
+When every tier declines, `async_route_frames()` returns `False` and the **caller**
+falls back to whatever ordinary cloud capability command it had. That cloud command is
+not a tier of the router — it is the caller's own path, which the router never touches.
 
 Contracts that hold for every tier:
 
@@ -401,7 +442,9 @@ Actionable repair notifications:
 | `poll_interval` | 60s | State refresh frequency |
 | `enable_groups` | false | Include Govee app groups |
 | `enable_scenes` | true | Create scene entities |
-| `enable_segments` | true | Create segment entities for RGBIC |
+| `enable_zone_lights` | false | **Fork.** Split a multi-zone lamp into per-zone light entities (and the DIY authoring controls) |
+| `enable_lan_raw_write` | false | **Fork.** Opt into the raw LAN tier for segment writes the cloud can also make. Zone and DIY writes do not need it |
+| `enable_ble_raw_write` | false | **Fork.** Opt into the plaintext-BLE raw tier, for SKUs with no local Wi-Fi raw pipe |
 
 ---
 

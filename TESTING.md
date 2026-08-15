@@ -84,11 +84,18 @@ Fork-added modules follow the same one-file-per-module rule:
 | Test file | Module under test |
 |-----------|-------------------|
 | `test_protocol.py` | `api/protocol/` — golden frames, profile table, transports |
-| `test_lan_raw_write.py` | `api/lan_raw_write.py` — zone power over raw LAN |
-| `test_lan_segment_write.py` | `api/lan_raw_write.py` — the per-segment colour path |
+| `test_raw_router.py` | `api/raw_router.py` — zone power, segment paints, accessors |
+| `test_raw_router_tiers.py` | `api/raw_router.py` — tier order and the never-raises contract |
+| `test_lan_segment_write.py` | `api/lan_raw.py` — the per-segment colour path |
+| `test_ble_raw_write.py` | `api/ble_raw_write.py` |
+| `test_mqtt_raw_write.py` | `api/mqtt_raw_write.py` |
 | `test_lan_nudge.py` | `api/lan_nudge.py` |
+| `test_lan_confirm.py` | `lan_confirm.py` |
+| `test_deferred_lan_confirm.py` | `coordinator.py` — the send-blocking LAN write |
 | `test_lan_udp_health.py` | `lan_udp_health.py` |
 | `test_zone_lights.py` | `platforms/zone_light.py` + `zone_state.py` |
+| `test_diy_entities.py` | `platforms/diy_effect.py` + `diy_state.py` + the service |
+| `test_repo_hygiene.py` | the tracked tree — no real identifiers, no key material |
 
 ### Test Coverage by File
 
