@@ -518,7 +518,9 @@ class TestProfiles:
         for profile in profiles.PROFILES.values():
             assert profile.transports
             assert len(set(profile.transports)) == len(profile.transports)
-            assert profile.preferred_transport is profile.transports[0]
+            # A permission set: membership is the only thing read.
+            for transport in profile.transports:
+                assert profile.carries(transport) is True
 
     def test_the_legacy_sku_does_not_carry_raw_frames_over_lan(self) -> None:
         """The one asymmetry the whole transport field exists to express.

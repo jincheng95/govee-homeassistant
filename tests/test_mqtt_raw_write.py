@@ -358,9 +358,10 @@ class TestGates:
     def test_the_table_says_which_skus_may_use_the_pipe(self):
         for sku in ("H60B0", "H6046", "H6076"):
             assert get_profile(sku).carries(Transport.MQTT_PTREAL) is True
-        # ...and it is never the preferred pipe on a SKU with a local one.
-        assert get_profile("H60B0").preferred_transport is Transport.LAN_RAW
-        assert get_profile("H6046").preferred_transport is Transport.BLE_PLAINTEXT
+        # ...and every one of them also has a local pipe the router tries
+        # first. That ordering is the router's, not the table's.
+        assert get_profile("H60B0").carries(Transport.LAN_RAW) is True
+        assert get_profile("H6046").carries(Transport.BLE_PLAINTEXT) is True
 
     @pytest.mark.asyncio
     async def test_every_raw_option_off_builds_nothing(self, raw_client):

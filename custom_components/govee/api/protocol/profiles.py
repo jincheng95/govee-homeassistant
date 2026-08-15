@@ -26,8 +26,11 @@ Transports
 Which *pipe* accepts a raw frame is a property of the SKU, not of the frame.
 The frames themselves are transport-agnostic — the same 20 bytes travel over
 LAN UDP, BLE GATT and cloud MQTT — but the lamps do not all listen on all
-three, so every profile declares a preference-ordered, non-empty
-:class:`Transport` tuple. Measured, not assumed:
+three, so every profile declares a non-empty :class:`Transport` tuple. It is a
+**permission set, not a preference order**: only membership is ever read, via
+:meth:`DeviceProfile.carries`; the tier order lives in
+:mod:`..raw_router`, which is where the latency trade-off actually is.
+Measured, not assumed:
 
 * **H60B0, H6076** take raw frames over LAN UDP (and over encrypted BLE).
 * **H6046** *ignores raw LAN frames entirely.* Seven envelope shapes were tried
@@ -95,7 +98,14 @@ class Transport(str, Enum):
     """``ptReal`` frames in a JSON envelope, UDP to the device's command port."""
 
     BLE_ENCRYPTED = "ble_encrypted"
-    """GATT write after a session handshake, frames encrypted under the key."""
+    """GATT write after a session handshake, frames encrypted under the key.
+
+    Recorded, not implemented: this integration has no encrypted-BLE raw tier,
+    so ``carries(BLE_ENCRYPTED)`` is never consulted on the write path. It
+    stays in the table because it is a measured fact about the SKU — the same
+    kind of fact as ``ble_manufacturer_id`` — and the day a tier exists the
+    table already says which lamps would take it.
+    """
 
     BLE_PLAINTEXT = "ble_plaintext"
     """Same characteristic and the same 20-byte frames, no handshake, no crypto."""
@@ -283,7 +293,7 @@ class DeviceProfile:
     kelvin: KelvinRange
 
     transports: tuple[Transport, ...]
-    """Pipes this SKU accepts raw frames on, best first. Never empty."""
+    """Pipes this SKU accepts raw frames on. Never empty; order is not read."""
 
     ble_manufacturer_id: int
     """Advertisement manufacturer id, so a scanner can pick a profile early."""
@@ -377,11 +387,6 @@ class DeviceProfile:
             True when this SKU is known to act on raw frames from that pipe.
         """
         return transport in self.transports
-
-    @property
-    def preferred_transport(self) -> Transport:
-        """The first transport in the table's preference order."""
-        return self.transports[0]
 
     def supports(self, capability: Capability, *, zone: str | None = None) -> bool:
         if capability not in self.capabilities:
