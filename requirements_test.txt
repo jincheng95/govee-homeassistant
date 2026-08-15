@@ -4,7 +4,10 @@ aiomqtt>=2.0.0
 cryptography>=41.0.0
 
 # Test dependencies
-black
+# black is pinned to a major: an unpinned formatter silently changes what
+# "formatted" means between environments. Run it as `black --line-length=119`,
+# the same width setup.cfg/tox.ini give flake8.
+black>=26.5,<27
 colorlog
 coveralls
 dacite
