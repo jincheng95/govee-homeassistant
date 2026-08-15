@@ -1,10 +1,9 @@
 """Custom services for Govee integration.
 
 Provides services for:
-- Refresh all scenes
-- Control segment colors
-- Apply a DIY effect to a multi-zone lamp (fork)
-- Send raw commands (advanced)
+- Refreshing the scene catalog (``govee.refresh_scenes``)
+- Setting per-segment colors on RGBIC devices (``govee.set_segment_color``)
+- Applying a DIY effect to a multi-zone lamp (``govee.apply_diy_effect``, fork)
 """
 
 from __future__ import annotations

@@ -32,6 +32,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from .const import (
     CONF_ENABLE_SCENES,
     DEFAULT_ENABLE_SCENES,
+    DEFAULT_SEGMENT_MODE,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_INDIVIDUAL,
 )
@@ -103,7 +104,7 @@ async def async_setup_entry(
         # Create segment entities for RGBIC devices based on per-device mode
         if device.supports_segments and device.segment_count > 0:
             # Use per-device mode if set, otherwise default to individual
-            segment_mode = device_modes.get(device.device_id, SEGMENT_MODE_INDIVIDUAL)
+            segment_mode = device_modes.get(device.device_id, DEFAULT_SEGMENT_MODE)
 
             # fork: the cloud over-reports segments (15 advertised for a
             # 7-segment H6076). Create as many as the hardware has.

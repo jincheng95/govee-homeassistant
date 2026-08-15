@@ -15,15 +15,15 @@ from custom_components.govee.config_flow import GoveeOptionsFlow
 from custom_components.govee.const import (
     CONF_API_KEY,
     CONF_EMAIL,
+    CONF_ENABLE_DIY_SCENES,
     CONF_ENABLE_GROUPS,
     CONF_ENABLE_SCENES,
-    CONF_ENABLE_SEGMENTS,
     CONF_LAN_TARGETS,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
+    DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
     DEFAULT_ENABLE_SCENES,
-    DEFAULT_ENABLE_SEGMENTS,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
 )
@@ -52,9 +52,9 @@ class TestConfigFlowConstants:
         """Test default enable scenes."""
         assert DEFAULT_ENABLE_SCENES is True
 
-    def test_default_enable_segments(self):
-        """Test default enable segments."""
-        assert DEFAULT_ENABLE_SEGMENTS is True
+    def test_default_enable_diy_scenes(self):
+        """Test default enable DIY scenes."""
+        assert DEFAULT_ENABLE_DIY_SCENES is True
 
 
 class TestApiKeyValidation:
@@ -105,13 +105,13 @@ class TestOptionsDefaults:
             CONF_POLL_INTERVAL: DEFAULT_POLL_INTERVAL,
             CONF_ENABLE_GROUPS: DEFAULT_ENABLE_GROUPS,
             CONF_ENABLE_SCENES: DEFAULT_ENABLE_SCENES,
-            CONF_ENABLE_SEGMENTS: DEFAULT_ENABLE_SEGMENTS,
+            CONF_ENABLE_DIY_SCENES: DEFAULT_ENABLE_DIY_SCENES,
         }
 
         assert options[CONF_POLL_INTERVAL] == 60
         assert options[CONF_ENABLE_GROUPS] is False
         assert options[CONF_ENABLE_SCENES] is True
-        assert options[CONF_ENABLE_SEGMENTS] is True
+        assert options[CONF_ENABLE_DIY_SCENES] is True
 
 
 class TestEntryDataStructure:
@@ -189,7 +189,7 @@ class TestOptionsFlow:
             CONF_POLL_INTERVAL: 60,
             CONF_ENABLE_GROUPS: False,
             CONF_ENABLE_SCENES: True,
-            CONF_ENABLE_SEGMENTS: True,
+            CONF_ENABLE_DIY_SCENES: True,
         }
         assert original[CONF_POLL_INTERVAL] == 60
 
@@ -198,13 +198,13 @@ class TestOptionsFlow:
             CONF_POLL_INTERVAL: 120,
             CONF_ENABLE_GROUPS: True,
             CONF_ENABLE_SCENES: False,
-            CONF_ENABLE_SEGMENTS: False,
+            CONF_ENABLE_DIY_SCENES: False,
         }
 
         assert new_options[CONF_POLL_INTERVAL] == 120
         assert new_options[CONF_ENABLE_GROUPS] is True
         assert new_options[CONF_ENABLE_SCENES] is False
-        assert new_options[CONF_ENABLE_SEGMENTS] is False
+        assert new_options[CONF_ENABLE_DIY_SCENES] is False
 
     def test_poll_interval_validation(self):
         """Test poll interval bounds."""
