@@ -14,7 +14,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -171,8 +171,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
 
         coordinator = _get_coordinator_for_device(hass, device_id)
         if not coordinator:
-            _LOGGER.debug("Device %s not found", device_id)
-            return
+            # A device id the user typed wrong is a user error, not a silent
+            # no-op: returning quietly left the automation looking successful.
+            raise ServiceValidationError(f"Govee device {device_id} not found")
 
         color = RGBColor(r=rgb[0], g=rgb[1], b=rgb[2])
         command = SegmentColorCommand(
