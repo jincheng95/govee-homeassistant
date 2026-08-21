@@ -15,7 +15,7 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
 
-from ..segment_limit import segment_count
+from ..segment_limit import manual_segment_count, segment_count
 from ..zone_state import ZONE_KEY_BY_TOGGLE, profile_for, registry
 from . import ble_raw_write, lan_raw, mqtt_raw_write
 from .protocol import (
@@ -405,7 +405,11 @@ def _sku(entity: Any) -> str:
 
 def _segment_count(entity: Any) -> int:
     """How many segments the device has, capped per :mod:`..segment_limit`."""
-    return segment_count(getattr(entity, "_device", None))
+    device = getattr(entity, "_device", None)
+    coordinator = getattr(entity, "coordinator", None)
+    options = getattr(getattr(coordinator, "config_entry", None), "options", None)
+    override = manual_segment_count(options, str(getattr(device, "device_id", "") or ""))
+    return segment_count(device, override)
 
 
 def _toggle_instance(entity: Any) -> str:

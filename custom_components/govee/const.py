@@ -114,9 +114,7 @@ FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
 )
 
 
-def resolve_fahrenheit_conversion(
-    sku: str, api_unit: str, device_unit_hint: str | None = None
-) -> bool:
+def resolve_fahrenheit_conversion(sku: str, api_unit: str, device_unit_hint: str | None = None) -> bool:
     """Whether a Developer-API ``sensor_temperature`` should be treated as °F.
 
     Shared by the sensor entity (which converts °F→°C for display) and the
@@ -143,7 +141,7 @@ DEFAULT_POLL_INTERVAL: Final = 60  # seconds
 DEFAULT_ENABLE_GROUPS: Final = False
 DEFAULT_ENABLE_SCENES: Final = True
 DEFAULT_ENABLE_DIY_SCENES: Final = True
-DEFAULT_SEGMENT_MODE: Final = "individual"  # "disabled", "grouped", or "individual"
+DEFAULT_SEGMENT_MODE: Final = "individual"  # "disabled", "grouped", "individual", or "groups"
 DEFAULT_EXPOSE_TRANSPORT_ENTITIES: Final = False
 DEFAULT_ENABLE_MQTT_CONTROL: Final = False
 DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
@@ -231,6 +229,7 @@ GOVEE_BLE_MANUFACTURER_IDS: Final = (0x8803,)  # 34819
 SEGMENT_MODE_DISABLED: Final = "disabled"
 SEGMENT_MODE_GROUPED: Final = "grouped"
 SEGMENT_MODE_INDIVIDUAL: Final = "individual"
+SEGMENT_MODE_GROUPS: Final = "groups"
 
 # Config entry schema version. Bumped to 2 in sprint-4 when IoT credentials
 # moved from hass.data[DOMAIN] to entry.data (see async_migrate_entry).
@@ -255,6 +254,13 @@ SIGNAL_SEGMENT_READBACK: Final = DOMAIN + "_segment_readback_{device_id}"
 # Used in entity creation and orphan cleanup to keep patterns consistent
 SUFFIX_SEGMENT: Final = "_segment_"
 SUFFIX_GROUPED_SEGMENT: Final = "_grouped_segments"
+# Shares SUFFIX_SEGMENT's prefix on purpose (the roadmap names it
+# `_segment_group_<name>`), so a bare `suffix.startswith(SUFFIX_SEGMENT)`
+# would wrongly catch it. `is_individual_segment_suffix` already guards
+# against this — it requires digits after the prefix, and "group_<name>"
+# never is — but any new pruning branch here must match on
+# SUFFIX_SEGMENT_GROUP explicitly, not fall through to the segment one.
+SUFFIX_SEGMENT_GROUP: Final = "_segment_group_"
 SUFFIX_SCENE_SELECT: Final = "_scene_select"
 SUFFIX_SNAPSHOT_SELECT: Final = "_snapshot_select"
 SUFFIX_DIY_SCENE_SELECT: Final = "_diy_scene_select"

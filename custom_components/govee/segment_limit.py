@@ -13,7 +13,7 @@ import logging
 from typing import Any, Final
 
 from .api.protocol import GoveeProtocolError, PROFILES
-from .const import SUFFIX_SEGMENT
+from .const import SUFFIX_SEGMENT, SUFFIX_SEGMENT_GROUP
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,21 +55,55 @@ def pushes_segment_readback(sku: str) -> bool:
     return profile is not None and profile.segment_readback
 
 
-def segment_count(device: Any) -> int:
+def manual_segment_count(entry_options: Any, device_id: str) -> int | None:
+    """The user-entered segment count for ``device_id``, if any was saved.
+
+    Only consulted by :func:`segment_count` when the profile table has no
+    ``verified_segment_count`` for the SKU — the profile always wins when it
+    has an answer.
+
+    Args:
+        entry_options: The config entry's ``options`` mapping.
+        device_id: The device to look up.
+
+    Returns:
+        The stored count, or None when nothing was ever saved for it.
+    """
+    stored = dict(entry_options or {}).get("segment_count_by_device", {})
+    value = stored.get(device_id)
+    return int(value) if value is not None else None
+
+
+def segment_count(device: Any, manual_override: int | None = None) -> int:
     """How many segment entities a device should actually get.
 
     The cloud's advertised count, capped at the profile's verified count when
     the table knows this SKU. Never raised above what the cloud reports.
 
+    For an unprofiled SKU, ``manual_override`` — the user's own answer to
+    "how many segments does this device really have" — takes the profile's
+    place as the cap, itself never raised above what the cloud reports. It is
+    ignored once a profile exists; the profile always wins.
+
     Args:
         device: A ``GoveeDevice`` (anything with ``sku`` / ``segment_count``).
+        manual_override: The stored per-device count from options, or None.
 
     Returns:
         The number of segments to expose, 0-based indices ``0..n-1``.
     """
     advertised = int(getattr(device, "segment_count", 0) or 0)
     verified = verified_segment_count(str(getattr(device, "sku", "") or ""))
-    if verified is None or advertised <= verified:
+    if verified is None:
+        if manual_override is None or manual_override <= 0 or advertised <= manual_override:
+            return advertised
+        _LOGGER.debug(
+            "Govee segments: %s has no profile, using the user-entered count %d",
+            getattr(device, "sku", "?"),
+            manual_override,
+        )
+        return manual_override
+    if advertised <= verified:
         return advertised
     _LOGGER.debug(
         "Govee segments: %s advertises %d segments, hardware has %d — capping",
@@ -95,6 +129,22 @@ def is_individual_segment_suffix(suffix: str) -> bool:
     if not suffix.startswith(_SEGMENT_PREFIX):
         return False
     return suffix[len(_SEGMENT_PREFIX) :].isdigit()
+
+
+def is_segment_group_suffix(suffix: str) -> bool:
+    """Whether ``suffix`` names a user-defined segment-group entity.
+
+    Args:
+        suffix: The unique_id with the device id stripped
+            (``_segment_group_left``).
+
+    Returns:
+        True only for ``_segment_group_<name>``. Checked explicitly rather
+        than relying on ``is_individual_segment_suffix`` returning False for
+        it — the two suffixes share a prefix and must be told apart by their
+        own matcher, not by one saying no.
+    """
+    return suffix.startswith(SUFFIX_SEGMENT_GROUP) and len(suffix) > len(SUFFIX_SEGMENT_GROUP)
 
 
 def is_phantom_segment_id(suffix: str, sku: str, advertised: int) -> bool:

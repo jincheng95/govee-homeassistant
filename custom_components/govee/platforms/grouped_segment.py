@@ -26,7 +26,7 @@ from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
 from ..api.raw_router import async_segment_color
-from ..segment_limit import segment_count
+from ..segment_limit import manual_segment_count, segment_count
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,7 +64,9 @@ class GoveeGroupedSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         self._device = device
 
         # Segment indices for all segments (0 to segment_count-1)
-        self._segment_indices = tuple(range(segment_count(device)))
+        options = getattr(getattr(coordinator, "config_entry", None), "options", None)
+        override = manual_segment_count(options, device.device_id)
+        self._segment_indices = tuple(range(segment_count(device, override)))
 
         # Unique ID for grouped segments
         self._attr_unique_id = f"{device.device_id}{SUFFIX_GROUPED_SEGMENT}"
