@@ -31,6 +31,8 @@ from custom_components.govee.const import (
     DOMAIN,
     MAX_WATER_DETECTOR_POLL_INTERVAL,
     MIN_WATER_DETECTOR_POLL_INTERVAL,
+    SEGMENT_MODE_GROUPS,
+    SEGMENT_MODE_INDIVIDUAL,
 )
 
 # ==============================================================================
@@ -270,17 +272,13 @@ class TestLanTargetsOption:
     @pytest.mark.asyncio
     async def test_blank_lan_targets_ok(self):
         flow, entry = _options_flow()
-        result = await _run_init(
-            flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: ""}
-        )
+        result = await _run_init(flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: ""})
         assert result["type"] == "create_entry"
 
     @pytest.mark.asyncio
     async def test_invalid_lan_targets_rejected(self):
         flow, entry = _options_flow()
-        result = await _run_init(
-            flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "not-an-ip"}
-        )
+        result = await _run_init(flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "not-an-ip"})
         # Re-shows the form with a field-level error; nothing is saved.
         assert result["type"] == "form"
         assert result["errors"] == {CONF_LAN_TARGETS: "invalid_lan_targets"}
@@ -288,9 +286,7 @@ class TestLanTargetsOption:
     @pytest.mark.asyncio
     async def test_oversized_subnet_rejected(self):
         flow, entry = _options_flow()
-        result = await _run_init(
-            flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "10.0.0.0/8"}
-        )
+        result = await _run_init(flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "10.0.0.0/8"})
         assert result["type"] == "form"
         assert result["errors"] == {CONF_LAN_TARGETS: "invalid_lan_targets"}
 
@@ -302,11 +298,7 @@ class TestWaterDetectorPollIntervalOption:
     async def test_field_defaults_to_constant(self):
         flow, entry = _options_flow()
         result = await _run_init(flow, entry, None)
-        key = next(
-            k
-            for k in result["data_schema"].schema
-            if k == CONF_WATER_DETECTOR_POLL_INTERVAL
-        )
+        key = next(k for k in result["data_schema"].schema if k == CONF_WATER_DETECTOR_POLL_INTERVAL)
         assert key.default() == DEFAULT_WATER_DETECTOR_POLL_INTERVAL
 
     @pytest.mark.asyncio
@@ -314,11 +306,7 @@ class TestWaterDetectorPollIntervalOption:
         flow, entry = _options_flow()
         entry.options = {CONF_WATER_DETECTOR_POLL_INTERVAL: 900}
         result = await _run_init(flow, entry, None)
-        key = next(
-            k
-            for k in result["data_schema"].schema
-            if k == CONF_WATER_DETECTOR_POLL_INTERVAL
-        )
+        key = next(k for k in result["data_schema"].schema if k == CONF_WATER_DETECTOR_POLL_INTERVAL)
         assert key.default() == 900
 
     @pytest.mark.asyncio
@@ -341,9 +329,7 @@ class TestWaterDetectorPollIntervalOption:
         flow, entry = _options_flow()
         result = await _run_init(flow, entry, None)
         with pytest.raises(vol.Invalid):
-            result["data_schema"](
-                {CONF_POLL_INTERVAL: 60, CONF_WATER_DETECTOR_POLL_INTERVAL: value}
-            )
+            result["data_schema"]({CONF_POLL_INTERVAL: 60, CONF_WATER_DETECTOR_POLL_INTERVAL: value})
 
 
 class TestConfigFlowSteps:
@@ -772,9 +758,7 @@ class TestPerDeviceSegmentMode:
         assert device_mode == SEGMENT_MODE_INDIVIDUAL
 
         # Unknown device should use default (individual)
-        unknown_mode = device_modes.get(
-            "AA:BB:CC:DD:EE:FF:00:99", SEGMENT_MODE_INDIVIDUAL
-        )
+        unknown_mode = device_modes.get("AA:BB:CC:DD:EE:FF:00:99", SEGMENT_MODE_INDIVIDUAL)
         assert unknown_mode == SEGMENT_MODE_INDIVIDUAL
 
 
@@ -810,9 +794,7 @@ class TestVerificationCodeFlow:
                 return_value=mock_auth_instance,
             ),
         ):
-            result = await flow.async_step_account(
-                {CONF_EMAIL: "test@example.com", CONF_PASSWORD: "secret"}
-            )
+            result = await flow.async_step_account({CONF_EMAIL: "test@example.com", CONF_PASSWORD: "secret"})
 
         # Should redirect to the verification_code form
         assert result["type"] == "form"
@@ -842,9 +824,7 @@ class TestVerificationCodeFlow:
             "custom_components.govee.config_flow.validate_govee_credentials",
             return_value=mock_creds,
         ):
-            result = await flow.async_step_verification_code(
-                {"verification_code": "123456"}
-            )
+            result = await flow.async_step_verification_code({"verification_code": "123456"})
 
         assert result["type"] == "create_entry"
         assert result["title"] == "Govee"
@@ -868,9 +848,7 @@ class TestVerificationCodeFlow:
             "custom_components.govee.config_flow.validate_govee_credentials",
             side_effect=Govee2FACodeInvalidError(),
         ):
-            result = await flow.async_step_verification_code(
-                {"verification_code": "000000"}
-            )
+            result = await flow.async_step_verification_code({"verification_code": "000000"})
 
         assert result["type"] == "form"
         assert result["step_id"] == "verification_code"
@@ -959,9 +937,7 @@ class TestVerificationCodeFlow:
             "custom_components.govee.config_flow.validate_govee_credentials",
             return_value=mock_creds,
         ):
-            result = await flow.async_step_verification_code(
-                {"verification_code": "123456"}
-            )
+            result = await flow.async_step_verification_code({"verification_code": "123456"})
 
         assert result is mock_update_result
         # Verify async_update_reload_and_abort was called with correct data
@@ -990,3 +966,157 @@ class TestVerificationCodeFlow:
         # Missing field raises error
         with pytest.raises(vol.MultipleInvalid):
             schema({})
+
+
+def _segment_mode_flow(device):
+    """A ``GoveeOptionsFlow`` parked at ``configure_device_mode`` for one device."""
+    flow, entry = _options_flow({device.device_id: device})
+    flow._selected_devices = [device.device_id]
+    flow._device_index = 0
+    flow._device_modes = {}
+    flow._device_groups = {}
+    flow._device_counts = {}
+    return flow, entry
+
+
+async def _run_configure_device_mode(flow, entry, user_input):
+    """Drive ``async_step_configure_device_mode`` with a patched ``config_entry``."""
+    with patch.object(
+        GoveeOptionsFlow,
+        "config_entry",
+        new_callable=PropertyMock,
+        return_value=entry,
+    ):
+        return await flow.async_step_configure_device_mode(user_input)
+
+
+class TestSegmentCountField:
+    """The ``segment_count`` field is profile-gated, roadmap 1.11."""
+
+    @pytest.mark.asyncio
+    async def test_hidden_for_a_profiled_sku(self):
+        device = MagicMock(device_id="AA:BB:77:88:99:AA:BB:CC", sku="H6076", name="Floor Lamp", segment_count=15)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(flow, entry, None)
+
+        assert "segment_count" not in result["data_schema"].schema
+
+    @pytest.mark.asyncio
+    async def test_shown_and_defaulted_to_the_cloud_count_for_an_unprofiled_sku(self):
+        device = MagicMock(device_id="AA:BB:CC:DD:EE:FF:61:99", sku="H6199", name="Mystery Strip", segment_count=15)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(flow, entry, None)
+
+        keys = {str(k): k for k in result["data_schema"].schema}
+        assert "segment_count" in keys
+        assert keys["segment_count"].default() == 15
+
+    @pytest.mark.asyncio
+    async def test_an_entered_value_is_stored_per_device(self):
+        device = MagicMock(device_id="AA:BB:CC:DD:EE:FF:61:99", sku="H6199", name="Mystery Strip", segment_count=15)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(
+            flow, entry, {"segment_mode": SEGMENT_MODE_INDIVIDUAL, "segment_count": 6, "segment_groups": ""}
+        )
+
+        assert result["type"] == "create_entry"
+        assert result["data"]["segment_count_by_device"] == {device.device_id: 6}
+
+
+class TestSegmentGroupsStep:
+    """The ``segment_groups`` field, its validation, and its storage shape."""
+
+    @pytest.mark.asyncio
+    async def test_valid_groups_are_parsed_and_stored_zero_based(self):
+        device = MagicMock(device_id="AA:BB:CC:DD:EE:FF:60:46", sku="H6046", name="Light Bar", segment_count=10)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(
+            flow,
+            entry,
+            {"segment_mode": SEGMENT_MODE_GROUPS, "segment_groups": "Left: 1-5; Right: 6-10"},
+        )
+
+        assert result["type"] == "create_entry"
+        assert result["data"]["segment_mode_by_device"] == {device.device_id: SEGMENT_MODE_GROUPS}
+        assert result["data"]["segment_groups_by_device"] == {
+            device.device_id: {"Left": [0, 1, 2, 3, 4], "Right": [5, 6, 7, 8, 9]}
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_definition_is_rejected_with_a_field_error(self):
+        device = MagicMock(device_id="AA:BB:CC:DD:EE:FF:60:46", sku="H6046", name="Light Bar", segment_count=10)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(
+            flow,
+            entry,
+            {"segment_mode": SEGMENT_MODE_GROUPS, "segment_groups": "Left 1-5"},
+        )
+
+        assert result["type"] == "form"
+        assert result["errors"] == {"segment_groups": "segment_groups_invalid_syntax"}
+
+    @pytest.mark.asyncio
+    async def test_an_overlap_is_rejected(self):
+        device = MagicMock(device_id="AA:BB:CC:DD:EE:FF:60:46", sku="H6046", name="Light Bar", segment_count=10)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(
+            flow,
+            entry,
+            {"segment_mode": SEGMENT_MODE_GROUPS, "segment_groups": "Left: 1-5; Right: 5-10"},
+        )
+
+        assert result["errors"] == {"segment_groups": "segment_groups_overlap"}
+
+    @pytest.mark.asyncio
+    async def test_groups_are_validated_against_the_profile_count_not_the_cloud_count(self):
+        """H6076 advertises 15 (CLOUD_ADVERTISED-style over-report); only 7 are real."""
+        device = MagicMock(device_id="AA:BB:77:88:99:AA:BB:CC", sku="H6076", name="Floor Lamp", segment_count=15)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(
+            flow,
+            entry,
+            {"segment_mode": SEGMENT_MODE_GROUPS, "segment_groups": "Ghost: 8-15"},
+        )
+
+        assert result["errors"] == {"segment_groups": "segment_groups_out_of_range"}
+
+    @pytest.mark.asyncio
+    async def test_groups_are_validated_against_the_manual_count_for_an_unprofiled_sku(self):
+        device = MagicMock(device_id="AA:BB:CC:DD:EE:FF:61:99", sku="H6199", name="Mystery Strip", segment_count=15)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(
+            flow,
+            entry,
+            {
+                "segment_mode": SEGMENT_MODE_GROUPS,
+                "segment_groups": "Left: 1-5",
+                "segment_count": 4,
+            },
+        )
+
+        # Segment 5 does not exist once the user says the device only has 4.
+        assert result["errors"] == {"segment_groups": "segment_groups_out_of_range"}
+
+    @pytest.mark.asyncio
+    async def test_a_non_groups_mode_never_parses_the_groups_field(self):
+        """The field is always in the schema; it is inert outside `groups` mode."""
+        device = MagicMock(device_id="AA:BB:CC:DD:EE:FF:60:46", sku="H6046", name="Light Bar", segment_count=10)
+        flow, entry = _segment_mode_flow(device)
+
+        result = await _run_configure_device_mode(
+            flow,
+            entry,
+            {"segment_mode": SEGMENT_MODE_INDIVIDUAL, "segment_groups": "not even close to valid"},
+        )
+
+        assert result["type"] == "create_entry"
+        assert result["data"]["segment_mode_by_device"] == {device.device_id: SEGMENT_MODE_INDIVIDUAL}
+        assert result["data"]["segment_groups_by_device"] == {}

@@ -27,11 +27,14 @@ from custom_components.govee import segment_limit
 from custom_components.govee.api.protocol import get_profile
 from custom_components.govee.const import (
     DOMAIN,
+    SEGMENT_MODE_DISABLED,
     SEGMENT_MODE_GROUPED,
+    SEGMENT_MODE_GROUPS,
     SEGMENT_MODE_INDIVIDUAL,
     SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SEGMENT,
     SUFFIX_SEGMENT_BLENDING,
+    SUFFIX_SEGMENT_GROUP,
 )
 from custom_components.govee.models import GoveeCapability, GoveeDevice
 from custom_components.govee.models.device import (
@@ -224,12 +227,8 @@ class TestPruning:
         entry.add_to_hass(hass)
 
         registry = er.async_get(hass)
-        real = registry.async_get_or_create(
-            "light", DOMAIN, f"{DEVICE_ID}{SUFFIX_SEGMENT}3", config_entry=entry
-        )
-        phantom = registry.async_get_or_create(
-            "light", DOMAIN, f"{DEVICE_ID}{SUFFIX_SEGMENT}9", config_entry=entry
-        )
+        real = registry.async_get_or_create("light", DOMAIN, f"{DEVICE_ID}{SUFFIX_SEGMENT}3", config_entry=entry)
+        phantom = registry.async_get_or_create("light", DOMAIN, f"{DEVICE_ID}{SUFFIX_SEGMENT}9", config_entry=entry)
         blending = registry.async_get_or_create(
             "switch", DOMAIN, f"{DEVICE_ID}{SUFFIX_SEGMENT_BLENDING}", config_entry=entry
         )
@@ -318,3 +317,153 @@ class TestBlendingSwitchSurvivesCleanup:
         assert segment_limit.is_individual_segment_suffix(f"{SUFFIX_SEGMENT}14") is True
         assert segment_limit.is_individual_segment_suffix(SUFFIX_SEGMENT_BLENDING) is False
         assert segment_limit.is_individual_segment_suffix(SUFFIX_GROUPED_SEGMENT) is False
+
+
+# ==============================================================================
+# 5. Segment groups — roadmap 1.11: full mode exclusivity + the manual count
+# ==============================================================================
+
+
+class TestSegmentGroupSuffixMatcher:
+    """``is_segment_group_suffix`` — checked explicitly, not via a bare prefix."""
+
+    def test_a_group_suffix_matches(self):
+        assert segment_limit.is_segment_group_suffix(f"{SUFFIX_SEGMENT_GROUP}left") is True
+
+    def test_bare_prefix_with_nothing_after_it_does_not_match(self):
+        assert segment_limit.is_segment_group_suffix(SUFFIX_SEGMENT_GROUP) is False
+
+    def test_an_individual_segment_is_not_a_group(self):
+        assert segment_limit.is_segment_group_suffix(f"{SUFFIX_SEGMENT}3") is False
+
+    def test_the_blending_switch_is_not_a_group(self):
+        assert segment_limit.is_segment_group_suffix(SUFFIX_SEGMENT_BLENDING) is False
+
+    def test_a_group_suffix_is_never_read_as_an_individual_segment(self):
+        """The prefix-collision the roadmap flags: `_segment_group_x` starts
+        with `_segment_`, so only the digit-only check keeps it out of the
+        individual-segment branch."""
+        assert segment_limit.is_individual_segment_suffix(f"{SUFFIX_SEGMENT_GROUP}left") is False
+
+
+class TestSegmentGroupExclusivity:
+    """Full mode exclusivity, mirroring today's individual/grouped behaviour."""
+
+    @pytest.mark.asyncio
+    async def test_groups_mode_prunes_individual_segments(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_GROUPS,
+            [f"{DEVICE_ID}{SUFFIX_SEGMENT}0", f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left"],
+        )
+        assert removed == {f"{DEVICE_ID}{SUFFIX_SEGMENT}0"}
+
+    @pytest.mark.asyncio
+    async def test_groups_mode_prunes_the_all_segments_grouped_entity(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_GROUPS,
+            [f"{DEVICE_ID}{SUFFIX_GROUPED_SEGMENT}", f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left"],
+        )
+        assert removed == {f"{DEVICE_ID}{SUFFIX_GROUPED_SEGMENT}"}
+
+    @pytest.mark.asyncio
+    async def test_groups_mode_keeps_the_blending_switch(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_GROUPS,
+            [f"{DEVICE_ID}{SUFFIX_SEGMENT_BLENDING}", f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left"],
+        )
+        assert removed == set()
+
+    @pytest.mark.asyncio
+    async def test_individual_mode_prunes_segment_groups(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_INDIVIDUAL,
+            [f"{DEVICE_ID}{SUFFIX_SEGMENT}0", f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left"],
+        )
+        assert removed == {f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left"}
+
+    @pytest.mark.asyncio
+    async def test_grouped_mode_prunes_segment_groups(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_GROUPED,
+            [f"{DEVICE_ID}{SUFFIX_GROUPED_SEGMENT}", f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left"],
+        )
+        assert removed == {f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left"}
+
+    @pytest.mark.asyncio
+    async def test_disabled_mode_prunes_segment_groups(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_DISABLED,
+            [f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left", f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}right"],
+        )
+        assert removed == {f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left", f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}right"}
+
+    @pytest.mark.asyncio
+    async def test_groups_mode_keeps_the_defined_groups(self):
+        removed = await _cleanup_removals(
+            SEGMENT_MODE_GROUPS,
+            [f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}left", f"{DEVICE_ID}{SUFFIX_SEGMENT_GROUP}right"],
+        )
+        assert removed == set()
+
+
+class TestManualSegmentCount:
+    """The user-entered count caps an unprofiled SKU exactly like the profile does."""
+
+    def test_a_profiled_sku_ignores_the_manual_override(self):
+        # H6076's verified count is 7 — a manual override must never win.
+        assert segment_limit.segment_count(_device(sku="H6076", segments=15), 3) == 7
+
+    def test_an_unprofiled_sku_is_capped_at_the_manual_override(self):
+        assert segment_limit.segment_count(_device(sku="H6199", segments=CLOUD_ADVERTISED), 5) == 5
+
+    def test_the_manual_override_is_never_raised_above_the_advertised_count(self):
+        assert segment_limit.segment_count(_device(sku="H6199", segments=4), 12) == 4
+
+    def test_no_override_keeps_the_cloud_count_for_an_unprofiled_sku(self):
+        assert segment_limit.segment_count(_device(sku="H6199", segments=CLOUD_ADVERTISED), None) == CLOUD_ADVERTISED
+
+    def test_a_zero_or_negative_override_is_ignored(self):
+        assert segment_limit.segment_count(_device(sku="H6199", segments=CLOUD_ADVERTISED), 0) == CLOUD_ADVERTISED
+        assert segment_limit.segment_count(_device(sku="H6199", segments=CLOUD_ADVERTISED), -1) == CLOUD_ADVERTISED
+
+    def test_manual_segment_count_reads_the_per_device_option(self):
+        options = {"segment_count_by_device": {DEVICE_ID: 6}}
+        assert segment_limit.manual_segment_count(options, DEVICE_ID) == 6
+
+    def test_manual_segment_count_is_none_when_unset(self):
+        assert segment_limit.manual_segment_count({}, DEVICE_ID) is None
+        assert segment_limit.manual_segment_count(None, DEVICE_ID) is None
+
+    @pytest.mark.asyncio
+    async def test_the_override_caps_entity_creation_for_an_unprofiled_sku(self):
+        from custom_components.govee import light as light_mod
+
+        device = _device(sku="H6199", segments=CLOUD_ADVERTISED)
+        coordinator = _coordinator(device)
+        entry = _entry(coordinator)
+        entry.options = {
+            "segment_mode_by_device": {},
+            "segment_count_by_device": {DEVICE_ID: 4},
+        }
+        added: list = []
+
+        await light_mod.async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
+
+        from custom_components.govee.platforms.segment import GoveeSegmentEntity
+
+        segments = [e for e in added if isinstance(e, GoveeSegmentEntity)]
+        assert len(segments) == 4
+        assert sorted(e._segment_index for e in segments) == [0, 1, 2, 3]
+
+    def test_the_override_reaches_the_mask_width_gate(self):
+        from custom_components.govee.api.raw_router import _segment_count
+
+        device = _device(sku="H6199", segments=CLOUD_ADVERTISED)
+        coordinator = _coordinator(device)
+        coordinator.config_entry.options = {"segment_count_by_device": {DEVICE_ID: 4}}
+
+        entity = MagicMock()
+        entity._device = device
+        entity.coordinator = coordinator
+
+        assert _segment_count(entity) == 4
