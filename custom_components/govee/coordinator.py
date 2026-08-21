@@ -168,6 +168,7 @@ LAN_COLOR_TEMP_CONFIRM_TOLERANCE = 150
 # BFF polling interval for leak sensor state (seconds)
 BFF_POLL_INTERVAL = 300  # 5 minutes
 
+
 def normalize_device_id(device_id: str) -> str:
     """Canonical form for comparing device IDs across Govee's APIs."""
     return device_id.replace(":", "").upper()
