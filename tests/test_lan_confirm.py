@@ -174,6 +174,7 @@ class _EchoingLamp:
     def __init__(self) -> None:
         self.on = False
         self.brightness_0_100 = 1
+        self.color = RGBColor(255, 0, 0)
         self.available = True
         self.send_calls: list[tuple[str, str, dict[str, Any]]] = []
         self.read_calls: list[tuple[str, float]] = []
@@ -194,11 +195,14 @@ class _EchoingLamp:
                     self.on = bool(data["value"])
                 elif cmd == "brightness":
                     self.brightness_0_100 = int(data["value"])
+                elif cmd == "colorwc":
+                    rgb = data["color"]
+                    self.color = RGBColor(rgb["r"], rgb["g"], rgb["b"])
             self._pending.clear()
         return LanDevStatus(
             on=self.on,
             brightness_0_100=self.brightness_0_100,
-            color=RGBColor(255, 0, 0),
+            color=self.color,
             color_temp_kelvin=None,
         )
 
@@ -251,9 +255,9 @@ async def _scene_apply(coord, *, brightness: int) -> None:
     """One scene apply's worth of writes on the verified LAN tier.
 
     A real H60B0 scene apply is five writes: whole-device power, whole-device
-    brightness, and three zone paints. Only the first two map to LAN
-    (``command_to_lan`` returns None for everything else), so the other three
-    are represented by commands that fall straight through.
+    brightness, and three colour paints. ``command_to_lan`` now maps power,
+    brightness, colour and colour-temp — the four ``devStatus``-readable
+    fields — so all five of these map to LAN.
     """
     device = coord._devices[DEVICE_ID]
     for command in (
@@ -287,15 +291,21 @@ class TestScenePipelineDoesNotArmTheCooldown:
         await _scene_apply(coord, brightness=60)
         await _scene_apply(coord, brightness=35)
 
-        # Four LAN-mapped writes went out (power + brightness, twice)...
+        # Ten LAN-mapped writes went out (power + brightness + 3 colour, twice)...
         assert [cmd for _, cmd, _ in lamp.send_calls] == [
             "turn",
             "brightness",
+            "colorwc",
+            "colorwc",
+            "colorwc",
             "turn",
             "brightness",
+            "colorwc",
+            "colorwc",
+            "colorwc",
         ]
         # ...every one of them confirmed after the echo settled...
-        assert len(lamp.read_calls) == 4
+        assert len(lamp.read_calls) == 10
         # ...so nothing was counted toward issue #57 and no cooldown is armed.
         assert coord._lan_write_misses == {}
         assert coord.lan_write_suppressed(DEVICE_ID) is False

@@ -205,7 +205,7 @@ class TestGatewayPtRealPublish:
         return client
 
     ROUTE = {
-        "device": "0F:E4:D4:13:68:51:F0:B2",
+        "device": "AA:BB:CC:DD:EE:FF:F0:B2",
         "sku": "H5044",
         "topic": "GD/gateway-hash",
     }
@@ -224,7 +224,7 @@ class TestGatewayPtRealPublish:
         assert cmd == "ptReal"
         # Addressed to the GATEWAY, not the leaf device — publishing to the leaf
         # topic produced no echo and no actuation on live hardware.
-        assert data["device"] == "0F:E4:D4:13:68:51:F0:B2"
+        assert data["device"] == "AA:BB:CC:DD:EE:FF:F0:B2"
         assert data["sku"] == "H5044"
         assert data["command"] == ["M3AAAAAAAAAAAAAAAAAAAAAAAEM="]
 

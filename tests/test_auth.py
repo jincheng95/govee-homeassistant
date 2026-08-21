@@ -2339,14 +2339,14 @@ class TestGatewayRoutes:
             "gatewayId": 1055056,
             "gatewayInfo": {
                 "sku": "H5044",
-                "device": "0F:E4:D4:13:68:51:F0:B2",
+                "device": "AA:BB:CC:DD:EE:FF:F0:B2",
                 "topic": gateway_topic,
             },
         }
         device_ext = {"deviceSettings": json.dumps(settings) if as_json_string else settings}
         return {
             "sku": "H5901",
-            "device": "00:11:22:33:44:55:2A:22",
+            "device": "11:22:33:44:55:66:2A:22",
             "deviceName": "Smart Water Timer",
             "deviceExt": device_ext,
         }
@@ -2354,8 +2354,8 @@ class TestGatewayRoutes:
     def test_extracts_the_gateway_route(self):
         routes = GoveeAuthClient._extract_gateway_routes([self._h5901_entry()])
         assert routes == {
-            "00:11:22:33:44:55:2A:22": {
-                "device": "0F:E4:D4:13:68:51:F0:B2",
+            "11:22:33:44:55:66:2A:22": {
+                "device": "AA:BB:CC:DD:EE:FF:F0:B2",
                 "sku": "H5044",
                 "topic": "GD/gateway-hash",
             }
@@ -2365,7 +2365,7 @@ class TestGatewayRoutes:
         routes = GoveeAuthClient._extract_gateway_routes(
             [self._h5901_entry(as_json_string=True)]
         )
-        assert routes["00:11:22:33:44:55:2A:22"]["topic"] == "GD/gateway-hash"
+        assert routes["11:22:33:44:55:66:2A:22"]["topic"] == "GD/gateway-hash"
 
     def test_device_without_a_gateway_topic_is_skipped(self):
         routes = GoveeAuthClient._extract_gateway_routes(

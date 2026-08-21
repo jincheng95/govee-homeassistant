@@ -191,7 +191,7 @@ class TestBinarySensor:
 def h5058_device() -> GoveeDevice:
     """H5058 as the developer API returns it — same capability as the H5054."""
     return GoveeDevice(
-        device_id="01:32:7A:C4:06:02:1C:42",
+        device_id="AA:BB:CC:DD:EE:FF:1C:42",
         sku="H5058",
         name="Master sink",
         device_type="devices.types.sensor",
@@ -224,7 +224,7 @@ class TestHubAttachedSensorNotDuplicated:
                 device_id=device.device_id,
                 name=device.name,
                 sku=device.sku,
-                hub_device_id="09:C2:60:74:F4:64:AB:FA",
+                hub_device_id="AA:BB:CC:DD:EE:FF:AB:FA",
                 sno=14,
             )
         coordinator = MagicMock()
@@ -358,7 +358,7 @@ class TestLeakBatteryUniqueIdCollision:
 
     def _leak_device(self, sku="H5058"):
         return GoveeDevice(
-            device_id="01:32:7A:C4:06:02:1C:42",
+            device_id="AA:BB:CC:DD:EE:FF:1C:42",
             sku=sku,
             name="Master sink",
             device_type="devices.types.sensor",
