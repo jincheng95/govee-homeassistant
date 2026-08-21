@@ -45,7 +45,7 @@ from .platforms.diy_effect import (
 )
 
 try:  # HA >= 2026.7 (CONCENTRATION_PARTS_PER_MILLION is deprecated there)
-    from homeassistant.const import UnitOfRatio
+    from homeassistant.const import UnitOfRatio  # type: ignore[attr-defined]
 
     PARTS_PER_MILLION: str = UnitOfRatio.PARTS_PER_MILLION
 except ImportError:  # hacs.json still declares 2024.11.0 as the minimum
