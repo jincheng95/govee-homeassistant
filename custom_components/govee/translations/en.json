@@ -113,14 +113,28 @@
       },
       "configure_device_mode": {
         "title": "Segment Mode: {device_name}",
-        "description": "Choose how segments are created for **{device_name}** (`{device_id}`): **disabled** creates no segment entities, **grouped** creates a single entity for all segments, **individual** creates a separate entity per segment.",
+        "description": "Choose how segments are created for **{device_name}** (`{device_id}`): **disabled** creates no segment entities, **grouped** creates a single entity for all segments, **individual** creates a separate entity per segment, **Custom groups** creates one entity per group you define below.",
         "data": {
-          "segment_mode": "Segment mode"
+          "segment_mode": "Segment mode",
+          "segment_groups": "Segment groups",
+          "segment_count": "Number of segments"
+        },
+        "data_description": {
+          "segment_groups": "Name each group and list its segments, separated by semicolons - e.g. \"Left: 1-5; Right: 6-10\". Ranges and comma lists both work. Groups may not overlap.",
+          "segment_count": "How many segments the device really has. Pre-filled with the cloud's count, which can be wrong for models the integration has not measured."
         }
       }
     },
     "error": {
-      "invalid_lan_targets": "One of the LAN device addresses is not a valid IP, broadcast address, or subnet (/24 or smaller). Example: 10.20.0.51, 10.20.0.255, 10.20.0.0/24"
+      "invalid_lan_targets": "One of the LAN device addresses is not a valid IP, broadcast address, or subnet (/24 or smaller). Example: 10.20.0.51, 10.20.0.255, 10.20.0.0/24",
+      "segment_groups_zero_groups": "Define at least one segment group.",
+      "segment_groups_invalid_syntax": "Each group must be \"Name: indices\", separated by semicolons - e.g. \"Left: 1-5; Right: 6-10\".",
+      "segment_groups_empty_name": "Group names cannot be empty.",
+      "segment_groups_duplicate_name": "Group names must be unique.",
+      "segment_groups_empty_group": "Every group needs at least one segment.",
+      "segment_groups_too_large": "A group can have at most 16 segments.",
+      "segment_groups_out_of_range": "One of the segment numbers is outside this device's segment count.",
+      "segment_groups_overlap": "Groups cannot share the same segment."
     }
   },
   "entity": {

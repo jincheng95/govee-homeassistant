@@ -44,6 +44,7 @@ from .const import (
     KEY_IOT_CREDENTIALS,
     KEY_IOT_LOGIN_FAILED,
     SEGMENT_MODE_GROUPED,
+    SEGMENT_MODE_GROUPS,
     SEGMENT_MODE_INDIVIDUAL,
     SUFFIX_DIY_APPLY,
     SUFFIX_DIY_DIRECTION,
@@ -62,6 +63,7 @@ from .diy_previews import async_register_previews
 from .segment_limit import (
     is_individual_segment_suffix,
     is_phantom_segment_id,
+    is_segment_group_suffix,
 )
 from .zone_state import zone_lights_enabled
 from .services import (
@@ -174,8 +176,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
             _LOGGER.debug("Using cached MQTT credentials from entry.data")
         elif login_failed:
             _LOGGER.debug(
-                "Skipping MQTT login - previous attempt failed: %s. "
-                "Reconfigure integration to retry.",
+                "Skipping MQTT login - previous attempt failed: %s. " "Reconfigure integration to retry.",
                 login_failed,
             )
         else:
@@ -304,9 +305,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> b
         )
         if legacy_creds is not None:
             new_data[KEY_IOT_CREDENTIALS] = (
-                _creds_to_dict(legacy_creds)
-                if isinstance(legacy_creds, GoveeIotCredentials)
-                else legacy_creds
+                _creds_to_dict(legacy_creds) if isinstance(legacy_creds, GoveeIotCredentials) else legacy_creds
             )
             domain_data[KEY_IOT_CREDENTIALS].pop(entry.entry_id, None)
         legacy_fail = (
@@ -351,9 +350,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bo
         # hass.data sub-entries to clean up. Tear down services and clear
         # the domain bucket only when this is the last entry.
         remaining_entries = [
-            other
-            for other in hass.config_entries.async_entries(DOMAIN)
-            if other.entry_id != entry.entry_id
+            other for other in hass.config_entries.async_entries(DOMAIN) if other.entry_id != entry.entry_id
         ]
         if not remaining_entries:
             await async_unload_services(hass)
@@ -362,9 +359,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bo
     return unload_ok
 
 
-def _extract_device_id_from_unique_id(
-    unique_id: str, known_device_ids: set[str]
-) -> str | None:
+def _extract_device_id_from_unique_id(unique_id: str, known_device_ids: set[str]) -> str | None:
     """Extract device_id from unique_id using longest prefix match.
 
     All unique_ids follow: device_id + suffix pattern.
@@ -418,9 +413,7 @@ async def _async_cleanup_orphaned_entities(
     known_device_ids = set(coordinator.devices.keys())
 
     # Get all entity entries for this config entry
-    all_entities = list(
-        er.async_entries_for_config_entry(entity_registry, entry.entry_id)
-    )
+    all_entities = list(er.async_entries_for_config_entry(entity_registry, entry.entry_id))
     _LOGGER.debug(
         "Checking %d entities for cleanup (coordinator has %d devices)",
         len(all_entities),
@@ -450,6 +443,14 @@ async def _async_cleanup_orphaned_entities(
                 if segment_mode != SEGMENT_MODE_GROUPED:
                     should_remove = True
                     removal_reason = "grouped segments disabled"
+            elif is_segment_group_suffix(suffix):
+                # Fork: `_segment_group_<slug>` shares SUFFIX_SEGMENT's prefix
+                # by design (roadmap 1.11), so this must be checked before —
+                # and independently of — the individual-segment branch below,
+                # never folded into it via a bare startswith().
+                if segment_mode != SEGMENT_MODE_GROUPS:
+                    should_remove = True
+                    removal_reason = "custom segment groups disabled"
             elif is_individual_segment_suffix(suffix):
                 # Fork: match `_segment_<digits>` only. A bare startswith() also
                 # catches SUFFIX_SEGMENT_BLENDING, which deleted the blending
@@ -515,9 +516,7 @@ async def _async_cleanup_orphaned_entities(
     device_registry = dr.async_get(hass)
 
     devices_to_remove = []
-    for device_entry in dr.async_entries_for_config_entry(
-        device_registry, entry.entry_id
-    ):
+    for device_entry in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
         # Check if device has any remaining entities
         entity_entries = er.async_entries_for_device(
             entity_registry,
@@ -558,14 +557,11 @@ async def _async_update_listener(
     # Log specific option changes for debugging
     enable_groups = entry.options.get(CONF_ENABLE_GROUPS, DEFAULT_ENABLE_GROUPS)
     enable_scenes = entry.options.get(CONF_ENABLE_SCENES, DEFAULT_ENABLE_SCENES)
-    enable_diy_scenes = entry.options.get(
-        CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES
-    )
+    enable_diy_scenes = entry.options.get(CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES)
     poll_interval = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
 
     _LOGGER.debug(
-        "Options: poll_interval=%s, enable_groups=%s, enable_scenes=%s, "
-        "enable_diy_scenes=%s",
+        "Options: poll_interval=%s, enable_groups=%s, enable_scenes=%s, " "enable_diy_scenes=%s",
         poll_interval,
         enable_groups,
         enable_scenes,

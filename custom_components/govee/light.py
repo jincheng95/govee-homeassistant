@@ -34,6 +34,7 @@ from .const import (
     DEFAULT_ENABLE_SCENES,
     DEFAULT_SEGMENT_MODE,
     SEGMENT_MODE_GROUPED,
+    SEGMENT_MODE_GROUPS,
     SEGMENT_MODE_INDIVIDUAL,
 )
 from .coordinator import GoveeCoordinator
@@ -51,7 +52,8 @@ from .models import (
 from .models.device import INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
 from .platforms.segment import GoveeSegmentEntity
-from .segment_limit import segment_count
+from .platforms.segment_group import async_segment_group_entities
+from .segment_limit import manual_segment_count, segment_count
 from .platforms.zone_light import (
     as_master_light,
     as_zone_named_segment,
@@ -88,11 +90,7 @@ async def async_setup_entry(
         # platforms. Without this filter, e.g. an H7150 dehumidifier would
         # appear as a light bulb (issue #54).
         if device.is_light_device and device.supports_power:
-            entities.append(
-                as_master_light(
-                    GoveeLightEntity(coordinator, device, enable_scenes), entry
-                )
-            )
+            entities.append(as_master_light(GoveeLightEntity(coordinator, device, enable_scenes), entry))
 
         # Appliances whose only light is the nightlight (e.g. H5089 outlet
         # extender, H7124 purifier) get a dedicated nightlight light entity —
@@ -106,7 +104,7 @@ async def async_setup_entry(
             # Use per-device mode if set, otherwise default to individual
             segment_mode = device_modes.get(device.device_id, DEFAULT_SEGMENT_MODE)
 
-            hardware_segment_count = segment_count(device)
+            hardware_segment_count = segment_count(device, manual_segment_count(entry.options, device.device_id))
 
             _LOGGER.debug(
                 "Segment check for %s: device_mode=%s, supports_segments=%s, segment_count=%d (advertised %d)",
@@ -148,6 +146,12 @@ async def async_setup_entry(
                             entry,
                         )
                     )
+            elif segment_mode == SEGMENT_MODE_GROUPS:
+                _LOGGER.debug(
+                    "Creating custom segment-group entities for %s",
+                    device.name,
+                )
+                entities.extend(async_segment_group_entities(coordinator, device, entry))
 
     entities.extend(async_zone_light_entities(coordinator, entry))
 
@@ -307,9 +311,7 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
     def _ha_to_device_brightness(self, ha_brightness: int) -> int:
         """Convert HA brightness (0-255) to device range, respecting min."""
         ratio = ha_brightness / HA_BRIGHTNESS_MAX
-        result = int(
-            self._brightness_min + ratio * (self._brightness_max - self._brightness_min)
-        )
+        result = int(self._brightness_min + ratio * (self._brightness_max - self._brightness_min))
         return max(self._brightness_min, min(self._brightness_max, result))
 
     def _device_to_ha_brightness(self, device_brightness: int) -> int:
@@ -317,11 +319,7 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
         device_range = self._brightness_max - self._brightness_min
         if device_range <= 0:
             return 0
-        result = int(
-            (device_brightness - self._brightness_min)
-            / device_range
-            * HA_BRIGHTNESS_MAX
-        )
+        result = int((device_brightness - self._brightness_min) / device_range * HA_BRIGHTNESS_MAX)
         return max(0, min(HA_BRIGHTNESS_MAX, result))
 
     async def async_turn_on(self, **kwargs: Any) -> None:
@@ -337,9 +335,7 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
                     SceneCommand(scene_id=scene_id, scene_name=scene_name),
                 )
             else:
-                _LOGGER.warning(
-                    "Unknown effect '%s' for %s", effect_name, self._device.name
-                )
+                _LOGGER.warning("Unknown effect '%s' for %s", effect_name, self._device.name)
             return
 
         # Handle brightness
@@ -372,10 +368,7 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
                 _LOGGER.debug("Color temp command failed for %s", self._device_id)
 
         # Only send power command if light is off or no attributes were set
-        has_attribute = any(
-            k in kwargs
-            for k in (ATTR_BRIGHTNESS, ATTR_RGB_COLOR, ATTR_COLOR_TEMP_KELVIN)
-        )
+        has_attribute = any(k in kwargs for k in (ATTR_BRIGHTNESS, ATTR_RGB_COLOR, ATTR_COLOR_TEMP_KELVIN))
         if not has_attribute or not self.is_on:
             await self.coordinator.async_control_device(
                 self._device_id,
@@ -427,9 +420,7 @@ class GoveeLightEntity(GoveeEntity, LightEntity, RestoreEntity):
                 power = last_state.state == "on"
                 brightness = None
                 if last_state.attributes.get("brightness"):
-                    brightness = self._ha_to_device_brightness(
-                        last_state.attributes["brightness"]
-                    )
+                    brightness = self._ha_to_device_brightness(last_state.attributes["brightness"])
                 self.coordinator.restore_group_state(self._device_id, power, brightness)
 
         # Load scenes for effect support (skip group devices - no scene API support)
@@ -478,20 +469,14 @@ class GoveeNightLightEntity(GoveeEntity, LightEntity):
 
     def _ha_to_device_brightness(self, ha_brightness: int) -> int:
         ratio = ha_brightness / HA_BRIGHTNESS_MAX
-        result = int(
-            self._brightness_min + ratio * (self._brightness_max - self._brightness_min)
-        )
+        result = int(self._brightness_min + ratio * (self._brightness_max - self._brightness_min))
         return max(self._brightness_min, min(self._brightness_max, result))
 
     def _device_to_ha_brightness(self, device_brightness: int) -> int:
         device_range = self._brightness_max - self._brightness_min
         if device_range <= 0:
             return 0
-        result = int(
-            (device_brightness - self._brightness_min)
-            / device_range
-            * HA_BRIGHTNESS_MAX
-        )
+        result = int((device_brightness - self._brightness_min) / device_range * HA_BRIGHTNESS_MAX)
         return max(0, min(HA_BRIGHTNESS_MAX, result))
 
     @property
@@ -575,19 +560,14 @@ class GoveeNightLightEntity(GoveeEntity, LightEntity):
 
         if ATTR_RGB_COLOR in kwargs:
             r, g, b = kwargs[ATTR_RGB_COLOR]
-            await self.coordinator.async_control_device(
-                self._device_id, ColorCommand(color=RGBColor(r=r, g=g, b=b))
-            )
+            await self.coordinator.async_control_device(self._device_id, ColorCommand(color=RGBColor(r=r, g=g, b=b)))
 
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
             await self.coordinator.async_control_device(
                 self._device_id, ColorTempCommand(kelvin=kwargs[ATTR_COLOR_TEMP_KELVIN])
             )
 
-        has_attribute = any(
-            k in kwargs
-            for k in (ATTR_BRIGHTNESS, ATTR_RGB_COLOR, ATTR_COLOR_TEMP_KELVIN)
-        )
+        has_attribute = any(k in kwargs for k in (ATTR_BRIGHTNESS, ATTR_RGB_COLOR, ATTR_COLOR_TEMP_KELVIN))
         if not has_attribute or not self.is_on:
             await self._set_toggle(True)
 

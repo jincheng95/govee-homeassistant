@@ -71,9 +71,12 @@ from .const import (
     MIN_WATER_DETECTOR_POLL_INTERVAL,
     SEGMENT_MODE_DISABLED,
     SEGMENT_MODE_GROUPED,
+    SEGMENT_MODE_GROUPS,
     SEGMENT_MODE_INDIVIDUAL,
 )
 from .api.lan import LanTargetError, expand_lan_targets
+from .segment_groups import SegmentGroupsError, format_segment_groups, parse_segment_groups
+from .segment_limit import segment_count, verified_segment_count
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -230,9 +233,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._password = password
                     try:
                         async with GoveeAuthClient(hass=self.hass) as client:
-                            await client.request_verification_code(
-                                email, self._client_id
-                            )
+                            await client.request_verification_code(email, self._client_id)
                     except GoveeApiError as err:
                         _LOGGER.warning("Failed to request verification code: %s", err)
                         errors["base"] = "cannot_connect"
@@ -425,9 +426,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ENABLE_GROUPS: DEFAULT_ENABLE_GROUPS,
                 CONF_ENABLE_SCENES: DEFAULT_ENABLE_SCENES,
                 CONF_ENABLE_DIY_SCENES: DEFAULT_ENABLE_DIY_SCENES,
-                CONF_WATER_DETECTOR_POLL_INTERVAL: (
-                    DEFAULT_WATER_DETECTOR_POLL_INTERVAL
-                ),
+                CONF_WATER_DETECTOR_POLL_INTERVAL: (DEFAULT_WATER_DETECTOR_POLL_INTERVAL),
             },
         )
 
@@ -457,9 +456,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     await validate_api_key(cleaned_key, hass=self.hass)
 
                     # Update existing entry
-                    entry = self.hass.config_entries.async_get_entry(
-                        self.context["entry_id"]
-                    )
+                    entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
                     if entry:
                         self.hass.config_entries.async_update_entry(
                             entry,
@@ -548,9 +545,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                             self._api_key = cleaned_key
                             try:
                                 async with GoveeAuthClient(hass=self.hass) as client:
-                                    await client.request_verification_code(
-                                        email, self._client_id
-                                    )
+                                    await client.request_verification_code(email, self._client_id)
                             except GoveeApiError as err:
                                 _LOGGER.warning(
                                     "Failed to request verification code: %s",
@@ -568,21 +563,15 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                             )
                             errors["base"] = "invalid_account"
                         except GoveeLoginRejectedError as err:
-                            _LOGGER.warning(
-                                "Govee login rejected during reconfigure: %s", err
-                            )
+                            _LOGGER.warning("Govee login rejected during reconfigure: %s", err)
                             errors["base"] = "login_rejected"
                         except GoveeApiError as err:
-                            _LOGGER.warning(
-                                "Account validation failed during reconfigure: %s", err
-                            )
+                            _LOGGER.warning("Account validation failed during reconfigure: %s", err)
                             errors["base"] = "cannot_connect"
                     elif email and not password:
                         # Email without password - check if keeping existing password
                         existing_email = reconfigure_entry.data.get(CONF_EMAIL, "")
-                        existing_password = reconfigure_entry.data.get(
-                            CONF_PASSWORD, ""
-                        )
+                        existing_password = reconfigure_entry.data.get(CONF_PASSWORD, "")
                         if email == existing_email and existing_password:
                             # Keeping same email with existing password - OK
                             new_data[CONF_EMAIL] = email
@@ -653,6 +642,8 @@ class GoveeOptionsFlow(OptionsFlow):
         self._global_options: dict[str, Any] = {}
         self._selected_devices: list[str] = []
         self._device_modes: dict[str, str] = {}
+        self._device_groups: dict[str, dict[str, list[int]]] = {}
+        self._device_counts: dict[str, int] = {}
         self._device_index: int = 0
 
     async def async_step_init(
@@ -676,9 +667,7 @@ class GoveeOptionsFlow(OptionsFlow):
                 _LOGGER.debug("Global options saved: %s", user_input)
 
                 coordinator = self.config_entry.runtime_data
-                rgbic_devices = [
-                    d for d in coordinator.devices.values() if d.segment_count > 0
-                ]
+                rgbic_devices = [d for d in coordinator.devices.values() if d.segment_count > 0]
 
                 if rgbic_devices:
                     _LOGGER.debug(
@@ -725,15 +714,11 @@ class GoveeOptionsFlow(OptionsFlow):
                     ): bool,
                     vol.Optional(
                         CONF_ENABLE_DIY_SCENES,
-                        default=source.get(
-                            CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES
-                        ),
+                        default=source.get(CONF_ENABLE_DIY_SCENES, DEFAULT_ENABLE_DIY_SCENES),
                     ): bool,
                     vol.Optional(
                         CONF_ENABLE_ZONE_LIGHTS,
-                        default=source.get(
-                            CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
-                        ),
+                        default=source.get(CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS),
                     ): bool,
                     vol.Optional(
                         CONF_EXPOSE_TRANSPORT_ENTITIES,
@@ -751,27 +736,19 @@ class GoveeOptionsFlow(OptionsFlow):
                     ): bool,
                     vol.Optional(
                         CONF_ENABLE_LAN_RAW_WRITE,
-                        default=source.get(
-                            CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
-                        ),
+                        default=source.get(CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE),
                     ): bool,
                     vol.Optional(
                         CONF_ENABLE_BLE_RAW_WRITE,
-                        default=source.get(
-                            CONF_ENABLE_BLE_RAW_WRITE, DEFAULT_ENABLE_BLE_RAW_WRITE
-                        ),
+                        default=source.get(CONF_ENABLE_BLE_RAW_WRITE, DEFAULT_ENABLE_BLE_RAW_WRITE),
                     ): bool,
                     vol.Optional(
                         CONF_ENABLE_LAN_NUDGE,
-                        default=source.get(
-                            CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE
-                        ),
+                        default=source.get(CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE),
                     ): bool,
                     vol.Optional(
                         CONF_API_TEMPERATURE_UNIT,
-                        default=source.get(
-                            CONF_API_TEMPERATURE_UNIT, DEFAULT_API_TEMPERATURE_UNIT
-                        ),
+                        default=source.get(CONF_API_TEMPERATURE_UNIT, DEFAULT_API_TEMPERATURE_UNIT),
                     ): vol.In(["auto", "celsius", "fahrenheit"]),
                     vol.Optional(
                         CONF_LAN_TARGETS,
@@ -789,16 +766,12 @@ class GoveeOptionsFlow(OptionsFlow):
         """Select which RGBIC devices to configure individually."""
         coordinator = self.config_entry.runtime_data
         rgbic_devices = {
-            d.device_id: f"{d.name} ({d.device_id})"
-            for d in coordinator.devices.values()
-            if d.segment_count > 0
+            d.device_id: f"{d.name} ({d.device_id})" for d in coordinator.devices.values() if d.segment_count > 0
         }
 
         if user_input is not None:
             # User selected devices to configure
-            self._selected_devices = user_input.get(
-                "devices", list(rgbic_devices.keys())
-            )
+            self._selected_devices = user_input.get("devices", list(rgbic_devices.keys()))
             _LOGGER.debug(
                 "Selected %d devices for per-device configuration: %s",
                 len(self._selected_devices),
@@ -808,6 +781,8 @@ class GoveeOptionsFlow(OptionsFlow):
             if self._selected_devices:
                 self._device_index = 0
                 self._device_modes = {}
+                self._device_groups = {}
+                self._device_counts = {}
                 return await self.async_step_configure_device_mode()
             else:
                 # No devices selected, save global options only
@@ -816,9 +791,7 @@ class GoveeOptionsFlow(OptionsFlow):
 
         # Show device selector
         all_device_ids = list(rgbic_devices.keys())
-        _LOGGER.debug(
-            "Showing device selector with %d RGBIC devices", len(rgbic_devices)
-        )
+        _LOGGER.debug("Showing device selector with %d RGBIC devices", len(rgbic_devices))
 
         return self.async_show_form(
             step_id="select_segment_devices",
@@ -836,35 +809,73 @@ class GoveeOptionsFlow(OptionsFlow):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Configure segment mode for one device at a time."""
-        if user_input is not None:
-            device_id = self._selected_devices[self._device_index]
-            self._device_modes[device_id] = user_input["segment_mode"]
-            self._device_index += 1
+        """Configure segment mode (and, for ``groups``, its fields) for one device.
 
-            # More devices? Loop back. Otherwise save.
-            if self._device_index < len(self._selected_devices):
-                return await self.async_step_configure_device_mode()
-
-            # Done — build final data and save
-            new_data = {
-                **self._global_options,
-                "segment_mode_by_device": self._device_modes,
-            }
-            _LOGGER.info("Options saved: %s", new_data)
-            _LOGGER.debug("Device modes configured: %s", self._device_modes)
-            return self.async_create_entry(title="", data=new_data)
-
-        # Show form for the current device
+        One step per device, shown in a loop. The ``groups`` text field and the
+        ``segment_count`` number field always live in this same step's schema —
+        HA forms cannot show/hide fields based on another field in the same
+        submission — rather than a step of their own; the groups field is
+        parsed only when ``segment_mode`` is ``groups``, and the count field is
+        omitted from the schema entirely for a profiled SKU.
+        """
         coordinator = self.config_entry.runtime_data
-        current_device_modes = self.config_entry.options.get(
-            "segment_mode_by_device", {}
-        )
-
         device_id = self._selected_devices[self._device_index]
         device = coordinator.devices.get(device_id)
         device_name = device.name if device else device_id
-        default_mode = current_device_modes.get(device_id, DEFAULT_SEGMENT_MODE)
+        advertised_count = int(getattr(device, "segment_count", 0) or 0)
+        show_count_field = verified_segment_count(str(getattr(device, "sku", "") or "")) is None
+
+        if user_input is not None:
+            errors: dict[str, str] = {}
+            mode = user_input["segment_mode"]
+            parsed_groups: dict[str, list[int]] = {}
+
+            count = advertised_count
+            if show_count_field:
+                count = int(user_input.get("segment_count", advertised_count))
+            # The cap groups validate against is the same one entity creation
+            # and the raw-write gate use: the profile's verified count when
+            # there is one (never the possibly over-reporting cloud number),
+            # else the user's own count for an unprofiled SKU.
+            effective_count = segment_count(device, count) if device is not None else advertised_count
+
+            if mode == SEGMENT_MODE_GROUPS:
+                try:
+                    parsed_groups = parse_segment_groups(user_input.get("segment_groups", ""), effective_count)
+                except SegmentGroupsError as err:
+                    errors["segment_groups"] = err.code
+
+            if not errors:
+                self._device_modes[device_id] = mode
+                if mode == SEGMENT_MODE_GROUPS:
+                    self._device_groups[device_id] = parsed_groups
+                if show_count_field:
+                    self._device_counts[device_id] = count
+                self._device_index += 1
+
+                # More devices? Loop back. Otherwise save.
+                if self._device_index < len(self._selected_devices):
+                    return await self.async_step_configure_device_mode()
+
+                # Done — build final data and save
+                new_data = {
+                    **self._global_options,
+                    "segment_mode_by_device": self._device_modes,
+                    "segment_groups_by_device": self._device_groups,
+                    "segment_count_by_device": self._device_counts,
+                }
+                _LOGGER.info("Options saved: %s", new_data)
+                _LOGGER.debug("Device modes configured: %s", self._device_modes)
+                return self.async_create_entry(title="", data=new_data)
+
+            return self.async_show_form(
+                step_id="configure_device_mode",
+                data_schema=self._configure_device_mode_schema(
+                    device_id, advertised_count, show_count_field, user_input=user_input
+                ),
+                description_placeholders={"device_name": device_name, "device_id": device_id},
+                errors=errors,
+            )
 
         _LOGGER.debug(
             "Showing segment mode form for device %d/%d: %s (%s)",
@@ -876,19 +887,48 @@ class GoveeOptionsFlow(OptionsFlow):
 
         return self.async_show_form(
             step_id="configure_device_mode",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional("segment_mode", default=default_mode): vol.In(
-                        [
-                            SEGMENT_MODE_DISABLED,
-                            SEGMENT_MODE_GROUPED,
-                            SEGMENT_MODE_INDIVIDUAL,
-                        ]
-                    ),
-                }
-            ),
+            data_schema=self._configure_device_mode_schema(device_id, advertised_count, show_count_field),
             description_placeholders={
                 "device_name": device_name,
                 "device_id": device_id,
             },
         )
+
+    def _configure_device_mode_schema(
+        self,
+        device_id: str,
+        advertised_count: int,
+        show_count_field: bool,
+        *,
+        user_input: dict[str, Any] | None = None,
+    ) -> vol.Schema:
+        """Build the ``configure_device_mode`` schema for one device.
+
+        Defaults come from ``user_input`` (re-rendering after a validation
+        error) when given, otherwise from what is already saved in options.
+        """
+        current_modes = self.config_entry.options.get("segment_mode_by_device", {})
+        current_groups = self.config_entry.options.get("segment_groups_by_device", {}).get(device_id, {})
+        current_counts = self.config_entry.options.get("segment_count_by_device", {})
+
+        source = user_input or {}
+        default_mode = source.get("segment_mode", current_modes.get(device_id, DEFAULT_SEGMENT_MODE))
+        default_groups = source.get("segment_groups", format_segment_groups(current_groups))
+        default_count = source.get("segment_count", current_counts.get(device_id, advertised_count))
+
+        schema: dict[Any, Any] = {
+            vol.Optional("segment_mode", default=default_mode): vol.In(
+                [
+                    SEGMENT_MODE_DISABLED,
+                    SEGMENT_MODE_GROUPED,
+                    SEGMENT_MODE_INDIVIDUAL,
+                    SEGMENT_MODE_GROUPS,
+                ]
+            ),
+            vol.Optional("segment_groups", default=default_groups): str,
+        }
+        if show_count_field:
+            schema[vol.Optional("segment_count", default=default_count)] = vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=999)
+            )
+        return vol.Schema(schema)
