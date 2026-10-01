@@ -22,7 +22,7 @@ skip_covered = False
 sort = Cover
 
 # Fail if coverage is below threshold (branch coverage, see [run])
-fail_under = 70
+fail_under = 95
 
 exclude_lines =
     # Standard pragma

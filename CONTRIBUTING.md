@@ -24,8 +24,8 @@ Thank you for your interest in contributing to this project!
 
 ```bash
 # Clone and install dependencies
-git clone https://github.com/lasswellt/hacs-govee.git
-cd hacs-govee
+git clone https://github.com/lasswellt/govee-homeassistant.git
+cd govee-homeassistant
 pip install -r requirements_test.txt
 
 # Run tests
@@ -35,9 +35,9 @@ tox
 black .
 ```
 
-### VS Code DevContainer
+### Running against Home Assistant
 
-A devcontainer is provided in `.devcontainer/` that sets up a complete Home Assistant development instance accessible at `localhost:9123`.
+Run the integration against a local Home Assistant instance by copying or symlinking `custom_components/govee/` into its `config/custom_components/` directory.
 
 ---
 
@@ -145,9 +145,9 @@ def process_state(self, data: dict[str, Any]) -> GoveeDeviceState:
 
 | Requirement | Standard |
 |-------------|----------|
-| Coverage | 95%+ overall |
+| Coverage | 95% floor enforced by tox and .coveragerc |
 | Python versions | 3.12 and 3.13 |
-| Async tests | Use `@pytest.mark.asyncio` |
+| Async tests | Plain `async def`; `asyncio_mode = auto` is configured |
 | Mocking | Mock all external dependencies |
 
 See [TESTING.md](TESTING.md) for detailed testing guide.
@@ -159,10 +159,9 @@ See [TESTING.md](TESTING.md) for detailed testing guide.
 When making changes:
 
 1. **Models** (`models/`): Immutable dataclasses, no I/O
-2. **Protocols** (`protocols/`): Interfaces only, no implementation
-3. **API Layer** (`api/`): HTTP/MQTT clients, exception handling
-4. **Coordinator**: State management, orchestration
-5. **Entities**: Home Assistant platform integration
+2. **API Layer** (`api/`): HTTP/MQTT clients, exception handling
+3. **Coordinator**: State management, orchestration
+4. **Entities**: Home Assistant platform integration
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture.
 

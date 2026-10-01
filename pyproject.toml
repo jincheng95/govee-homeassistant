@@ -1,0 +1,11 @@
+# Shared tool configuration. Keep line length in sync with setup.cfg
+# ([flake8] and [isort]) and .pre-commit-config.yaml.
+[tool.black]
+line-length = 119
+target-version = ["py312"]
+extend-exclude = '''
+/(
+    \.serena
+  | htmlcov
+)/
+'''

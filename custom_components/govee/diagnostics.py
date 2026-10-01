@@ -151,6 +151,18 @@ def _serialize_state(state: Any) -> dict[str, Any] | None:
         }
 
 
+def _fan_swing_tail(coordinator: GoveeCoordinator, device_id: str) -> list[int] | None:
+    """Last-seen Tower-Fan swing-range tail for a device, if the client has one."""
+    client = coordinator.mqtt_client
+    if client is None:
+        return None
+    try:
+        tail = client.fan_swing_tail(device_id)
+    except Exception:  # pragma: no cover - defensive
+        return None
+    return list(tail) if isinstance(tail, list) else None
+
+
 def _transport_health(coordinator: GoveeCoordinator, device_id: str) -> dict[str, Any]:
     """Per-transport connectivity health for a device (timestamps as ISO)."""
     out: dict[str, Any] = {}
@@ -212,12 +224,18 @@ def _device_diag(
         "state": _serialize_state(coordinator.get_state(device_id)),
         "raw_api_state": raw_state.get(device_id),
         "last_mqtt_message": raw_mqtt.get(device_id),
+        # Tower Fan 2 swing-range tail replayed on oscillation ON (PR #176);
+        # None until the fan has reported an aa 1d frame on this session.
+        "fan_swing_tail": _fan_swing_tail(coordinator, device_id),
         "transport": {
             "cloud_api": True,
             "mqtt": coordinator.mqtt_connected,
             "ble": coordinator.is_ble_available(device_id),
         },
         "transport_health": _transport_health(coordinator, device_id),
+        # How segment_count was derived (parser, size.max clamp, SKU override),
+        # so an over-reported count is diagnosable from a download alone.
+        "segment_resolution": device.segment_count_resolution,
     }
 
 
@@ -239,15 +257,27 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
     mqtt_client = coordinator.mqtt_client
     mqtt_info: dict[str, Any] | None = None
     recent_multisync: list[dict[str, Any]] = []
+    recent_probe_frames: list[dict[str, Any]] = []
     if mqtt_client:
         mqtt_info = {
             "available": mqtt_client.available,
             "connected": mqtt_client.connected,
             "tracked_devices": len(mqtt_client.last_messages),
+            # Connection-loop state (2026.9.1): how many attempts in the
+            # current failure streak, the last error, and the session start.
+            "consecutive_failures": getattr(mqtt_client, "consecutive_failures", None),
+            "last_error": getattr(mqtt_client, "last_error", None),
+            "connected_since": _iso(getattr(mqtt_client, "connected_since", None)),
+            # Devices the session dropped right after a status query to, and
+            # which of them the sweep has quarantined (#195).
+            "status_query_strikes": coordinator.mqtt_status_query_strikes,
         }
         # Recent hub multiSync packets (hex) — lets undecoded leak-sensor
         # packet subtypes be reverse-engineered from a download alone (#87).
         recent_multisync = mqtt_client.recent_multisync
+        # Raw probe-thermometer frames (hex). Same purpose as the multiSync
+        # buffer: the next probe SKU should be decodable from a download.
+        recent_probe_frames = mqtt_client.recent_probe_frames
     openapi_client = coordinator.openapi_events_client
     openapi_info: dict[str, Any] | None = None
     if openapi_client:
@@ -264,6 +294,7 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
         "mqtt": mqtt_info,
         "openapi_events": openapi_info,
         "recent_multisync": recent_multisync,
+        "recent_probe_frames": recent_probe_frames,
         # Recent /device/control sends with the exact capability payload and
         # Govee's HTTP status + response body — lets "command accepted but
         # device does nothing" reports (#127) be debugged from a download
@@ -288,6 +319,11 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
             "rate_limit_remaining": coordinator.api_rate_limit_remaining,
             "rate_limit_total": coordinator.api_rate_limit_total,
             "rate_limit_reset": coordinator.api_rate_limit_reset,
+            # Effective cloud poll interval: the configured one, or the longer
+            # one budget pacing chose to keep the day's spend under budget.
+            "poll_interval_seconds": (
+                coordinator.update_interval.total_seconds() if coordinator.update_interval else None
+            ),
         },
         "scene_cache_count": coordinator.scene_cache_count,
         "diy_scene_cache_count": coordinator.diy_scene_cache_count,
@@ -491,8 +527,8 @@ async def async_get_config_entry_diagnostics(
         # drift). Counts only — no address and no scan->device_id join is exposed,
         # so the auto-enabled LAN transport stays observable from a download
         # alone, without hardware and without leaking any address.
-        "lan_active_count": len(coordinator._lan_devices),
-        "lan_unmatched_count": len(coordinator._lan_unmatched),
+        "lan_active_count": coordinator.lan_active_count,
+        "lan_unmatched_count": coordinator.lan_unmatched_count,
         **_runtime_diag(coordinator),
     }
     return _redact(diagnostics_data)

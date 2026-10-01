@@ -18,6 +18,9 @@ from custom_components.govee.diagnostics import (
 )
 from custom_components.govee.models import GoveeDeviceState
 from custom_components.govee.models.device import (
+    CAPABILITY_SEGMENT_COLOR,
+    GoveeCapability,
+    GoveeDevice,
     GoveeLeakSensor,
     GoveeLeakSensorState,
 )
@@ -67,6 +70,9 @@ def _coordinator_stub(**overrides):
     coordinator.api_rate_limit_reset = 0
     coordinator.scene_cache_count = 0
     coordinator.diy_scene_cache_count = 0
+    coordinator.lan_active_count = 0
+    coordinator.lan_unmatched_count = 0
+    coordinator.mqtt_status_query_strikes = []
     for key, value in overrides.items():
         setattr(coordinator, key, value)
     return coordinator
@@ -549,6 +555,58 @@ class TestDeviceDiagnostics:
         assert sensor_mac not in rendered
         assert _MAC_RE.search(rendered) is None
 
+    @pytest.mark.asyncio
+    async def test_device_dump_includes_segment_resolution(self) -> None:
+        """The per-device record explains how segment_count was derived."""
+        mac_id = "03:9C:DC:06:75:4B:10:7D"
+        device = GoveeDevice(
+            device_id=mac_id,
+            sku="H7076",
+            name="Strip",
+            device_type="devices.types.light",
+            capabilities=(
+                GoveeCapability(
+                    type=CAPABILITY_SEGMENT_COLOR,
+                    instance="segmentedColorRgb",
+                    parameters={
+                        "dataType": "STRUCT",
+                        "fields": [
+                            {
+                                "fieldName": "segment",
+                                "elementRange": {"min": 0, "max": 14},
+                                "size": {"min": 1, "max": 15},
+                            }
+                        ],
+                    },
+                ),
+            ),
+            is_group=False,
+        )
+        coordinator = _coordinator_stub(
+            devices={mac_id: device},
+            get_state=lambda _did: GoveeDeviceState.create_empty(mac_id),
+        )
+
+        device_entry = MagicMock()
+        device_entry.id = "ha_dev_strip"
+        device_entry.name = "Strip"
+        device_entry.name_by_user = None
+        device_entry.identifiers = {("govee", mac_id)}
+        device_entry.model = "H7076"
+        device_entry.sw_version = None
+        device_entry.hw_version = None
+
+        out = await async_get_device_diagnostics(MagicMock(), _entry_stub(coordinator), device_entry)
+
+        record = next(iter(out["devices"].values()))
+        assert record["segment_resolution"] == {
+            "api_count": 15,
+            "size_max": 15,
+            "override": 4,
+            "effective": 4,
+            "source": "override",
+        }
+
 
 class TestLanDiscoveryDiag:
     """Entry diagnostics include a read-only LAN scan, with IP redacted (#57)."""
@@ -713,10 +771,7 @@ class TestLanDiscoveryDiag:
         # PII-free LAN census (#57): the entry diagnostics surface how many
         # devices are LAN-active vs. unmatched as plain integer counts, so
         # MAC-format drift is observable from a download without any address.
-        coordinator = _coordinator_stub(
-            _lan_devices={"dev1": object(), "dev2": object()},
-            _lan_unmatched=[{"device": "AA:BB"}],
-        )
+        coordinator = _coordinator_stub(lan_active_count=2, lan_unmatched_count=1)
         out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
 
         assert out["lan_active_count"] == 2
@@ -912,3 +967,28 @@ class TestLanRealityProbe:
         await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(_coordinator_stub()))
 
         probe.assert_awaited_once_with(["192.168.1.23", "192.168.1.24"], interface_ips=["192.168.1.50"])
+
+
+@pytest.mark.asyncio
+async def test_mqtt_status_query_strikes_ride_along_with_the_id_redacted() -> None:
+    """#195: the sweep's blame census is in the mqtt block, MAC redacted."""
+    mqtt_client = MagicMock()
+    mqtt_client.available = True
+    mqtt_client.connected = True
+    mqtt_client.last_messages = {}
+    mqtt_client.recent_multisync = []
+    mqtt_client.recent_probe_frames = []
+    coordinator = _coordinator_stub(
+        mqtt_client=mqtt_client,
+        mqtt_status_query_strikes=[
+            {"device_id": "AA:BB:CC:DD:EE:FF:60:B0", "sku": "H60B0", "strikes": 2, "quarantined": True}
+        ],
+    )
+
+    out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
+
+    (entry,) = out["mqtt"]["status_query_strikes"]
+    assert entry["sku"] == "H60B0"
+    assert entry["strikes"] == 2
+    assert entry["quarantined"] is True
+    assert entry["device_id"] == "**REDACTED**"

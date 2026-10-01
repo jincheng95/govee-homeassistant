@@ -101,16 +101,12 @@ class TestParseDevStatusHappyPath:
         assert status.color_temp_kelvin is None
 
     def test_color_dict_becomes_rgbcolor(self):
-        status = parse_dev_status(
-            _dev_status(**_full_data(color={"r": 10, "g": 20, "b": 30}))
-        )
+        status = parse_dev_status(_dev_status(**_full_data(color={"r": 10, "g": 20, "b": 30})))
         assert status is not None
         assert status.color == RGBColor(10, 20, 30)
 
     def test_color_values_are_clamped_by_rgbcolor(self):
-        status = parse_dev_status(
-            _dev_status(**_full_data(color={"r": 999, "g": -1, "b": 30}))
-        )
+        status = parse_dev_status(_dev_status(**_full_data(color={"r": 999, "g": -1, "b": 30})))
         assert status is not None
         assert status.color == RGBColor(255, 0, 30)
 
@@ -166,9 +162,7 @@ class TestParseDevStatusRejection:
         payload = {"msg": {"data": _full_data()}}
         assert parse_dev_status(payload) is None
 
-    @pytest.mark.parametrize(
-        "missing", ["onOff", "brightness", "color", "colorTemInKelvin"]
-    )
+    @pytest.mark.parametrize("missing", ["onOff", "brightness", "color", "colorTemInKelvin"])
     def test_partial_reply_missing_any_field_returns_none(self, missing):
         data = _full_data()
         del data[missing]
@@ -342,9 +336,7 @@ class TestCorrelateScanGroupSkip:
 
     def test_group_excluded_but_real_device_still_matches(self):
         records = [_scan_record(_MAC)]
-        matched, unmatched = correlate_scan(
-            records, [_GROUP_ID, _MAC], now=1.0
-        )
+        matched, unmatched = correlate_scan(records, [_GROUP_ID, _MAC], now=1.0)
         assert set(matched) == {_MAC}
         assert unmatched == []
 
@@ -409,9 +401,7 @@ class TestCorrelateScanEdgeCases:
             _scan_record(_GROUP_ID),
             _scan_record("AA:BB:CC:DD:EE:FF:00:11"),
         ]
-        matched, unmatched = correlate_scan(
-            records, [_MAC, _GROUP_ID], now=7.0
-        )
+        matched, unmatched = correlate_scan(records, [_MAC, _GROUP_ID], now=7.0)
         assert set(matched) == {_MAC}
         assert len(unmatched) == 2
 
@@ -891,9 +881,7 @@ class TestAsyncReadOne:
     """Returns the parsed reply, or None on timeout / send failure / unavailable."""
 
     async def test_returns_parsed_reply_from_queried_ip(self, monkeypatch):
-        client, pushes = await _start_client(
-            monkeypatch, replies={"10.0.0.7": _dev_status_bytes(brightness=55)}
-        )
+        client, pushes = await _start_client(monkeypatch, replies={"10.0.0.7": _dev_status_bytes(brightness=55)})
 
         status = await client.async_read_one("10.0.0.7", timeout=0.5)
 
@@ -968,9 +956,7 @@ class TestAsyncReadBatch:
         assert client._pending_reads == {}
 
     async def test_duplicate_ips_are_de_duplicated(self, monkeypatch):
-        client, _ = await _start_client(
-            monkeypatch, replies={"10.0.0.1": _dev_status_bytes(brightness=10)}
-        )
+        client, _ = await _start_client(monkeypatch, replies={"10.0.0.1": _dev_status_bytes(brightness=10)})
 
         result = await client.async_read_batch(["10.0.0.1", "10.0.0.1"], window=0.05)
 

@@ -112,10 +112,10 @@ class TestTransportRegistration:
         assert isinstance(tracker.get(DEVICE_ID, "lan_udp"), TransportHealth)
 
     def test_spec_row_follows_the_existing_convention(self):
-        assert ("lan_udp", "lan_udp_connectivity", "mdi:lan-pending") in _TRANSPORT_SPECS
+        assert ("lan_udp", "lan_udp_connectivity") in _TRANSPORT_SPECS
         assert len([s for s in _TRANSPORT_SPECS if s[0] == "lan_udp"]) == 1
         # ...and it did not displace the existing LAN row.
-        assert ("lan", "lan_connectivity", "mdi:lan") in _TRANSPORT_SPECS
+        assert ("lan", "lan_connectivity") in _TRANSPORT_SPECS
 
 
 # ==============================================================================
@@ -138,7 +138,8 @@ class TestEntities:
         entity = entities[0]
         assert entity.translation_key == "lan_udp_connectivity"
         assert entity.unique_id == f"{DEVICE_ID}_lan_udp_connectivity"
-        assert entity.icon == "mdi:lan-pending"
+        icons = json.loads((Path(__file__).parent.parent / "custom_components/govee/icons.json").read_text())
+        assert icons["entity"]["binary_sensor"]["lan_udp_connectivity"]["default"] == "mdi:lan-pending"
 
     @pytest.mark.asyncio
     async def test_entity_absent_when_not_exposed(self):

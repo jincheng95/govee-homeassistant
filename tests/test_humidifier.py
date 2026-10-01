@@ -314,9 +314,7 @@ class TestEntityProperties:
         coordinator.get_state.return_value = h7150_state
         assert entity.target_humidity == 30
 
-    def test_target_falls_back_when_auto_modevalue_unreported(
-        self, entity, coordinator, h7150_state
-    ):
+    def test_target_falls_back_when_auto_modevalue_unreported(self, entity, coordinator, h7150_state):
         # Govee's /device/state poll returns modeValue 0 for Auto — it never
         # populates the live setpoint (issue #118, cross-validated against
         # govee2mqtt #413). The bogus 0 must never surface; with no user-set
@@ -327,9 +325,7 @@ class TestEntityProperties:
         coordinator.get_state.return_value = h7150_state
         assert entity.target_humidity == 30
 
-    def test_target_falls_back_when_auto_modevalue_below_min(
-        self, entity, coordinator, h7150_state
-    ):
+    def test_target_falls_back_when_auto_modevalue_below_min(self, entity, coordinator, h7150_state):
         # Any value outside the advertised [min, max] Auto range is treated as
         # "not reported" rather than a literal setpoint (issue #118).
         h7150_state.work_mode = 3  # Auto
@@ -337,9 +333,7 @@ class TestEntityProperties:
         coordinator.get_state.return_value = h7150_state
         assert entity.target_humidity == 30
 
-    def test_optimistic_target_beats_min_fallback(
-        self, entity, coordinator, h7150_state
-    ):
+    def test_optimistic_target_beats_min_fallback(self, entity, coordinator, h7150_state):
         # After the user sets a target, it is remembered (and restored across
         # restarts) even though the poll never reports it back (#118).
         entity._optimistic_target = 55
@@ -387,18 +381,14 @@ class TestEntityCommands:
         assert cmd.work_mode == 8 and cmd.mode_value == 0
 
     @pytest.mark.asyncio
-    async def test_set_mode_auto_preserves_setpoint(
-        self, entity, coordinator, h7150_state
-    ):
+    async def test_set_mode_auto_preserves_setpoint(self, entity, coordinator, h7150_state):
         # Current state is Auto/55 — switching back to Auto keeps 55.
         await entity.async_set_mode(MODE_AUTO)
         cmd = coordinator.async_control_device.call_args[0][1]
         assert cmd.work_mode == 3 and cmd.mode_value == 55
 
     @pytest.mark.asyncio
-    async def test_set_mode_auto_from_gear_uses_min(
-        self, entity, coordinator, h7150_state
-    ):
+    async def test_set_mode_auto_from_gear_uses_min(self, entity, coordinator, h7150_state):
         h7150_state.work_mode = 1  # gearMode
         h7150_state.mode_value = 1
         coordinator.get_state.return_value = h7150_state
@@ -442,9 +432,7 @@ class TestEntityCommands:
         assert calls[3][0][1].value == 80  # range write carries same value
 
     @pytest.mark.asyncio
-    async def test_set_humidity_commits_optimistic_on_partial_success(
-        self, entity, coordinator
-    ):
+    async def test_set_humidity_commits_optimistic_on_partial_success(self, entity, coordinator):
         # If EITHER write is accepted, the setpoint reached the device —
         # commit the optimistic target and write state (#118).
         coordinator.async_control_device = AsyncMock(side_effect=[False, True])
@@ -454,21 +442,20 @@ class TestEntityCommands:
 
     @pytest.mark.asyncio
     async def test_set_humidity_no_commit_when_both_fail(self, entity, coordinator):
+        from homeassistant.exceptions import HomeAssistantError
+
         coordinator.async_control_device = AsyncMock(side_effect=[False, False])
-        await entity.async_set_humidity(45)
+        with pytest.raises(HomeAssistantError):
+            await entity.async_set_humidity(45)
         assert entity._optimistic_target is None
         entity.async_write_ha_state.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_set_humidity_skips_range_when_capability_absent(
-        self, h7150_capabilities
-    ):
+    async def test_set_humidity_skips_range_when_capability_absent(self, h7150_capabilities):
         # A device whose Auto modeValue is the setpoint but which does NOT
         # advertise range::humidity must receive only the work_mode write.
         caps = tuple(
-            c
-            for c in h7150_capabilities
-            if not (c.type == CAPABILITY_RANGE and c.instance == INSTANCE_HUMIDITY)
+            c for c in h7150_capabilities if not (c.type == CAPABILITY_RANGE and c.instance == INSTANCE_HUMIDITY)
         )
         device = GoveeDevice(
             device_id="11:22:33:44:55:66:70:00",
@@ -496,7 +483,9 @@ class TestEntityCommands:
 
     @pytest.mark.asyncio
     async def test_set_mode_rejects_unknown(self, entity):
-        with pytest.raises(ValueError):
+        from homeassistant.exceptions import ServiceValidationError
+
+        with pytest.raises(ServiceValidationError):
             await entity.async_set_mode("bogus")
 
 
@@ -519,9 +508,7 @@ class TestH7152PinnedAuto:
         assert h7152_device.supports_humidity_range is True
 
     @pytest.mark.asyncio
-    async def test_set_humidity_sends_only_range_command(
-        self, h7152_entity, h7152_coordinator
-    ):
+    async def test_set_humidity_sends_only_range_command(self, h7152_entity, h7152_coordinator):
         await h7152_entity.async_set_humidity(55)
         calls = h7152_coordinator.async_control_device.call_args_list
         assert len(calls) == 1

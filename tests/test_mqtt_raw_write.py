@@ -80,6 +80,7 @@ def _coordinator(
     coordinator._mqtt_client = MagicMock()
     coordinator._mqtt_client.async_publish_ptreal = AsyncMock(return_value=True)
     coordinator._ensure_device_topic = AsyncMock(return_value=topic)
+    coordinator.gateway_route = MagicMock(return_value=None)
     return coordinator
 
 
@@ -317,6 +318,18 @@ class TestGates:
         assert mqtt_raw_write.mqtt_raw_target(_coordinator(), profile) is True
         assert mqtt_raw_write.mqtt_raw_target(_coordinator(mqtt_control=False), profile) is False
         assert mqtt_raw_write.mqtt_raw_target(_coordinator(lan_raw=False), profile) is False
+
+    @pytest.mark.asyncio
+    async def test_a_gateway_routed_device_is_not_a_target(self):
+        coordinator = _coordinator()
+        coordinator.gateway_route = MagicMock(return_value={"topic": "GA/synthetic-gateway", "sku": "H5044"})
+        profile = get_profile(LAN_SKU)
+
+        assert mqtt_raw_write.mqtt_raw_target(coordinator, profile, DEVICE_ID) is False
+        assert mqtt_raw_write.mqtt_raw_target(coordinator, profile) is True
+        sent = await mqtt_raw_write.async_send_frames(coordinator, DEVICE_ID, LAN_SKU, profile, [b"\x33" + bytes(19)])
+        assert sent is False
+        coordinator._mqtt_client.async_publish_ptreal.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_disconnected_client_is_not_a_target(self):

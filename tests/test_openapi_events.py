@@ -109,9 +109,7 @@ class TestOpenApiEventClient:
         push = {
             "sku": "H7150",
             "device": "AA:BB:CC:DD:EE:FF:71:50",
-            "capabilities": [
-                {"type": "devices.capabilities.on_off", "instance": "powerSwitch"}
-            ],
+            "capabilities": [{"type": "devices.capabilities.on_off", "instance": "powerSwitch"}],
         }
         client._handle_message(_message(push))
         assert events == []
@@ -139,9 +137,7 @@ class TestCoordinatorWaterFullEvent:
         coord = object.__new__(coord_mod.GoveeCoordinator)
         device = _h7150()
         coord._devices = {device.device_id: device}
-        coord._states = {
-            device.device_id: GoveeDeviceState.create_empty(device.device_id)
-        }
+        coord._states = {device.device_id: GoveeDeviceState.create_empty(device.device_id)}
         coord._water_full_changed_at = {}
         coord.async_set_updated_data = MagicMock()
         return coord, device
@@ -161,23 +157,17 @@ class TestCoordinatorWaterFullEvent:
     def test_water_full_cleared_value_applied(self):
         coord, device = self._coordinator()
         coord._states[device.device_id].water_full = True
-        coord._on_openapi_event(
-            device.device_id, "H7150", "waterFullEvent", [{"value": 0}]
-        )
+        coord._on_openapi_event(device.device_id, "H7150", "waterFullEvent", [{"value": 0}])
         assert coord._states[device.device_id].water_full is False
 
     def test_unknown_device_ignored(self):
         coord, _ = self._coordinator()
-        coord._on_openapi_event(
-            "11:22:33:44:55:66:77:88", "H7150", "waterFullEvent", [{"value": 1}]
-        )
+        coord._on_openapi_event("11:22:33:44:55:66:77:88", "H7150", "waterFullEvent", [{"value": 1}])
         coord.async_set_updated_data.assert_not_called()
 
     def test_other_instance_ignored(self):
         coord, device = self._coordinator()
-        coord._on_openapi_event(
-            device.device_id, "H7150", "lackWaterEvent", [{"value": 1}]
-        )
+        coord._on_openapi_event(device.device_id, "H7150", "lackWaterEvent", [{"value": 1}])
         assert coord._states[device.device_id].water_full is None
         coord.async_set_updated_data.assert_not_called()
 
@@ -191,9 +181,7 @@ class TestCoordinatorBodyAppearedEvent:
 
         coord = object.__new__(coord_mod.GoveeCoordinator)
         coord._devices = {device.device_id: device}
-        coord._states = {
-            device.device_id: GoveeDeviceState.create_empty(device.device_id)
-        }
+        coord._states = {device.device_id: GoveeDeviceState.create_empty(device.device_id)}
         coord._water_full_changed_at = {}
         coord.async_set_updated_data = MagicMock()
         return coord
@@ -205,17 +193,13 @@ class TestCoordinatorBodyAppearedEvent:
             sku="H5127",
             name="Office Presence Sensor",
             device_type="devices.types.sensor",
-            capabilities=(
-                GoveeCapability(type=CAPABILITY_EVENT, instance="bodyAppearedEvent"),
-            ),
+            capabilities=(GoveeCapability(type=CAPABILITY_EVENT, instance="bodyAppearedEvent"),),
         )
 
     def test_presence_value_1_sets_present(self):
         device = self._h5127()
         coord = self._coordinator(device)
-        coord._on_openapi_event(
-            device.device_id, "H5127", "bodyAppearedEvent", [{"name": "Presence", "value": 1}]
-        )
+        coord._on_openapi_event(device.device_id, "H5127", "bodyAppearedEvent", [{"name": "Presence", "value": 1}])
         assert coord._states[device.device_id].presence is True
         coord.async_set_updated_data.assert_called_once()
 
@@ -223,9 +207,7 @@ class TestCoordinatorBodyAppearedEvent:
         device = self._h5127()
         coord = self._coordinator(device)
         coord._states[device.device_id].presence = True
-        coord._on_openapi_event(
-            device.device_id, "H5127", "bodyAppearedEvent", [{"name": "Absence", "value": 2}]
-        )
+        coord._on_openapi_event(device.device_id, "H5127", "bodyAppearedEvent", [{"name": "Absence", "value": 2}])
         assert coord._states[device.device_id].presence is False
 
     @staticmethod
@@ -235,9 +217,7 @@ class TestCoordinatorBodyAppearedEvent:
             sku="H5054",
             name="Water Detector",
             device_type="devices.types.sensor",
-            capabilities=(
-                GoveeCapability(type=CAPABILITY_EVENT, instance="bodyAppearedEvent"),
-            ),
+            capabilities=(GoveeCapability(type=CAPABILITY_EVENT, instance="bodyAppearedEvent"),),
         )
 
     def test_h5054_leaked_value_1_sets_wet(self):
@@ -276,9 +256,7 @@ class TestCoordinatorBodyAppearedEvent:
         # water_leak (issue #124 / #138 must not cross-contaminate).
         device = self._h5127()
         coord = self._coordinator(device)
-        coord._on_openapi_event(
-            device.device_id, "H5127", "bodyAppearedEvent", [{"value": 1}]
-        )
+        coord._on_openapi_event(device.device_id, "H5127", "bodyAppearedEvent", [{"value": 1}])
         assert coord._states[device.device_id].water_leak is None
         assert coord._states[device.device_id].presence is True
 
@@ -296,7 +274,5 @@ class TestBffWaterFullNoLongerApplied:
         coord._devices = {device.device_id: device}
         coord._states = {device.device_id: state}
 
-        coord._apply_bff_thermo_battery(
-            {device.device_id: {"water_full": 1, "battery": None}}
-        )
+        coord._apply_bff_thermo_battery({device.device_id: {"water_full": 1, "battery": None}})
         assert state.water_full is None

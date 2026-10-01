@@ -399,9 +399,7 @@ class TestLanStaleness:
 
         coord._apply_lan_read(
             "dev1",
-            LanDevStatus(
-                on=True, brightness_0_100=50, color=None, color_temp_kelvin=None
-            ),
+            LanDevStatus(on=True, brightness_0_100=50, color=None, color_temp_kelvin=None),
         )
 
         health = coord.get_transport_health("dev1", "lan")

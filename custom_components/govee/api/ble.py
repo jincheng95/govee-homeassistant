@@ -41,6 +41,7 @@ core contribution the refactor is mechanical.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,6 +56,11 @@ from bleak_retry_connector import (  # type: ignore[attr-defined]
     establish_connection,
 )
 
+from .ble_crypto import (
+    GoveeBLESession,
+    async_establish_session,
+    async_supports_encryption,
+)
 from .ble_packet import build_packet
 
 if TYPE_CHECKING:
@@ -72,7 +78,11 @@ BLE_DISCOVERY_NAMES: tuple[str, ...] = ("Govee_", "ihoment_", "GBK_")
 
 # SKUs that use the segmented color encoding. Lifted directly from
 # Beshelmek/govee_ble_lights `SEGMENTED_MODELS` (light.py:35).
-SEGMENTED_MODELS: frozenset[str] = frozenset({"H6053", "H6072", "H6102", "H6199"})
+#
+# H1270 is not in that reference list but requires the segmented encoding:
+# field testing showed it silently discards the single-zone frame (the colour
+# read-back stays black) and only acts on mode 0x15.
+SEGMENTED_MODELS: frozenset[str] = frozenset({"H6053", "H6072", "H6102", "H6199", "H1270"})
 
 # SKUs with verified BLE command support. BLE command dispatch is only
 # attempted for devices on this list — advertising over BLE is not
@@ -88,6 +98,11 @@ SEGMENTED_MODELS: frozenset[str] = frozenset({"H6053", "H6072", "H6102", "H6199"
 BLE_COMMAND_SUPPORTED_MODELS: frozenset[str] = frozenset(
     {
         "H6199",  # RGBIC — confirmed working per issue #59 (at-9 report, ~10s lag).
+        # H1270 accepts commands only over the encrypted protocol; plaintext
+        # frames are dropped without any error, which is why it read as
+        # "advertises BLE but ignores writes" before ble_crypto existed.
+        # Field-tested on hardware: power, brightness and colour all confirmed.
+        "H1270",
     }
 )
 
@@ -245,6 +260,9 @@ class GoveeBLEDevice:
         self._refresh_ble_device = refresh_ble_device
         self._segmented = segmented
         self._client: BleakClient | None = None
+        # Set only for devices speaking the encrypted protocol, and only for
+        # as long as the connection that negotiated it lives.
+        self._session: GoveeBLESession | None = None
         self._state = GoveeBLEState()
         self._lock = asyncio.Lock()
         self._callbacks: list[Callable[[GoveeBLEState], None]] = []
@@ -291,9 +309,7 @@ class GoveeBLEDevice:
         """
         self._ble_device = ble_device
 
-    def register_callback(
-        self, callback: Callable[[GoveeBLEState], None]
-    ) -> Callable[[], None]:
+    def register_callback(self, callback: Callable[[GoveeBLEState], None]) -> Callable[[], None]:
         """Register a state-change callback.
 
         Returns an unsubscribe callable (idempotent). The HA entity subscribes
@@ -320,9 +336,18 @@ class GoveeBLEDevice:
     # Connection management
     # ------------------------------------------------------------------ #
 
-    def _on_disconnected(self, _client: BleakClient) -> None:
-        """Callback fired by bleak when the GATT link drops."""
+    def _on_disconnected(self, client: BleakClient) -> None:
+        """Callback fired by bleak when the GATT link drops.
+
+        A late callback from a superseded client must not wipe the connection
+        that replaced it, so only the current client's drop is honoured.
+        """
+        if self._client is not None and client is not self._client:
+            return
         self._client = None
+        # Frame counters restart at 1 on the next connection, so reusing this
+        # session would encrypt with nonces the device has already seen.
+        self._session = None
 
     async def _ensure_connected(self) -> BleakClient:
         """Open or return the cached ``BleakClient`` for this device.
@@ -359,15 +384,38 @@ class GoveeBLEDevice:
             max_attempts=_MAX_CONNECT_ATTEMPTS,
             use_services_cache=True,
         )
+
+        try:
+            if await async_supports_encryption(self._client):
+                self._session = await async_establish_session(
+                    self._client, WRITE_CHARACTERISTIC_UUID, READ_CHARACTERISTIC_UUID
+                )
+                _LOGGER.debug("Negotiated encrypted BLE session with %s", self.address)
+        except Exception:
+            # Drop the link rather than caching a connected-but-unnegotiated
+            # client. Keeping it would send the next command as plaintext,
+            # which an encrypted device discards without raising — so the
+            # caller would record a success and skip the cloud fallback. A
+            # dropped link just fails this one command and renegotiates next
+            # time.
+            client, self._client, self._session = self._client, None, None
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+            raise
+
         return self._client
 
     async def _write(self, frame: bytes) -> None:
-        """Send a single 20-byte frame to the control characteristic."""
+        """Send a single 20-byte frame to the control characteristic.
+
+        Devices on the encrypted protocol take the identical frame wrapped in
+        the session cipher, so every command encoding above is shared.
+        """
         async with self._lock:
             client = await self._ensure_connected()
-            await client.write_gatt_char(
-                WRITE_CHARACTERISTIC_UUID, frame, response=False
-            )
+            if self._session is not None:
+                frame = self._session.wrap(frame)
+            await client.write_gatt_char(WRITE_CHARACTERISTIC_UUID, frame, response=False)
 
     # ------------------------------------------------------------------ #
     # High-level command API
@@ -441,3 +489,4 @@ class GoveeBLEDevice:
                         self.address,
                     )
             self._client = None
+            self._session = None

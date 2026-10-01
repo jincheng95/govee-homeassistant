@@ -165,9 +165,7 @@ class TestPurifierModeSelectEntity:
         entity.async_write_ha_state = MagicMock()
         return entity
 
-    def test_purifier_mode_entity_init(
-        self, purifier_mode_entity, mock_purifier_device
-    ):
+    def test_purifier_mode_entity_init(self, purifier_mode_entity, mock_purifier_device):
         """Test purifier mode entity initialization."""
         assert purifier_mode_entity._device == mock_purifier_device
         assert purifier_mode_entity._device_id == mock_purifier_device.device_id
@@ -194,9 +192,7 @@ class TestPurifierModeSelectEntity:
         """Test current option returns Low."""
         assert purifier_mode_entity.current_option == "Low"
 
-    def test_current_option_default_on_none(
-        self, purifier_mode_entity, mock_coordinator
-    ):
+    def test_current_option_default_on_none(self, purifier_mode_entity, mock_coordinator):
         """Test current option returns first option when state is None."""
         from custom_components.govee.models import GoveeDeviceState
 
@@ -226,9 +222,7 @@ class TestPurifierModeSelectEntity:
         assert command.mode_instance == INSTANCE_PURIFIER_MODE
         assert command.value == 3
 
-    async def test_select_purifier_mode_custom(
-        self, purifier_mode_entity, mock_coordinator
-    ):
+    async def test_select_purifier_mode_custom(self, purifier_mode_entity, mock_coordinator):
         """Test selecting Custom purifier mode."""
         await purifier_mode_entity.async_select_option("Custom")
 
@@ -240,22 +234,24 @@ class TestPurifierModeSelectEntity:
         assert isinstance(command, ModeCommand)
         assert command.value == 4
 
-    async def test_select_purifier_mode_invalid(
-        self, purifier_mode_entity, mock_coordinator
-    ):
+    async def test_select_purifier_mode_invalid(self, purifier_mode_entity, mock_coordinator):
         """Test selecting invalid purifier mode option."""
-        await purifier_mode_entity.async_select_option("Invalid")
+        from homeassistant.exceptions import ServiceValidationError
+
+        with pytest.raises(ServiceValidationError):
+            await purifier_mode_entity.async_select_option("Invalid")
 
         # Command should not be sent
         mock_coordinator.async_control_device.assert_not_called()
 
-    async def test_select_purifier_mode_failure(
-        self, purifier_mode_entity, mock_coordinator
-    ):
-        """Test purifier mode selection failure."""
+    async def test_select_purifier_mode_failure(self, purifier_mode_entity, mock_coordinator):
+        """Test purifier mode selection failure raises."""
+        from homeassistant.exceptions import HomeAssistantError
+
         mock_coordinator.async_control_device.return_value = False
 
-        await purifier_mode_entity.async_select_option("Sleep")
+        with pytest.raises(HomeAssistantError):
+            await purifier_mode_entity.async_select_option("Sleep")
 
         # Command should still be attempted
         mock_coordinator.async_control_device.assert_called_once()

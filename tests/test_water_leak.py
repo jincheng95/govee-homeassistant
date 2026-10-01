@@ -233,9 +233,7 @@ class TestHubAttachedSensorNotDuplicated:
         coordinator._leak_sensors = leak_sensors
         coordinator._config_entry.data = {}
         coordinator.register_leak_hubs = MagicMock()
-        coordinator.is_bff_leak_sensor = (
-            lambda did: GoveeCoordinator.is_bff_leak_sensor(coordinator, did)
-        )
+        coordinator.is_bff_leak_sensor = lambda did: GoveeCoordinator.is_bff_leak_sensor(coordinator, did)
         entry = MagicMock()
         entry.runtime_data = coordinator
         entry.options = {}
@@ -271,11 +269,7 @@ class TestHubAttachedSensorNotDuplicated:
         added: list = []
         await async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
 
-        moisture = [
-            e
-            for e in added
-            if isinstance(e, (GoveeLeakBinarySensor, GoveeWaterLeakBinarySensor))
-        ]
+        moisture = [e for e in added if isinstance(e, (GoveeLeakBinarySensor, GoveeWaterLeakBinarySensor))]
         assert len(moisture) == 1
         assert isinstance(moisture[0], GoveeLeakBinarySensor)
 
@@ -299,11 +293,7 @@ class TestHubAttachedSensorNotDuplicated:
             entry = self._entry(h5058_device, discovered_via_bff=discovered)
             added: list = []
             await async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
-            moisture = [
-                e
-                for e in added
-                if isinstance(e, (GoveeLeakBinarySensor, GoveeWaterLeakBinarySensor))
-            ]
+            moisture = [e for e in added if isinstance(e, (GoveeLeakBinarySensor, GoveeWaterLeakBinarySensor))]
             assert len(moisture) >= 1, f"no moisture entity when {discovered=}"
 
     @pytest.mark.asyncio
@@ -311,10 +301,7 @@ class TestHubAttachedSensorNotDuplicated:
         """Govee is inconsistent about colons between its APIs; match anyway."""
         entry = self._entry(h5058_device, discovered_via_bff=True)
         coordinator = entry.runtime_data
-        colonless = {
-            device_id.replace(":", ""): sensor
-            for device_id, sensor in coordinator.leak_sensors.items()
-        }
+        colonless = {device_id.replace(":", ""): sensor for device_id, sensor in coordinator.leak_sensors.items()}
         coordinator.leak_sensors = colonless
         coordinator._leak_sensors = colonless
 
@@ -349,12 +336,8 @@ class TestLeakBatteryUniqueIdCollision:
         added: list = []
         entry = MagicMock()
         entry.runtime_data = coordinator
-        await sensor_module.async_setup_entry(
-            MagicMock(), entry, lambda entities: added.extend(entities)
-        )
-        return [
-            e for e in added if isinstance(e, sensor_module.GoveeThermoBatterySensor)
-        ]
+        await sensor_module.async_setup_entry(MagicMock(), entry, lambda entities: added.extend(entities))
+        return [e for e in added if isinstance(e, sensor_module.GoveeThermoBatterySensor)]
 
     def _leak_device(self, sku="H5058"):
         return GoveeDevice(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any, Protocol
 
 # Candidate keys a thermometer/hygrometer reading may hide behind. The Govee
@@ -43,6 +44,13 @@ _SENSOR_HUMIDITY_MQTT_KEYS = (
     "currentHumidity",
     "humidity",
     "hum",
+)
+
+# Boilerplate/settings frame prefixes to skip when hunting for the H5106's
+# temperature/humidity/PM2.5 frame among an AWS IoT push's other op_frames —
+# ported from homebridge-govee's sensor-monitor.js, issue #200.
+_PM25_FRAME_IGNORED_PREFIXES = frozenset(
+    {"0000", "0003", "0100", "0101", "0102", "0103", "331a", "3315", "aa0d", "aa0e"}
 )
 
 
@@ -162,6 +170,24 @@ class LanDevStatusLike(Protocol):
     color_temp_kelvin: int | None
 
 
+@dataclass(frozen=True)
+class ProbeReading:
+    """One probe of a probe thermometer (H5192).
+
+    ``core`` and ``ambient`` are the live temperatures; the four limits are the
+    alarm corridor stored in the device. Every field is None when the device
+    reports the 0xFFFF sentinel — an unplugged probe for the readings, an unset
+    corridor for the limits. All values are degrees Celsius.
+    """
+
+    core: float | None = None
+    ambient: float | None = None
+    core_max: float | None = None
+    core_min: float | None = None
+    ambient_max: float | None = None
+    ambient_min: float | None = None
+
+
 @dataclass
 class GoveeDeviceState:
     """Mutable device state updated from API or MQTT.
@@ -206,6 +232,12 @@ class GoveeDeviceState:
     # active named nightlightScene mode option.
     nightlight_scene: int | None = None
 
+    # Probe thermometer readings, keyed by probe number (H5192). Frozen
+    # values, so a merge replaces the entry rather than mutating it.
+    # Diagnostics dumps state with dataclasses.asdict, so these appear in
+    # downloads without extra plumbing.
+    probes: dict[int, ProbeReading] = field(default_factory=dict)
+
     # DreamView (Movie Mode) state
     dreamview_enabled: bool | None = None  # DreamView on/off
 
@@ -219,12 +251,13 @@ class GoveeDeviceState:
     # carries no unit metadata. Capturing the STRUCT's unit lets the
     # temperature sensor entity normalize without a SKU allowlist entry
     # (issue #129).
-    heater_temperature_unit: str | None = None
+    # Unit the device declares in its temperature_setting STRUCT ("Celsius" /
+    # "Fahrenheit"). Not heater-specific despite the capability's origins —
+    # kettles declare it too, under a different instance name (issue #171).
+    device_temperature_unit: str | None = None
 
     # Purifier state
-    purifier_mode: int | None = (
-        None  # Purifier mode value (1=Sleep, 2=Low, 3=High, etc.)
-    )
+    purifier_mode: int | None = None  # Purifier mode value (1=Sleep, 2=Low, 3=High, etc.)
 
     # Humidifier / dehumidifier state.
     # Target humidity (Auto mode) and manual speed are both carried in
@@ -235,6 +268,37 @@ class GoveeDeviceState:
     # issue #114). Distinct from the Auto-mode modeValue setpoint used by the
     # H7150 — see GoveeDevice.auto_mode_value_is_setpoint.
     configured_humidity: int | None = None
+
+    # Pump-fault status for pump-model dehumidifiers (H7152 "Max"). Not
+    # advertised as a capability by the Developer API and never carried in the
+    # flat MQTT ``state`` keys or the OpenAPI event-push channel (confirmed by
+    # a live capture during an actual clogged-drain fault, with zero footprint
+    # on either channel) — only in the AWS IoT status push's ``op.command``
+    # BLE-format frames, decoded in :meth:`update_pump_state_from_frames`.
+    # Live/level flag, not edge-latched like water_full: it clears on its own
+    # once the app's pump-fault alert clears.
+    pump_state: bool | None = None
+
+    # Hose-connection mode for pump-model dehumidifiers (H7152 "Max"),
+    # decoded from byte offset 9 of the AWS IoT ``aa 19`` status frame.
+    # "pump" = drain hose physically connected (app's "Pump Mode"); "tank" =
+    # hose disconnected, draining into the bucket instead (app's "Water Tank
+    # Mode"). Confirmed directly against the app: repeatedly pressing and
+    # holding the device's physical hose-connection button (~5s per hold)
+    # toggled the app's own Mode label in exact lockstep with this byte on
+    # every single transition. See update_dehumidifier_mode_from_frames.
+    dehumidifier_mode: str | None = None  # "pump" | "tank"
+
+    # Live power-monitoring readings for smart-outlet SKUs (H5086, issue
+    # #200). No capability advertises these — they only arrive in the AWS
+    # IoT push's ``op.command`` BLE-format frames, decoded in
+    # :meth:`update_power_monitoring_from_frames`. ``power_factor`` is a
+    # raw percent (0-100); the rest are already scaled to their SI unit.
+    voltage: float | None = None  # Volts
+    current: float | None = None  # Amps
+    power_draw: float | None = None  # Watts
+    energy_total: float | None = None  # kWh used today; the device resets it at midnight
+    power_factor: int | None = None  # Percent, 0-100
 
     # Standalone water-leak detector trip (H5054, issue #62). True when water
     # is detected. Arrives via the bodyAppearedEvent event capability — the
@@ -250,9 +314,12 @@ class GoveeDeviceState:
 
     # Read-only sensor properties (devices.capabilities.property) for
     # stand-alone sensors like H5109/H5179. None until first poll lands.
-    sensor_temperature: float | None = (
-        None  # Raw from API (°C or °F; entity may normalize)
-    )
+    sensor_temperature: float | None = None  # Raw from API (°C or °F; entity may normalize)
+    # Second temperature probe on dual-probe SKUs (H5112, issue #150). Set
+    # only from the BFF ``tem2`` field — the Developer API exposes a single
+    # sensorTemperature and has no concept of a second probe. Independent of
+    # sensor_temperature: either probe can be unplugged while the other reads.
+    sensor_temperature_2: float | None = None
     sensor_humidity: float | None = None  # Relative humidity 0-100 %
     battery: int | None = None  # Battery level 0-100 % (BFF thermo-hygrometers)
 
@@ -260,6 +327,13 @@ class GoveeDeviceState:
     # monitors and air purifiers (H5106/H7124/H7126, issue #114).
     air_quality: int | None = None
     filter_life: int | None = None
+
+    # Live PM2.5 (micrograms/m3) for the H5106 AQI monitor, issue #200. The
+    # Developer API has no PM2.5 field at all for this SKU — only the coarse
+    # air_quality index above. Decoded from the same AWS IoT push frame that
+    # also refreshes sensor_temperature/sensor_humidity with a faster reading
+    # than the API poll — see update_pm25_from_frames.
+    pm25: int | None = None
 
     # Read-only CO₂ concentration in ppm (H5140 Smart CO₂ Monitor, issue #117).
     carbon_dioxide: int | None = None
@@ -269,6 +343,18 @@ class GoveeDeviceState:
     # real 0/1 value; toggles reported as "" on poll (e.g. mainLightToggle)
     # stay absent and the entity uses optimistic state instead (issue #114).
     toggles: dict[str, bool] = field(default_factory=dict)
+
+    # Integrated ceiling fan on H1310/H1370-style combos (issue #181). The
+    # Developer API returns "" for fanToggle / fanSpeedMode /
+    # reverseAirflowToggle / fanOscillateToggle on every poll, so these are
+    # only ever set from the fan's own AWS IoT status frames
+    # (:meth:`update_ceiling_fan_from_frames`) or from an optimistic write.
+    # None until either lands; the fan entity falls back to its restored
+    # state until then.
+    ceiling_fan_on: bool | None = None
+    ceiling_fan_speed: int | None = None
+    ceiling_fan_reverse: bool | None = None
+    ceiling_fan_swing: bool | None = None
 
     # Last activated scene (for restoring after music mode off)
     last_scene_id: str | None = None
@@ -306,7 +392,8 @@ class GoveeDeviceState:
         self.source = "api"
 
         # Parse capabilities array for state values
-        capabilities = data.get("capabilities", [])
+        # ``or []``: Govee has returned a null list for offline devices.
+        capabilities = data.get("capabilities") or []
         for cap in capabilities:
             cap_type = cap.get("type", "")
             instance = cap.get("instance", "")
@@ -323,9 +410,7 @@ class GoveeDeviceState:
             elif cap_type == "devices.capabilities.range":
                 if instance == "brightness":
                     parsed_brightness = _coerce_int(value)
-                    self.brightness = (
-                        parsed_brightness if parsed_brightness is not None else 100
-                    )
+                    self.brightness = parsed_brightness if parsed_brightness is not None else 100
                 elif instance == "humidity":
                     # Dehumidifier configured setpoint (H7152, issue #114).
                     parsed_humidity = _coerce_int(value)
@@ -339,7 +424,7 @@ class GoveeDeviceState:
                     elif isinstance(value, dict):
                         self.color = RGBColor.from_dict(value)
                 elif instance == "colorTemperatureK":
-                    self.color_temp_kelvin = int(value) if value else None
+                    self.color_temp_kelvin = _coerce_int(value) or None
 
             elif cap_type == "devices.capabilities.toggle":
                 if instance == "oscillationToggle":
@@ -377,9 +462,7 @@ class GoveeDeviceState:
                 # STRUCT. Accept both, plus the legacy "currentX" field
                 # naming used by older WiFi sensors.
                 if instance == "sensorTemperature":
-                    parsed = _coerce_sensor_value(
-                        value, _SENSOR_TEMPERATURE_STRUCT_KEYS
-                    )
+                    parsed = _coerce_sensor_value(value, _SENSOR_TEMPERATURE_STRUCT_KEYS)
                     if parsed is not None:
                         self.sensor_temperature = parsed
                 elif instance == "sensorHumidity":
@@ -430,24 +513,30 @@ class GoveeDeviceState:
                     # A device is only ever a leak OR a presence sensor, so
                     # populating both fields never conflicts — the right entity
                     # reads the right field.
-                    raw_ev = (
-                        value.get("value", value.get("state"))
-                        if isinstance(value, dict)
-                        else value
-                    )
+                    raw_ev = value.get("value", value.get("state")) if isinstance(value, dict) else value
                     num_ev = _coerce_int(raw_ev)
                     if num_ev in (1, 2):
                         self.presence = num_ev == 1
 
             elif cap_type == "devices.capabilities.temperature_setting":
+                # Any temperature_setting STRUCT may declare the unit the
+                # device is working in, whatever the instance is called.
+                # Heaters use ``targetTemperature``; the H7170 kettle uses
+                # ``sliderTemperature`` and carries the same
+                # ``{"unit": ..., "targetTemperature": ...}`` shape. Reading
+                # the hint only from the heater instance left the kettle
+                # falling through to the SKU allowlist, which converted an
+                # already-Fahrenheit sensorTemperature a second time — 77 °F
+                # surfaced as 170.6 °F (issue #171).
+                unit = value.get("unit") if isinstance(value, dict) else None
+                if isinstance(unit, str) and unit:
+                    self.device_temperature_unit = unit
+
                 # Heaters report target temperature + autoStop in a STRUCT.
                 # Capturing autoStop here lets temperature-change commands
                 # preserve the user's choice instead of resetting it to 0
                 # (issue #29).
                 if instance == "targetTemperature" and isinstance(value, dict):
-                    unit = value.get("unit")
-                    if isinstance(unit, str) and unit:
-                        self.heater_temperature_unit = unit
                     # The capability definition names the field ``temperature``
                     # (and commands are sent that way), but the polled STATE
                     # carries it as ``targetTemperature`` on devices like the
@@ -464,10 +553,7 @@ class GoveeDeviceState:
                             # heater_temperature is canonical °C (commands are
                             # always sent with unit=Celsius) — normalize a
                             # Fahrenheit-reporting device on read (issue #129).
-                            if (
-                                isinstance(unit, str)
-                                and unit.lower() == "fahrenheit"
-                            ):
+                            if isinstance(unit, str) and unit.lower() == "fahrenheit":
                                 temp_int = round((temp_int - 32) * 5 / 9)
                             self.heater_temperature = temp_int
                     auto_stop = value.get("autoStop")
@@ -477,13 +563,22 @@ class GoveeDeviceState:
                         except (TypeError, ValueError):
                             pass
 
-    def update_from_mqtt(self, data: dict[str, Any]) -> None:
+    def update_from_mqtt(self, data: dict[str, Any], *, ceiling_fan: bool = False) -> None:
         """Update state from MQTT push message.
 
         MQTT format differs from REST API - uses onOff/brightness/color keys.
 
         Args:
             data: State dict from MQTT message.
+            ceiling_fan: The device is a ceiling-fan-with-light combo
+                (H1310/H1370). On those the device-wide ``onOff`` is the
+                whole unit having power — a fan reporting ``onOff: 1`` has
+                been captured with both lights AND the fan off in the same
+                status (homebridge-govee #1352) — so it must not speak for
+                the light. The lights' state comes from the ``aa 42`` /
+                ``aa 36`` frames via :meth:`update_ceiling_fan_from_frames`
+                instead (issue #181: switching the fan on lit the light
+                entity until the next poll).
         """
         self.source = "mqtt"
 
@@ -493,7 +588,7 @@ class GoveeDeviceState:
         # availability immediately without waiting for the cloud to catch up.
         self.online = True
 
-        if "onOff" in data:
+        if "onOff" in data and not ceiling_fan:
             self.power_state = bool(data["onOff"])
 
         if "brightness" in data:
@@ -510,7 +605,7 @@ class GoveeDeviceState:
 
         if "colorTemInKelvin" in data:
             temp = data["colorTemInKelvin"]
-            self.color_temp_kelvin = int(temp) if temp else None
+            self.color_temp_kelvin = _coerce_int(temp) or None
 
         # Stand-alone thermometer/hygrometer readings (H5179, H5109, H5110,
         # HS5108, HS5106). The mqtt.py docstring notes AWS IoT pushes carry
@@ -519,9 +614,7 @@ class GoveeDeviceState:
         # dropped and the entity only ever showed its first REST read (#83).
         for key in _SENSOR_TEMPERATURE_MQTT_KEYS:
             if key in data:
-                parsed = _coerce_sensor_value(
-                    data[key], _SENSOR_TEMPERATURE_STRUCT_KEYS
-                )
+                parsed = _coerce_sensor_value(data[key], _SENSOR_TEMPERATURE_STRUCT_KEYS)
                 if parsed is not None:
                     self.sensor_temperature = parsed
                     break
@@ -545,9 +638,115 @@ class GoveeDeviceState:
         # on API polls are authoritative again for power/brightness.
         self.clear_optimistic_window()
 
-    def update_from_lan(
-        self, data: LanDevStatusLike, *, skip_power_brightness: bool = False
-    ) -> None:
+    def update_ceiling_fan_from_frames(self, frames: Iterable[bytes]) -> bool:
+        """Apply the status frames a ceiling-fan combo carries in its AWS push.
+
+        The H1310/R1310/H1370 report the integrated fan and the two lights as
+        BLE-format frames in the push's ``op.command`` list, never in the
+        flat ``state`` keys and never in the Developer API poll. Layouts,
+        from labelled captures on real units (homebridge-govee
+        ``fan-ceiling.js``, issues #1352/#1358):
+
+        - ``aa 31 <running> <speed> <direction> .. .. <swing>`` — byte 2 is
+          ``01`` while the fan turns, byte 3 the speed step, byte 4 ``01``
+          when airflow is reversed (``reverseAirflowToggle`` on), byte 7
+          ``01`` while oscillating (H1370 only; the H1310 cannot).
+        - ``aa 42 <mask>`` — bit 0x40 main light, 0x20 background light,
+          0x80 set whenever either is lit.
+        - ``aa 36 <main> <background>`` — one byte per light, same fact.
+
+        The lights' frames also decide the light entity's ``power_state``
+        (either light lit), since the device-wide ``onOff`` does not.
+
+        Args:
+            frames: Decoded (not base64) frames from ``op.command``.
+
+        Returns:
+            True if at least one frame was recognised.
+        """
+        recognised = False
+        for raw in frames:
+            if len(raw) < 3 or raw[0] != 0xAA:
+                continue
+            opcode = raw[1]
+            if opcode == 0x31 and len(raw) >= 5:
+                self.ceiling_fan_on = raw[2] == 0x01
+                if raw[3] > 0:
+                    self.ceiling_fan_speed = raw[3]
+                self.ceiling_fan_reverse = raw[4] == 0x01
+                if len(raw) >= 8:
+                    self.ceiling_fan_swing = raw[7] == 0x01
+                recognised = True
+            elif opcode == 0x42:
+                mask = raw[2]
+                self._apply_ceiling_fan_lights(
+                    main=bool(mask & 0x40),
+                    background=bool(mask & 0x20),
+                    any_lit=bool(mask & 0x80) or bool(mask & 0x60),
+                )
+                recognised = True
+            elif opcode == 0x36 and len(raw) >= 4:
+                main = raw[2] == 0x01
+                background = raw[3] == 0x01
+                self._apply_ceiling_fan_lights(main=main, background=background, any_lit=main or background)
+                recognised = True
+        return recognised
+
+    def _apply_ceiling_fan_lights(self, *, main: bool, background: bool, any_lit: bool) -> None:
+        """Store the two named-light toggles and derive the light's power from them."""
+        # Same instance names the Developer API uses for the toggles
+        # (models.device INSTANCE_MAIN_LIGHT_TOGGLE / _BACKGROUND_LIGHT_TOGGLE);
+        # the named-light switches read these when present.
+        self.toggles["mainLightToggle"] = main
+        self.toggles["backgroundLightToggle"] = background
+        self.power_state = any_lit
+
+    def update_temperature_from_frames(self, frames: Iterable[bytes]) -> bool:
+        """Apply the live temperature and humidity readings a pump-model
+        dehumidifier (H7152) carries in its AWS IoT push.
+
+        The H7152 has no ``sensorTemperature``/``sensorHumidity`` capability
+        at all (confirmed: absent from the discovered capabilities list even
+        though the app shows live readings for both) — the app's ambient
+        readout is BLE-adjacent but reachable remotely, so it travels over
+        this same AWS IoT push, not local BLE (issue #114 follow-up).
+
+        The ``aa 10 81`` frame in ``op.command`` is the app's own BLE status
+        frame (opcode ``0x10``, sub-type ``0x81``, decoded app-side into a
+        ``ThermometerInfo``): bytes 3-5 are a single big-endian 3-byte
+        packed value, temperature and humidity each x10 and concatenated
+        (``temp_decidegrees * 1000 + humidity_decipercent``)::
+
+            raw = (frame[3] << 16) | (frame[4] << 8) | frame[5]
+            temperature_c = (raw // 1000) / 10.0
+            humidity_pct = (raw % 1000) / 10.0
+
+        Byte 3 is part of this packed value, not a fixed header byte — it
+        happens to read ``0x03`` across every captured sample because they
+        all fall in the ~19.7-26.2 degC room-temperature band, where that's
+        the packed value's high byte. Matching on it would silently stop
+        decoding outside that band, so the frame is identified by the
+        3-byte ``aa 10 81`` prefix alone.
+
+        Confirmed against real capture pairs spanning 20.9-22.4 degC with
+        zero residual error against the app's own displayed temperature and
+        humidity alike.
+
+        Args:
+            frames: Decoded (not base64) frames from ``op.command``.
+
+        Returns:
+            True if the frame was recognised.
+        """
+        for raw in frames:
+            if len(raw) >= 6 and raw[0] == 0xAA and raw[1] == 0x10 and raw[2] == 0x81:
+                packed = (raw[3] << 16) | (raw[4] << 8) | raw[5]
+                self.sensor_temperature = round((packed // 1000) / 10.0, 1)
+                self.sensor_humidity = round((packed % 1000) / 10.0, 1)
+                return True
+        return False
+
+    def update_from_lan(self, data: LanDevStatusLike, *, skip_power_brightness: bool = False) -> None:
         """Overlay a Govee LAN ``devStatus`` reply onto the existing state.
 
         A hardened sibling of :meth:`update_from_mqtt`. The Govee LAN protocol
@@ -602,10 +801,7 @@ class GoveeDeviceState:
         # color/brightness no longer describe a static state — only power stays
         # meaningful, so skip the rest to avoid per-poll churn.
         in_effect = bool(
-            self.active_scene
-            or self.active_diy_scene
-            or self.music_mode_enabled
-            or self.dreamview_enabled
+            self.active_scene or self.active_diy_scene or self.music_mode_enabled or self.dreamview_enabled
         )
 
         if not skip_power_brightness:
@@ -666,9 +862,7 @@ class GoveeDeviceState:
         self.active_scene = None
         self.active_scene_name = None
 
-    def apply_optimistic_scene(
-        self, scene_id: str, scene_name: str | None = None
-    ) -> None:
+    def apply_optimistic_scene(self, scene_id: str, scene_name: str | None = None) -> None:
         """Apply optimistic scene activation.
 
         Scenes, Music Mode, and DreamView are mutually exclusive.
@@ -722,9 +916,7 @@ class GoveeDeviceState:
         self.active_scene = None
         self.active_scene_name = None
 
-    def apply_optimistic_diy_style(
-        self, style: str, style_value: int | None = None
-    ) -> None:
+    def apply_optimistic_diy_style(self, style: str, style_value: int | None = None) -> None:
         """Apply optimistic DIY style update.
 
         Args:
@@ -809,6 +1001,141 @@ class GoveeDeviceState:
             self.active_scene = None
             self.active_scene_name = None
             self.active_diy_scene = None
+
+    def update_pump_state_from_frames(self, frames: Iterable[bytes]) -> bool:
+        """Apply the pump-fault flag an H7152 carries in its AWS IoT push.
+
+        Reverse-engineered from a live clogged-drain capture: the app's
+        pump-fault alert corresponds to byte offset 12 of an ``aa 17``
+        status frame in the push's ``op.command`` list — ``0x00`` normally,
+        ``0x01`` while the fault is active, back to ``0x00`` once it clears.
+        Confirmed against three captures (before / during / after an actual
+        fault) with the checksum consistent across all three, and stable at
+        ``0x00`` across unrelated mode changes in between. Also confirmed
+        live against two independent real-world faults caught by the shipped
+        sensor, one of which lined up with Home Assistant's own recorded
+        state-transition timestamp to the second.
+
+        Args:
+            frames: Decoded (not base64) frames from ``op.command``.
+
+        Returns:
+            True if the frame was recognised.
+        """
+        for raw in frames:
+            if len(raw) >= 13 and raw[0] == 0xAA and raw[1] == 0x17:
+                self.pump_state = raw[12] == 0x01
+                return True
+        return False
+
+    def update_dehumidifier_mode_from_frames(self, frames: Iterable[bytes]) -> bool:
+        """Apply hose-connection mode from an H7152's AWS IoT ``aa 19``
+        status frame.
+
+        Reverse-engineered from a live test pressing and holding the
+        device's own hose-connection button repeatedly (~5s per hold):
+        byte offset 9 toggled in exact lockstep with the app's Mode label on
+        every single press, in both directions — ``0x01`` while the drain
+        hose reads as connected ("Pump Mode"), ``0x00`` once it doesn't
+        ("Water Tank Mode").
+
+        Args:
+            frames: Decoded (not base64) frames from ``op.command``.
+
+        Returns:
+            True if the frame was recognised.
+        """
+        for raw in frames:
+            if len(raw) >= 10 and raw[0] == 0xAA and raw[1] == 0x19:
+                self.dehumidifier_mode = "pump" if raw[9] == 0x01 else "tank"
+                return True
+        return False
+
+    def update_power_monitoring_from_frames(self, frames: Iterable[bytes]) -> bool:
+        """Apply live power-monitoring readings from a smart outlet's (H5086)
+        AWS IoT ``aa 19`` status frame.
+
+        Register ``0x19`` is shared with the H7152's hose-connection mode
+        (:meth:`update_dehumidifier_mode_from_frames`) — an entirely
+        different device family with an entirely different frame layout on
+        the same register number. Safe only because the coordinator gates
+        each decoder to its own SKU set before ever calling it.
+
+        Byte layout, reverse-engineered against
+        https://github.com/egold555/Govee-Reverse-Engineering/blob/master/Products/H5086.md
+        and confirmed against the Govee app on two independent H5086 units
+        across all five fields (issue #200)::
+
+            offset 2-4   uint24  seconds powered on today (resets at midnight)
+            offset 5-7   uint24  energy used today, tenths of a Wh (resets at midnight)
+            offset 8-9   uint16  voltage, hundredths of a volt
+            offset 10-11 uint16  current, hundredths of an amp
+            offset 12-14 uint24  power, hundredths of a watt
+            offset 15    uint8   power factor, percent
+
+        The frame carries no XOR checksum consistent with the probe
+        thermometer's convention (byte 19 was ``0x00`` in both captures), so
+        none is checked here.
+
+        Args:
+            frames: Decoded (not base64) frames from ``op.command``.
+
+        Returns:
+            True if the frame was recognised.
+        """
+        for raw in frames:
+            if len(raw) >= 16 and raw[0] == 0xAA and raw[1] == 0x19:
+                self.energy_total = round(int.from_bytes(raw[5:8], "big") / 10000.0, 4)
+                self.voltage = round(int.from_bytes(raw[8:10], "big") / 100.0, 2)
+                self.current = round(int.from_bytes(raw[10:12], "big") / 100.0, 2)
+                self.power_draw = round(int.from_bytes(raw[12:15], "big") / 100.0, 2)
+                self.power_factor = raw[15]
+                return True
+        return False
+
+    def update_pm25_from_frames(self, frames: Iterable[bytes]) -> bool:
+        """Apply live temperature/humidity/PM2.5 from an H5106 AQI monitor's
+        AWS IoT push (issue #200).
+
+        Unlike every other frame this module decodes, this one carries no
+        ``0xAA``/register-byte prefix to key on at all — reverse-engineered
+        from homebridge-govee's ``sensor-monitor.js``, which identifies the
+        useful frame by ruling out a fixed list of known boilerplate/settings
+        prefixes (``0000``, ``0003``, ``0100``, ``0101``, ``0102``, ``0103``,
+        ``331a``, ``3315``, ``aa0d``, ``aa0e``) rather than matching one in.
+        That is a weaker identification than this module uses everywhere
+        else, so a physical-plausibility check on the decoded temperature and
+        humidity guards against a frame this integration has never seen
+        being misread as a reading.
+
+        Confirmed against the Govee app on two independent H5106 units, all
+        three fields matching on each: 19.00 degC/54.2%/1 ug/m3, and 25.10
+        degC/54.8%/0 ug/m3.
+
+        Byte layout (20-byte frame, no XOR checksum found)::
+
+            offset 0-1   int16   temperature, hundredths of a degree Celsius
+            offset 9-10  uint16  relative humidity, hundredths of a percent
+            offset 18-19 uint16  PM2.5, micrograms per cubic meter
+
+        Args:
+            frames: Decoded (not base64) frames from ``op.command``.
+
+        Returns:
+            True if a frame was recognised and passed the plausibility check.
+        """
+        for raw in frames:
+            if len(raw) != 20 or raw[:2].hex() in _PM25_FRAME_IGNORED_PREFIXES:
+                continue
+            temp = int.from_bytes(raw[0:2], "big", signed=True) / 100.0
+            humidity = int.from_bytes(raw[9:11], "big") / 100.0
+            if not (-40.0 <= temp <= 125.0) or not (0.0 <= humidity <= 100.0):
+                continue
+            self.sensor_temperature = round(temp, 1)
+            self.sensor_humidity = round(humidity, 1)
+            self.pm25 = int.from_bytes(raw[18:20], "big")
+            return True
+        return False
 
     @classmethod
     def create_empty(cls, device_id: str) -> GoveeDeviceState:

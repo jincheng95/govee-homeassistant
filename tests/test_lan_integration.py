@@ -300,9 +300,7 @@ def _build_coordinator(devices: dict[str, GoveeDevice]) -> tuple[Any, Any]:
     return coord, coord_mod
 
 
-async def _wire_lan(
-    monkeypatch: pytest.MonkeyPatch, coord: Any
-) -> tuple[GoveeLanClient, _FakeDevice]:
+async def _wire_lan(monkeypatch: pytest.MonkeyPatch, coord: Any) -> tuple[GoveeLanClient, _FakeDevice]:
     """Start a real ``GoveeLanClient`` over fakes and attach a fake device."""
     recv_sock = _FakeSocket()
     send_sock = _FakeSocket()
@@ -353,9 +351,7 @@ class TestFullPollOverlay:
     IP = "10.0.0.5"
 
     @pytest.mark.asyncio
-    async def test_overlay_four_fields_preserve_scene_segments_sensors(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_overlay_four_fields_preserve_scene_segments_sensors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, _ = _build_coordinator({self.DEVICE_ID: _light_device(self.DEVICE_ID)})
         client, responder = await _wire_lan(monkeypatch, coord)
         _correlate(coord, self.DEVICE_ID, self.IP)
@@ -420,9 +416,7 @@ class TestSceneActiveNoChurn:
     IP = "10.0.0.5"
 
     @pytest.mark.asyncio
-    async def test_scene_frame_color_does_not_overwrite_preserved_color(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_scene_frame_color_does_not_overwrite_preserved_color(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, _ = _build_coordinator({self.DEVICE_ID: _light_device(self.DEVICE_ID)})
         client, responder = await _wire_lan(monkeypatch, coord)
         _correlate(coord, self.DEVICE_ID, self.IP)
@@ -479,14 +473,10 @@ class TestVerifiedWrites:
         return coord, client, responder
 
     @pytest.mark.asyncio
-    async def test_power_write_confirms_and_skips_rest(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_power_write_confirms_and_skips_rest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, client, _ = await self._ready(monkeypatch)
 
-        result = await coord.async_control_device(
-            self.DEVICE_ID, PowerCommand(power_on=True)
-        )
+        result = await coord.async_control_device(self.DEVICE_ID, PowerCommand(power_on=True))
 
         assert result is True
         # LAN handled it — REST was never reached.
@@ -503,14 +493,10 @@ class TestVerifiedWrites:
         assert "turn" in sent_cmds
 
     @pytest.mark.asyncio
-    async def test_brightness_write_confirms_within_tolerance(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_brightness_write_confirms_within_tolerance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, client, _ = await self._ready(monkeypatch)
 
-        result = await coord.async_control_device(
-            self.DEVICE_ID, BrightnessCommand(brightness=55)
-        )
+        result = await coord.async_control_device(self.DEVICE_ID, BrightnessCommand(brightness=55))
 
         assert result is True
         coord._api_client.control_device.assert_not_called()
@@ -531,9 +517,7 @@ class TestNeverStranded:
     IP = "10.0.0.5"
 
     @pytest.mark.asyncio
-    async def test_stale_lan_write_falls_through_lan_mqtt_rest(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_stale_lan_write_falls_through_lan_mqtt_rest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, _ = _build_coordinator({self.DEVICE_ID: _light_device(self.DEVICE_ID)})
         client, responder = await _wire_lan(monkeypatch, coord)
         _correlate(coord, self.DEVICE_ID, self.IP)
@@ -547,9 +531,7 @@ class TestNeverStranded:
         # successful read; staleness then marks LAN unavailable.
         responder.go_silent()
         health = coord._transport.get(self.DEVICE_ID, "lan")
-        health.last_success_ts = datetime.now(timezone.utc) - timedelta(
-            seconds=LAN_STALE_SECONDS + 10
-        )
+        health.last_success_ts = datetime.now(timezone.utc) - timedelta(seconds=LAN_STALE_SECONDS + 10)
         coord._refresh_lan_staleness()
         assert health.is_available is False
         assert health.last_failure_reason == "stale_lan"
@@ -563,6 +545,7 @@ class TestNeverStranded:
         mqtt.async_publish_command = AsyncMock(return_value=False)
         coord._mqtt_client = mqtt
         coord._ensure_device_topic = AsyncMock(return_value="GA/topic/x")
+        coord._transport.record_success(self.DEVICE_ID, "mqtt")
 
         client._send_transport.sent.clear()
         command = PowerCommand(power_on=False)
@@ -593,9 +576,7 @@ class TestDhcpReassignment:
     IP = "10.0.0.5"
 
     @pytest.mark.asyncio
-    async def test_rescan_invalidates_stale_ip_and_preserves_device_a(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_rescan_invalidates_stale_ip_and_preserves_device_a(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, coord_mod = _build_coordinator(
             {
                 self.DEVICE_A: _light_device(self.DEVICE_A),
@@ -683,14 +664,10 @@ class TestColorOverLan:
         return coord, client, responder
 
     @pytest.mark.asyncio
-    async def test_color_command_goes_over_lan(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_color_command_goes_over_lan(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, client, responder = await self._ready(monkeypatch)
 
-        result = await coord.async_control_device(
-            self.DEVICE_ID, ColorCommand(color=RGBColor(0, 0, 255))
-        )
+        result = await coord.async_control_device(self.DEVICE_ID, ColorCommand(color=RGBColor(0, 0, 255)))
 
         assert result is True
         sent = [json.loads(d.decode())["msg"] for d, _ in client._send_transport.sent]
@@ -703,14 +680,10 @@ class TestColorOverLan:
         assert responder.devices[self.IP]["color"] == (0, 0, 255)
 
     @pytest.mark.asyncio
-    async def test_color_temp_command_goes_over_lan(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_color_temp_command_goes_over_lan(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, client, responder = await self._ready(monkeypatch)
 
-        result = await coord.async_control_device(
-            self.DEVICE_ID, ColorTempCommand(kelvin=4000)
-        )
+        result = await coord.async_control_device(self.DEVICE_ID, ColorTempCommand(kelvin=4000))
 
         assert result is True
         sent = [json.loads(d.decode())["msg"] for d, _ in client._send_transport.sent]
@@ -722,24 +695,18 @@ class TestColorOverLan:
         assert responder.devices[self.IP]["color_temp"] == 4000
 
     @pytest.mark.asyncio
-    async def test_color_falls_back_to_rest_when_the_device_ignores_it(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_color_falls_back_to_rest_when_the_device_ignores_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The never-stranded guarantee: firmware that swallows the LAN colour
         # write still reports its old colour, so the readback fails to confirm
         # and REST delivers the command instead.
         coord, client, responder = await self._ready(monkeypatch)
         responder.ignores_color = True
 
-        result = await coord.async_control_device(
-            self.DEVICE_ID, ColorCommand(color=RGBColor(0, 0, 255))
-        )
+        result = await coord.async_control_device(self.DEVICE_ID, ColorCommand(color=RGBColor(0, 0, 255)))
 
         assert result is True
         coord._api_client.control_device.assert_awaited_once()
-        assert isinstance(
-            coord._api_client.control_device.call_args.args[2], ColorCommand
-        )
+        assert isinstance(coord._api_client.control_device.call_args.args[2], ColorCommand)
 
 
 # ==============================================================================
@@ -754,9 +721,7 @@ class TestBootstrapFallThrough:
     IP = "10.0.0.5"
 
     @pytest.mark.asyncio
-    async def test_first_control_falls_through_to_rest(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_first_control_falls_through_to_rest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         coord, _ = _build_coordinator({self.DEVICE_ID: _light_device(self.DEVICE_ID)})
         client, responder = await _wire_lan(monkeypatch, coord)
         # Correlated and reachable, but NO read has happened yet, so the
@@ -768,9 +733,7 @@ class TestBootstrapFallThrough:
         # Documented bootstrap behaviour — this is expected, not breakage.
         assert health is not None and health.is_available is False
 
-        result = await coord.async_control_device(
-            self.DEVICE_ID, PowerCommand(power_on=True)
-        )
+        result = await coord.async_control_device(self.DEVICE_ID, PowerCommand(power_on=True))
 
         assert result is True
         # The first control did NOT go over LAN (gate shut before any send)...

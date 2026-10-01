@@ -16,12 +16,8 @@ from custom_components.govee.scene_cache import SceneCacheManager
 def mock_api() -> AsyncMock:
     """Create a mock API client with scene methods."""
     api = AsyncMock()
-    api.get_dynamic_scenes = AsyncMock(
-        return_value=[{"name": "Sunrise", "value": {"id": 1}}]
-    )
-    api.get_diy_scenes = AsyncMock(
-        return_value=[{"name": "DIY Rainbow", "value": {"id": 100}}]
-    )
+    api.get_dynamic_scenes = AsyncMock(return_value=[{"name": "Sunrise", "value": {"id": 1}}])
+    api.get_diy_scenes = AsyncMock(return_value=[{"name": "DIY Rainbow", "value": {"id": 100}}])
     return api
 
 
@@ -60,9 +56,7 @@ class TestSceneCacheHit:
     """Test that cache hits return cached data without API call."""
 
     @pytest.mark.asyncio
-    async def test_cache_hit_returns_cached_scenes(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_cache_hit_returns_cached_scenes(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """Cache hit returns cached data without making an API call."""
         manager = SceneCacheManager(mock_api)
 
@@ -77,9 +71,7 @@ class TestSceneCacheHit:
         assert mock_api.get_dynamic_scenes.call_count == 1  # No additional call
 
     @pytest.mark.asyncio
-    async def test_cache_hit_returns_cached_diy_scenes(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_cache_hit_returns_cached_diy_scenes(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """DIY scene cache hit returns cached data without making an API call."""
         manager = SceneCacheManager(mock_api)
 
@@ -92,9 +84,7 @@ class TestSceneCacheHit:
         assert mock_api.get_diy_scenes.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_refresh_bypasses_cache(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_refresh_bypasses_cache(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """Refresh=True bypasses cache and makes a new API call."""
         manager = SceneCacheManager(mock_api)
 
@@ -105,9 +95,7 @@ class TestSceneCacheHit:
         assert mock_api.get_dynamic_scenes.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_diy_refresh_bypasses_cache(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_diy_refresh_bypasses_cache(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """Refresh=True bypasses DIY scene cache and makes a new API call."""
         manager = SceneCacheManager(mock_api)
 
@@ -127,9 +115,7 @@ class TestInflightDedup:
     """Test that concurrent requests for the same device share one API call."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_scene_requests_deduplicated(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_concurrent_scene_requests_deduplicated(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """Two concurrent scene calls for the same device make only one API call."""
 
         # Make the API call take some time so both callers overlap
@@ -152,9 +138,7 @@ class TestInflightDedup:
         assert mock_api.get_dynamic_scenes.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_concurrent_diy_scene_requests_deduplicated(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_concurrent_diy_scene_requests_deduplicated(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """Two concurrent DIY scene calls for the same device make only one API call."""
 
         async def slow_fetch(*args, **kwargs):
@@ -196,9 +180,7 @@ class TestInflightDedup:
         assert mock_api.get_dynamic_scenes.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_inflight_cleaned_up_after_completion(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_inflight_cleaned_up_after_completion(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """In-flight task is removed after the request completes."""
         manager = SceneCacheManager(mock_api)
 
@@ -206,9 +188,7 @@ class TestInflightDedup:
         assert device.device_id not in manager._scene_inflight
 
     @pytest.mark.asyncio
-    async def test_diy_inflight_cleaned_up_after_completion(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_diy_inflight_cleaned_up_after_completion(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """DIY in-flight task is removed after the request completes."""
         manager = SceneCacheManager(mock_api)
 
@@ -225,9 +205,7 @@ class TestErrorHandling:
     """Test that API errors propagate correctly and fall back to cached data."""
 
     @pytest.mark.asyncio
-    async def test_api_error_propagates_to_all_waiters(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_api_error_propagates_to_all_waiters(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """API error returns fallback (empty list) to all concurrent waiters."""
 
         async def failing_fetch(*args, **kwargs):
@@ -249,9 +227,7 @@ class TestErrorHandling:
         assert mock_api.get_dynamic_scenes.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_fallback_not_raises(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_timeout_returns_fallback_not_raises(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """A raw read TimeoutError degrades to empty, not an exception (#146).
 
         Scenes are fetched from light/select ``async_added_to_hass``; a
@@ -264,9 +240,7 @@ class TestErrorHandling:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_api_error_falls_back_to_cached_data(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_api_error_falls_back_to_cached_data(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """API error returns previously cached data."""
         manager = SceneCacheManager(mock_api)
 
@@ -275,16 +249,12 @@ class TestErrorHandling:
         assert len(cached) == 1
 
         # Now fail on refresh
-        mock_api.get_dynamic_scenes = AsyncMock(
-            side_effect=GoveeApiError("rate limited")
-        )
+        mock_api.get_dynamic_scenes = AsyncMock(side_effect=GoveeApiError("rate limited"))
         result = await manager.async_get_scenes(device.device_id, device, refresh=True)
         assert result == cached
 
     @pytest.mark.asyncio
-    async def test_diy_api_error_falls_back_to_cached_data(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_diy_api_error_falls_back_to_cached_data(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """DIY scene API error returns previously cached data."""
         manager = SceneCacheManager(mock_api)
 
@@ -292,19 +262,13 @@ class TestErrorHandling:
         assert len(cached) == 1
 
         mock_api.get_diy_scenes = AsyncMock(side_effect=GoveeApiError("rate limited"))
-        result = await manager.async_get_diy_scenes(
-            device.device_id, device, refresh=True
-        )
+        result = await manager.async_get_diy_scenes(device.device_id, device, refresh=True)
         assert result == cached
 
     @pytest.mark.asyncio
-    async def test_inflight_cleaned_up_after_error(
-        self, mock_api: AsyncMock, device: GoveeDevice
-    ) -> None:
+    async def test_inflight_cleaned_up_after_error(self, mock_api: AsyncMock, device: GoveeDevice) -> None:
         """In-flight task is removed even when the API call fails."""
-        mock_api.get_dynamic_scenes = AsyncMock(
-            side_effect=GoveeApiError("rate limited")
-        )
+        mock_api.get_dynamic_scenes = AsyncMock(side_effect=GoveeApiError("rate limited"))
         manager = SceneCacheManager(mock_api)
 
         await manager.async_get_scenes(device.device_id, device)

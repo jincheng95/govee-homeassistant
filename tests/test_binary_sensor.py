@@ -37,9 +37,7 @@ def _light() -> GoveeDevice:
         sku="H6072",
         name="Test Lamp",
         device_type=DEVICE_TYPE_LIGHT,
-        capabilities=(
-            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
-        ),
+        capabilities=(GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),),
     )
 
 
@@ -70,7 +68,7 @@ def _aggregate(coordinator: MagicMock, device: GoveeDevice) -> GoveeDeviceConnec
 class TestTransportSpecs:
     def test_lan_spec_appended(self):
         # The hand-maintained spec table must carry the LAN row.
-        assert ("lan", "lan_connectivity", "mdi:lan") in _TRANSPORT_SPECS
+        assert ("lan", "lan_connectivity") in _TRANSPORT_SPECS
         # ...and exactly once.
         lan_specs = [s for s in _TRANSPORT_SPECS if s[0] == "lan"]
         assert len(lan_specs) == 1
@@ -85,16 +83,16 @@ class TestLanTransportEntity:
         added: list = []
         await async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
 
-        lan_entities = [
-            e
-            for e in added
-            if isinstance(e, GoveeTransportConnectivity) and e._transport == "lan"
-        ]
+        lan_entities = [e for e in added if isinstance(e, GoveeTransportConnectivity) and e._transport == "lan"]
         assert len(lan_entities) == 1
         lan = lan_entities[0]
         assert lan.translation_key == "lan_connectivity"
         assert lan.unique_id == f"{device.device_id}_lan_connectivity"
-        assert lan.icon == "mdi:lan"
+        import json
+        from pathlib import Path
+
+        icons = json.loads((Path(__file__).resolve().parent.parent / "custom_components/govee/icons.json").read_text())
+        assert icons["entity"]["binary_sensor"]["lan_connectivity"]["default"] == "mdi:lan"
 
     async def test_lan_connectivity_entity_absent_when_not_exposed(self):
         device = _light()
@@ -110,19 +108,13 @@ class TestLanTransportEntity:
     async def test_lan_entity_reports_health(self):
         device = _light()
         coordinator = _coordinator(device)
-        coordinator.get_transport_health.return_value = TransportHealth(
-            transport="lan", is_available=True
-        )
+        coordinator.get_transport_health.return_value = TransportHealth(transport="lan", is_available=True)
         entry = _entry(coordinator, expose=True)
 
         added: list = []
         await async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
 
-        lan = next(
-            e
-            for e in added
-            if isinstance(e, GoveeTransportConnectivity) and e._transport == "lan"
-        )
+        lan = next(e for e in added if isinstance(e, GoveeTransportConnectivity) and e._transport == "lan")
         assert lan.is_on is True
         coordinator.get_transport_health.assert_called_with(device.device_id, "lan")
 

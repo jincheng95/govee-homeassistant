@@ -20,16 +20,20 @@ from custom_components.govee.const import (
     CONF_ENABLE_GROUPS,
     CONF_ENABLE_SCENES,
     CONF_LAN_TARGETS,
+    CONF_MQTT_STATUS_INTERVAL,
     CONF_PASSWORD,
     CONF_POLL_INTERVAL,
     CONF_WATER_DETECTOR_POLL_INTERVAL,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
     DEFAULT_ENABLE_SCENES,
+    DEFAULT_MQTT_STATUS_INTERVAL,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_WATER_DETECTOR_POLL_INTERVAL,
     DOMAIN,
+    MAX_MQTT_STATUS_INTERVAL,
     MAX_WATER_DETECTOR_POLL_INTERVAL,
+    MIN_MQTT_STATUS_INTERVAL,
     MIN_WATER_DETECTOR_POLL_INTERVAL,
     SEGMENT_MODE_GROUPS,
     SEGMENT_MODE_INDIVIDUAL,
@@ -291,6 +295,85 @@ class TestLanTargetsOption:
         assert result["errors"] == {CONF_LAN_TARGETS: "invalid_lan_targets"}
 
 
+class TestLanDeviceOverrideOption:
+    """Form validation for the device_id=ip[!] override syntax (issue #164).
+
+    Runtime parsing skips a malformed override silently so the rest still bind.
+    The form must not: a typo that saves cleanly leaves the user with an
+    accepted form, a stored option and a device that never works, with nothing
+    on screen to say why.
+    """
+
+    DEVICE = "AA:BB:CC:DD:EE:FF:00:11"
+
+    @pytest.mark.asyncio
+    async def test_valid_override_saved(self):
+        flow, entry = _options_flow(devices={self.DEVICE: MagicMock(segment_count=0)})
+        raw = f"{self.DEVICE}=10.20.0.51"
+        result = await _run_init(flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: raw})
+        assert result["type"] == "create_entry"
+        assert result["data"][CONF_LAN_TARGETS] == raw
+
+    @pytest.mark.asyncio
+    async def test_valid_write_only_override_saved(self):
+        flow, entry = _options_flow(devices={self.DEVICE: MagicMock(segment_count=0)})
+        raw = f"{self.DEVICE}=10.20.0.51!"
+        result = await _run_init(flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: raw})
+        assert result["type"] == "create_entry"
+        assert result["data"][CONF_LAN_TARGETS] == raw
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "AA:BB:CC:DD:EE:FF:00:11=10.20.0.999",
+            "AA:BB:CC:DD:EE:FF:00:11=",
+            "AA:BB:CC:DD:EE:FF:00:11=not-an-ip!",
+            "=10.20.0.51",
+        ],
+    )
+    async def test_malformed_override_rejected(self, raw):
+        flow, entry = _options_flow(devices={self.DEVICE: MagicMock(segment_count=0)})
+        result = await _run_init(flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: raw})
+        assert result["type"] == "form"
+        assert result["errors"] == {CONF_LAN_TARGETS: "invalid_lan_targets"}
+
+    @pytest.mark.asyncio
+    async def test_unknown_device_id_rejected(self):
+        """A mistyped device ID binds nothing — catch it at the form."""
+        flow, entry = _options_flow(devices={self.DEVICE: MagicMock(segment_count=0)})
+        result = await _run_init(
+            flow,
+            entry,
+            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: "AA:BB:CC:DD:EE:FF:00:99=10.20.0.51"},
+        )
+        assert result["type"] == "form"
+        assert result["errors"] == {CONF_LAN_TARGETS: "unknown_lan_device"}
+
+    @pytest.mark.asyncio
+    async def test_unknown_device_check_skipped_without_a_device_list(self):
+        """Options can be opened before discovery has populated devices.
+
+        With no device list to check against, a correct id is indistinguishable
+        from a typo, and rejecting would lock the user out of their own options.
+        """
+        flow, entry = _options_flow(devices={})
+        result = await _run_init(
+            flow,
+            entry,
+            {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: f"{self.DEVICE}=10.20.0.51"},
+        )
+        assert result["type"] == "create_entry"
+
+    @pytest.mark.asyncio
+    async def test_override_mixed_with_plain_targets(self):
+        flow, entry = _options_flow(devices={self.DEVICE: MagicMock(segment_count=0)})
+        raw = f"10.20.0.0/24, {self.DEVICE}=10.20.0.51!"
+        result = await _run_init(flow, entry, {CONF_POLL_INTERVAL: 60, CONF_LAN_TARGETS: raw})
+        assert result["type"] == "create_entry"
+        assert result["data"][CONF_LAN_TARGETS] == raw
+
+
 class TestWaterDetectorPollIntervalOption:
     """The leak-poll interval is exposed and bounded in the options flow."""
 
@@ -330,6 +413,57 @@ class TestWaterDetectorPollIntervalOption:
         result = await _run_init(flow, entry, None)
         with pytest.raises(vol.Invalid):
             result["data_schema"]({CONF_POLL_INTERVAL: 60, CONF_WATER_DETECTOR_POLL_INTERVAL: value})
+
+
+class TestMqttStatusIntervalOption:
+    """The MQTT status re-query interval is exposed and bounded in the options
+    flow, matching the leak-poll interval's pattern.
+    """
+
+    @pytest.mark.asyncio
+    async def test_field_defaults_to_constant(self):
+        flow, entry = _options_flow()
+        result = await _run_init(flow, entry, None)
+        key = next(k for k in result["data_schema"].schema if k == CONF_MQTT_STATUS_INTERVAL)
+        assert key.default() == DEFAULT_MQTT_STATUS_INTERVAL
+
+    @pytest.mark.asyncio
+    async def test_field_seeded_from_saved_option(self):
+        flow, entry = _options_flow()
+        entry.options = {CONF_MQTT_STATUS_INTERVAL: 900}
+        result = await _run_init(flow, entry, None)
+        key = next(k for k in result["data_schema"].schema if k == CONF_MQTT_STATUS_INTERVAL)
+        assert key.default() == 900
+
+    @pytest.mark.asyncio
+    async def test_value_is_saved(self):
+        flow, entry = _options_flow()
+        result = await _run_init(
+            flow,
+            entry,
+            {CONF_POLL_INTERVAL: 60, CONF_MQTT_STATUS_INTERVAL: 600},
+        )
+        assert result["type"] == "create_entry"
+        assert result["data"][CONF_MQTT_STATUS_INTERVAL] == 600
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "value",
+        [MIN_MQTT_STATUS_INTERVAL - 1, MAX_MQTT_STATUS_INTERVAL + 1],
+    )
+    async def test_out_of_range_rejected_by_schema(self, value):
+        flow, entry = _options_flow()
+        result = await _run_init(flow, entry, None)
+        with pytest.raises(vol.Invalid):
+            result["data_schema"]({CONF_POLL_INTERVAL: 60, CONF_MQTT_STATUS_INTERVAL: value})
+
+    @pytest.mark.asyncio
+    async def test_zero_is_accepted_as_off(self):
+        """0 is the documented off switch, below the range but valid."""
+        flow, entry = _options_flow()
+        result = await _run_init(flow, entry, None)
+        validated = result["data_schema"]({CONF_POLL_INTERVAL: 60, CONF_MQTT_STATUS_INTERVAL: 0})
+        assert validated[CONF_MQTT_STATUS_INTERVAL] == 0
 
 
 class TestConfigFlowSteps:
@@ -556,24 +690,22 @@ class TestRepairsFramework:
     def test_issue_ids(self):
         """Test issue ID constants."""
         from custom_components.govee.repairs import (
-            ISSUE_AUTH_FAILED,
             ISSUE_MQTT_DISCONNECTED,
             ISSUE_RATE_LIMITED,
         )
 
-        assert ISSUE_AUTH_FAILED == "auth_failed"
         assert ISSUE_RATE_LIMITED == "rate_limited"
         assert ISSUE_MQTT_DISCONNECTED == "mqtt_disconnected"
 
     def test_issue_id_format(self):
         """Test issue ID format with entry ID."""
-        from custom_components.govee.repairs import ISSUE_AUTH_FAILED
+        from custom_components.govee.repairs import ISSUE_RATE_LIMITED
 
         entry_id = "test_entry_123"
-        issue_id = f"{ISSUE_AUTH_FAILED}_{entry_id}"
+        issue_id = f"{ISSUE_RATE_LIMITED}_{entry_id}"
 
-        assert issue_id == "auth_failed_test_entry_123"
-        assert issue_id.startswith(ISSUE_AUTH_FAILED)
+        assert issue_id == "rate_limited_test_entry_123"
+        assert issue_id.startswith(ISSUE_RATE_LIMITED)
 
     def test_rate_limit_reset_time_format(self):
         """Test rate limit reset time formatting."""
@@ -586,26 +718,22 @@ class TestRepairsFramework:
         """Test issue severity levels."""
         # These would be ir.IssueSeverity values in actual code
         severity_mapping = {
-            "auth_failed": "ERROR",
             "rate_limited": "WARNING",
             "mqtt_disconnected": "WARNING",
         }
 
-        assert severity_mapping["auth_failed"] == "ERROR"
         assert severity_mapping["rate_limited"] == "WARNING"
         assert severity_mapping["mqtt_disconnected"] == "WARNING"
 
     def test_fixable_issues(self):
         """Test which issues are fixable."""
         fixable_issues = {
-            "auth_failed": True,
-            "rate_limited": False,
-            "mqtt_disconnected": False,
+            "rate_limited": True,
+            "mqtt_disconnected": True,
         }
 
-        assert fixable_issues["auth_failed"] is True
-        assert fixable_issues["rate_limited"] is False
-        assert fixable_issues["mqtt_disconnected"] is False
+        assert fixable_issues["rate_limited"] is True
+        assert fixable_issues["mqtt_disconnected"] is True
 
 
 class TestPerDeviceSegmentMode:
@@ -943,7 +1071,7 @@ class TestVerificationCodeFlow:
         # Verify async_update_reload_and_abort was called with correct data
         call_args = flow.async_update_reload_and_abort.call_args
         assert call_args[0][0] is mock_entry
-        data_updates = call_args[1]["data_updates"]
+        data_updates = call_args[1]["data"]
         assert data_updates[CONF_EMAIL] == "new@example.com"
         assert data_updates[CONF_PASSWORD] == "newpass"
         assert data_updates[CONF_API_KEY] == "new-api-key-xxxx-xxxx-xxxx-xxxx-long"

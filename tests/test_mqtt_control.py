@@ -109,6 +109,7 @@ def _make_coordinator(*, topic="GD/topic", publish_ok=True):
     from custom_components.govee.coordinator import GoveeCoordinator
 
     coord = object.__new__(GoveeCoordinator)
+    coord._devices = {}
     coord._transport = TransportHealthTracker()
     coord._mqtt_client = MagicMock()
     coord._mqtt_client.async_publish_command = AsyncMock(return_value=publish_ok)
@@ -120,9 +121,7 @@ class TestTryMqttCommand:
     @pytest.mark.asyncio
     async def test_power_publishes(self):
         coord = _make_coordinator()
-        result = await coord._try_mqtt_command(
-            "dev1", "H601F", PowerCommand(power_on=True)
-        )
+        result = await coord._try_mqtt_command("dev1", "H601F", PowerCommand(power_on=True))
         assert result is True
         coord._mqtt_client.async_publish_command.assert_awaited_once_with(
             "GD/topic", "turn", {"val": 1}, cmd_version=0
@@ -131,18 +130,14 @@ class TestTryMqttCommand:
     @pytest.mark.asyncio
     async def test_non_capable_skips_publish(self):
         coord = _make_coordinator()
-        result = await coord._try_mqtt_command(
-            "dev1", "H601F", ColorTempCommand(kelvin=3000)
-        )
+        result = await coord._try_mqtt_command("dev1", "H601F", ColorTempCommand(kelvin=3000))
         assert result is False
         coord._mqtt_client.async_publish_command.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_topic_returns_false(self):
         coord = _make_coordinator(topic=None)
-        result = await coord._try_mqtt_command(
-            "dev1", "H601F", PowerCommand(power_on=True)
-        )
+        result = await coord._try_mqtt_command("dev1", "H601F", PowerCommand(power_on=True))
         assert result is False
         coord._mqtt_client.async_publish_command.assert_not_awaited()
 
@@ -150,17 +145,13 @@ class TestTryMqttCommand:
     async def test_no_mqtt_client_returns_false(self):
         coord = _make_coordinator()
         coord._mqtt_client = None
-        result = await coord._try_mqtt_command(
-            "dev1", "H601F", PowerCommand(power_on=True)
-        )
+        result = await coord._try_mqtt_command("dev1", "H601F", PowerCommand(power_on=True))
         assert result is False
 
     @pytest.mark.asyncio
     async def test_publish_failure_records_transport_failure(self):
         coord = _make_coordinator(publish_ok=False)
-        result = await coord._try_mqtt_command(
-            "dev1", "H601F", PowerCommand(power_on=True)
-        )
+        result = await coord._try_mqtt_command("dev1", "H601F", PowerCommand(power_on=True))
         assert result is False
         # A failure was recorded for the mqtt transport.
         health = coord._transport.get("dev1", "mqtt")
@@ -214,9 +205,7 @@ class TestGatewayPtRealPublish:
     async def test_publishes_to_the_gateway_topic_addressed_to_the_gateway(self):
         client = self._client()
 
-        ok = await client.async_publish_gateway_ptreal(
-            self.ROUTE, "M3AAAAAAAAAAAAAAAAAAAAAAAEM="
-        )
+        ok = await client.async_publish_gateway_ptreal(self.ROUTE, "M3AAAAAAAAAAAAAAAAAAAAAAAEM=")
 
         assert ok is True
         topic, cmd, data = client.async_publish_command.await_args.args

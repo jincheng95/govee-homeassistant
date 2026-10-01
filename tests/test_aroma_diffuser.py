@@ -123,11 +123,7 @@ class TestPresetSceneParsing:
             sku="H7161",
             name="Test Diffuser",
             device_type=DEVICE_TYPE_AROMA_DIFFUSER,
-            capabilities=(
-                GoveeCapability(
-                    type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
-                ),
-            ),
+            capabilities=(GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),),
         )
         assert device.get_preset_scene_options() == []
 
@@ -183,9 +179,7 @@ class TestPresetSceneSelectEntity:
     @pytest.fixture
     def mock_coordinator(self, mock_aroma_diffuser_device):
         coordinator = MagicMock()
-        coordinator.devices = {
-            mock_aroma_diffuser_device.device_id: mock_aroma_diffuser_device
-        }
+        coordinator.devices = {mock_aroma_diffuser_device.device_id: mock_aroma_diffuser_device}
         state = GoveeDeviceState(
             device_id=mock_aroma_diffuser_device.device_id,
             online=True,
@@ -226,17 +220,13 @@ class TestPresetSceneSelectEntity:
     def test_unique_id(self, preset_scene_entity, mock_aroma_diffuser_device):
         from custom_components.govee.const import SUFFIX_PRESET_SCENE_SELECT
 
-        expected = (
-            f"{mock_aroma_diffuser_device.device_id}{SUFFIX_PRESET_SCENE_SELECT}"
-        )
+        expected = f"{mock_aroma_diffuser_device.device_id}{SUFFIX_PRESET_SCENE_SELECT}"
         assert preset_scene_entity._attr_unique_id == expected
 
     def test_current_option_matches_state(self, preset_scene_entity):
         assert preset_scene_entity.current_option == "Morgen"
 
-    def test_current_option_defaults_when_unset(
-        self, preset_scene_entity, mock_coordinator
-    ):
+    def test_current_option_defaults_when_unset(self, preset_scene_entity, mock_coordinator):
         state = GoveeDeviceState(
             device_id=preset_scene_entity._device_id,
             online=True,
@@ -246,9 +236,7 @@ class TestPresetSceneSelectEntity:
         mock_coordinator.get_state.return_value = state
         assert preset_scene_entity.current_option == "Bach"
 
-    async def test_select_sends_integer_id_not_name(
-        self, preset_scene_entity, mock_coordinator
-    ):
+    async def test_select_sends_integer_id_not_name(self, preset_scene_entity, mock_coordinator):
         await preset_scene_entity.async_select_option("Morgen")
 
         mock_coordinator.async_control_device.assert_called_once()
@@ -259,10 +247,11 @@ class TestPresetSceneSelectEntity:
         # Critical: the localized name must map to the integer id.
         assert command.value == 171398
 
-    async def test_select_invalid_option_no_command(
-        self, preset_scene_entity, mock_coordinator
-    ):
-        await preset_scene_entity.async_select_option("Nope")
+    async def test_select_invalid_option_no_command(self, preset_scene_entity, mock_coordinator):
+        from homeassistant.exceptions import ServiceValidationError
+
+        with pytest.raises(ServiceValidationError):
+            await preset_scene_entity.async_select_option("Nope")
         mock_coordinator.async_control_device.assert_not_called()
 
 
@@ -274,22 +263,16 @@ class TestPresetSceneSelectEntity:
 class TestAromaDiffuserPlatformWiring:
     """The setup guards create the right entities for a diffuser."""
 
-    async def test_switch_setup_creates_appliance_power_switch(
-        self, mock_aroma_diffuser_device
-    ):
+    async def test_switch_setup_creates_appliance_power_switch(self, mock_aroma_diffuser_device):
         from custom_components.govee import switch as switch_mod
 
         coordinator = MagicMock()
-        coordinator.devices = {
-            mock_aroma_diffuser_device.device_id: mock_aroma_diffuser_device
-        }
+        coordinator.devices = {mock_aroma_diffuser_device.device_id: mock_aroma_diffuser_device}
         entry = MagicMock()
         entry.runtime_data = coordinator
         added: list = []
 
-        await switch_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await switch_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
 
         names = [type(e).__name__ for e in added]
         assert "GoveeAppliancePowerSwitchEntity" in names
@@ -302,9 +285,7 @@ class TestAromaDiffuserPlatformWiring:
         coordinator.async_get_diy_scenes = AsyncMock(return_value=[])
         return coordinator
 
-    async def test_select_setup_creates_preset_scene_select(
-        self, mock_aroma_diffuser_device
-    ):
+    async def test_select_setup_creates_preset_scene_select(self, mock_aroma_diffuser_device):
         from custom_components.govee import select as select_mod
 
         coordinator = self._select_coordinator(mock_aroma_diffuser_device)
@@ -313,9 +294,7 @@ class TestAromaDiffuserPlatformWiring:
         entry.options = {}
         added: list = []
 
-        await select_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await select_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
 
         names = [type(e).__name__ for e in added]
         assert "GoveePresetSceneSelectEntity" in names
@@ -329,9 +308,7 @@ class TestAromaDiffuserPlatformWiring:
         entry.options = {}
         added: list = []
 
-        await select_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await select_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
 
         names = [type(e).__name__ for e in added]
         assert "GoveePresetSceneSelectEntity" not in names

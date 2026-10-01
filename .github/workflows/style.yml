@@ -9,9 +9,11 @@ jobs:
     runs-on: "ubuntu-latest"
     name: Check style formatting
     steps:
-        - uses: "actions/checkout@v3"
-        - uses: "actions/setup-python@v1"
-          with:
-            python-version: "3.x"
-        - run: python3 -m pip install black
-        - run: black .
+      - uses: "actions/checkout@v4"
+      - uses: "actions/setup-python@v5"
+        with:
+          python-version: "3.12"
+      # Pinned to the version in .pre-commit-config.yaml so both runs agree.
+      - run: python3 -m pip install black==26.5.1
+      # --check fails the job on unformatted files; --diff shows what to fix.
+      - run: black --check --diff .

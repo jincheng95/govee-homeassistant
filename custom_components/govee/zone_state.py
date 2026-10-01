@@ -269,7 +269,7 @@ def register_zone_switch(entity: Any) -> Callable[[], None]:
     store.seed(device_id, zone_key, _switch_is_on(entity))
 
     def _set(on: bool) -> None:
-        _set_switch_state(entity, on)
+        set_switch_state(entity, on)
 
     return store.register(device_id, zone_key, _set)
 
@@ -303,7 +303,18 @@ def _switch_is_on(entity: Any) -> bool:
     return bool(getattr(entity, "_is_on", False))
 
 
-def _set_switch_state(entity: Any, on: bool) -> None:
-    """Write a zone switch's optimistic state and notify HA."""
+def set_switch_state(entity: Any, on: bool) -> None:
+    """Write a zone switch's optimistic state, mirror it, and notify HA.
+
+    The mirror goes into ``state.toggles[<instance>]``, which the named-light
+    switch reads in preference to its own flag, so a raw write is not undone
+    by the last cloud ToggleCommand recorded there.
+    """
     entity._is_on = on
+    instance = _toggle_instance(entity)
+    device_id = _device_id(entity)
+    if instance and device_id:
+        state = _coordinator(entity).get_state(device_id)
+        if state is not None:
+            state.toggles[instance] = on
     entity.async_write_ha_state()

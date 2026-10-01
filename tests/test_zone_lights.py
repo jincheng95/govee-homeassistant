@@ -183,7 +183,7 @@ def _lights(coordinator: Any, entry: Any) -> dict[str, GoveeZoneLightEntity]:
 
 
 def _switch(coordinator: Any, instance: str, device: GoveeDevice) -> GoveeNamedLightSwitchEntity:
-    entity = GoveeNamedLightSwitchEntity(coordinator, device, instance, "govee_test", "_x", "mdi:shimmer")
+    entity = GoveeNamedLightSwitchEntity(coordinator, device, instance, "govee_test", "_x")
     entity.async_write_ha_state = MagicMock()
     return entity
 
@@ -1092,7 +1092,9 @@ class TestSegmentNaming:
         coordinator = _coordinator()
         seg = as_zone_named_segment(self._segment(0), _entry(coordinator, zone_lights=False))
 
-        assert seg._attr_name == "Segment 1"
+        assert "_attr_name" not in vars(seg)
+        assert seg.translation_key == "govee_segment"
+        assert seg.translation_placeholders == {"segment_index": "1"}
 
     def test_a_device_without_profile_zones_keeps_upstreams_name(self):
         """No profile (or a single-zone profile) -> "Segment N" is not ambiguous."""
@@ -1104,7 +1106,8 @@ class TestSegmentNaming:
         seg_entity = GoveeSegmentEntity(coordinator=coordinator, device=device, segment_index=0)
         as_zone_named_segment(seg_entity, _entry(coordinator))
 
-        assert seg_entity._attr_name == "Segment 1"
+        assert "_attr_name" not in vars(seg_entity)
+        assert seg_entity.translation_placeholders == {"segment_index": "1"}
 
 
 # ==============================================================================

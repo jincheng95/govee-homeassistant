@@ -157,23 +157,17 @@ class TestOccupancyEntity:
     def test_is_on_reads_presence(self, h5127_device):
         state = GoveeDeviceState(device_id=h5127_device.device_id)
         state.presence = True
-        entity = GoveeOccupancyBinarySensor(
-            self._coordinator(h5127_device, state), h5127_device
-        )
+        entity = GoveeOccupancyBinarySensor(self._coordinator(h5127_device, state), h5127_device)
         assert entity.is_on is True
         state.presence = False
         assert entity.is_on is False
 
     def test_unique_id(self, h5127_device):
         state = GoveeDeviceState(device_id=h5127_device.device_id)
-        entity = GoveeOccupancyBinarySensor(
-            self._coordinator(h5127_device, state), h5127_device
-        )
+        entity = GoveeOccupancyBinarySensor(self._coordinator(h5127_device, state), h5127_device)
         assert entity.unique_id == f"{h5127_device.device_id}_occupancy"
 
     def test_available_despite_offline_device(self, h5127_device):
         state = GoveeDeviceState(device_id=h5127_device.device_id, online=False)
-        entity = GoveeOccupancyBinarySensor(
-            self._coordinator(h5127_device, state), h5127_device
-        )
+        entity = GoveeOccupancyBinarySensor(self._coordinator(h5127_device, state), h5127_device)
         assert entity.available is True

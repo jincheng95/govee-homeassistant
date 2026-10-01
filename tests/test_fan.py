@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from homeassistant.util.percentage import ordered_list_item_to_percentage
+
+from dataclasses import replace
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -97,9 +100,7 @@ class TestGoveeFanEntity:
         mock_coordinator.get_state.return_value = mock_fan_device_state
         assert fan_entity.percentage == 100  # High = 100%
 
-    def test_percentage_auto_mode(
-        self, fan_entity, mock_coordinator, mock_fan_device_state
-    ):
+    def test_percentage_auto_mode(self, fan_entity, mock_coordinator, mock_fan_device_state):
         """Test percentage returns None in auto mode."""
         mock_fan_device_state.work_mode = WORK_MODE_AUTO
         mock_coordinator.get_state.return_value = mock_fan_device_state
@@ -110,9 +111,7 @@ class TestGoveeFanEntity:
         """Test preset mode returns Normal for gear mode."""
         assert fan_entity.preset_mode == PRESET_MODE_NORMAL
 
-    def test_preset_mode_auto(
-        self, fan_entity, mock_coordinator, mock_fan_device_state
-    ):
+    def test_preset_mode_auto(self, fan_entity, mock_coordinator, mock_fan_device_state):
         """Test preset mode returns Auto for auto mode."""
         mock_fan_device_state.work_mode = WORK_MODE_AUTO
         mock_coordinator.get_state.return_value = mock_fan_device_state
@@ -293,6 +292,122 @@ class TestGoveeFanEntityControls:
         assert isinstance(call_args[0][1], OscillationCommand)
         assert call_args[0][1].oscillating is False
 
+    # ------------------------------------------------------------------
+    # Tower Fan 2 family (H7105/H7107): oscillation over MQTT ptReal
+    # ------------------------------------------------------------------
+
+    @pytest.fixture
+    def tower_fan_entity(self, mock_coordinator, mock_fan_device):
+        """Create an H7107 entity whose oscillation routes over MQTT."""
+        device = replace(mock_fan_device, sku="H7107")
+        mock_coordinator.devices = {device.device_id: device}
+        mock_coordinator.mqtt_connected = True
+        mock_coordinator.async_send_fan_oscillation = AsyncMock(return_value=True)
+        entity = GoveeFanEntity(mock_coordinator, device)
+        entity.async_write_ha_state = MagicMock()
+        return entity
+
+    @pytest.mark.asyncio
+    async def test_tower_fan_oscillate_uses_mqtt(self, tower_fan_entity, mock_coordinator, mock_fan_device_state):
+        """H7107 sends the MQTT frame and skips REST.
+
+        The optimistic write and listener notification belong to the
+        coordinator (see tests/test_fan_oscillation_coordinator.py), so the
+        entity itself must not touch shared state or write HA state here.
+        """
+        await tower_fan_entity.async_oscillate(False)
+
+        mock_coordinator.async_send_fan_oscillation.assert_awaited_once_with(tower_fan_entity._device_id, False)
+        mock_coordinator.async_control_device.assert_not_called()
+        assert mock_fan_device_state.oscillating is True
+        tower_fan_entity.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tower_fan_sku_match_is_case_insensitive(self, mock_coordinator, mock_fan_device):
+        """A lower-case SKU from the API still takes the MQTT path."""
+        device = replace(mock_fan_device, sku="h7105")
+        mock_coordinator.devices = {device.device_id: device}
+        mock_coordinator.mqtt_connected = True
+        mock_coordinator.async_send_fan_oscillation = AsyncMock(return_value=True)
+        entity = GoveeFanEntity(mock_coordinator, device)
+
+        await entity.async_oscillate(True)
+
+        mock_coordinator.async_send_fan_oscillation.assert_awaited_once()
+        mock_coordinator.async_control_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tower_fan_oscillate_falls_back_when_mqtt_down(self, tower_fan_entity, mock_coordinator, caplog):
+        """No MQTT session -> the pre-existing REST OscillationCommand path.
+
+        API-key-only users get one WARNING telling them why the cloud toggle
+        does nothing on this model — once per entity, not once per press.
+        """
+        mock_coordinator.mqtt_connected = False
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.govee.fan"):
+            await tower_fan_entity.async_oscillate(True)
+            await tower_fan_entity.async_oscillate(False)
+
+        mock_coordinator.async_send_fan_oscillation.assert_not_awaited()
+        assert mock_coordinator.async_control_device.call_count == 2
+        call_args = mock_coordinator.async_control_device.call_args_list[0]
+        assert isinstance(call_args[0][1], OscillationCommand)
+        assert call_args[0][1].oscillating is True
+        warnings = [r for r in caplog.records if "needs Govee account login" in r.getMessage()]
+        assert len(warnings) == 1
+
+    @pytest.mark.asyncio
+    async def test_tower_fan_oscillate_falls_back_when_send_declined(
+        self, tower_fan_entity, mock_coordinator, mock_fan_device_state
+    ):
+        """A False from the MQTT path (no client/topic) falls back to REST."""
+        mock_coordinator.async_send_fan_oscillation.return_value = False
+
+        await tower_fan_entity.async_oscillate(False)
+
+        mock_coordinator.async_control_device.assert_called_once()
+        assert isinstance(
+            mock_coordinator.async_control_device.call_args[0][1],
+            OscillationCommand,
+        )
+        # No optimistic write when the MQTT frame did not go out.
+        assert mock_fan_device_state.oscillating is True
+        tower_fan_entity.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tower_fan_oscillate_falls_back_when_send_raises(
+        self, tower_fan_entity, mock_coordinator, mock_fan_device_state, caplog
+    ):
+        """An exception on the MQTT path is logged with a traceback; REST still runs."""
+        mock_coordinator.async_send_fan_oscillation.side_effect = RuntimeError("publish failed")
+
+        with caplog.at_level(logging.WARNING, logger="custom_components.govee.fan"):
+            await tower_fan_entity.async_oscillate(False)
+
+        mock_coordinator.async_control_device.assert_called_once()
+        assert isinstance(
+            mock_coordinator.async_control_device.call_args[0][1],
+            OscillationCommand,
+        )
+        # No optimistic write when the MQTT frame did not go out.
+        assert mock_fan_device_state.oscillating is True
+        tower_fan_entity.async_write_ha_state.assert_not_called()
+        failed = [r for r in caplog.records if "MQTT oscillation send failed" in r.getMessage()]
+        assert len(failed) == 1
+        assert failed[0].exc_info is not None
+
+    @pytest.mark.asyncio
+    async def test_other_fans_keep_rest_oscillation(self, fan_entity, mock_coordinator):
+        """A non-Tower-Fan-2 SKU (H7101) never touches the MQTT path."""
+        mock_coordinator.mqtt_connected = True
+        mock_coordinator.async_send_fan_oscillation = AsyncMock(return_value=True)
+
+        await fan_entity.async_oscillate(True)
+
+        mock_coordinator.async_send_fan_oscillation.assert_not_awaited()
+        mock_coordinator.async_control_device.assert_called_once()
+
 
 # ==============================================================================
 # 8-Speed Fan Entity Tests
@@ -341,9 +456,7 @@ class TestGoveeFanEntity8Speed:
         assert fan_entity.percentage == 100
 
     @pytest.mark.asyncio
-    async def test_set_percentage_sends_correct_mode_value(
-        self, fan_entity, mock_coordinator
-    ):
+    async def test_set_percentage_sends_correct_mode_value(self, fan_entity, mock_coordinator):
         """Test that 50% maps to mode_value=4 for 8-speed fan."""
         await fan_entity.async_set_percentage(50)
 
@@ -380,9 +493,7 @@ def _h1310_device():
         name="Room1 Ceiling Fan",
         device_type="devices.types.light",
         capabilities=(
-            GoveeCapability(
-                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
-            ),
+            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
             GoveeCapability(
                 type=CAPABILITY_TOGGLE,
                 instance=INSTANCE_FAN_TOGGLE,
@@ -393,9 +504,7 @@ def _h1310_device():
                 instance=INSTANCE_FAN_SPEED_MODE,
                 parameters={
                     "dataType": "ENUM",
-                    "options": [
-                        {"name": f"Speed {i}", "value": i} for i in range(1, 7)
-                    ],
+                    "options": [{"name": f"Speed {i}", "value": i} for i in range(1, 7)],
                 },
             ),
             GoveeCapability(
@@ -435,9 +544,7 @@ def _h1370_device():
         name="Office Fan",
         device_type="devices.types.light",
         capabilities=(
-            GoveeCapability(
-                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
-            ),
+            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
             GoveeCapability(
                 type=CAPABILITY_TOGGLE,
                 instance=INSTANCE_FAN_TOGGLE,
@@ -448,9 +555,7 @@ def _h1370_device():
                 instance=INSTANCE_FAN_SPEED_MODE,
                 parameters={
                     "dataType": "ENUM",
-                    "options": [
-                        {"name": f"Speed {i}", "value": i} for i in range(1, 7)
-                    ],
+                    "options": [{"name": f"Speed {i}", "value": i} for i in range(1, 7)],
                 },
             ),
             GoveeCapability(
@@ -476,10 +581,18 @@ class TestGoveeCeilingFanEntity:
         return _h1310_device()
 
     @pytest.fixture
-    def mock_coordinator(self, device):
+    def device_state(self, device):
+        from custom_components.govee.models import GoveeDeviceState
+
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.online = True
+        return state
+
+    @pytest.fixture
+    def mock_coordinator(self, device, device_state):
         coordinator = MagicMock()
         coordinator.devices = {device.device_id: device}
-        coordinator.get_state = MagicMock(return_value=MagicMock(online=True))
+        coordinator.get_state = MagicMock(return_value=device_state)
         coordinator.async_control_device = AsyncMock(return_value=True)
         return coordinator
 
@@ -545,9 +658,7 @@ class TestGoveeCeilingFanEntity:
         assert fan_entity.is_on is False
 
     @pytest.mark.asyncio
-    async def test_set_percentage_sends_mode_command(
-        self, fan_entity, mock_coordinator
-    ):
+    async def test_set_percentage_sends_mode_command(self, fan_entity, mock_coordinator):
         from custom_components.govee.models import ModeCommand
         from custom_components.govee.models.device import INSTANCE_FAN_SPEED_MODE
 
@@ -587,6 +698,40 @@ class TestGoveeCeilingFanEntity:
         assert cmd.toggle_instance == INSTANCE_REVERSE_AIRFLOW
         assert cmd.enabled is True
         assert fan_entity.current_direction == DIRECTION_REVERSE
+        # The motor starts on a direction change even from off (#181).
+        assert fan_entity.is_on is True
+
+    def test_pushed_state_beats_restored_state(self, fan_entity, device_state):
+        """Once the fan has reported an ``aa 31`` frame, the entity shows it (#181)."""
+        from homeassistant.components.fan import DIRECTION_REVERSE
+
+        # Restored/optimistic values say off, forward.
+        assert fan_entity.is_on is False
+        assert fan_entity.percentage == 0
+
+        device_state.update_ceiling_fan_from_frames([bytes([0xAA, 0x31, 0x01, 0x03, 0x01]) + bytes(15)])
+
+        assert fan_entity.is_on is True
+        assert fan_entity.percentage == 50  # speed 3 of 6
+        assert fan_entity.current_direction == DIRECTION_REVERSE
+
+    def test_pushed_stop_wins_over_optimistic_on(self, fan_entity, device_state):
+        """A stop reported by the fan (remote / app) is not masked by the last HA command."""
+        fan_entity._is_on = True
+        fan_entity._speed_value = 6
+
+        device_state.update_ceiling_fan_from_frames([bytes([0xAA, 0x31, 0x00, 0x06, 0x00]) + bytes(15)])
+
+        assert fan_entity.is_on is False
+        assert fan_entity.percentage == 0
+
+    def test_unknown_pushed_speed_falls_back_to_last_command(self, fan_entity, device_state):
+        """A speed byte outside fanSpeedMode's options is not shown as a percentage."""
+        fan_entity._speed_value = 2
+        device_state.ceiling_fan_on = True
+        device_state.ceiling_fan_speed = 99
+
+        assert fan_entity.percentage == ordered_list_item_to_percentage([1, 2, 3, 4, 5, 6], 2)
 
 
 class TestGoveeCeilingFanOscillation:
@@ -597,10 +742,18 @@ class TestGoveeCeilingFanOscillation:
         return _h1370_device()
 
     @pytest.fixture
-    def mock_coordinator(self, device):
+    def device_state(self, device):
+        from custom_components.govee.models import GoveeDeviceState
+
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.online = True
+        return state
+
+    @pytest.fixture
+    def mock_coordinator(self, device, device_state):
         coordinator = MagicMock()
         coordinator.devices = {device.device_id: device}
-        coordinator.get_state = MagicMock(return_value=MagicMock(online=True))
+        coordinator.get_state = MagicMock(return_value=device_state)
         coordinator.async_control_device = AsyncMock(return_value=True)
         return coordinator
 
@@ -730,9 +883,7 @@ def _h7106_device():
         name="Living Room Fan",
         device_type="devices.types.fan",
         capabilities=(
-            GoveeCapability(
-                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
-            ),
+            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
             GoveeCapability(
                 type=CAPABILITY_WORK_MODE,
                 instance=INSTANCE_WORK_MODE,
@@ -990,9 +1141,7 @@ class TestFanSpeedManualModeDiscovery:
         assert cmd.mode_value == 12
 
     @pytest.mark.asyncio
-    async def test_set_manual_preset_reuses_valid_mode_value_outside_manual_mode(
-        self, h7107_entity
-    ):
+    async def test_set_manual_preset_reuses_valid_mode_value_outside_manual_mode(self, h7107_entity):
         state = h7107_entity.coordinator.get_state.return_value
         state.work_mode = 2
         state.mode_value = 6
@@ -1005,9 +1154,7 @@ class TestFanSpeedManualModeDiscovery:
         assert cmd.mode_value == 6
 
     @pytest.mark.asyncio
-    async def test_set_manual_preset_defaults_to_typical_speed_when_mode_value_invalid(
-        self, h7107_entity
-    ):
+    async def test_set_manual_preset_defaults_to_typical_speed_when_mode_value_invalid(self, h7107_entity):
         state = h7107_entity.coordinator.get_state.return_value
         state.work_mode = 2
         state.mode_value = 0
@@ -1020,9 +1167,7 @@ class TestFanSpeedManualModeDiscovery:
         assert cmd.mode_value == 6
 
     @pytest.mark.asyncio
-    async def test_set_auto_preset_uses_zero_mode_value(
-        self, h7107_entity
-    ):
+    async def test_set_auto_preset_uses_zero_mode_value(self, h7107_entity):
         state = h7107_entity.coordinator.get_state.return_value
         state.work_mode = 4
         state.mode_value = 8
@@ -1035,9 +1180,7 @@ class TestFanSpeedManualModeDiscovery:
         assert cmd.mode_value == 0
 
     @pytest.mark.asyncio
-    async def test_set_auto_preset_uses_zero_mode_value_when_state_invalid(
-        self, h7107_entity
-    ):
+    async def test_set_auto_preset_uses_zero_mode_value_when_state_invalid(self, h7107_entity):
         state = h7107_entity.coordinator.get_state.return_value
         state.work_mode = 2
         state.mode_value = 0
@@ -1059,9 +1202,7 @@ class TestFanSpeedManualModeDiscovery:
         assert cmd.mode_value == 0
 
     @pytest.mark.asyncio
-    async def test_set_manual_preset_restores_last_manual_speed_after_mode_switch(
-        self, h7107_entity
-    ):
+    async def test_set_manual_preset_restores_last_manual_speed_after_mode_switch(self, h7107_entity):
         state = h7107_entity.coordinator.get_state.return_value
         state.work_mode = 4
         state.mode_value = 8
@@ -1078,9 +1219,7 @@ class TestFanSpeedManualModeDiscovery:
         assert cmd.mode_value == 8
 
     @pytest.mark.asyncio
-    async def test_set_auto_preset_keeps_zero_mode_value(
-        self, h7107_entity
-    ):
+    async def test_set_auto_preset_keeps_zero_mode_value(self, h7107_entity):
         h7107_entity._preset_commands["Auto"] = (2, 0)
 
         await h7107_entity.async_set_preset_mode("Auto")
@@ -1118,9 +1257,7 @@ class TestFanSpeedManualModeDiscovery:
         "work_mode",
         [3, 5],
     )
-    async def test_speed_percentage_returns_none_for_modes_without_speed_options(
-        self, h7107_entity, work_mode
-    ):
+    async def test_speed_percentage_returns_none_for_modes_without_speed_options(self, h7107_entity, work_mode):
         state = h7107_entity.coordinator.get_state.return_value
         state.work_mode = work_mode
         state.mode_value = 8
@@ -1136,9 +1273,7 @@ class TestFanSpeedManualModeDiscovery:
         assert h7107_entity.percentage is None
 
     @pytest.mark.asyncio
-    async def test_speed_percentage_returns_none_without_cached_value_for_speed_mode(
-        self, h7107_entity
-    ):
+    async def test_speed_percentage_returns_none_without_cached_value_for_speed_mode(self, h7107_entity):
         state = h7107_entity.coordinator.get_state.return_value
         state.work_mode = 3
         state.mode_value = 0
@@ -1207,3 +1342,185 @@ class TestFanModeNameWhitespaceHandling:
         assert isinstance(cmd, WorkModeCommand)
         assert cmd.work_mode == entity._manual_work_mode
         assert "Unknown preset mode" in caplog.text
+
+
+def _h7121_device():
+    """H7121 purifier: every speed is its own workMode and every modeValue defaults to 0 (issue #201)."""
+    from custom_components.govee.models import GoveeDevice, GoveeCapability
+    from custom_components.govee.models.device import (
+        CAPABILITY_ON_OFF,
+        CAPABILITY_WORK_MODE,
+        INSTANCE_POWER,
+        INSTANCE_WORK_MODE,
+    )
+
+    workmode = {
+        "dataType": "STRUCT",
+        "fields": [
+            {
+                "fieldName": "workMode",
+                "dataType": "ENUM",
+                "options": [
+                    {"name": "High", "value": 3},
+                    {"name": "Medium", "value": 2},
+                    {"name": "Low", "value": 1},
+                    {"name": "Sleep", "value": 16},
+                ],
+                "required": True,
+            },
+            {
+                "fieldName": "modeValue",
+                "dataType": "ENUM",
+                "options": [
+                    {"defaultValue": 0, "name": "High"},
+                    {"defaultValue": 0, "name": "Medium"},
+                    {"defaultValue": 0, "name": "Low"},
+                    {"defaultValue": 0, "name": "Sleep"},
+                ],
+                "required": True,
+            },
+        ],
+    }
+    return GoveeDevice(
+        device_id="AA:BB:CC:DD:EE:FF:71:21",
+        sku="H7121",
+        name="Smart Air Purifier",
+        device_type="devices.types.air_purifier",
+        capabilities=(
+            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+            GoveeCapability(type=CAPABILITY_WORK_MODE, instance=INSTANCE_WORK_MODE, parameters=workmode),
+        ),
+    )
+
+
+class TestTieredWorkModeSpeeds:
+    """Issue #201: Low/Medium/High are workModes 1/2/3, not modeValues of a manual mode."""
+
+    @pytest.fixture
+    def h7121_entity(self):
+        device = _h7121_device()
+        state = MagicMock()
+        state.work_mode = 1
+        state.mode_value = 0
+        coordinator = MagicMock()
+        coordinator.devices = {device.device_id: device}
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        entity = GoveeFanEntity(coordinator, device)
+        entity._test_state = state
+        return entity
+
+    def test_three_speeds_and_no_invented_presets(self, h7121_entity):
+        assert h7121_entity.speed_count == 3
+        # No manual mode to call "normal" and no Auto workMode to send.
+        assert "normal" not in h7121_entity.preset_modes
+        assert "auto" not in h7121_entity.preset_modes
+        assert "sleep" in h7121_entity.preset_modes
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("percentage", "work_mode"), [(1, 1), (34, 2), (67, 3), (100, 3)])
+    async def test_set_percentage_picks_the_work_mode_with_a_zero_mode_value(
+        self, h7121_entity, percentage, work_mode
+    ):
+        await h7121_entity.async_set_percentage(percentage)
+
+        cmd = h7121_entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(cmd, WorkModeCommand)
+        assert cmd.work_mode == work_mode
+        assert cmd.mode_value == 0
+
+    @pytest.mark.asyncio
+    async def test_set_percentage_ignores_the_current_work_mode(self, h7121_entity):
+        h7121_entity._test_state.work_mode = 16  # Sleep
+
+        await h7121_entity.async_set_percentage(100)
+
+        cmd = h7121_entity.coordinator.async_control_device.call_args[0][1]
+        assert (cmd.work_mode, cmd.mode_value) == (3, 0)
+
+    @pytest.mark.parametrize(("work_mode", "expected"), [(1, 33), (2, 66), (3, 100)])
+    def test_percentage_follows_the_work_mode(self, h7121_entity, work_mode, expected):
+        h7121_entity._test_state.work_mode = work_mode
+
+        assert h7121_entity.percentage == expected
+
+    def test_sleep_has_no_percentage(self, h7121_entity):
+        h7121_entity._test_state.work_mode = 16
+
+        assert h7121_entity.percentage is None
+        assert h7121_entity.preset_mode == "sleep"
+
+    @pytest.mark.asyncio
+    async def test_sleep_preset_sends_its_own_work_mode(self, h7121_entity):
+        await h7121_entity.async_set_preset_mode("sleep")
+
+        cmd = h7121_entity.coordinator.async_control_device.call_args[0][1]
+        assert (cmd.work_mode, cmd.mode_value) == (16, 0)
+
+    def test_manual_mode_devices_are_not_treated_as_tiered(self):
+        device = _h7107_device()
+        entity = GoveeFanEntity(MagicMock(), device)
+
+        assert entity._tier_work_modes == []
+        assert PRESET_MODE_NORMAL in entity.preset_modes
+
+    def test_nested_speeds_under_low_medium_high_keep_the_manual_path(self):
+        """A workMode literally named Low that carries its own nested speeds is not tiered."""
+        from custom_components.govee.models import GoveeCapability, GoveeDevice
+
+        device = GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:71:22",
+            sku="H7999",
+            name="Odd Fan",
+            device_type="devices.types.fan",
+            capabilities=(
+                GoveeCapability(
+                    type="devices.capabilities.work_mode",
+                    instance="workMode",
+                    parameters={
+                        "fields": [
+                            {
+                                "fieldName": "workMode",
+                                "options": [{"name": "Low", "value": 1}, {"name": "High", "value": 3}],
+                            },
+                            {
+                                "fieldName": "modeValue",
+                                "options": [
+                                    {"name": "Low", "options": [{"value": 1}, {"value": 2}]},
+                                    {"name": "High", "options": [{"value": 5}, {"value": 6}]},
+                                ],
+                            },
+                        ]
+                    },
+                ),
+            ),
+        )
+
+        assert GoveeFanEntity(MagicMock(), device)._tier_work_modes == []
+
+    def test_a_single_speed_name_is_not_enough_to_be_tiered(self):
+        from custom_components.govee.models import GoveeCapability, GoveeDevice
+
+        device = GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:71:23",
+            sku="H7998",
+            name="One Speed Fan",
+            device_type="devices.types.fan",
+            capabilities=(
+                GoveeCapability(
+                    type="devices.capabilities.work_mode",
+                    instance="workMode",
+                    parameters={
+                        "fields": [
+                            {
+                                "fieldName": "workMode",
+                                "options": [{"name": "Low", "value": 1}, {"name": "Sleep", "value": 16}],
+                            },
+                            {"fieldName": "modeValue", "options": [{"defaultValue": 0, "name": "Low"}]},
+                        ]
+                    },
+                ),
+            ),
+        )
+
+        assert GoveeFanEntity(MagicMock(), device)._tier_work_modes == []

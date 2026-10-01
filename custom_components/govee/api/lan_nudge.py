@@ -67,7 +67,11 @@ class LanNudgeManager:
             coordinator: The owning :class:`GoveeCoordinator`.
         """
         self._coordinator = coordinator
-        self._enabled: bool = coordinator.config_entry.options.get(CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE)
+        # A coordinator without a config entry has no options; the nudge stays off.
+        entry = getattr(coordinator, "config_entry", None)
+        self._enabled: bool = entry is not None and bool(
+            entry.options.get(CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE)
+        )
         # Scheduled-but-not-yet-fired reads, keyed by device_id.
         self._pending: dict[str, CALLBACK_TYPE] = {}
         # Monotonic deadline until which further pushes coalesce into the nudge

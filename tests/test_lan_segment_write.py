@@ -143,6 +143,9 @@ def _grouped_entity(coordinator: Any, *, sku: str = LAN_SKU, segment_count: int 
     entity._brightness = 255
     entity._rgb_color = (255, 255, 255)
     entity.async_write_ha_state = MagicMock()
+    # The grouped entity broadcasts to its individual segments on every write.
+    entity.hass = MagicMock()
+    entity.hass.data = {}
     return entity
 
 

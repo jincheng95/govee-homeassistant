@@ -25,9 +25,12 @@ MUSIC_PACKET_PREFIX = 0x33
 MUSIC_MODE_COMMAND = 0x05
 MUSIC_MODE_INDICATOR = 0x01
 
-# DreamView (Movie Mode) packet constants
+# DreamView (Video/Movie Mode) packet constants
 DREAMVIEW_COMMAND = 0x05  # Same as music mode command byte
-DREAMVIEW_INDICATOR = 0x04  # Scene mode indicator (vs 0x01 for music)
+DREAMVIEW_INDICATOR = 0x00  # Video mode indicator (0x04 is a scene preset!)
+DREAMVIEW_SEGMENTS_ALL = 0x01  # 0x00 = partial, 0x01 = all segments
+DREAMVIEW_STYLE_MOVIE = 0x00  # 0x00 = movie, 0x01 = game
+DREAMVIEW_SATURATION_MAX = 0x64  # Saturation, 0x00-0x64
 DIY_MODE_INDICATOR = 0x0A  # DIY mode indicator
 
 # DIY style name to value mapping for select entity
@@ -107,24 +110,92 @@ def build_music_mode_packet(enabled: bool, sensitivity: int = 50) -> bytes:
     return build_packet(data)
 
 
-def build_dreamview_packet(enabled: bool) -> bytes:
-    """Build DreamView (Movie Mode) control packet.
+# Music mode as the Govee app writes it (sub-mode 0x13, the app's
+# SubModeMusicV3). Layout per teh-hippo/ha-govee-led-ble, decompiled from the
+# Android app 7.6.01 and captured on the H617A/H6099/H6199/H6102:
+#   33 05 13 <effect> <sensitivity 0-100> [<style> <fixed colour> <R G B>]
+# The bracketed tail exists only for the four legacy effects. An H612F status
+# frame confirms the shape: aa 05 13 31 19 = Shiny at sensitivity 25 (#215).
+MUSIC_V3_INDICATOR = 0x13
+MUSIC_V3_LEGACY_EFFECTS = frozenset({0x03, 0x04, 0x05, 0x06})
+# The Developer API's musicMode values are per-model list positions (the
+# H612F lists Rhythm=0, Shiny=2), so the effect is matched by name. Keys are
+# lowercased with non-letters removed; "energic" is the API's own spelling.
+MUSIC_V3_EFFECT_CODES: dict[str, int] = {
+    "rhythm": 0x03,
+    "spectrum": 0x04,
+    "energic": 0x05,
+    "energetic": 0x05,
+    "rolling": 0x06,
+    "bloom": 0x30,
+    "shiny": 0x31,
+    "separation": 0x32,
+    "hopping": 0x33,
+    "pianokeys": 0x34,
+    "fountain": 0x35,
+    "dayandnight": 0x37,
+}
 
-    Uses the scene mode indicator (0x04) with on/off value.
-    Follows same pattern as music mode but with different indicator.
+
+def music_v3_effect_code(name: str) -> int | None:
+    """App effect code for a Developer-API music mode name, or None if unknown."""
+    key = "".join(ch for ch in name.lower() if ch.isalpha())
+    return MUSIC_V3_EFFECT_CODES.get(key)
+
+
+def build_music_mode_v3_packet(effect_code: int, sensitivity: int) -> bytes:
+    """Build the app's music-mode selector frame.
+
+    Legacy effects get the dynamic style and automatic colour; newer effects
+    carry only the effect and sensitivity and play the palette the device
+    already holds.
 
     Args:
-        enabled: True to enable DreamView, False to disable.
+        effect_code: App effect code (see ``MUSIC_V3_EFFECT_CODES``).
+        sensitivity: Microphone sensitivity 0-100.
 
     Returns:
-        20-byte BLE packet for DreamView command.
+        20-byte BLE packet.
     """
-    # Packet: 33 05 04 [enabled] 00...00 [XOR]
+    data = [
+        MUSIC_PACKET_PREFIX,
+        MUSIC_MODE_COMMAND,
+        MUSIC_V3_INDICATOR,
+        effect_code & 0xFF,
+        max(0, min(100, sensitivity)),
+    ]
+    if effect_code in MUSIC_V3_LEGACY_EFFECTS:
+        data.extend([0x00, 0x00])  # dynamic style, no fixed colour
+    return build_packet(data)
+
+
+def build_dreamview_packet() -> bytes:
+    """Build the DreamView (video/camera sync) activation packet.
+
+    Byte 2 of a ``0x33 0x05`` frame selects the colour operation mode, and
+    video mode is ``0x00`` — see ``docs/govee-protocol-reference.md`` 6.4,
+    which already documents ``0x00 = Video/DreamView mode``.
+
+    This previously used ``0x04``, which is the *scene preset* sub-command:
+    ``33 05 04 01`` is byte-for-byte the documented ``Scene(Sunset)`` frame,
+    so "DreamView ON" put the device into a static orange scene instead of
+    video sync.
+
+    There is deliberately no "disable" counterpart: the protocol has no
+    video-off opcode. A device leaves video mode by being given another
+    mode, which the integration already does over the REST colour path.
+
+    Returns:
+        20-byte BLE packet that enables video mode.
+    """
+    # Packet: 33 05 00 [segments] [style] [saturation] 00...00 [XOR]
     data = [
         MUSIC_PACKET_PREFIX,  # 0x33 - Standard command prefix
         DREAMVIEW_COMMAND,  # 0x05 - Color/mode command
-        DREAMVIEW_INDICATOR,  # 0x04 - Scene mode indicator
-        0x01 if enabled else 0x00,  # Enabled state
+        DREAMVIEW_INDICATOR,  # 0x00 - Video mode indicator
+        DREAMVIEW_SEGMENTS_ALL,
+        DREAMVIEW_STYLE_MOVIE,
+        DREAMVIEW_SATURATION_MAX,
     ]
     return build_packet(data)
 
@@ -155,6 +226,40 @@ def build_diy_scene_packet(scene_id: int) -> bytes:
         id_bytes[3],
     ]
 
+    return build_packet(data)
+
+
+# Tower Fan oscillation (H7105/H7107 "Tower Fan 2" family). Reverse-engineered
+# from homebridge-govee lib/device/fan-H7107.js (2026-08, hardware-confirmed).
+# The dev-API oscillationToggle is a no-op for this family; only these raw
+# ptReal/multiSync frames move the sweep motor. The ON frame carries 4
+# "swing-range" bytes copied from the fan's own inbound aa1d status frame so the
+# physically-configured arc is preserved; OFF is a bare zero-padded frame.
+FAN_OSC_PTREAL_PREFIX = 0x33
+FAN_OSC_MULTISYNC_PREFIX = 0x3A
+FAN_OSC_COMMAND = 0x1D
+
+
+def build_fan_oscillation_packet(
+    enabled: bool,
+    swing_tail: list[int] | None = None,
+    *,
+    prefix: int = FAN_OSC_PTREAL_PREFIX,
+) -> bytes:
+    """Build a Tower-Fan oscillation on/off packet.
+
+    Args:
+        enabled: True = oscillate (sweep), False = hold still.
+        swing_tail: 4 swing-range bytes copied from the fan's aa1d report,
+                    used only for the ON frame; None sends a bare ON.
+        prefix: 0x33 for the ptReal frame, 0x3A for the multiSync twin.
+
+    Returns:
+        20-byte packet (19 data bytes + XOR checksum).
+    """
+    data = [prefix, FAN_OSC_COMMAND, 0x01 if enabled else 0x00]
+    if enabled and swing_tail:
+        data.extend(int(b) & 0xFF for b in swing_tail[:4])
     return build_packet(data)
 
 

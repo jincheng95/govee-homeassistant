@@ -128,9 +128,7 @@ class TestMigrateEntry:
     @pytest.mark.asyncio
     async def test_migrate_v1_to_v2_with_login_failure_marker(self) -> None:
         hass = MagicMock()
-        hass.data = {
-            DOMAIN: {KEY_IOT_LOGIN_FAILED: {"entry_x": "2FA verification required"}}
-        }
+        hass.data = {DOMAIN: {KEY_IOT_LOGIN_FAILED: {"entry_x": "2FA verification required"}}}
         captured: dict = {}
         hass.config_entries.async_update_entry = lambda _e, **kw: captured.update(kw)
 

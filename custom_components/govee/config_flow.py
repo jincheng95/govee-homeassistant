@@ -1,13 +1,15 @@
 """Config flow for Govee integration.
 
-Fresh version 1 - no migration complexity.
-Supports API key authentication with optional account login for MQTT.
-Handles Govee 2FA (email verification code) when required.
+Supports API key authentication with optional account login for MQTT,
+handles Govee 2FA (email verification code) when required, and provides the
+options, reauth, and reconfigure flows. Entry schema versions are migrated in
+``__init__.async_migrate_entry``.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
 import voluptuous as vol
@@ -18,7 +20,14 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
-from homeassistant.helpers import config_validation as cv
+from homeassistant.data_entry_flow import AbortFlow
+from homeassistant.helpers import config_validation as cv, issue_registry as ir
+from homeassistant.helpers.service_info.bluetooth import BluetoothServiceInfo
+from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .api import (
     Govee2FACodeInvalidError,
@@ -32,6 +41,7 @@ from .api import (
 )
 from .api.auth import _derive_client_id
 from .api.client import validate_api_key
+from .models import GoveeDevice
 from .const import (
     CONF_API_KEY,
     CONF_API_TEMPERATURE_UNIT,
@@ -46,11 +56,18 @@ from .const import (
     CONF_ENABLE_ZONE_LIGHTS,
     CONF_EXPOSE_TRANSPORT_ENTITIES,
     CONF_LAN_TARGETS,
+    CONF_MQTT_STATUS_INTERVAL,
     CONF_PASSWORD,
+    CONF_DAILY_REQUEST_BUDGET,
     CONF_POLL_INTERVAL,
+    CONF_PROBE_POLL_INTERVAL,
+    CONF_SEGMENT_COUNT_BY_DEVICE,
+    CONF_SEGMENT_GROUPS_BY_DEVICE,
+    CONF_SEGMENT_MODE_BY_DEVICE,
     CONF_WATER_DETECTOR_POLL_INTERVAL,
     CONFIG_VERSION,
     DEFAULT_API_TEMPERATURE_UNIT,
+    DEFAULT_DAILY_REQUEST_BUDGET,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
     DEFAULT_ENABLE_BLE_RAW_WRITE,
@@ -61,20 +78,36 @@ from .const import (
     DEFAULT_ENABLE_ZONE_LIGHTS,
     DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
     DEFAULT_LAN_TARGETS,
+    DEFAULT_MQTT_STATUS_INTERVAL,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_PROBE_POLL_INTERVAL,
     DEFAULT_SEGMENT_MODE,
     DEFAULT_WATER_DETECTOR_POLL_INTERVAL,
     DOMAIN,
     KEY_IOT_CREDENTIALS,
     KEY_IOT_LOGIN_FAILED,
+    MAX_MQTT_STATUS_INTERVAL,
+    MAX_DAILY_REQUEST_BUDGET,
+    MAX_POLL_INTERVAL,
+    MAX_PROBE_POLL_INTERVAL,
     MAX_WATER_DETECTOR_POLL_INTERVAL,
+    MIN_MQTT_STATUS_INTERVAL,
+    MIN_DAILY_REQUEST_BUDGET,
+    MIN_POLL_INTERVAL,
+    MIN_PROBE_POLL_INTERVAL,
     MIN_WATER_DETECTOR_POLL_INTERVAL,
+    MQTT_STATUS_POLL_OFF,
+    SEGMENT_MODE_BOTH,
     SEGMENT_MODE_DISABLED,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_GROUPS,
     SEGMENT_MODE_INDIVIDUAL,
 )
-from .api.lan import LanTargetError, expand_lan_targets
+from .api.lan import (
+    LanTargetError,
+    expand_lan_targets,
+    validate_lan_device_overrides,
+)
 from .segment_groups import SegmentGroupsError, format_segment_groups, parse_segment_groups
 from .segment_limit import segment_count, verified_segment_count
 
@@ -120,6 +153,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
         self._password: str | None = None
         self._client_id: str | None = None
         self._iot_credentials: GoveeIotCredentials | None = None
+        self._discovered_name: str | None = None
 
     @staticmethod
     @callback
@@ -130,6 +164,37 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
         do not pass it to ``__init__`` (deprecated in HA 2025.12).
         """
         return GoveeOptionsFlow()
+
+    async def async_step_bluetooth(self, discovery_info: BluetoothServiceInfo) -> ConfigFlowResult:
+        """Offer the cloud set-up when a Govee device advertises nearby.
+
+        The manifest's Bluetooth matchers make Home Assistant start this flow
+        for any Govee advertisement. Every device belongs to the same cloud
+        account, so one prompt is enough: the flow aborts when an entry
+        already exists (including an ignored one) or another discovery flow is
+        open. Bluetooth is only a transport here; the entry is still created
+        from the API key in the user step.
+        """
+        await self.async_set_unique_id(DOMAIN)
+        self._abort_if_unique_id_configured()
+        self._async_abort_entries_match()
+        self._discovered_name = discovery_info.name or discovery_info.address
+        self.context["title_placeholders"] = {"name": self._discovered_name}
+        return await self.async_step_bluetooth_confirm()
+
+    async def async_step_bluetooth_confirm(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Ask before continuing to the API key step."""
+        if user_input is not None:
+            return await self.async_step_user()
+
+        self._set_confirm_only()
+        return self.async_show_form(
+            step_id="bluetooth_confirm",
+            description_placeholders={"name": self._discovered_name or "Govee device"},
+        )
 
     async def async_step_user(
         self,
@@ -146,6 +211,8 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             if format_error:
                 errors["base"] = format_error
             else:
+                # One entry per API key (quality-scale rule unique-config-entry).
+                self._async_abort_entries_match({CONF_API_KEY: cleaned_key})
                 try:
                     await validate_api_key(cleaned_key, hass=self.hass)
                     self._api_key = cleaned_key
@@ -225,10 +292,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     return self._create_entry()
 
                 except Govee2FARequiredError:
-                    _LOGGER.info(
-                        "Govee 2FA required for '%s' — requesting verification code",
-                        email,
-                    )
+                    _LOGGER.debug("Govee 2FA required; requesting verification code")
                     self._email = email
                     self._password = password
                     try:
@@ -241,8 +305,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                         return await self.async_step_verification_code()
                 except GoveeAuthError as err:
                     _LOGGER.warning(
-                        "Govee account validation failed for '%s': %s (code=%s)",
-                        email,
+                        "Govee account validation failed: %s (code=%s)",
                         err,
                         getattr(err, "code", None),
                     )
@@ -306,9 +369,12 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                     # Pre-cache the IoT credentials so the reload
                     # doesn't try to login again (which would hit 2FA)
                     self._cache_iot_credentials(reconfigure_entry.entry_id)
+                    self._sync_cached_creds(new_data, reconfigure_entry)
+                    # new_data is the complete replacement; data_updates would
+                    # merge and could never drop a removed email or password.
                     return self.async_update_reload_and_abort(
                         reconfigure_entry,
-                        data_updates=new_data,
+                        data=new_data,
                     )
                 return self._create_entry()
 
@@ -338,6 +404,31 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    @staticmethod
+    def _sync_cached_creds(new_data: dict[str, Any], entry: ConfigEntry) -> None:
+        """Carry freshly cached credential keys into a ``data_updates`` payload.
+
+        ``_clear_mqtt_cache`` and ``_cache_iot_credentials`` write straight to
+        ``entry.data``, but the payload passed to
+        ``async_update_reload_and_abort`` is snapshotted from ``entry.data``
+        *before* those calls run, and it replaces the entry data wholesale.
+        Without re-syncing, the stale token in that snapshot is written back
+        over the fresh one the flow just obtained: the user sees
+        "Reconfiguration successful" and keeps the expired credentials.
+
+        That is worse than it sounds, because reconfiguring is the obvious
+        user-side recovery from an expired token — so the recovery silently
+        did nothing (issues #178, #179).
+
+        Both completion paths call this, so a future edit to one can't
+        reintroduce the bug in the other.
+        """
+        for key in (KEY_IOT_CREDENTIALS, KEY_IOT_LOGIN_FAILED):
+            if key in entry.data:
+                new_data[key] = entry.data[key]
+            else:
+                new_data.pop(key, None)
+
     def _cache_iot_credentials(self, entry_id: str) -> None:
         """Pre-cache IoT credentials in entry.data so reload can skip login.
 
@@ -347,9 +438,6 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
         """
         if not self._iot_credentials:
             return
-
-        from dataclasses import asdict, is_dataclass
-        from typing import Any
 
         entry = self.hass.config_entries.async_get_entry(entry_id)
         if entry is None:
@@ -401,8 +489,6 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                 self.hass.config_entries.async_update_entry(entry, data=new_data)
 
         # Dismiss 2FA repairs issue if it exists
-        from homeassistant.helpers import issue_registry as ir
-
         ir.async_delete_issue(self.hass, DOMAIN, f"mqtt_2fa_required_{entry_id}")
 
         _LOGGER.debug("Cleared MQTT cache for entry %s", entry_id)
@@ -417,6 +503,11 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
         if self._email and self._password:
             data[CONF_EMAIL] = self._email
             data[CONF_PASSWORD] = self._password
+            # Persist the IoT credentials the flow already obtained so the
+            # first setup reuses them instead of logging in again (and, with
+            # 2FA, being asked for a second verification code).
+            if self._iot_credentials is not None and is_dataclass(self._iot_credentials):
+                data[KEY_IOT_CREDENTIALS] = asdict(self._iot_credentials)
 
         return self.async_create_entry(
             title="Govee",
@@ -427,8 +518,23 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ENABLE_SCENES: DEFAULT_ENABLE_SCENES,
                 CONF_ENABLE_DIY_SCENES: DEFAULT_ENABLE_DIY_SCENES,
                 CONF_WATER_DETECTOR_POLL_INTERVAL: (DEFAULT_WATER_DETECTOR_POLL_INTERVAL),
+                CONF_PROBE_POLL_INTERVAL: DEFAULT_PROBE_POLL_INTERVAL,
+                CONF_MQTT_STATUS_INTERVAL: DEFAULT_MQTT_STATUS_INTERVAL,
             },
         )
+
+    def _abort_if_key_used_elsewhere(self, api_key: str, own_entry: ConfigEntry) -> None:
+        """Abort when another entry already uses this API key.
+
+        Reauth and reconfigure may keep or rotate the key of ``own_entry``, but
+        must not turn it into a duplicate of a second entry (quality-scale rule
+        unique-config-entry).
+        """
+        for entry in self._async_current_entries(include_ignore=False):
+            if entry.entry_id == own_entry.entry_id:
+                continue
+            if entry.data.get(CONF_API_KEY) == api_key:
+                raise AbortFlow("already_configured")
 
     async def async_step_reauth(
         self,
@@ -452,18 +558,15 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             if format_error:
                 errors["base"] = format_error
             else:
+                reauth_entry = self._get_reauth_entry()
+                # Abort before spending an API call on a key another entry owns.
+                self._abort_if_key_used_elsewhere(cleaned_key, reauth_entry)
                 try:
                     await validate_api_key(cleaned_key, hass=self.hass)
-
-                    # Update existing entry
-                    entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
-                    if entry:
-                        self.hass.config_entries.async_update_entry(
-                            entry,
-                            data={**entry.data, CONF_API_KEY: cleaned_key},
-                        )
-                        await self.hass.config_entries.async_reload(entry.entry_id)
-                        return self.async_abort(reason="reauth_successful")
+                    return self.async_update_reload_and_abort(
+                        reauth_entry,
+                        data_updates={CONF_API_KEY: cleaned_key},
+                    )
 
                 except GoveeAuthError as err:
                     _LOGGER.warning(
@@ -509,6 +612,8 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
             if format_error:
                 errors["base"] = format_error
             else:
+                # Abort before spending an API call on a key another entry owns.
+                self._abort_if_key_used_elsewhere(cleaned_key, reconfigure_entry)
                 try:
                     await validate_api_key(cleaned_key, hass=self.hass)
 
@@ -536,10 +641,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                             new_data[CONF_EMAIL] = email
                             new_data[CONF_PASSWORD] = password
                         except Govee2FARequiredError:
-                            _LOGGER.info(
-                                "Govee 2FA required during reconfigure for '%s'",
-                                email,
-                            )
+                            _LOGGER.debug("Govee 2FA required during reconfigure")
                             self._email = email
                             self._password = password
                             self._api_key = cleaned_key
@@ -556,8 +658,7 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                                 return await self.async_step_verification_code()
                         except GoveeAuthError as err:
                             _LOGGER.warning(
-                                "Govee account validation failed for '%s' during reconfigure: %s (code=%s)",
-                                email,
+                                "Govee account validation failed during reconfigure: %s (code=%s)",
                                 err,
                                 getattr(err, "code", None),
                             )
@@ -591,10 +692,12 @@ class GoveeConfigFlow(ConfigFlow, domain=DOMAIN):
                         self._clear_mqtt_cache(reconfigure_entry.entry_id)
                         # Pre-cache IoT credentials so reload doesn't re-login
                         self._cache_iot_credentials(reconfigure_entry.entry_id)
+                        self._sync_cached_creds(new_data, reconfigure_entry)
 
+                        # Complete replacement, see async_step_reconfigure.
                         return self.async_update_reload_and_abort(
                             reconfigure_entry,
-                            data_updates=new_data,
+                            data=new_data,
                         )
 
                 except GoveeAuthError as err:
@@ -646,6 +749,36 @@ class GoveeOptionsFlow(OptionsFlow):
         self._device_counts: dict[str, int] = {}
         self._device_index: int = 0
 
+    def _coordinator_devices(self) -> list[GoveeDevice]:
+        """Devices of the running coordinator, or none if the entry is not loaded.
+
+        Options can be opened on an entry whose setup failed; it then has no
+        ``runtime_data`` and the flow must fall back to the global options only.
+        """
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        devices = getattr(coordinator, "devices", None)
+        if not devices:
+            return []
+        return list(devices.values())
+
+    def _unknown_override_device_ids(self, overrides: dict[str, tuple[str, bool]]) -> set[str]:
+        """Return override device_ids that aren't devices on this account (#164).
+
+        A LAN override binds a coordinator ``device_id`` straight to an IP, so
+        a mistyped id silently binds nothing. The coordinator is the only place
+        that knows the real ids, which is why this check can't live in
+        ``api.lan``. If the entry has no coordinator yet (options opened before
+        setup finished), skip the check rather than reject a correct id we
+        simply can't confirm.
+        """
+        if not overrides:
+            return set()
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        known = getattr(coordinator, "devices", None)
+        if not known:
+            return set()
+        return {device_id for device_id in overrides if device_id not in known}
+
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
@@ -656,18 +789,33 @@ class GoveeOptionsFlow(OptionsFlow):
             # Validate the free-text LAN targets before saving so a bad subnet
             # is rejected in the form, not silently dropped at scan time (#57).
             try:
-                expand_lan_targets(user_input.get(CONF_LAN_TARGETS, ""))
+                raw_lan_targets = user_input.get(CONF_LAN_TARGETS, "")
+                expand_lan_targets(raw_lan_targets)
+                # device_id=ip[!] overrides get the same treatment (#164). The
+                # runtime parser skips a bad one silently so the rest still
+                # bind; here a typo must surface, or the user saves an option
+                # that quietly does nothing.
+                overrides = validate_lan_device_overrides(raw_lan_targets)
             except LanTargetError as err:
                 _LOGGER.debug("Invalid LAN targets entered: %s", err)
                 errors[CONF_LAN_TARGETS] = "invalid_lan_targets"
+            else:
+                # A device_id typo is the likeliest mistake and the only check
+                # the parser can't make for itself — it has no device list.
+                unknown = self._unknown_override_device_ids(overrides)
+                if unknown:
+                    _LOGGER.debug(
+                        "LAN override names unknown device_id(s): %s",
+                        ", ".join(sorted(unknown)),
+                    )
+                    errors[CONF_LAN_TARGETS] = "unknown_lan_device"
 
             if not errors:
                 # Save global options and proceed to device selection if needed.
                 self._global_options = user_input
                 _LOGGER.debug("Global options saved: %s", user_input)
 
-                coordinator = self.config_entry.runtime_data
-                rgbic_devices = [d for d in coordinator.devices.values() if d.segment_count > 0]
+                rgbic_devices = [d for d in self._coordinator_devices() if d.segment_count > 0]
 
                 if rgbic_devices:
                     _LOGGER.debug(
@@ -690,7 +838,14 @@ class GoveeOptionsFlow(OptionsFlow):
                     vol.Optional(
                         CONF_POLL_INTERVAL,
                         default=source.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
-                    ): vol.All(vol.Coerce(int), vol.Range(min=30, max=300)),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=MIN_POLL_INTERVAL, max=MAX_POLL_INTERVAL)),
+                    vol.Optional(
+                        CONF_DAILY_REQUEST_BUDGET,
+                        default=source.get(CONF_DAILY_REQUEST_BUDGET, DEFAULT_DAILY_REQUEST_BUDGET),
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(min=MIN_DAILY_REQUEST_BUDGET, max=MAX_DAILY_REQUEST_BUDGET),
+                    ),
                     vol.Optional(
                         CONF_WATER_DETECTOR_POLL_INTERVAL,
                         default=source.get(
@@ -702,6 +857,37 @@ class GoveeOptionsFlow(OptionsFlow):
                         vol.Range(
                             min=MIN_WATER_DETECTOR_POLL_INTERVAL,
                             max=MAX_WATER_DETECTOR_POLL_INTERVAL,
+                        ),
+                    ),
+                    vol.Optional(
+                        CONF_PROBE_POLL_INTERVAL,
+                        default=source.get(
+                            CONF_PROBE_POLL_INTERVAL,
+                            DEFAULT_PROBE_POLL_INTERVAL,
+                        ),
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(
+                            min=MIN_PROBE_POLL_INTERVAL,
+                            max=MAX_PROBE_POLL_INTERVAL,
+                        ),
+                    ),
+                    vol.Optional(
+                        CONF_MQTT_STATUS_INTERVAL,
+                        default=source.get(
+                            CONF_MQTT_STATUS_INTERVAL,
+                            DEFAULT_MQTT_STATUS_INTERVAL,
+                        ),
+                    ): vol.All(
+                        vol.Coerce(int),
+                        # 0 is the documented "off" value; anything else must
+                        # sit inside the bounds.
+                        vol.Any(
+                            MQTT_STATUS_POLL_OFF,
+                            vol.Range(
+                                min=MIN_MQTT_STATUS_INTERVAL,
+                                max=MAX_MQTT_STATUS_INTERVAL,
+                            ),
                         ),
                     ),
                     vol.Optional(
@@ -749,7 +935,13 @@ class GoveeOptionsFlow(OptionsFlow):
                     vol.Optional(
                         CONF_API_TEMPERATURE_UNIT,
                         default=source.get(CONF_API_TEMPERATURE_UNIT, DEFAULT_API_TEMPERATURE_UNIT),
-                    ): vol.In(["auto", "celsius", "fahrenheit"]),
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=["auto", "celsius", "fahrenheit"],
+                            translation_key=CONF_API_TEMPERATURE_UNIT,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                     vol.Optional(
                         CONF_LAN_TARGETS,
                         default=source.get(CONF_LAN_TARGETS, DEFAULT_LAN_TARGETS),
@@ -764,9 +956,8 @@ class GoveeOptionsFlow(OptionsFlow):
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
         """Select which RGBIC devices to configure individually."""
-        coordinator = self.config_entry.runtime_data
         rgbic_devices = {
-            d.device_id: f"{d.name} ({d.device_id})" for d in coordinator.devices.values() if d.segment_count > 0
+            d.device_id: f"{d.name} ({d.device_id})" for d in self._coordinator_devices() if d.segment_count > 0
         }
 
         if user_input is not None:
@@ -818,9 +1009,8 @@ class GoveeOptionsFlow(OptionsFlow):
         parsed only when ``segment_mode`` is ``groups``, and the count field is
         omitted from the schema entirely for a profiled SKU.
         """
-        coordinator = self.config_entry.runtime_data
         device_id = self._selected_devices[self._device_index]
-        device = coordinator.devices.get(device_id)
+        device = next((d for d in self._coordinator_devices() if d.device_id == device_id), None)
         device_name = device.name if device else device_id
         advertised_count = int(getattr(device, "segment_count", 0) or 0)
         show_count_field = verified_segment_count(str(getattr(device, "sku", "") or "")) is None
@@ -860,11 +1050,11 @@ class GoveeOptionsFlow(OptionsFlow):
                 # Done — build final data and save
                 new_data = {
                     **self._global_options,
-                    "segment_mode_by_device": self._device_modes,
-                    "segment_groups_by_device": self._device_groups,
-                    "segment_count_by_device": self._device_counts,
+                    CONF_SEGMENT_MODE_BY_DEVICE: self._device_modes,
+                    CONF_SEGMENT_GROUPS_BY_DEVICE: self._device_groups,
+                    CONF_SEGMENT_COUNT_BY_DEVICE: self._device_counts,
                 }
-                _LOGGER.info("Options saved: %s", new_data)
+                _LOGGER.debug("Options saved: %s", new_data)
                 _LOGGER.debug("Device modes configured: %s", self._device_modes)
                 return self.async_create_entry(title="", data=new_data)
 
@@ -907,9 +1097,9 @@ class GoveeOptionsFlow(OptionsFlow):
         Defaults come from ``user_input`` (re-rendering after a validation
         error) when given, otherwise from what is already saved in options.
         """
-        current_modes = self.config_entry.options.get("segment_mode_by_device", {})
-        current_groups = self.config_entry.options.get("segment_groups_by_device", {}).get(device_id, {})
-        current_counts = self.config_entry.options.get("segment_count_by_device", {})
+        current_modes = self.config_entry.options.get(CONF_SEGMENT_MODE_BY_DEVICE, {})
+        current_groups = self.config_entry.options.get(CONF_SEGMENT_GROUPS_BY_DEVICE, {}).get(device_id, {})
+        current_counts = self.config_entry.options.get(CONF_SEGMENT_COUNT_BY_DEVICE, {})
 
         source = user_input or {}
         default_mode = source.get("segment_mode", current_modes.get(device_id, DEFAULT_SEGMENT_MODE))
@@ -917,13 +1107,18 @@ class GoveeOptionsFlow(OptionsFlow):
         default_count = source.get("segment_count", current_counts.get(device_id, advertised_count))
 
         schema: dict[Any, Any] = {
-            vol.Optional("segment_mode", default=default_mode): vol.In(
-                [
-                    SEGMENT_MODE_DISABLED,
-                    SEGMENT_MODE_GROUPED,
-                    SEGMENT_MODE_INDIVIDUAL,
-                    SEGMENT_MODE_GROUPS,
-                ]
+            vol.Optional("segment_mode", default=default_mode): SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SEGMENT_MODE_DISABLED,
+                        SEGMENT_MODE_GROUPED,
+                        SEGMENT_MODE_INDIVIDUAL,
+                        SEGMENT_MODE_BOTH,
+                        SEGMENT_MODE_GROUPS,
+                    ],
+                    translation_key="segment_mode",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
             ),
             vol.Optional("segment_groups", default=default_groups): str,
         }

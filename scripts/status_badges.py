@@ -15,6 +15,7 @@ Pure standard library — no third-party deps, so it runs on a bare CI runner.
 Artifacts are written to --data-dir (default: docs/badges) and are intended to
 live on an orphan `badges` branch to keep master history clean.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -149,8 +150,7 @@ def card_open(w: int, h: int) -> list[str]:
     return [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
         f'viewBox="0 0 {w} {h}" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">',
-        f'<rect x="0.5" y="0.5" width="{w - 1}" height="{h - 1}" rx="12" '
-        f'fill="{CARD}" stroke="{BORDER}"/>',
+        f'<rect x="0.5" y="0.5" width="{w - 1}" height="{h - 1}" rx="12" ' f'fill="{CARD}" stroke="{BORDER}"/>',
     ]
 
 
@@ -199,7 +199,9 @@ def render_installs_svg(history: list, fork_total: int, official_total: int) -> 
             py = gy0 + gh - (gh - 8) * (c - lo) / rng
             pts.append((px, py))
         line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
-        area = f"M{gx0},{gy0 + gh} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) + f" L{pts[-1][0]:.1f},{gy0 + gh} Z"
+        area = (
+            f"M{gx0},{gy0 + gh} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) + f" L{pts[-1][0]:.1f},{gy0 + gh} Z"
+        )
         s.append(
             f'<defs><linearGradient id="ig" x1="0" x2="0" y1="0" y2="1">'
             f'<stop offset="0" stop-color="{ACCENT}" stop-opacity="0.45"/>'
@@ -255,11 +257,14 @@ def render_versions_svg(fork_counts: dict[str, int], fork_total: int) -> str:
         cy = y + row_h / 2 + 4
         is_latest = ver == latest
         col = GREEN if is_latest else ACCENT
-        s.append(txt(bar_x - 8, cy, ver, 11.5, TEXT if is_latest else MUTED,
-                     weight=700 if is_latest else 400, anchor="end"))
+        s.append(
+            txt(bar_x - 8, cy, ver, 11.5, TEXT if is_latest else MUTED, weight=700 if is_latest else 400, anchor="end")
+        )
         bw = max(bar_max * c / maxc, 2)
-        s.append(f'<rect x="{bar_x}" y="{y + 4}" width="{bw:.1f}" height="{row_h - 11}" rx="3" '
-                 f'fill="{col}" fill-opacity="{0.95 if is_latest else 0.65}"/>')
+        s.append(
+            f'<rect x="{bar_x}" y="{y + 4}" width="{bw:.1f}" height="{row_h - 11}" rx="3" '
+            f'fill="{col}" fill-opacity="{0.95 if is_latest else 0.65}"/>'
+        )
         pct = c / fork_total * 100 if fork_total else 0
         s.append(txt(w - pad, cy, f"{human(c)} · {pct:.0f}%", 10.5, MUTED, anchor="end"))
 
@@ -309,8 +314,10 @@ def run_installs(data_dir: Path, repo_dir: Path) -> None:
         lic = first.replace(" License", "").strip() or "MIT"
     write_json(data_dir / "license.json", shields_endpoint("license", lic, "41BDF5"))
 
-    print(f"[installs] fork={fork_total} (of {official_total} domain total) "
-          f"versions_matched={len(fork_counts)} release=v{ver} license={lic}")
+    print(
+        f"[installs] fork={fork_total} (of {official_total} domain total) "
+        f"versions_matched={len(fork_counts)} release=v{ver} license={lic}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -323,16 +330,18 @@ def fetch_stargazers(slug: str) -> list[datetime]:
     page = 1
     while page <= 50:  # 5000-star ceiling
         url = f"https://api.github.com/repos/{slug}/stargazers?per_page=100&page={page}"
-        req = urllib.request.Request(url, headers={
-            "User-Agent": UA, "Accept": "application/vnd.github.star+json"})
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/vnd.github.star+json"})
         if token:
             req.add_header("Authorization", f"Bearer {token}")
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         if not data:
             break
-        out += [datetime.strptime(d["starred_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                for d in data if d.get("starred_at")]
+        out += [
+            datetime.strptime(d["starred_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            for d in data
+            if d.get("starred_at")
+        ]
         if len(data) < 100:
             break
         page += 1
@@ -361,7 +370,9 @@ def render_stars_svg(times: list[datetime], delta30: int) -> str:
             pts.append((px, py))
         pts.append((gx0 + gw, gy0 + gh - (gh - 8)))  # extend to "now" at full count
         line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
-        area = f"M{gx0},{gy0 + gh} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) + f" L{pts[-1][0]:.1f},{gy0 + gh} Z"
+        area = (
+            f"M{gx0},{gy0 + gh} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) + f" L{pts[-1][0]:.1f},{gy0 + gh} Z"
+        )
         s.append(
             f'<defs><linearGradient id="sg" x1="0" x2="0" y1="0" y2="1">'
             f'<stop offset="0" stop-color="{STAR}" stop-opacity="0.4"/>'
@@ -446,7 +457,9 @@ def render_uptime_svg(history: list) -> str:
     s.append(txt(pad, 34, "GOVEE API", 11, MUTED, weight=600, spacing="1.5"))
     # status pill (width sized to dot + label so text never overflows the border)
     pill_w = 32 + len(status) * 7.2
-    s.append(f'<rect x="{pad}" y="44" width="{pill_w:.0f}" height="22" rx="11" fill="{scol}" fill-opacity="0.16" stroke="{scol}" stroke-opacity="0.5"/>')
+    s.append(
+        f'<rect x="{pad}" y="44" width="{pill_w:.0f}" height="22" rx="11" fill="{scol}" fill-opacity="0.16" stroke="{scol}" stroke-opacity="0.5"/>'
+    )
     s.append(f'<circle cx="{pad + 13}" cy="55" r="4" fill="{scol}"/>')
     s.append(txt(pad + 23, 59, status, 12, scol, weight=700))
 
@@ -492,14 +505,18 @@ def render_uptime_svg(history: list) -> str:
             py = gy0 + gh - (gh - 4) * (m - lo) / rng
             pts.append((px, py))
         line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
-        area = f"M{gx0},{gy0 + gh} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) + f" L{pts[-1][0]:.1f},{gy0 + gh} Z"
+        area = (
+            f"M{gx0},{gy0 + gh} " + " ".join(f"L{x:.1f},{y:.1f}" for x, y in pts) + f" L{pts[-1][0]:.1f},{gy0 + gh} Z"
+        )
         s.append(
             f'<defs><linearGradient id="lg" x1="0" x2="0" y1="0" y2="1">'
             f'<stop offset="0" stop-color="{lat_col}" stop-opacity="0.35"/>'
             f'<stop offset="1" stop-color="{lat_col}" stop-opacity="0"/></linearGradient></defs>'
         )
         s.append(f'<path d="{area}" fill="url(#lg)"/>')
-        s.append(f'<polyline points="{line}" fill="none" stroke="{lat_col}" stroke-width="1.8" stroke-linejoin="round"/>')
+        s.append(
+            f'<polyline points="{line}" fill="none" stroke="{lat_col}" stroke-width="1.8" stroke-linejoin="round"/>'
+        )
         s.append(f'<circle cx="{pts[-1][0]:.1f}" cy="{pts[-1][1]:.1f}" r="3" fill="{lat_col}"/>')
     else:
         s.append(txt(w / 2, gy0 + gh / 2 + 4, "collecting latency…", 11, MUTED, anchor="middle"))

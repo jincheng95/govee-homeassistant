@@ -142,6 +142,31 @@ class TestSegmentTurnOffLogic:
         entity.coordinator.async_control_device.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_turn_off_records_black_even_when_command_skipped(self):
+        """A skipped write still means the segment is off.
+
+        The skip only means something else is already taking the device dark.
+        Leaving the previous colour in the coordinator's tracking would make a
+        later whole-device write replay it and relight a ring the user had
+        switched off (issue #131) — which is exactly what happened in practice
+        after an area turn_off.
+        """
+        entity = _make_segment_entity(power_state=True, power_off_pending=True)
+
+        await entity.async_turn_off()
+
+        entity.coordinator.async_control_device.assert_not_called()
+        entity.coordinator.record_segment_color.assert_called_once_with("AA:BB:CC:DD:EE:FF:00:11", 3, (0, 0, 0))
+
+    @pytest.mark.asyncio
+    async def test_turn_off_records_black_when_command_sent(self):
+        entity = _make_segment_entity(power_state=True, power_off_pending=False)
+
+        await entity.async_turn_off()
+
+        entity.coordinator.record_segment_color.assert_called_once_with("AA:BB:CC:DD:EE:FF:00:11", 3, (0, 0, 0))
+
+    @pytest.mark.asyncio
     async def test_turn_off_yields_before_flag_check(self):
         """asyncio.sleep(0) is called before checking the power-off flag."""
         entity = _make_segment_entity(power_state=True, power_off_pending=False)
@@ -281,3 +306,82 @@ class TestSegmentPowerSync:
         await entity.async_turn_off()
 
         assert not any(isinstance(cmd, PowerCommand) for cmd in self._commands(entity))
+
+
+class TestSegmentOptimisticSync:
+    """SEGMENT_MODE_BOTH: a segment mirrors whatever the grouped "all
+    segments" entity last broadcast, since Govee gives no real per-segment
+    readback to arbitrate between them (issue #164-adjacent)."""
+
+    def test_handle_group_update_mirrors_state_and_writes(self):
+        entity = _make_segment_entity()
+
+        entity._handle_group_update(False, 128, (10, 20, 30))
+
+        assert entity._is_on is False
+        assert entity._brightness == 128
+        assert entity._rgb_color == (10, 20, 30)
+        entity.async_write_ha_state.assert_called_once()
+
+    def test_handle_group_update_on(self):
+        entity = _make_segment_entity()
+        entity._is_on = False
+        entity._brightness = 0
+
+        entity._handle_group_update(True, 255, (255, 255, 255))
+
+        assert entity._is_on is True
+        assert entity._brightness == 255
+        assert entity._rgb_color == (255, 255, 255)
+
+
+class TestSegmentRawFirst:
+    """Raw pipe first, cloud only when it declines; one write either way."""
+
+    _RAW = "custom_components.govee.platforms.segment.async_segment_color"
+
+    @pytest.mark.asyncio
+    async def test_turn_off_sends_nothing_to_the_cloud_when_raw_handles_it(self):
+        entity = _make_segment_entity(power_state=True)
+        with patch(self._RAW, AsyncMock(return_value=True)) as raw:
+            await entity.async_turn_off()
+
+        raw.assert_awaited_once()
+        entity.coordinator.async_control_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_turn_off_falls_back_to_one_cloud_command(self):
+        entity = _make_segment_entity(power_state=True)
+        with patch(self._RAW, AsyncMock(return_value=False)):
+            await entity.async_turn_off()
+
+        entity.coordinator.async_control_device.assert_awaited_once()
+        command = entity.coordinator.async_control_device.call_args[0][1]
+        assert isinstance(command, SegmentColorCommand)
+        assert command.color == RGBColor(r=0, g=0, b=0)
+
+    @pytest.mark.asyncio
+    async def test_raw_turn_on_records_the_colour_for_replay(self):
+        entity = _make_segment_entity(power_state=True)
+        with patch(self._RAW, AsyncMock(return_value=True)):
+            await entity.async_turn_on(rgb_color=(10, 20, 30))
+
+        entity.coordinator.async_control_device.assert_not_called()
+        entity.coordinator.record_segment_color.assert_called_once_with("AA:BB:CC:DD:EE:FF:00:11", 3, (10, 20, 30))
+
+    @pytest.mark.asyncio
+    async def test_cloud_turn_on_leaves_recording_to_the_coordinator(self):
+        entity = _make_segment_entity(power_state=True)
+        with patch(self._RAW, AsyncMock(return_value=False)):
+            await entity.async_turn_on(rgb_color=(10, 20, 30))
+
+        entity.coordinator.async_control_device.assert_awaited_once()
+        entity.coordinator.record_segment_color.assert_not_called()
+
+    def test_group_update_opens_the_readback_grace(self):
+        entity = _make_segment_entity()
+        entity._written_at = 0.0
+
+        entity._handle_group_update(True, 255, (1, 2, 3))
+
+        assert entity._written_at > 0.0

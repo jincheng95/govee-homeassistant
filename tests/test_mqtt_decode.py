@@ -46,10 +46,7 @@ class TestNonUtf8PayloadDecode:
         client = _make_client(cb)
         # 0xb0 ('°' in latin-1) is an invalid UTF-8 start byte — embedded in a
         # scene name string value, the rest of the JSON is well-formed.
-        payload = (
-            b'{"device":"AA:BB:CC:DD:EE:FF","state":'
-            b'{"onOff":1,"brightness":50,"sceneName":"Patio\xb0"}}'
-        )
+        payload = b'{"device":"AA:BB:CC:DD:EE:FF","state":' b'{"onOff":1,"brightness":50,"sceneName":"Patio\xb0"}}'
 
         await client._handle_message(_msg(payload))
 
@@ -66,10 +63,7 @@ class TestNonUtf8PayloadDecode:
         cb = MagicMock()
         client = _make_client(cb)
         # 0xfc ('ü') + 0xb0 ('°') — both invalid UTF-8 starts.
-        payload = (
-            b'{"device":"11:22:33:44:55:66","state":'
-            b'{"onOff":0,"name":"B\xfcro\xb0"}}'
-        )
+        payload = b'{"device":"11:22:33:44:55:66","state":' b'{"onOff":0,"name":"B\xfcro\xb0"}}'
 
         await client._handle_message(_msg(payload))
 

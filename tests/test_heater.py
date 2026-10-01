@@ -295,9 +295,7 @@ class TestHeaterTemperatureNumberEntity:
         """Test entity is available when device is online."""
         assert heater_temp_entity.available is True
 
-    def test_temp_entity_unavailable_offline(
-        self, heater_temp_entity, mock_coordinator
-    ):
+    def test_temp_entity_unavailable_offline(self, heater_temp_entity, mock_coordinator):
         """Test entity is unavailable when device is offline."""
         offline_state = GoveeDeviceState(
             device_id=heater_temp_entity._device_id,
@@ -326,9 +324,7 @@ class TestHeaterTemperatureNumberEntity:
         # Verify state was updated
         assert heater_temp_entity._attr_native_value == 25.0
 
-    async def test_set_temperature_preserves_auto_stop(
-        self, heater_temp_entity, mock_coordinator
-    ):
+    async def test_set_temperature_preserves_auto_stop(self, heater_temp_entity, mock_coordinator):
         """Test setting temperature preserves current auto_stop setting."""
         # Set auto_stop to 1 in state
         state = mock_coordinator.get_state.return_value
@@ -343,9 +339,7 @@ class TestHeaterTemperatureNumberEntity:
         assert command.temperature == 20
         assert command.auto_stop == 1  # Preserved from state
 
-    async def test_set_temperature_boundary_low(
-        self, heater_temp_entity, mock_coordinator
-    ):
+    async def test_set_temperature_boundary_low(self, heater_temp_entity, mock_coordinator):
         """Test setting temperature at minimum boundary."""
         await heater_temp_entity.async_set_native_value(5.0)
 
@@ -355,9 +349,7 @@ class TestHeaterTemperatureNumberEntity:
         assert isinstance(command, TemperatureSettingCommand)
         assert command.temperature == 5
 
-    async def test_set_temperature_boundary_high(
-        self, heater_temp_entity, mock_coordinator
-    ):
+    async def test_set_temperature_boundary_high(self, heater_temp_entity, mock_coordinator):
         """Test setting temperature at maximum boundary."""
         await heater_temp_entity.async_set_native_value(30.0)
 
@@ -368,11 +360,14 @@ class TestHeaterTemperatureNumberEntity:
         assert command.temperature == 30
 
     async def test_set_temperature_failure(self, heater_temp_entity, mock_coordinator):
-        """Test temperature setting failure."""
+        """Test temperature setting failure raises and keeps the value."""
+        from homeassistant.exceptions import HomeAssistantError
+
         mock_coordinator.async_control_device.return_value = False
         initial_value = heater_temp_entity._attr_native_value
 
-        await heater_temp_entity.async_set_native_value(28.0)
+        with pytest.raises(HomeAssistantError):
+            await heater_temp_entity.async_set_native_value(28.0)
 
         # Value should not change on failure
         assert heater_temp_entity._attr_native_value == initial_value
@@ -469,16 +464,22 @@ class TestFanSpeedSelectEntity:
 
     async def test_select_fan_speed_invalid(self, fan_speed_entity, mock_coordinator):
         """Test selecting invalid fan speed option."""
-        await fan_speed_entity.async_select_option("Invalid")
+        from homeassistant.exceptions import ServiceValidationError
+
+        with pytest.raises(ServiceValidationError):
+            await fan_speed_entity.async_select_option("Invalid")
 
         # Command should not be sent
         mock_coordinator.async_control_device.assert_not_called()
 
     async def test_select_fan_speed_failure(self, fan_speed_entity, mock_coordinator):
-        """Test fan speed selection failure."""
+        """Test fan speed selection failure raises."""
+        from homeassistant.exceptions import HomeAssistantError
+
         mock_coordinator.async_control_device.return_value = False
 
-        await fan_speed_entity.async_select_option("Low")
+        with pytest.raises(HomeAssistantError):
+            await fan_speed_entity.async_select_option("Low")
 
         # Command should still be attempted
         mock_coordinator.async_control_device.assert_called_once()
@@ -663,9 +664,7 @@ class TestH7131FanSpeedSelectEntity:
         mock_coordinator.get_state.return_value = state
         assert fan_speed_entity.current_option == "Fan"
 
-    def test_current_option_fallback_work_mode_only(
-        self, fan_speed_entity, mock_coordinator
-    ):
+    def test_current_option_fallback_work_mode_only(self, fan_speed_entity, mock_coordinator):
         """Test fallback matching on work_mode when mode_value is None."""
         state = GoveeDeviceState(
             device_id=fan_speed_entity._device_id,
@@ -786,10 +785,13 @@ class TestAutoStopSwitchEntity:
         assert command.enabled is False
 
     async def test_turn_on_failure(self, auto_stop_entity, mock_coordinator):
-        """Test auto-stop switch does not update on failure."""
+        """Test auto-stop switch raises and does not update on failure."""
+        from homeassistant.exceptions import HomeAssistantError
+
         mock_coordinator.async_control_device.return_value = False
 
-        await auto_stop_entity.async_turn_on()
+        with pytest.raises(HomeAssistantError):
+            await auto_stop_entity.async_turn_on()
 
         # Should not update local state or write HA state
         assert auto_stop_entity._is_on is False

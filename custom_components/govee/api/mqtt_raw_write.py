@@ -42,20 +42,24 @@ def mqtt_raw_enabled(coordinator: GoveeCoordinator) -> bool:
     )
 
 
-def mqtt_raw_target(coordinator: GoveeCoordinator, profile: DeviceProfile) -> bool:
+def mqtt_raw_target(coordinator: GoveeCoordinator, profile: DeviceProfile, device_id: str | None = None) -> bool:
     """Whether a raw frame for this SKU could go out over MQTT right now.
 
     Args:
         coordinator: The coordinator owning the device.
         profile: The device's SKU profile.
+        device_id: The device, when known. A gateway-attached device ignores
+            its own topic, so it is never a target.
 
     Returns:
         True when the options are on, the table declares the pipe for this SKU,
-        and the MQTT client is connected.
+        the MQTT client is connected, and the device has no gateway route.
     """
     if not mqtt_raw_enabled(coordinator):
         return False
     if not profile.carries(Transport.MQTT_PTREAL):
+        return False
+    if device_id is not None and _gateway_routed(coordinator, device_id):
         return False
     return _mqtt_connected(coordinator)
 
@@ -108,7 +112,7 @@ async def async_send_frames(
         True when the publish succeeded — the caller must then do nothing else.
         False means "not handled": fall through to the next tier.
     """
-    if not frames or not mqtt_raw_target(coordinator, profile):
+    if not frames or not mqtt_raw_target(coordinator, profile, device_id):
         return False
 
     client = _mqtt_client(coordinator)
@@ -160,6 +164,17 @@ def _mqtt_client(coordinator: GoveeCoordinator) -> Any:
 def _mqtt_connected(coordinator: GoveeCoordinator) -> bool:
     """Upstream's own "is the MQTT channel live" predicate."""
     return bool(getattr(coordinator, "mqtt_connected", False))
+
+
+def _gateway_routed(coordinator: GoveeCoordinator, device_id: str) -> bool:
+    """Whether upstream relays this device's commands through a gateway topic."""
+    route = getattr(coordinator, "gateway_route", None)
+    if route is None:
+        return False
+    try:
+        return isinstance(route(device_id), dict)
+    except Exception:  # noqa: BLE001 - a tier must never raise at an entity
+        return False
 
 
 async def _device_topic(coordinator: GoveeCoordinator, device_id: str) -> str | None:

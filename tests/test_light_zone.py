@@ -40,9 +40,7 @@ def _h60b2_device() -> GoveeDevice:
         name="3-Segment Lamp",
         device_type=DEVICE_TYPE_LIGHT,
         capabilities=(
-            GoveeCapability(
-                type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
-            ),
+            GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
             GoveeCapability(
                 type=CAPABILITY_COLOR_SETTING,
                 instance=INSTANCE_COLOR_RGB,
@@ -51,11 +49,7 @@ def _h60b2_device() -> GoveeDevice:
             GoveeCapability(
                 type=CAPABILITY_SEGMENT_COLOR,
                 instance=INSTANCE_SEGMENT_COLOR,
-                parameters={
-                    "fields": [
-                        {"fieldName": "segment", "elementRange": {"min": 0, "max": 2}}
-                    ]
-                },
+                parameters={"fields": [{"fieldName": "segment", "elementRange": {"min": 0, "max": 2}}]},
             ),
             # Order intentionally shuffled to prove sorting by zone number.
             toggle("light2Toggle"),
@@ -116,9 +110,7 @@ class TestLightZoneSwitchEntity:
     def zone_entity(self, mock_coordinator, device):
         from custom_components.govee.switch import GoveeLightZoneSwitchEntity
 
-        entity = GoveeLightZoneSwitchEntity(
-            mock_coordinator, device, "light2Toggle", 1
-        )
+        entity = GoveeLightZoneSwitchEntity(mock_coordinator, device, "light2Toggle", 1)
         entity.async_write_ha_state = MagicMock()
         return entity
 
@@ -157,8 +149,11 @@ class TestLightZoneSwitchEntity:
 
     @pytest.mark.asyncio
     async def test_no_optimistic_flip_on_failure(self, zone_entity, mock_coordinator):
+        from homeassistant.exceptions import HomeAssistantError
+
         mock_coordinator.async_control_device.return_value = False
-        await zone_entity.async_turn_on()
+        with pytest.raises(HomeAssistantError):
+            await zone_entity.async_turn_on()
         # Command failed -> optimistic state must not flip.
         assert zone_entity.is_on is False
 
@@ -202,15 +197,9 @@ class TestLightZonePlatformWiring:
         entry.runtime_data = coordinator
         added: list = []
 
-        await switch_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await switch_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
 
-        zone_switches = [
-            e
-            for e in added
-            if type(e).__name__ == "GoveeLightZoneSwitchEntity"
-        ]
+        zone_switches = [e for e in added if type(e).__name__ == "GoveeLightZoneSwitchEntity"]
         assert len(zone_switches) == 3
         instances = sorted(e._toggle_instance for e in zone_switches)
         assert instances == ["light1Toggle", "light2Toggle", "light3Toggle"]
@@ -224,9 +213,7 @@ class TestLightZonePlatformWiring:
         entry.runtime_data = coordinator
         added: list = []
 
-        await switch_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await switch_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
 
         names = [type(e).__name__ for e in added]
         assert "GoveeLightZoneSwitchEntity" not in names

@@ -22,7 +22,6 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -36,7 +35,7 @@ from .const import (
     DEFAULT_EXPOSE_TRANSPORT_ENTITIES,
     DOMAIN,
 )
-from .coordinator import GoveeCoordinator
+from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .entity import GoveeEntity
 from .models import TransportKind
 from .models.transport import TRANSPORT_KINDS
@@ -47,18 +46,19 @@ _LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 0
 
 
-_TRANSPORT_SPECS: tuple[tuple[TransportKind, str, str], ...] = (
-    ("cloud_api", "cloud_api_connectivity", "mdi:cloud"),
-    ("mqtt", "mqtt_connectivity", "mdi:cloud-sync"),
-    ("ble", "ble_connectivity", "mdi:bluetooth"),
-    ("lan", "lan_connectivity", "mdi:lan"),
-    ("lan_udp", "lan_udp_connectivity", "mdi:lan-pending"),
+# (transport, translation_key); icons live in icons.json under the key.
+_TRANSPORT_SPECS: tuple[tuple[TransportKind, str], ...] = (
+    ("cloud_api", "cloud_api_connectivity"),
+    ("mqtt", "mqtt_connectivity"),
+    ("ble", "ble_connectivity"),
+    ("lan", "lan_connectivity"),
+    ("lan_udp", "lan_udp_connectivity"),
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: GoveeConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Govee binary sensors from a config entry."""
@@ -73,6 +73,11 @@ async def async_setup_entry(
             continue
         if device.supports_water_full_event:
             entities.append(GoveeWaterFullBinarySensor(coordinator, device))
+        # Pump-fault sensor for pump-model dehumidifiers (H7152 "Max") — a
+        # separate alert from water-tank-full, reached via a decoded AWS IoT
+        # status frame rather than a capability (see GoveePumpStateBinarySensor).
+        if device.supports_pump_state:
+            entities.append(GoveePumpStateBinarySensor(coordinator, device))
         # Standalone water-leak detectors (H5054) that surface in the developer
         # device list with a bodyAppearedEvent capability — issue #62. Presence
         # sensors (H5127) share that instance but are excluded here (they get an
@@ -86,9 +91,7 @@ async def async_setup_entry(
         # The cost is accepted knowingly: a row seeded during an outage is
         # suppressed on the next healthy boot, and the repairs notice reports
         # it. A stale row the user is told about beats a blind leak sensor.
-        if device.supports_water_leak_event and not coordinator.is_bff_leak_sensor(
-            device.device_id
-        ):
+        if device.supports_water_leak_event and not coordinator.is_bff_leak_sensor(device.device_id):
             entities.append(GoveeWaterLeakBinarySensor(coordinator, device))
         # mmWave presence/occupancy sensors (H5127) — issue #124. They expose
         # the generic bodyAppearedEvent capability with Presence/Absence
@@ -102,20 +105,17 @@ async def async_setup_entry(
 
     # Transport connectivity entities are opt-in to avoid creating 3×N
     # diagnostic entities by default.
-    if entry.options.get(
-        CONF_EXPOSE_TRANSPORT_ENTITIES, DEFAULT_EXPOSE_TRANSPORT_ENTITIES
-    ):
+    if entry.options.get(CONF_EXPOSE_TRANSPORT_ENTITIES, DEFAULT_EXPOSE_TRANSPORT_ENTITIES):
         for device in coordinator.devices.values():
             if device.is_group:
                 continue
-            for kind, translation_key, icon in _TRANSPORT_SPECS:
+            for kind, translation_key in _TRANSPORT_SPECS:
                 entities.append(
                     GoveeTransportConnectivity(
                         coordinator=coordinator,
                         device=device,
                         transport=kind,
                         translation_key=translation_key,
-                        icon=icon,
                     )
                 )
     else:
@@ -154,7 +154,6 @@ class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity, RestoreEntity)
 
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_translation_key = "govee_water_full"
-    _attr_icon = "mdi:cup-water"
 
     def __init__(
         self,
@@ -196,6 +195,37 @@ class GoveeWaterFullBinarySensor(GoveeEntity, BinarySensorEntity, RestoreEntity)
         return attrs
 
 
+class GoveePumpStateBinarySensor(GoveeEntity, BinarySensorEntity):
+    """Pump-fault sensor for pump-model dehumidifiers (H7152 "Max"), issue #114 follow-up.
+
+    Separate from :class:`GoveeWaterFullBinarySensor` — the app treats a
+    pump fault (e.g. a clogged drain hose) and "Water Tank Full" as distinct
+    alerts, and this one is reachable through a completely different channel:
+    it has no capability entry, no OpenAPI event, and no flat MQTT ``state``
+    key (all three confirmed empty during a live fault) — only a bit in the
+    AWS IoT status push's BLE-format ``op.command`` frames, decoded in
+    :meth:`GoveeDeviceState.update_pump_state_from_frames`.
+
+    Unlike ``waterFullEvent``, this is a live/level flag: it clears on its own
+    once the device reports the fault gone, so no clear-alert button/latch is
+    needed here.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_translation_key = "govee_pump_state"
+
+    def __init__(self, coordinator: GoveeCoordinator, device: Any) -> None:
+        """Initialize the pump-abnormal binary sensor."""
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_pump_state"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True while the pump-fault flag is set."""
+        state = self.device_state
+        return state.pump_state if state else None
+
+
 class GoveeWaterLeakBinarySensor(GoveeEntity, BinarySensorEntity):
     """Binary sensor reporting a water-leak trip for standalone detectors (H5054).
 
@@ -208,7 +238,6 @@ class GoveeWaterLeakBinarySensor(GoveeEntity, BinarySensorEntity):
 
     _attr_device_class = BinarySensorDeviceClass.MOISTURE
     _attr_translation_key = "govee_water_leak"
-    _attr_icon = "mdi:water-alert"
 
     def __init__(
         self,
@@ -265,7 +294,6 @@ class GoveeOccupancyBinarySensor(GoveeEntity, BinarySensorEntity):
 
     _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
     _attr_translation_key = "govee_occupancy"
-    _attr_icon = "mdi:motion-sensor"
 
     def __init__(self, coordinator: GoveeCoordinator, device: Any) -> None:
         """Initialize the occupancy binary sensor."""
@@ -301,7 +329,6 @@ class GoveeDeviceConnectivity(GoveeEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_translation_key = "device_connectivity"
-    _attr_icon = "mdi:lan-connect"
 
     def __init__(self, coordinator: GoveeCoordinator, device: Any) -> None:
         """Initialize the overall connectivity binary sensor."""
@@ -374,13 +401,11 @@ class GoveeTransportConnectivity(GoveeEntity, BinarySensorEntity):
         device: Any,
         transport: TransportKind,
         translation_key: str,
-        icon: str,
     ) -> None:
         """Initialize the connectivity binary sensor."""
         super().__init__(coordinator, device)
         self._transport = transport
         self._attr_translation_key = translation_key
-        self._attr_icon = icon
         self._attr_unique_id = f"{device.device_id}_{transport}_connectivity"
 
     @property
@@ -438,6 +463,7 @@ class GoveeLeakBinarySensor(BinarySensorEntity):
     """
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
     _attr_device_class = BinarySensorDeviceClass.MOISTURE
 
     def __init__(self, coordinator: GoveeCoordinator, sensor: GoveeLeakSensor) -> None:
@@ -462,11 +488,7 @@ class GoveeLeakBinarySensor(BinarySensorEntity):
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to leak-specific dispatcher signal."""
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update
-            )
-        )
+        self.async_on_remove(async_dispatcher_connect(self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update))
 
     @callback
     def _handle_leak_update(self) -> None:
@@ -478,10 +500,10 @@ class GoveeLeakOnlineSensor(BinarySensorEntity):
     """Binary sensor for the LoRa link between the leak sensor and its hub."""
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_translation_key = "leak_online"
-    _attr_icon = "mdi:radio-tower"
 
     def __init__(self, coordinator: GoveeCoordinator, sensor: GoveeLeakSensor) -> None:
         self._coordinator = coordinator
@@ -498,11 +520,7 @@ class GoveeLeakOnlineSensor(BinarySensorEntity):
         return state.online if state else None
 
     async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update
-            )
-        )
+        self.async_on_remove(async_dispatcher_connect(self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update))
 
     @callback
     def _handle_leak_update(self) -> None:
@@ -518,10 +536,10 @@ class GoveeLeakHubOnlineSensor(BinarySensorEntity):
     """
 
     _attr_has_entity_name = True
+    _attr_should_poll = False
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_translation_key = "leak_hub_online"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:web"
 
     def __init__(self, coordinator: GoveeCoordinator, hub_device_id: str) -> None:
         self._coordinator = coordinator
@@ -543,11 +561,7 @@ class GoveeLeakHubOnlineSensor(BinarySensorEntity):
         return None
 
     async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            async_dispatcher_connect(
-                self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update
-            )
-        )
+        self.async_on_remove(async_dispatcher_connect(self.hass, f"{DOMAIN}_leak_update", self._handle_leak_update))
 
     @callback
     def _handle_leak_update(self) -> None:

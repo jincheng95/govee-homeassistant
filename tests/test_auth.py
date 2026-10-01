@@ -307,9 +307,7 @@ class TestLoginSuccess:
         client = GoveeAuthClient(session=session)
 
         # Act
-        credentials = await client.login(
-            "user@example.com", "s3cr3t", client_id="myclientid"
-        )
+        credentials = await client.login("user@example.com", "s3cr3t", client_id="myclientid")
 
         # Assert — accountId 99001 from factory
         assert credentials.client_id == "AP/99001/myclientid"
@@ -463,9 +461,7 @@ class TestLoginJsonStatusCodes:
     async def test_login_json_password_in_message_raises_auth_error(self):
         """should raise GoveeAuthError when message contains 'password' regardless of status code."""
         # Arrange — some Govee responses return a non-401 status but include 'password'
-        body = create_login_response(
-            {"status": 400, "message": "Wrong password provided"}
-        )
+        body = create_login_response({"status": 400, "message": "Wrong password provided"})
         login_resp = make_mock_response(200, body)
         session = make_session_post_get(login_resp, MagicMock())
         client = GoveeAuthClient(session=session)
@@ -591,10 +587,7 @@ class TestLoginMissingData:
         with pytest.raises(GoveeApiError) as exc_info:
             await client.login("user@example.com", "s3cr3t")
 
-        assert (
-            "certificate" in str(exc_info.value).lower()
-            or "cert" in str(exc_info.value).lower()
-        )
+        assert "certificate" in str(exc_info.value).lower() or "cert" in str(exc_info.value).lower()
 
     async def test_login_invalid_credentials_result_raises_api_error(self):
         """should raise GoveeApiError when assembled credentials fail is_valid check."""
@@ -612,9 +605,7 @@ class TestLoginMissingData:
         with pytest.raises(GoveeApiError) as exc_info:
             await client.login("user@example.com", "s3cr3t")
 
-        assert (
-            "IoT" in str(exc_info.value) or "credentials" in str(exc_info.value).lower()
-        )
+        assert "IoT" in str(exc_info.value) or "credentials" in str(exc_info.value).lower()
 
 
 # ==============================================================================
@@ -701,9 +692,7 @@ class TestLoginRequestShape:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(
-            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
-        ):
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
             captured["body"] = json
             return _async_cm(login_resp)
 
@@ -835,9 +824,7 @@ class TestFetchDeviceTopicsHeaders:
             return _async_cm(device_resp)
 
         session.post = _post
-        session.get = lambda *a, **kw: _async_cm(
-            make_mock_response(200, {"data": {"devices": []}})
-        )
+        session.get = lambda *a, **kw: _async_cm(make_mock_response(200, {"data": {"devices": []}}))
         client = GoveeAuthClient(session=session)
 
         # Act
@@ -872,9 +859,7 @@ class TestFetchDeviceTopicsHeaders:
     async def test_fetch_device_topics_parses_json_string_device_ext(self):
         """should handle deviceExt as a JSON string (not a pre-parsed dict)."""
         # Arrange
-        device_ext_str = json.dumps(
-            {"deviceSettings": {"topic": "GA/device/CC:DD:EE:FF:00:11"}}
-        )
+        device_ext_str = json.dumps({"deviceSettings": {"topic": "GA/device/CC:DD:EE:FF:00:11"}})
         devices = [{"device": "CC:DD:EE:FF:00:11", "deviceExt": device_ext_str}]
         device_resp = make_mock_response(200, create_device_list_response(devices))
         bff_resp = make_mock_response(200, {"data": {"devices": []}})
@@ -975,9 +960,7 @@ class TestFetchDeviceTopicsHeaders:
                         {
                             "sku": "H5901",
                             "device": "HUB:H5901",
-                            "deviceExt": {
-                                "deviceSettings": json.dumps({"topic": "GD/hub-h5901"})
-                            },
+                            "deviceExt": {"deviceSettings": json.dumps({"topic": "GD/hub-h5901"})},
                         },
                     ]
                 }
@@ -1073,9 +1056,7 @@ class TestExtractTopicsFromDevices:
             {"device": "A", "deviceExt": {"deviceSettings": {"topic": "GD/a"}}},
             {
                 "device": "B",
-                "deviceExt": json.dumps(
-                    {"deviceSettings": json.dumps({"topic": "GD/b"})}
-                ),
+                "deviceExt": json.dumps({"deviceSettings": json.dumps({"topic": "GD/b"})}),
             },
         ]
         topics = GoveeAuthClient._extract_topics_from_devices(devices)
@@ -1181,9 +1162,7 @@ class TestValidateGoveeCredentials:
         session = make_session_post_get(login_resp, iot_resp)
 
         # Act
-        credentials = await validate_govee_credentials(
-            "user@example.com", "s3cr3t", session=session
-        )
+        credentials = await validate_govee_credentials("user@example.com", "s3cr3t", session=session)
 
         # Assert
         assert isinstance(credentials, GoveeIotCredentials)
@@ -1222,9 +1201,7 @@ class Test2FAFlow:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(
-            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
-        ):
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
             captured["body"] = json
             return _async_cm(login_resp)
 
@@ -1251,9 +1228,7 @@ class Test2FAFlow:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(
-            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
-        ):
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
             captured["body"] = json
             return _async_cm(login_resp)
 
@@ -1279,9 +1254,7 @@ class Test2FAFlow:
         session = MagicMock(spec=aiohttp.ClientSession)
         session.close = AsyncMock()
 
-        def _post(
-            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
-        ):
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
             captured["url"] = _url
             captured["body"] = json
             return _async_cm(verify_resp)
@@ -1321,9 +1294,7 @@ class Test2FAFlow:
         client = GoveeAuthClient(session=session)
 
         # Act
-        await client.request_verification_code(
-            "user@example.com", client_id="my-client-id-42"
-        )
+        await client.request_verification_code("user@example.com", client_id="my-client-id-42")
 
         # Assert
         headers = captured["headers"]
@@ -1360,9 +1331,7 @@ class Test2FAFlow:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(
-            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
-        ):
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
             captured["body"] = json
             return _async_cm(login_resp)
 
@@ -1392,9 +1361,7 @@ class Test2FAFlow:
         client = GoveeAuthClient(session=session)
 
         # Act
-        credentials = await client.login(
-            "user@example.com", "s3cr3t", client_id="cid-2fa", code="9999"
-        )
+        credentials = await client.login("user@example.com", "s3cr3t", client_id="cid-2fa", code="9999")
 
         # Assert
         assert isinstance(credentials, GoveeIotCredentials)
@@ -1466,9 +1433,7 @@ class TestDeterministicClientId:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(
-            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
-        ):
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
             captured_bodies.append(json)
             return _async_cm(login_resp)
 
@@ -1574,9 +1539,7 @@ class TestDeterministicClientId:
             return _async_cm(topics_resp)
 
         session.post = _post
-        session.get = lambda *a, **kw: _async_cm(
-            make_mock_response(200, {"data": {"devices": []}})
-        )
+        session.get = lambda *a, **kw: _async_cm(make_mock_response(200, {"data": {"devices": []}}))
         client = GoveeAuthClient(session=session)
         client._client_id = "login-cid-xyz"
 
@@ -1597,9 +1560,7 @@ class TestDeterministicClientId:
         session.close = AsyncMock()
         session.get = lambda *a, **kw: _async_cm(iot_resp)
 
-        def _post(
-            _url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any
-        ):
+        def _post(_url: str, *_args: Any, json: dict[str, Any] | None = None, **_kwargs: Any):
             if json and "client" in json:
                 captured_client_ids.append(json["client"])
             return _async_cm(login_resp)
@@ -1764,14 +1725,10 @@ class TestBffDeviceCensus:
             {
                 "sku": "H5058",
                 "device": "AA:BB:CC:DD:EE:FF:00:11",
-                "deviceExt": {
-                    "deviceSettings": {"sno": 3, "gatewayInfo": {"sku": "H5043"}}
-                },
+                "deviceExt": {"deviceSettings": {"sno": 3, "gatewayInfo": {"sku": "H5043"}}},
             }
         ]
-        client = GoveeAuthClient(
-            session=make_session_get(make_mock_response(200, _bff_response(devices)))
-        )
+        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, _bff_response(devices))))
         await client.fetch_bff_leak_sensors(token="tok")
         assert client.bff_device_census()[0]["sno"] == 3
 
@@ -1791,9 +1748,7 @@ class TestBffResponseSkeleton:
                 "deviceExt": json.dumps({"deviceSettings": {"sno": 4}}),
             }
         ]
-        client = GoveeAuthClient(
-            session=make_session_get(make_mock_response(200, _bff_response(devices)))
-        )
+        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, _bff_response(devices))))
         await client.fetch_bff_leak_sensors(token="tok")
         skeleton = client.bff_response_skeleton()
 
@@ -1818,9 +1773,7 @@ class TestBffResponseSkeleton:
         were elsewhere rather than truly absent.
         """
         resp = {"data": {"devices": [], "subDevices": [{"sku": "H5059"}]}}
-        client = GoveeAuthClient(
-            session=make_session_get(make_mock_response(200, resp))
-        )
+        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, resp)))
         await client.fetch_bff_leak_sensors(token="tok")
 
         assert client.bff_device_census() == []
@@ -1861,9 +1814,7 @@ class TestBffDeviceValues:
                 ),
             }
         ]
-        client = GoveeAuthClient(
-            session=make_session_get(make_mock_response(200, _bff_response(devices)))
-        )
+        client = GoveeAuthClient(session=make_session_get(make_mock_response(200, _bff_response(devices))))
         await client.fetch_bff_leak_sensors(token="tok")
         values = client.bff_device_values()
 
@@ -2035,12 +1986,60 @@ class TestBffReadingHelper:
         assert _bff_reading({"tem": None}, (("tem", True),)) is None
 
     def test_non_numeric_skipped_for_next_key(self):
-        assert (
-            _bff_reading(
-                {"tem": "x", "temperature": 21}, (("tem", True), ("temperature", False))
-            )
-            == 21.0
-        )
+        assert _bff_reading({"tem": "x", "temperature": 21}, (("tem", True), ("temperature", False))) == 21.0
+
+
+class TestBffInBodyErrorStatus:
+    """A BFF error returned with HTTP 200 must raise, not read as "no devices".
+
+    Govee answers an expired or rejected token with HTTP 200 and an error
+    envelope — ``{"status": 401, "message": "..."}`` with no ``data`` key at
+    all. Before #132 every caller read ``data["data"]["devices"]``, got ``[]``
+    from the missing key, and carried on as though the account owned no
+    devices: battery levels and gateway-bridged readings silently stopped
+    while MQTT (certificate-authenticated, so unaffected) kept the integration
+    looking healthy.
+    """
+
+    ERROR_BODY = {"status": 401, "message": "token is invalid"}
+
+    @pytest.mark.asyncio
+    async def test_thermo_list_raises_auth_error_on_body_401(self):
+        session = make_session_get(make_mock_response(200, self.ERROR_BODY))
+        client = GoveeAuthClient(session=session)
+        with pytest.raises(GoveeAuthError):
+            await client.fetch_bff_thermo_hygrometers(token="tok")
+
+    @pytest.mark.asyncio
+    async def test_leak_list_raises_auth_error_on_body_401(self):
+        session = make_session_get(make_mock_response(200, self.ERROR_BODY))
+        client = GoveeAuthClient(session=session)
+        with pytest.raises(GoveeAuthError):
+            await client.fetch_bff_leak_sensors(token="tok")
+
+    @pytest.mark.asyncio
+    async def test_non_401_body_status_raises_api_error(self):
+        session = make_session_get(make_mock_response(200, {"status": 500, "message": "server busy"}))
+        client = GoveeAuthClient(session=session)
+        with pytest.raises(GoveeApiError):
+            await client.fetch_bff_thermo_hygrometers(token="tok")
+
+    @pytest.mark.asyncio
+    async def test_success_status_is_not_treated_as_an_error(self):
+        body = _bff_response([])
+        body["status"] = 200
+        session = make_session_get(make_mock_response(200, body))
+        client = GoveeAuthClient(session=session)
+        assert await client.fetch_bff_thermo_hygrometers(token="tok") == []
+
+    @pytest.mark.asyncio
+    async def test_missing_status_is_not_treated_as_an_error(self):
+        """Not every BFF endpoint sets a status on success."""
+        body = _bff_response([])
+        body.pop("status", None)
+        session = make_session_get(make_mock_response(200, body))
+        client = GoveeAuthClient(session=session)
+        assert await client.fetch_bff_thermo_hygrometers(token="tok") == []
 
 
 class TestBffThermoHygrometerDiscovery:
@@ -2135,6 +2134,9 @@ class TestBffThermoHygrometerDiscovery:
         # Gateway hub for via_device linkage (#86)
         assert s["hub_device_id"] == "11:22:33:44:55:66:77:88"
         assert s["hub_sku"] == "H5044"
+        # Gateway slot — routes the hub's multiSync thermo frames back to this
+        # device, which name their sub-device by slot only (#151)
+        assert s["sno"] == 0
         # Instrumentation only — captured, NOT applied to readings (#86)
         assert s["fah_open"] is True
         assert s["tem_cali"] == -30
@@ -2202,9 +2204,7 @@ class TestBffThermoReadings:
                 "sku": "H5110",
                 "device": did,
                 "deviceName": "Garage",
-                "deviceExt": json.dumps(
-                    {"lastDeviceData": json.dumps({"tem": 2800, "hum": 393})}
-                ),
+                "deviceExt": json.dumps({"lastDeviceData": json.dumps({"tem": 2800, "hum": 393})}),
             },
         ]
         session = make_session_get(make_mock_response(200, _bff_response(devices)))
@@ -2212,9 +2212,7 @@ class TestBffThermoReadings:
 
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
-        assert thermo == {
-            did: {"tem": 2800, "hum": 393, "battery": None, "water_full": None}
-        }
+        assert thermo == {did: {"tem": 2800, "hum": 393, "battery": None, "water_full": None}}
 
     @pytest.mark.asyncio
     async def test_thermo_battery_extracted_from_device_settings(self):
@@ -2238,9 +2236,7 @@ class TestBffThermoReadings:
 
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
-        assert thermo == {
-            did: {"tem": 2200, "hum": 500, "battery": 87, "water_full": None}
-        }
+        assert thermo == {did: {"tem": 2200, "hum": 500, "battery": 87, "water_full": None}}
 
     @pytest.mark.asyncio
     async def test_thermo_reading_included_when_only_battery(self):
@@ -2250,9 +2246,7 @@ class TestBffThermoReadings:
             {
                 "sku": "H5110",
                 "device": did,
-                "deviceExt": json.dumps(
-                    {"deviceSettings": json.dumps({"battery": 42})}
-                ),
+                "deviceExt": json.dumps({"deviceSettings": json.dumps({"battery": 42})}),
             },
         ]
         session = make_session_get(make_mock_response(200, _bff_response(devices)))
@@ -2260,9 +2254,7 @@ class TestBffThermoReadings:
 
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
-        assert thermo == {
-            did: {"tem": None, "hum": None, "battery": 42, "water_full": None}
-        }
+        assert thermo == {did: {"tem": None, "hum": None, "battery": 42, "water_full": None}}
 
     @pytest.mark.asyncio
     async def test_water_full_extracted_from_device_settings(self):
@@ -2274,9 +2266,7 @@ class TestBffThermoReadings:
                 "sku": "H7152",
                 "device": did,
                 "deviceName": "Dehumidifier",
-                "deviceExt": json.dumps(
-                    {"deviceSettings": json.dumps({"waterFull": 1})}
-                ),
+                "deviceExt": json.dumps({"deviceSettings": json.dumps({"waterFull": 1})}),
             },
         ]
         session = make_session_get(make_mock_response(200, _bff_response(devices)))
@@ -2284,9 +2274,7 @@ class TestBffThermoReadings:
 
         _sensors, _hubs, thermo = await client.fetch_bff_leak_sensors(token="tok")
 
-        assert thermo == {
-            did: {"tem": None, "hum": None, "battery": None, "water_full": 1}
-        }
+        assert thermo == {did: {"tem": None, "hum": None, "battery": None, "water_full": 1}}
 
     @pytest.mark.asyncio
     async def test_leak_and_hub_and_bffonly_thermo_skus_excluded(self):
@@ -2362,15 +2350,11 @@ class TestGatewayRoutes:
         }
 
     def test_handles_device_settings_delivered_as_a_json_string(self):
-        routes = GoveeAuthClient._extract_gateway_routes(
-            [self._h5901_entry(as_json_string=True)]
-        )
+        routes = GoveeAuthClient._extract_gateway_routes([self._h5901_entry(as_json_string=True)])
         assert routes["11:22:33:44:55:66:2A:22"]["topic"] == "GD/gateway-hash"
 
     def test_device_without_a_gateway_topic_is_skipped(self):
-        routes = GoveeAuthClient._extract_gateway_routes(
-            [self._h5901_entry(gateway_topic="")]
-        )
+        routes = GoveeAuthClient._extract_gateway_routes([self._h5901_entry(gateway_topic="")])
         assert routes == {}
 
     def test_plain_wifi_device_has_no_route(self):

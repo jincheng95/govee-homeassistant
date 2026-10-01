@@ -195,6 +195,9 @@ class TestTemperatureSensorFahrenheitConversion:
             coordinator=coordinator,
             _device=SimpleNamespace(sku=sku),
             _device_id="AA:BB:CC:DD:EE:FF:00:11",
+            # native_value reads the stored value through this hook so the
+            # second probe reuses the same conversion path (#150).
+            _raw_reading=raw_value,
         )
         return GoveeTemperatureSensor.native_value.fget(stub)
 
@@ -247,6 +250,7 @@ class TestTemperatureSensorFahrenheitConversion:
             coordinator=coordinator,
             _device=SimpleNamespace(sku="H5109"),
             _device_id="AA:BB:CC:DD:EE:FF:00:11",
+            _raw_reading=state.sensor_temperature,
         )
         # Default is auto -> known °F SKU converts.
         result = GoveeTemperatureSensor.native_value.fget(stub)
@@ -271,6 +275,7 @@ class TestTemperatureSensorFahrenheitConversion:
             coordinator=coordinator,
             _device=SimpleNamespace(sku="H5179"),
             _device_id="AA:BB:CC:DD:EE:FF:00:11",
+            _raw_reading=state.sensor_temperature,
         )
         assert GoveeTemperatureSensor.native_value.fget(stub) == 4.9
 
@@ -324,6 +329,35 @@ class TestTemperatureSensorFahrenheitConversion:
         # An account whose Govee app is set to °C can opt out via the option.
         assert self._make_sensor_stub(-14.3, "celsius", sku="H5111") == -14.3
 
+    def test_h5053_wifi_thermometer_auto_converts_fahrenheit(self):
+        # Issue #173: six H5053s read ~162°F for a real ~72°F — the Developer
+        # API returned 72.2 (already °F) and HA converted it again. Auto mode
+        # stores the raw 72.2°F as ~22.3°C so HA renders 72.2°F.
+        result = self._make_sensor_stub(72.2, "auto", sku="H5053")
+        assert abs(result - 22.333333) < 1e-4
+
+    def test_h5053_celsius_override_passthrough(self):
+        # An account whose Govee app is set to °C can opt out via the option.
+        assert self._make_sensor_stub(22.3, "celsius", sku="H5053") == 22.3
+
+    def test_h5053_account_celsius_hint_beats_allowlist(self):
+        # Should the fahOpen harvest ever cover the H5053, a recorded °C
+        # preference must win over the static allowlist (same rule as H5310).
+        assert self._make_sensor_stub(22.3, "auto", sku="H5053", account_unit="celsius") == 22.3
+
+    def test_h5171_wifi_hygrometer_auto_converts_fahrenheit(self):
+        # Issue #173 follow-up: an H5171's raw_api_state carried
+        # sensorTemperature 71.06 (already °F) and HA showed ~159°F. Auto
+        # mode stores it as ~21.7°C so HA renders 71.1°F.
+        result = self._make_sensor_stub(71.06, "auto", sku="H5171")
+        assert abs(result - 21.7) < 1e-4
+
+    def test_h5171_celsius_override_passthrough(self):
+        assert self._make_sensor_stub(21.7, "celsius", sku="H5171") == 21.7
+
+    def test_h5171_account_celsius_hint_beats_allowlist(self):
+        assert self._make_sensor_stub(21.7, "auto", sku="H5171", account_unit="celsius") == 21.7
+
     def test_h5310_pool_thermometer_auto_converts_fahrenheit(self):
         # Issue #157: an 88°F pool surfaced as ~191°F because the Developer API
         # had already returned °F. With no fahOpen flag to go on, the SKU
@@ -334,28 +368,18 @@ class TestTemperatureSensorFahrenheitConversion:
     def test_account_fahrenheit_hint_converts_unknown_sku(self):
         # A device outside the allowlist still converts when Govee tells us the
         # account reports in °F (issue #157).
-        result = self._make_sensor_stub(
-            70.0, "auto", sku="H6072", account_unit="fahrenheit"
-        )
+        result = self._make_sensor_stub(70.0, "auto", sku="H6072", account_unit="fahrenheit")
         assert abs(result - 21.111111) < 1e-4
 
     def test_account_celsius_hint_beats_sku_allowlist(self):
         # The protection for °C accounts: an H5310 on a Celsius account reports
         # °C, and the fahOpen=false hint must stop the allowlist from mangling
         # it (issue #157 vs #151).
-        assert (
-            self._make_sensor_stub(29.4, "auto", sku="H5310", account_unit="celsius")
-            == 29.4
-        )
+        assert self._make_sensor_stub(29.4, "auto", sku="H5310", account_unit="celsius") == 29.4
 
     def test_explicit_option_still_beats_account_hint(self):
         # "celsius"/"fahrenheit" are user overrides — they outrank any hint.
-        assert (
-            self._make_sensor_stub(
-                88.34, "celsius", sku="H5310", account_unit="fahrenheit"
-            )
-            == 88.34
-        )
+        assert self._make_sensor_stub(88.34, "celsius", sku="H5310", account_unit="fahrenheit") == 88.34
 
 
 class TestAccountTemperatureUnit:
@@ -395,9 +419,7 @@ class TestSyntheticThermometer:
     """GoveeDevice.synthetic_thermometer backs BFF-only H5301 discovery (#86)."""
 
     def test_synthesizes_thermometer_with_sensor_capabilities(self):
-        device = GoveeDevice.synthetic_thermometer(
-            device_id="AA:BB:CC:DD:EE:FF:00:11", sku="H5301", name="Office"
-        )
+        device = GoveeDevice.synthetic_thermometer(device_id="AA:BB:CC:DD:EE:FF:00:11", sku="H5301", name="Office")
         assert device.device_id == "AA:BB:CC:DD:EE:FF:00:11"
         assert device.sku == "H5301"
         assert device.name == "Office"
@@ -409,16 +431,12 @@ class TestSyntheticThermometer:
 
     def test_temp_only_sku_omits_humidity_capability(self):
         # H5310 pool thermometer has no hygrometer -> no humidity entity (#97).
-        device = GoveeDevice.synthetic_thermometer(
-            device_id="11:22:33:44:55:66:53:10", sku="H5310", name="Pool"
-        )
+        device = GoveeDevice.synthetic_thermometer(device_id="03:55:01:25:00:00:00:0D", sku="H5310", name="Pool")
         assert device.supports_temperature_sensor
         assert not device.supports_humidity_sensor
 
     def test_hub_device_id_default_empty(self):
-        device = GoveeDevice.synthetic_thermometer(
-            device_id="AA:BB:CC:DD:EE:FF:00:11", sku="H5301", name="Office"
-        )
+        device = GoveeDevice.synthetic_thermometer(device_id="AA:BB:CC:DD:EE:FF:00:11", sku="H5301", name="Office")
         assert device.hub_device_id == ""
 
     def test_hub_device_id_propagates(self):
@@ -467,11 +485,7 @@ class TestBffThermometerAvailability:
 
         from custom_components.govee.sensor import GoveeTemperatureSensor
 
-        state = (
-            SimpleNamespace(online=online, sensor_temperature=26.4)
-            if has_reading
-            else None
-        )
+        state = SimpleNamespace(online=online, sensor_temperature=26.4) if has_reading else None
         coordinator = SimpleNamespace(
             last_update_success=update_success,
             is_bff_thermometer=lambda _id: is_bff,
@@ -491,12 +505,7 @@ class TestBffThermometerAvailability:
         assert self._available(is_bff=True, online=False, has_reading=False) is False
 
     def test_unavailable_when_coordinator_failed(self):
-        assert (
-            self._available(
-                is_bff=True, online=True, has_reading=True, update_success=False
-            )
-            is False
-        )
+        assert self._available(is_bff=True, online=True, has_reading=True, update_success=False) is False
 
 
 class TestThermoBatterySensor:
@@ -507,9 +516,7 @@ class TestThermoBatterySensor:
 
         from custom_components.govee.sensor import GoveeThermoBatterySensor
 
-        state = (
-            SimpleNamespace(battery=battery) if battery is not None else None
-        )
+        state = SimpleNamespace(battery=battery) if battery is not None else None
         stub = SimpleNamespace(device_state=state)
         return GoveeThermoBatterySensor.native_value.fget(stub)
 
@@ -525,9 +532,7 @@ class TestThermoBatterySensor:
             _BffThermometerAvailabilityMixin,
         )
 
-        assert issubclass(
-            GoveeThermoBatterySensor, _BffThermometerAvailabilityMixin
-        )
+        assert issubclass(GoveeThermoBatterySensor, _BffThermometerAvailabilityMixin)
 
 
 class TestThermoDeviceInfoViaDevice:
@@ -544,10 +549,7 @@ class TestThermoDeviceInfoViaDevice:
             name="Pool",
             hub_device_id=hub_device_id,
         )
-        stub = SimpleNamespace(
-            _device=device,
-            _infer_area_from_name=GoveeEntity._infer_area_from_name,
-        )
+        stub = SimpleNamespace(_device=device)
         return GoveeEntity.device_info.fget(stub)
 
     def test_via_device_set_when_bridged(self):
@@ -595,12 +597,8 @@ class TestDeveloperThermometerBattery:
 
         did = "AA:BB:CC:DD:EE:FF:51:10"
         state = GoveeDeviceState(device_id=did)
-        fake = SimpleNamespace(
-            _states={did: state}, _devices={did: self._thermo_device(did)}
-        )
-        GoveeCoordinator._apply_bff_thermo_battery(
-            fake, {did: {"tem": 2200, "hum": 500, "battery": 87}}
-        )
+        fake = SimpleNamespace(_states={did: state}, _devices={did: self._thermo_device(did)})
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"tem": 2200, "hum": 500, "battery": 87}})
         assert state.battery == 87
 
     def test_apply_bff_thermo_battery_skips_when_absent(self):
@@ -611,12 +609,8 @@ class TestDeveloperThermometerBattery:
 
         did = "AA:BB:CC:DD:EE:FF:51:10"
         state = GoveeDeviceState(device_id=did)
-        fake = SimpleNamespace(
-            _states={did: state}, _devices={did: self._thermo_device(did)}
-        )
-        GoveeCoordinator._apply_bff_thermo_battery(
-            fake, {did: {"tem": 2200, "hum": 500, "battery": None}}
-        )
+        fake = SimpleNamespace(_states={did: state}, _devices={did: self._thermo_device(did)})
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"tem": 2200, "hum": 500, "battery": None}})
         assert state.battery is None
 
     def test_apply_bff_thermo_battery_skips_mains_powered(self):
@@ -654,9 +648,7 @@ class TestDeveloperThermometerBattery:
 
         did = "AA:BB:CC:DD:EE:FF:51:10"
         state = GoveeDeviceState(device_id=did)
-        fake = SimpleNamespace(
-            _states={did: state}, _devices={did: self._thermo_device(did)}
-        )
+        fake = SimpleNamespace(_states={did: state}, _devices={did: self._thermo_device(did)})
         GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 87}})
         assert state.battery == 87
 
@@ -681,9 +673,7 @@ class TestDeveloperThermometerBattery:
             _config_entry=SimpleNamespace(entry_id="test_entry"),
         )
 
-        GoveeCoordinator._apply_bff_thermo_battery(
-            fake, {did: {"battery": 87}}, allow_reload=True
-        )
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 87}}, allow_reload=True)
 
         assert state.battery == 87
         assert fake._battery_reload_scheduled is True
@@ -709,9 +699,7 @@ class TestDeveloperThermometerBattery:
             _config_entry=SimpleNamespace(entry_id="test_entry"),
         )
 
-        GoveeCoordinator._apply_bff_thermo_battery(
-            fake, {did: {"battery": 88}}, allow_reload=True
-        )
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 88}}, allow_reload=True)
 
         assert state.battery == 88
         assert fake._battery_reload_scheduled is False
@@ -737,9 +725,7 @@ class TestDeveloperThermometerBattery:
             _config_entry=SimpleNamespace(entry_id="test_entry"),
         )
 
-        GoveeCoordinator._apply_bff_thermo_battery(
-            fake, {did: {"battery": 87}}, allow_reload=True
-        )
+        GoveeCoordinator._apply_bff_thermo_battery(fake, {did: {"battery": 87}}, allow_reload=True)
 
         assert state.battery == 87
         config_entries.async_schedule_reload.assert_not_called()
@@ -892,6 +878,7 @@ class TestBffThermoHandover:
         coordinator._states = dict(states or {})
         coordinator._bff_thermometer_ids = set()
         coordinator._bff_thermo_pending = set()
+        coordinator._thermo_frame_ts = {}
         coordinator._display_fahrenheit = {}
         coordinator._bff_thermo_hubs = {}
         coordinator._sensor_reading_changed_at = {}
@@ -931,9 +918,7 @@ class TestBffThermoHandover:
         ctx.__aenter__ = AsyncMock(return_value=auth_client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "custom_components.govee.coordinator.GoveeAuthClient", return_value=ctx
-        ):
+        with patch("custom_components.govee.coordinator.GoveeAuthClient", return_value=ctx):
             await coordinator._discover_bff_thermometers()
 
     async def _refresh(self, coordinator, sensors):
@@ -950,9 +935,7 @@ class TestBffThermoHandover:
         ctx.__aenter__ = AsyncMock(return_value=auth_client)
         ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch(
-            "custom_components.govee.coordinator.GoveeAuthClient", return_value=ctx
-        ):
+        with patch("custom_components.govee.coordinator.GoveeAuthClient", return_value=ctx):
             await coordinator._refresh_bff_thermometers()
 
     @pytest.mark.asyncio
@@ -1047,9 +1030,7 @@ class TestBatteryCandidateDevices:
         device = self._thermometer()
         state = GoveeDeviceState.create_empty(device.device_id)
         state.battery = 88
-        coordinator = self._coordinator(
-            {device.device_id: device}, {device.device_id: state}
-        )
+        coordinator = self._coordinator({device.device_id: device}, {device.device_id: state})
         assert coordinator._battery_candidate_devices() == set()
 
     def test_mains_powered_sku_is_never_a_candidate(self):
@@ -1069,12 +1050,145 @@ class TestBatteryCandidateDevices:
             sku="H6072",
             name="Lamp",
             device_type="devices.types.light",
-            capabilities=(
-                GoveeCapability(
-                    type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}
-                ),
-            ),
+            capabilities=(GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),),
             is_group=False,
         )
         coordinator = self._coordinator({light.device_id: light})
         assert coordinator._battery_candidate_devices() == set()
+
+
+class TestGatewayThermoFrameRouting:
+    """Applying a decoded H5044 thermo frame to the right entity (issue #151).
+
+    The frames name their sub-device by gateway slot only, so routing depends
+    on the ``sno`` the BFF device list reports for each thermometer.
+    """
+
+    HUB = "07:23:5C:E7:53:5F:6F:0A"
+    DEV = "03:55:01:25:00:00:00:0B:FF:FF:00:41:FF:FF:00:33"
+
+    def _coordinator(self, *, options=None, sku="H5310"):
+        from types import SimpleNamespace
+
+        from custom_components.govee.coordinator import GoveeCoordinator
+        from custom_components.govee.transport_health import TransportHealthTracker
+
+        coordinator = GoveeCoordinator.__new__(GoveeCoordinator)
+        coordinator._config_entry = SimpleNamespace(options=options or {})
+        coordinator._devices = {
+            self.DEV: GoveeDevice.synthetic_thermometer(
+                device_id=self.DEV, sku=sku, name="Pool", hub_device_id=self.HUB
+            )
+        }
+        coordinator._states = {}
+        coordinator._sno_to_thermo_id = {}
+        coordinator._thermo_frame_ts = {}
+        coordinator._sensor_reading_changed_at = {}
+        coordinator._display_fahrenheit = {}
+        coordinator._bff_thermometer_ids = set()
+        coordinator._transport = TransportHealthTracker()
+        coordinator.async_set_updated_data = lambda _data: None
+        return coordinator
+
+    def _frame(self, *, slot=0, temperature_c=24.9, battery=100):
+        return {
+            "_thermo_frame": True,
+            "hub_device_id": self.HUB,
+            "sensor_slot": slot,
+            "temperature_c": temperature_c,
+            "battery": battery,
+            "frame_ts": 0x6A7ECA3C,
+        }
+
+    def test_slot_is_mapped_from_bff_listing(self):
+        coordinator = self._coordinator()
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB, "sno": 0})
+        assert coordinator._sno_to_thermo_id == {(self.HUB, 0): self.DEV}
+
+    def test_listing_without_gateway_is_not_mapped(self):
+        """A direct-WiFi thermometer has no gateway slot to route to."""
+        coordinator = self._coordinator()
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": "", "sno": 0})
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB})
+        assert coordinator._sno_to_thermo_id == {}
+
+    def test_frame_lands_on_the_mapped_device(self):
+        coordinator = self._coordinator()
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB, "sno": 0})
+        coordinator._handle_thermo_frame(self._frame())
+
+        state = coordinator._states[self.DEV]
+        assert state.battery == 100
+        assert state.online is True
+        assert self.DEV in coordinator._sensor_reading_changed_at
+
+    def test_unmapped_slot_is_dropped(self):
+        """A frame for a slot we have no thermometer for creates no state."""
+        coordinator = self._coordinator()
+        coordinator._handle_thermo_frame(self._frame(slot=3))
+        assert coordinator._states == {}
+
+    def test_reading_stored_as_fahrenheit_for_fahrenheit_skus(self):
+        """The H5310's entity converts °F→°C, so the frame must store °F.
+
+        Writing the decoded 24.9 °C straight through would surface the pool at
+        -4 °C — the same double-conversion class as #96/#83.
+        """
+        coordinator = self._coordinator()
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB, "sno": 0})
+        coordinator._handle_thermo_frame(self._frame(temperature_c=24.9))
+
+        stored = coordinator._states[self.DEV].sensor_temperature
+        assert abs(stored - 76.82) < 0.01
+        # Round-trips back to the decoded value through the entity's conversion.
+        assert abs((stored - 32.0) * (5.0 / 9.0) - 24.9) < 0.01
+
+    def test_reading_stored_as_celsius_when_account_reports_celsius(self):
+        """A °C account's fahOpen=false hint wins over the SKU allowlist."""
+        coordinator = self._coordinator()
+        coordinator._note_display_unit(self.DEV, {"fah_open": False})
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB, "sno": 0})
+        coordinator._handle_thermo_frame(self._frame(temperature_c=24.9))
+        assert coordinator._states[self.DEV].sensor_temperature == 24.9
+
+    def test_reading_stored_as_celsius_for_bff_owned_device(self):
+        """A BFF-owned device's entity trusts the stored value as °C."""
+        coordinator = self._coordinator()
+        coordinator._bff_thermometer_ids.add(self.DEV)
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB, "sno": 0})
+        coordinator._handle_thermo_frame(self._frame(temperature_c=24.9))
+        assert coordinator._states[self.DEV].sensor_temperature == 24.9
+
+    def test_frame_records_mqtt_transport_health(self):
+        """The reading arrived over MQTT — diagnostics should say so.
+
+        The #151 reporter saw ``mqtt.last_received = null`` while the frames
+        were being received and discarded.
+        """
+        coordinator = self._coordinator()
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB, "sno": 0})
+        coordinator._handle_thermo_frame(self._frame())
+
+        health = coordinator.get_transport_health(self.DEV, "mqtt")
+        assert health is not None
+        assert health.last_success_ts is not None
+
+    def test_unchanged_reading_does_not_restamp_change_time(self):
+        """Last Reading is a last-*change* timestamp, not last-poll (#83)."""
+        coordinator = self._coordinator()
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB, "sno": 0})
+        coordinator._handle_thermo_frame(self._frame(temperature_c=24.9))
+        first = coordinator._sensor_reading_changed_at[self.DEV]
+
+        coordinator._handle_thermo_frame(self._frame(temperature_c=24.9))
+        assert coordinator._sensor_reading_changed_at[self.DEV] == first
+
+        coordinator._handle_thermo_frame(self._frame(temperature_c=25.1))
+        assert coordinator._sensor_reading_changed_at[self.DEV] > first
+
+    def test_dispatched_from_the_mqtt_state_callback(self):
+        """The frame reaches its handler through the normal MQTT entry point."""
+        coordinator = self._coordinator()
+        coordinator._note_thermo_slot(self.DEV, {"hub_device_id": self.HUB, "sno": 0})
+        coordinator._on_mqtt_state_update(self.HUB, self._frame())
+        assert coordinator._states[self.DEV].sensor_temperature is not None

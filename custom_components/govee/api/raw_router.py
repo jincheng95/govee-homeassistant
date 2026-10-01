@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 from ..segment_limit import manual_segment_count, segment_count
-from ..zone_state import ZONE_KEY_BY_TOGGLE, profile_for, registry
+from ..zone_state import ZONE_KEY_BY_TOGGLE, profile_for, registry, set_switch_state
 from . import ble_raw_write, lan_raw, mqtt_raw_write
 from .protocol import (
     Capability,
@@ -214,7 +214,7 @@ async def async_zone_power(entity: Any, *, on: bool) -> bool:
     ):
         return False
 
-    _set_state(entity, on)
+    set_switch_state(entity, on)
     registry(coordinator).apply(device_id, sku, zone_key, on)
     return True
 
@@ -415,12 +415,6 @@ def _segment_count(entity: Any) -> int:
 def _toggle_instance(entity: Any) -> str:
     """The cloud capability instance the switch drives (``rippleLightToggle``)."""
     return str(getattr(entity, "_toggle_instance", "") or "")
-
-
-def _set_state(entity: Any, on: bool) -> None:
-    """Write a zone switch's optimistic state and notify HA."""
-    entity._is_on = on
-    entity.async_write_ha_state()
 
 
 def _lan_target(coordinator: GoveeCoordinator, device_id: str | None, sku: str) -> tuple[str, DeviceProfile] | None:

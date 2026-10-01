@@ -431,9 +431,7 @@ class TestSocketSwitch:
     def entity(self, device, state):
         from custom_components.govee.switch import GoveeSocketSwitchEntity
 
-        e = GoveeSocketSwitchEntity(
-            _coordinator_with_state(device, state), device, "socketToggle1", 0
-        )
+        e = GoveeSocketSwitchEntity(_coordinator_with_state(device, state), device, "socketToggle1", 0)
         e.async_write_ha_state = MagicMock()
         return e
 
@@ -454,8 +452,11 @@ class TestSocketSwitch:
 
     @pytest.mark.asyncio
     async def test_failure_does_not_flip(self, entity):
+        from homeassistant.exceptions import HomeAssistantError
+
         entity.coordinator.async_control_device.return_value = False
-        await entity.async_turn_off()
+        with pytest.raises(HomeAssistantError):
+            await entity.async_turn_off()
         assert entity.is_on is True
 
 
@@ -477,7 +478,6 @@ class TestNamedLightSwitch:
             INSTANCE_MAIN_LIGHT_TOGGLE,
             "govee_main_light",
             SUFFIX_MAIN_LIGHT,
-            "mdi:ceiling-light",
         )
         e.async_write_ha_state = MagicMock()
         return e
@@ -504,9 +504,7 @@ class TestSwitchPlatformWiring:
         entry = MagicMock()
         entry.runtime_data = coordinator
         added: list = []
-        await switch_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await switch_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
         return added
 
     async def test_h5089_creates_two_outlet_switches(self):
@@ -520,11 +518,7 @@ class TestSwitchPlatformWiring:
 
     async def test_h1310_creates_main_and_background_switches(self):
         added = await self._setup(_h1310())
-        named = [
-            e._toggle_instance
-            for e in added
-            if type(e).__name__ == "GoveeNamedLightSwitchEntity"
-        ]
+        named = [e._toggle_instance for e in added if type(e).__name__ == "GoveeNamedLightSwitchEntity"]
         assert sorted(named) == ["backgroundLightToggle", "mainLightToggle"]
 
 
@@ -830,9 +824,7 @@ class TestNightlightPlatformWiring:
         entry.runtime_data = coordinator
         entry.options = {}
         added: list = []
-        await light_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await light_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
         return [type(e).__name__ for e in added]
 
     async def _setup_switch(self, device):
@@ -843,9 +835,7 @@ class TestNightlightPlatformWiring:
         entry = MagicMock()
         entry.runtime_data = coordinator
         added: list = []
-        await switch_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await switch_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
         return [type(e).__name__ for e in added]
 
     async def _setup_select(self, device):
@@ -857,9 +847,7 @@ class TestNightlightPlatformWiring:
         entry.runtime_data = coordinator
         entry.options = {}
         added: list = []
-        await select_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await select_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
         return [type(e).__name__ for e in added]
 
     async def test_h5089_light_wiring(self):
@@ -945,9 +933,7 @@ class TestSnapshotSelect:
         from custom_components.govee.select import GoveeSnapshotSelectEntity
 
         state = GoveeDeviceState(device_id=device.device_id, online=True)
-        e = GoveeSnapshotSelectEntity(
-            _coordinator_with_state(device, state), device, device.get_snapshot_options()
-        )
+        e = GoveeSnapshotSelectEntity(_coordinator_with_state(device, state), device, device.get_snapshot_options())
         e.async_write_ha_state = MagicMock()
         return e
 
@@ -979,9 +965,7 @@ class TestSnapshotPlatformWiring:
         entry.runtime_data = coordinator
         entry.options = {"enable_scenes": enable_scenes, "enable_diy_scenes": False}
         added: list = []
-        await select_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await select_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
         return [type(e).__name__ for e in added]
 
     async def test_h1310_gets_snapshot_select(self):

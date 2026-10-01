@@ -32,6 +32,7 @@ from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
 from ..api.raw_router import async_segment_color
+from .grouped_segment import segments_optimistic_signal
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,12 +91,9 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         # Unique ID combines device and segment
         self._attr_unique_id = f"{device.device_id}{SUFFIX_SEGMENT}{segment_index}"
 
-        # Segment name with 1-based index for user display
-        self._attr_name = f"Segment {segment_index + 1}"
-
-        # Translation placeholders
+        # Name comes from the ``govee_segment`` translation; the placeholder
+        # carries the 1-based index users see on the strip.
         self._attr_translation_placeholders = {
-            "device_name": device.name,
             "segment_index": str(segment_index + 1),
         }
 
@@ -105,15 +103,6 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         self._rgb_color: tuple[int, int, int] = (255, 255, 255)
         # ``time.monotonic()`` of this segment's last write, 0.0 for never.
         self._written_at: float = 0.0
-
-    @property
-    def available(self) -> bool:
-        """Return True if entity is available.
-
-        Segments don't depend on coordinator state updates.
-        Just check the coordinator is healthy.
-        """
-        return self.coordinator.last_update_success
 
     @property
     def is_on(self) -> bool:
@@ -144,20 +133,16 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         r, g, b = self._rgb_color
         color = RGBColor(r=r, g=g, b=b)
 
-        command = SegmentColorCommand(
-            segment_indices=(self._segment_index,),
-            color=color,
-        )
-
         await async_ensure_device_powered(self.coordinator, self._device_id)
 
-        if not await async_segment_color(
+        if await async_segment_color(
             self, self._rgb_color, (self._segment_index,), brightness=kwargs.get(ATTR_BRIGHTNESS)
         ):
-            await self.coordinator.async_control_device(
-                self._device_id,
-                command,
-            )
+            # Fork: a raw paint bypasses async_control_device, so record it here
+            # for the whole-device replay (issue #131).
+            self.coordinator.record_segment_color(self._device_id, self._segment_index, self._rgb_color)
+        else:
+            await self._async_send_command(SegmentColorCommand(segment_indices=(self._segment_index,), color=color))
 
         self._is_on = True
         self._written_at = time.monotonic()  # fork: opens the readback grace
@@ -180,12 +165,13 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         power_off_pending = self.coordinator.is_power_off_pending(self._device_id)
 
         if not device_already_off and not power_off_pending:
-            command = SegmentColorCommand(
-                segment_indices=(self._segment_index,),
-                color=RGBColor(r=0, g=0, b=0),
-            )
             if not await async_segment_color(self, (0, 0, 0), (self._segment_index,)):
-                await self.coordinator.async_control_device(self._device_id, command)
+                await self._async_send_command(
+                    SegmentColorCommand(
+                        segment_indices=(self._segment_index,),
+                        color=RGBColor(r=0, g=0, b=0),
+                    )
+                )
         else:
             _LOGGER.debug(
                 "Skipping segment %d turn_off for %s (power_off_pending=%s, device_already_off=%s)",
@@ -197,10 +183,23 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
 
         self._is_on = False
         self._written_at = time.monotonic()  # fork: opens the readback grace
+
+        # Record black even when the write was skipped above. The segment is
+        # off either way — the skip only means something else is already
+        # taking the device dark — and leaving the previous colour in the
+        # coordinator's tracking would make a later whole-device write replay
+        # it, relighting a ring the user had switched off (issue #131).
+        self.coordinator.record_segment_color(self._device_id, self._segment_index, (0, 0, 0))
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
-        """Restore previous state and subscribe to hardware segment readback."""
+        """Restore previous state, then subscribe to readback and grouped-entity writes.
+
+        SEGMENT_MODE_BOTH runs this entity alongside GoveeGroupedSegmentEntity
+        for the same segment. Govee never reports real per-segment state, so
+        without this a `light.turn_off` on the grouped "all segments" entity
+        would leave this entity still optimistically showing "on".
+        """
         await super().async_added_to_hass()
 
         last_state = await self.async_get_last_state()
@@ -213,6 +212,18 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
             if last_state.attributes.get("rgb_color"):
                 self._rgb_color = tuple(last_state.attributes["rgb_color"])
 
+        # Seed the coordinator's segment tracking from the restored state. On
+        # fixtures where a whole-device write clobbers the segment overlay, the
+        # coordinator replays these colours afterwards; that tracking is
+        # in-memory, so without this the first such write after a restart would
+        # have nothing to replay and would leave the ring wiped (issue #131).
+        # An off segment is black, matching what async_turn_off actually sends.
+        self.coordinator.record_segment_color(
+            self._device_id,
+            self._segment_index,
+            self._rgb_color if self._is_on else (0, 0, 0),
+        )
+
         # Fork: the ONE correction path this entity accepts. Not a coordinator
         # subscription — see the class docstring for why that stays shut — but
         # a dedicated signal carrying decoded `reference` §6.2 `aa a5` frames,
@@ -222,6 +233,14 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
                 self.hass,
                 SIGNAL_SEGMENT_READBACK.format(device_id=self._device_id),
                 self._handle_segment_readback,
+            )
+        )
+
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                segments_optimistic_signal(self._device_id),
+                self._handle_group_update,
             )
         )
 
@@ -286,4 +305,27 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         self._is_on = True
         self._rgb_color = reading.rgb
         self._brightness = reading.brightness
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_group_update(
+        self,
+        is_on: bool,
+        brightness: int,
+        rgb_color: tuple[int, int, int],
+    ) -> None:
+        """Mirror a write made through the grouped "all segments" entity.
+
+        The coordinator's own segment tracking (#131) is fed by the command
+        path rather than from here — the grouped entity dispatches a real
+        SegmentColorCommand, so async_control_device records those colours
+        whichever entity issued them. This handler only keeps the individual
+        entity's optimistic view in step with the group's.
+        """
+        self._is_on = is_on
+        self._brightness = brightness
+        self._rgb_color = rgb_color
+        # Fork: a group write is this segment's write too, so it opens the
+        # readback grace window.
+        self._written_at = time.monotonic()
         self.async_write_ha_state()

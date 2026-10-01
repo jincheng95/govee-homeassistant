@@ -788,12 +788,12 @@ class TestService:
 
     @staticmethod
     async def _handler(monkeypatch, hass, coordinator):
-        await services.async_setup_services(hass)
+        services.async_setup_services(hass)
         monkeypatch.setattr(
             services,
             "_get_coordinator_for_device",
             lambda _hass, device_id: (
-                coordinator if coordinator is not None and device_id in coordinator.devices else None
+                (coordinator, device_id) if coordinator is not None and device_id in coordinator.devices else None
             ),
         )
 
@@ -1153,11 +1153,7 @@ class TestService:
         ]
 
     @pytest.mark.asyncio
-    async def test_the_service_is_unregistered_on_unload(self):
-        hass = MagicMock()
-        removed: list[str] = []
-        hass.services.async_remove = lambda domain, name: removed.append(name)
+    async def test_the_service_is_registered_without_an_entry(self, hass):
+        services.async_setup_services(hass)
 
-        await services.async_unload_services(hass)
-
-        assert services.SERVICE_APPLY_DIY_EFFECT in removed
+        assert hass.services.has_service(DOMAIN, services.SERVICE_APPLY_DIY_EFFECT)

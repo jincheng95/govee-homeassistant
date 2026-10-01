@@ -2,7 +2,7 @@
 
 A comprehensive technical reference for Govee device communication protocols, compiled from official documentation, PCAP analysis of the Android app, and community reverse engineering efforts.
 
-**Last Updated:** March 4, 2026
+**Last Updated:** September 11, 2026 (the H7152 push decoding; see the git history for per-section changes)
 **Data Sources:**
 - `docs/PCAPdroid_24_Jan_16_00_31.pcap` - Android app network capture
 - `logs/PCAPdroid_09_Jan_19_27_26.pcap` - Reference capture
@@ -25,6 +25,9 @@ A comprehensive technical reference for Govee device communication protocols, co
 10. [Scene & DIY Modes](#10-scene--diy-modes)
 11. [PCAP Analysis Details](#11-pcap-analysis-details)
 12. [References](#12-references)
+13. [Findings from Submitted Diagnostics](#13-findings-from-submitted-diagnostics-2026-03--2026-09)
+
+Per-model capability lists, state readback and account-list data for every SKU seen in a diagnostics download live in [`device-catalog.md`](device-catalog.md).
 
 ---
 
@@ -1659,6 +1662,113 @@ The BLE 20-byte packet format is the canonical low-level protocol. MQTT and LAN 
 
 `ptReal` commands wrap base64-encoded BLE packets, making BLE the universal escape hatch for features not supported by the high-level JSON commands.
 
+### 6.8 Probe Thermometers (H5192)
+
+Two-probe cooking thermometers use the same 20-byte packet format as the light
+strips, but with their own registers and — unlike every other device in this
+document — a **pull model**: the H5192 never volunteers a reading. It answers
+a read request and otherwise stays silent, which is why the Govee app shows
+"not connected" for a second when a device page opens, and why its history
+graph takes a moment to populate. The app is asking, not listening.
+
+Everything below was captured from an H5192 on AWS IoT and cross-checked
+against what the app displayed at the same moment.
+
+#### Frame identification
+
+Packets arrive base64-encoded in `op.command[]` of a `status` or `ptReal`
+message, split across one or two blocks that must be concatenated before
+decoding. **Only byte 1 identifies the frame.** Byte 0 was observed as `0x40`,
+`0x42`, `0x44`, `0x45` and `0x47` on frames that were otherwise identical, so
+matching on it drops readings at random.
+
+| byte 1 | Direction | Meaning |
+|--------|-----------|---------|
+| `0x0F` | device to app | Full status: both probes, readings and limits |
+| `0x24` | both | Live reading for one probe (`0xAA` read, `0x33` push) |
+| `0x12` | both | Alarm limits for one probe |
+
+The `0xAA` / `0x33` prefix in byte 0 of a *request* follows the usual
+convention: `0xAA` reads, `0x33` writes. Byte 2 is the probe number (1 or 2).
+
+#### Temperature encoding
+
+Every temperature is a **signed 16-bit big-endian value in hundredths of a
+degree Celsius**: `0x0BB8` = 30.00 °C, `0xFF38` = -2.00 °C.
+
+`0xFFFF` is a sentinel, not a temperature. It means "probe not plugged in" for
+a reading and "limit not set" for a corridor bound. It has to be checked
+**against the unsigned word, before the signed conversion** — as a signed value
+it is -1, which is a perfectly plausible temperature for a fridge probe and
+would be shown as -0.01 °C.
+
+#### Status frame (`0x0F`)
+
+Volunteered on power-on and when an app session opens. No request was found
+that provokes it. Six values per probe, probe 1 at offset 10, probe 2 at
+offset 26 of the concatenated 40-byte payload:
+
+| Offset (probe 1) | Field |
+|---|---|
+| 10 | core temperature |
+| 12 | core max (alarm high) |
+| 14 | core min (alarm low) |
+| 16 | ambient temperature |
+| 18 | ambient max |
+| 20 | ambient min |
+
+Probe 2 repeats the same order 16 bytes later.
+
+#### Live reading (`0x24`)
+
+Read request: `AA 24 <probe> 00 …` padded to 19 bytes plus checksum.
+The reply carries the core temperature at offset 22 and the ambient
+temperature at offset 24 of the concatenated payload.
+
+The device also pushes this frame unprompted with prefix `0x33` while an app
+session is open, which is where the two-block split is most visible.
+
+#### Alarm limits (`0x12`)
+
+Read request: `AA 12 <probe>` padded to 19 bytes plus checksum. The reply
+carries four values starting at offset 3, in the order core max, core min,
+ambient max, ambient min.
+
+**Byte 11 is a flag, not padding.** It reads `0xFF` while the probe has no
+limit set at all and `0xEE` as soon as at least one is set. It does not encode
+which limit or how many — captured across all four states on an H5192 running
+firmware 1.00.81. Bytes 12-13 were `FF FF` in every capture.
+
+Writing uses the same layout with the `0x33` prefix. **There is no partial
+update** — a write carries all four values, so the three that are not being
+changed have to be supplied from the last read.
+
+`0xFFFF` is valid on a write and means "no limit". This is not a guess: a probe
+with no alarms configured reports all four as `0xFFFF`, and clearing an alarm in
+the Govee app puts them back to it. Setting a single limit out of that state —
+the normal first-use case — therefore means writing the sentinel for the other
+three, and the device accepts it and keeps them unset. An implementation that
+refuses to write while a value is unknown makes the first limit unsettable,
+because every probe starts with all four unset.
+
+#### Checksum
+
+Same as the rest of the BLE protocol: byte 19 is the XOR of bytes 0 through 18.
+
+#### Consequences for an integration
+
+- The device's BFF `lastDeviceData` stays `{"online": false}` permanently.
+  Availability must not be gated on it.
+- Nothing arrives without a request, so the poll interval *is* the update rate.
+  Polling a battery device around the clock is wasteful, so this integration
+  puts the poll behind an explicit per-device switch that is off by default.
+- The generic BFF thermometer refresh must skip these devices. It rebuilds
+  state from `create_empty()` and copies only temperature, humidity and
+  battery, which would drop the probe readings on every pass.
+- Light strips push their own `0xAA 0x05`, `0xAA 0x13` and `0xAA 0xA5` packets
+  through the same `op.command` field. Frame dispatch has to be gated on the
+  SKU, or a segment-color packet gets decoded as a probe reading.
+
 ---
 
 ## 8. State Management
@@ -2046,7 +2156,7 @@ TV backlight with **movie mode** — a capability not seen on other devices. Fro
 Key observations:
 - **`movie_setting` / `movieMode`** is a new capability type — hardware DreamView/movie mode
 - Has both `gradientToggle` AND `dreamViewToggle` (hardware HDMI passthrough)
-- Not currently exposed by the integration (feature request in issue #14)
+- `dreamViewToggle` is accepted (HTTP 200) but inert: the light answers `33 60 01 00…` for both on and off and never enters screen sync (issue #213). The integration skips it (`PTREAL_DREAMVIEW_SKUS`) and sends the `33 05 00` video-mode frame over AWS IoT instead (unverified on hardware; `33 60 01 01 01…`, the frame the H2A41 reports when the app starts screen sync, is the other candidate); off restores the last colour
 
 #### H6104 — WiFi RGB Light (`devices.types.light`)
 
@@ -2158,7 +2268,48 @@ Key observations:
 Key observations:
 - 12 speed levels (vs 8 on H7101) — fan speed count varies by model
 - Different work mode numbering than H7101 (Auto=2 vs Auto=3)
-- `oscillationToggle` for fan oscillation control
+- `oscillationToggle` is **advertised but a no-op on the H7107**: the Platform
+  API returns HTTP 200 and the sweep motor does not react (govee2mqtt #438/#709,
+  disforw/goveelife #70 — all H7107 reports). The state readback works; only
+  the write is dead. The H7105 shares the H7107's ranged-oscillation frame
+  shape (homebridge-govee #1339) and is routed the same way. The H7106 reports
+  plain on/off oscillation in homebridge's capability grouping and is NOT the
+  same protocol class; the H7108 is unverified. Neither is on this path.
+
+**Oscillation over AWS IoT (ptReal) — the channel that works.** Reverse-engineered
+in homebridge-govee `lib/device/fan-H7107.js` (v11.33.0, hardware-confirmed on
+H7107; identical fix for H7105 in v11.34.0) and verified on an H7107 by this
+integration (2026-08-26: OFF stops the sweep in <1 s, ON resumes it; the fan
+ACKs each frame with `state.result: 1` on its `GA/…` reporting topic).
+
+| Frame | Bytes (0-2) | Base64 (20-byte packet) | Notes |
+|-------|-------------|--------------------------|-------|
+| ptReal OFF | `33 1d 00` + zero pad + XOR | `Mx0AAAAAAAAAAAAAAAAAAAAAAC4=` | byte-exact to homebridge |
+| ptReal ON | `33 1d 01 [t0 t1 t2 t3]` + pad + XOR | — | tail = 4 swing-range bytes, optional |
+| multiSync twin | `3a 1d <on>` (same body, 0x3a prefix) | — | sent alongside each ptReal frame |
+
+- Publish the ptReal frame with the standard `{"msg": {"cmd": "ptReal", "data": {"command": [b64]}}}`
+  envelope on the device topic; the twin goes out as `cmd: "multiSync"` with the same
+  `command: [b64]` list.
+- The 4 tail bytes are the fan's configured sweep arc, echoed from its own inbound
+  `aa 1d` BLE-format status frame (bytes 3-6). A bare ON (`33 1d 01`, no tail) also
+  resumes the sweep on the H7107; the tail is replayed when seen so the fan keeps its
+  physically-configured arc.
+- **No angle/range SET command has been reverse-engineered.** The 4 tail bytes are
+  only ever replayed from the fan's own report — two H7107 units in homebridge-govee
+  #1334 reported different tails (`03 32 03 e8` and `03 3c 03 84`), so the arc is
+  app-configurable and a set path exists somewhere in the app protocol. This
+  integration exposes oscillation as a boolean only.
+- Which of the two frames the fan honours is unconfirmed (homebridge-govee #1334);
+  the hardware-confirmed requirement for a reliable OFF is that the frame carries
+  **no tail bytes**. The multiSync twin is best-effort.
+- In this integration: `fan.py` routes `async_oscillate` for
+  `MQTT_OSCILLATION_SKUS = {"H7105", "H7107"}` (`const.py`) through
+  `GoveeCoordinator.async_send_fan_oscillation` → `BlePassthroughManager.async_send_fan_oscillation`
+  when the AWS IoT session is up, falling back to the REST `OscillationCommand`
+  otherwise (a documented no-op on these SKUs — API-key-only users are warned once
+  in the log). The send and the replayed tail land in the diagnostics download
+  (`recent_commands` transport `mqtt`, per-device `fan_swing_tail`).
 
 #### H1310 — Ceiling Fan + Light (`devices.types.light`)
 
@@ -2188,6 +2339,34 @@ Combo ceiling-fan-with-light. Reports as `devices.types.light` (because of the i
 - `fanSpeedMode` is a `mode` (6 discrete speeds), not a `work_mode` STRUCT like tower fans.
 - `reverseAirflowToggle` → fan direction (forward / reverse).
 - Govee's cloud poll does not report fan state → use optimistic state restored across restarts.
+
+**Fan and light state over AWS IoT (issue #181).** The Developer API returns `""` for
+`fanToggle`, `fanSpeedMode`, `reverseAirflowToggle`, `mainLightToggle` and
+`backgroundLightToggle` on every poll, and the push's device-wide `onOff` is the *unit*
+having power, not the light — `onOff: 1` has been captured alongside both lights and the
+fan off in one status (homebridge-govee #1352). The real state rides as BLE-format frames
+in the push's `op.command` list (base64), decoded from labelled captures on real
+H1310/R1310/H1370 units (homebridge-govee `lib/device/fan-ceiling.js`, #1352/#1358):
+
+| Frame | Layout | Meaning |
+|-------|--------|---------|
+| `aa 31 <run> <speed> <dir> .. .. <swing>` | byte 2 `01` = turning, byte 3 = speed step (1–6 on the H1310), byte 4 `01` = reverse airflow, byte 7 `01` = oscillating (H1370 only) | fan state |
+| `aa 42 <mask>` | bit `0x40` main light, `0x20` background light, `0x80` either lit | lights |
+| `aa 36 <main> <background>` | one byte per light | lights (same fact, second form) |
+
+In this integration the MQTT client attaches the decoded frames to the state it hands the
+coordinator as `_op_frames` (hex; visible in the diagnostics `last_mqtt_message`), and for
+devices with `supports_ceiling_fan` the coordinator ignores the top-level `onOff`, decodes
+these frames into `ceiling_fan_on / _speed / _reverse / _swing` and the two light toggles,
+and derives the light entity's power from the light frames. The fan entity and the named
+light switches prefer that pushed state and fall back to their restored optimistic state
+until the fan has reported. The values are carried across Developer polls because the poll
+would otherwise reset them to nothing.
+
+Related write-side observations from the same captures: `powerSwitch` is the whole unit;
+`33 31 <run> <speed>` is the ptReal form of the fan command; the `reverseAirflowToggle`
+capability is the only way to *send* a direction. Changing direction while the fan is off
+starts the motor (reported on an H1310 in #181), so the integration marks the fan running.
 
 #### H5089 — Smart Outlet Extender w/ Nightlight (`devices.types.socket`)
 
@@ -2484,8 +2663,16 @@ Reports `devices.types.thermometer` (not `air_quality_monitor` like the H5140). 
 
 - **Target humidity lives in the Auto-mode `modeValue`.** `workMode` is a STRUCT `{workMode ENUM, modeValue}`. gearMode `modeValue` is the fan gear (Low 1 / Medium 2 / High 3 — the **H7150 omits Medium**). The humidity setpoint is the Auto `modeValue`, but its advertised range is **model-dependent**: the **H7150** allows a settable `30–80`, while the **H7151/H7152 pin Auto to a fixed `80` (range `min:80, max:80`)**. Either way the `/device/state` poll returns `modeValue: 0` for Auto — Govee doesn't populate the current Auto setpoint — so `configured_humidity` reads null/0 (reporter #118 on an H7150 saw `workMode 3 / modeValue 0`). This exact "Auto → modeValue 0, HA number expects 80" mismatch is independently reproduced in govee2mqtt #413.
 - **`waterFullEvent` is a push-only event** (`alarmType 58`, `eventState.options[].value 1` = "Water bucket is full or has been pulled out"). It is absent from the `/device/state` poll and not pushed over MQTT, so tank-full state is read from **BFF `deviceSettings.waterFull`** (`1` = full) → `binary_sensor` device_class `problem`. Requires email/password (#118).
-- The `range`/`humidity` `state.value` comes back as an **empty string `""`** in the poll. There is **no `sensorTemperature` / `sensorHumidity` capability at all** on these dehumidifiers — live room temp/humidity is BLE-only in the Govee app and unavailable to any cloud integration (confirmed in govee2mqtt #413: `"instance":"humidity","state":{"value":""}`, "reports humidity only via Bluetooth").
+- The `range`/`humidity` `state.value` comes back as an **empty string `""`** in the poll, and there is **no `sensorTemperature` / `sensorHumidity` capability at all** on these dehumidifiers — confirmed in govee2mqtt #413 too (`"instance":"humidity","state":{"value":""}`, "reports humidity only via Bluetooth").
 - Cross-validated 2026-06-30 against the **goveelife** real-device fixtures (`h7150_2024-08-12.json`, `h7151_2025-06-01.json`) and **govee2mqtt** issues #413 / #145.
+- **H7152 live temperature + humidity, reverse-engineered 2026-09-10/11, issue #114 follow-up.** Despite the above, the Govee app *does* show a live temperature/humidity reading for the H7152 — remotely, off the local network, ruling out a direct BLE-only read. It arrives over the AWS IoT status push's BLE-format `op.command` frames instead, the same channel `waterFullEvent`-adjacent state rides:
+  - **Temperature + humidity (`aa 10 81` frame), bytes 3-5.** This is the app's own BLE status frame (opcode `0x10`, sub-type `0x81`, decoded app-side into a `ThermometerInfo`), and bytes 3-5 are a single big-endian 3-byte packed value — temperature and humidity each ×10 and concatenated:
+    ```
+    raw = (frame[3] << 16) | (frame[4] << 8) | frame[5]
+    temperature_c = (raw // 1000) / 10.0
+    humidity_pct  = (raw %  1000) / 10.0
+    ```
+    Confirmed against real capture pairs spanning 20.9–22.4°C with **zero residual error** against the app's own displayed temperature and humidity alike — an exact decode, not a fit. Byte 3 is part of the packed value, not a fixed header byte — every captured sample happens to fall in the ~19.7–26.2°C band where that byte reads `0x03`, so the frame is matched on the 3-byte `aa 10 81` prefix alone (matching frame[3] too would silently stop decoding outside that band). SKU-locked to **H7152** (`PUMP_DEHUMIDIFIER_SKUS`) — H7150/H7151 are tank-only variants with no confirmed frame layout of their own.
 
 #### H5310 — Smart Thermometer P2 / Pool Thermometer (`devices.types.thermometer`, gateway-bridged)
 
@@ -2495,39 +2682,57 @@ Battery thermo-hygrometer that reaches the cloud through an **H5044 gateway**; n
 - The pool probe is **temperature-only**: `sensorHumidity` comes back as `655.35` (= `0xFFFF / 100`, a "no-data" sentinel). Treat the sentinel as unavailable rather than a real 655% reading (#100).
 - Rides the gateway with **no direct MQTT topic** (`device_topic_count=0`); the H5044 pushes 20-byte `ee34…` multi-sync frames. Richer cached state (`tem`/`hum`/`avgDay…`) is in BFF `lastDeviceData`.
 
-##### Thermo `ee34` frame layout — partially decoded (issues #151, #157)
+##### Thermo `ee34` frame layout — decoded (issues #151, #157)
 
-An H5044 bridging an H5310 pushes an `ee34` frame every ~10 minutes. The
-integration currently decodes `0xEE 0x34` **only** as a leak/dry report, so these
-frames are recorded into the `recent_multisync` diagnostics ring and then
-discarded — which is why a gateway-bridged H5310 whose BFF `lastDeviceData` is
-empty has no reading source at all (#151).
-
-Analysis of 64 consecutive frames from one H5310 (#157 diagnostics, 2026-08-11):
+An H5044 bridging an H5310 pushes an `ee34` frame every ~10 minutes (some
+accounts see one per hour, at hh:56). These frames are the **origin** of the
+reading everything else mirrors: the cloud copy in BFF `lastDeviceData` lands
+5–7 minutes later, and for some accounts Govee never fills it at all, leaving a
+gateway-bridged H5310 with no reading source whatsoever (#151).
 
 ```
-ee 34 00 08 00 64 25 14 A8 6A 7A B5 BE C5 82 CC FF 20 00 60
-└──┬──┘ └─────┬─────┘ └┬ └─────┬─────┘ └┬ └────┬────┘ └┬ └┬
- header    constant    ?    epoch ts    ?   constant   ?  cksum
+ee 34 00 08 00 64 29 15 c2 6a 7e ca 3c 89 ba cc ff 80 00 2a
+└──┬──┘ │  │  │  └──┬──┘ └────┬────┘ │  └────┬────┘ └─┬─┘ │
+ header │  │  │   per-dev   epoch ts   │    per-dev    ?  cksum
+        │  │  battery              temperature
+        │  sub-device class
+        slot (sno)
 ```
 
 | Byte | Finding |
 |------|---------|
-| `0-1` | `0xEE 0x34` header |
-| `2-7` | Constant across every frame (`00 08 00 64 25 14`) — note `0x64` sits where the leak decoder reads battery |
-| `8` | Varies 147-168 across the day, **not** monotone with temperature |
-| `9-12` | **Big-endian Unix epoch seconds**, matching the receive time exactly — confirmed on all 64 frames |
-| `13` | Varies 196-201, **rising monotonically as the day warms** — the temperature candidate |
-| `14-18` | Constant (`82 CC FF 20 00`) |
+| `0-1` | `0xEE 0x34` header — shared with leak reports |
+| `2` | Slot (`sno`) of the sub-device on the gateway |
+| `3` | **Sub-device class: `0x02` = leak sensor, `0x08` = thermometer.** The only byte separating the two frame types |
+| `4-5` | `00 64` — byte 5 is battery %, same slot both frame types use |
+| `6-8` | Per-device constants; byte `8` varies without tracking temperature |
+| `9-12` | **Big-endian Unix epoch seconds.** Within 3 s of receive time across all 44 frames of the #151 capture |
+| `13` | **Temperature: `T[°C] = (byte13 + 112) / 10`** |
+| `14-18` | Per-device constants (`ba cc ff 80 00` here, `82 cc ff 20 00` on the #157 unit) |
 | `19` | Checksum (XOR-style, varies with payload) |
 
-**Not yet decodable.** Byte `13` is temperature-shaped, but the capture carries
-only ONE labelled reading (88.34 °F at the end of the window), and both
-`°F + 113` and `°C + 170` reproduce it exactly. The day's 5-unit swing fits °F
-better than °C for a pool, but that is an argument from plausibility, not proof.
-Shipping either would surface confidently wrong pool temperatures, so the decode
-stays unimplemented until a capture pairs several frames with the temperature the
-Govee app showed at those times.
+**How byte 13 was settled.** @Araknus13 paired 30 on-the-hour frames against
+their own logged cloud history for the same probe — pool water, 24.4–29.5 °C
+over 31 hours. Least squares gives `T = 0.10010 * b13 + 11.1647`, i.e. exactly
+0.1 °C per count, reproducing every point within 0.1 K. The two candidates from
+#157's single-labelled-point capture miss the same data by 19.3 K (`°F + 113`)
+and 38.1 K (`°C + 170`); they had looked indistinguishable only because they
+intersect at 31.25 °C = 88.25 °F, right where that lone 88.34 °F reading sat.
+The formula independently reproduces that #157 point from a different account.
+
+**Known limits.** Byte 13 is unsigned, so the representable span is
+11.2–36.7 °C and the validating capture only covers 24–30 °C — behaviour at
+the ends (whether the byte saturates, or a sign/scale switch exists for
+sub-11 °C readings) is unverified. `0x00` and `0xFF` are treated as the
+frame's own no-data markers rather than 11.2/36.7 °C readings.
+
+**Implementation.** `_decode_thermo_frame` in `api/mqtt.py` diverts byte-3
+`0x08` frames ahead of the leak branch — leak decoding stays the default for
+every other sub-device class, so an unknown leak SKU can never be silenced by
+the discrimination. `coordinator._handle_thermo_frame` routes the reading via
+`(gateway, sno) → device_id` and normalizes the decoded °C into the unit the
+entity reads back, so the frame path coexists with the Developer poll instead
+of claiming ownership of the device.
 
 #### H616C — LED Strip (NOT yet in Developer API backend)
 
@@ -2561,6 +2766,1579 @@ Non-light devices follow consistent patterns:
 Devices with hardware HDMI passthrough expose `dreamViewToggle` via the cloud API. Camera-based video sync is a local feature controlled via BLE/the Govee app and cannot be toggled through the API.
 
 ---
+
+### 9.7 Models from submitted diagnostics (2026-03 → 2026-09)
+
+Capability lists below are as the Developer API `/user/devices` returned them in diagnostics attached to the referenced issues (parameters abbreviated to options, ranges and segment sizes; `dataType`/`required` dropped). Readback notes are from the same captures' `/device/state`. Models already covered above are not repeated; the full per-model table including account-list data is in [`device-catalog.md`](device-catalog.md).
+
+
+**Lights**
+
+
+#### H1250 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 16}, "elementRange": {"min": 0, "max": 15}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 16}, "elementRange": {"min": 0, "max": 15}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "backgroundLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "mainLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `backgroundLightToggle`, `diyScene`, `gradientToggle`, `lightScene`, `mainLightToggle`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 16 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push seen: acknowledgement only (`result`).
+- Seen in #131.
+
+
+#### H1270 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot", "parameters": {"options": [{"name": "Work", "value": 4118470}]}},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Ripple", "value": 0}, {"name": "Gridding", "value": 1}, {"name": "Flame", "value": 2}, {"name": "Sky", "value": 3}, {"name": "Color Painting", "value": 4}, {"name": "Sprouting", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "Disassociate", "value": 7}, {"name": "Floating Mist", "value": 8}, {"name": "Separation", "value": 9}, {"name": "Meteor shower", "value": 10}, {"name": "Flexing", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 12}, "elementRange": {"min": 0, "max": 11}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 12}, "elementRange": {"min": 0, "max": 11}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "backgroundLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "mainLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `backgroundLightToggle`, `diyScene`, `gradientToggle`, `lightScene`, `mainLightToggle`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 12 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push seen: acknowledgement only (`result`).
+- Seen in #131.
+
+
+#### H1370 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.mode", "instance": "fanSpeedMode", "parameters": {"options": [{"name": "Speed 1", "value": 1}, {"name": "Speed 2", "value": 2}, {"name": "Speed 3", "value": 3}, {"name": "Speed 4", "value": 4}, {"name": "Speed 5", "value": 5}, {"name": "Speed 6", "value": 6}, {"name": "Speed 7", "value": 7}, {"name": "Speed 8", "value": 8}, {"name": "Speed 9", "value": 9}, {"name": "Speed 10", "value": 10}, {"name": "Speed 11", "value": 11}, {"name": "Speed 12", "value": 12}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 14}, "elementRange": {"min": 0, "max": 13}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 14}, "elementRange": {"min": 0, "max": 13}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "backgroundLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "fanOscillateToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "fanToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "mainLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "reverseAirflowToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `backgroundLightToggle`, `diyScene`, `fanOscillateToggle`, `fanSpeedMode`, `fanToggle`, `lightScene`, `mainLightToggle`, `reverseAirflowToggle`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 14 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `subDevices`, `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `brightness`, `color`, `colorTemInKelvin`, `mode`, `onOff`, `sta`, `wifiFuncList`.
+- Seen in #105, #114.
+
+
+#### H14C0 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `lightScene`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #131.
+
+
+#### H6008 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`.
+- Account (BFF) list: present — `deviceSettings` has `subDevices`, `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #131, #150, #158.
+
+
+#### H6010 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #150.
+
+
+#### H601A (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `color`, `colorTemInKelvin`.
+- Seen in #131.
+
+
+#### H601F (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 7}, "elementRange": {"min": 0, "max": 6}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 7}, "elementRange": {"min": 0, "max": 6}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 7 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `brightness`, `color`, `colorTemInKelvin`, `mode`, `onOff`, `sta`.
+- Seen in #159.
+
+
+#### H6022 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 5}, {"name": "Rhythm", "value": 3}, {"name": "Spectrum", "value": 6}, {"name": "Rolling", "value": 4}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`, `musicMode`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Rejected: `musicMode={"musicMode": 1, "sensitivity": 44, "autoColor": 1} -> HTTP 200 Parameter value out of range`.
+- Rejected: `musicMode={"musicMode": 1, "sensitivity": 50, "autoColor": 1} -> HTTP 200 Parameter value out of range`.
+- Rejected: `musicMode={"musicMode": 1, "sensitivity": 77, "autoColor": 1} -> HTTP 200 Parameter value out of range`.
+- Rejected: `musicMode={"musicMode": 1, "sensitivity": 78, "autoColor": 1} -> HTTP 200 Parameter value out of range`.
+- Rejected: `musicMode={"musicMode": 1, "sensitivity": 79, "autoColor": 1} -> HTTP 200 Parameter value out of range`.
+- Seen in #72, #186.
+
+
+#### H6054 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Vivid", "value": 0}, {"name": "Strike", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Vibrate", "value": 3}, {"name": "Beat", "value": 4}, {"name": "Torch", "value": 5}, {"name": "RainbowCircle", "value": 6}, {"name": "Shiny", "value": 7}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `lightScene`, `musicMode`, `snapshot`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push seen: acknowledgement only (`result`).
+- Seen in #158.
+
+
+#### H605A (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Rhythm", "value": 1}, {"name": "Windmill", "value": 2}, {"name": "Hooray", "value": 3}, {"name": "Sprouting", "value": 4}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 24}, "elementRange": {"min": 0, "max": 23}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 24}, "elementRange": {"min": 0, "max": 23}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "backLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "leftLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "rightLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `backLightToggle`, `diyScene`, `dreamViewToggle`, `gradientToggle`, `leftLightToggle`, `lightScene`, `musicMode`, `rightLightToggle`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 24 (`size.max` and `elementRange` agree).
+- Seen in #85, #99.
+
+
+#### H6061 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Calm", "value": 0}, {"name": "Dynamic", "value": 1}, {"name": "Energic", "value": 2}, {"name": "Hopping", "value": 3}, {"name": "Stacking", "value": 4}, {"name": "Rippling", "value": 5}, {"name": "Swiping", "value": 6}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 21}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 21}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: `elementRange` 0–14 but `size.max` 21 — the count is clamped to 15 (see §13.6).
+- Seen in #72.
+
+
+#### H6072 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Dynamic", "value": 1}, {"name": "Calm", "value": 2}, {"name": "Bounce", "value": 3}, {"name": "Hopping", "value": 4}, {"name": "Strike", "value": 5}, {"name": "Vibrate", "value": 6}, {"name": "Skittles", "value": 7}, {"name": "Torch", "value": 8}, {"name": "CandyCrush", "value": 9}, {"name": "Fusion", "value": 10}, {"name": "Luminous", "value": 11}, {"name": "Separation", "value": 12}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 8}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 8}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: `elementRange` 0–14 but `size.max` 8 — the count is clamped to 8 (see §13.6).
+- Seen in #60.
+
+
+#### H6076 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2200, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Dynamic", "value": 1}, {"name": "Calm", "value": 2}, {"name": "Bounce", "value": 3}, {"name": "Hopping", "value": 4}, {"name": "Strike", "value": 5}, {"name": "Vibrate", "value": 6}, {"name": "Skittles", "value": 7}, {"name": "Torch", "value": 8}, {"name": "CandyCrush", "value": 9}, {"name": "Fusion", "value": 10}, {"name": "Luminous", "value": 11}, {"name": "Separation", "value": 12}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 7}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 7}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: `elementRange` 0–14 but `size.max` 7 — the count is clamped to 7 (see §13.6).
+- Seen in #60, #104.
+
+
+#### H6095 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`, `snapshot`.
+- Account (BFF) list: present — `deviceSettings` has `subDevices`, `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `brightness`, `color`, `colorTemInKelvin`, `mode`, `onOff`, `sta`.
+- LAN API reachable in at least one capture.
+- Seen in #175.
+
+
+#### H6097 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Rhythm", "value": 1}, {"name": "Spectrum", "value": 2}, {"name": "Rolling", "value": 3}, {"name": "Separation", "value": 4}, {"name": "Hopping", "value": 5}, {"name": "PianoKeys", "value": 6}, {"name": "Fountain", "value": 7}, {"name": "DayAndNight", "value": 8}, {"name": "Sprouting", "value": 9}, {"name": "Shiny", "value": 10}, {"name": "Energic", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 14}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 14}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: `elementRange` 0–14 but `size.max` 14 — the count is clamped to 14 (see §13.6).
+- Seen in #85.
+
+
+#### H60A1 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2200, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 13}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 13}, "elementRange": {"min": 0, "max": 12}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: `elementRange` 0–14 but `size.max` 13 — the count is clamped to 13 (see §13.6).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #85, #104, #114.
+
+
+#### H60A6 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.toggle", "instance": "backgroundLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "mainLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `backgroundLightToggle`, `diyScene`, `lightScene`, `mainLightToggle`, `snapshot`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push seen: acknowledgement only (`result`).
+- LAN API reachable in at least one capture.
+- Seen in #127, #159.
+
+
+#### H60B0 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "DIY", "value": 0}, {"name": "Stippling", "value": 1}, {"name": "Hopping", "value": 2}, {"name": "Flowing Light", "value": 3}, {"name": "Luminous", "value": 4}, {"name": "Sprouting", "value": 5}, {"name": "Rhythm", "value": 6}, {"name": "Shiny", "value": 7}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "bottomLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "rippleLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "sideLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `online`; `""` for `bottomLightToggle`, `brightness`, `colorRgb`, `colorTemperatureK`, `diyScene`, `dreamViewToggle`, `lightScene`, `musicMode`, `powerSwitch`, `rippleLightToggle`, `segmentedBrightness`, `segmentedColorRgb`, `sideLightToggle`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #83.
+
+
+#### H60B2 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Stippling", "value": 0}, {"name": "Rhythm", "value": 1}, {"name": "Hopping", "value": 2}, {"name": "Colorful", "value": 3}, {"name": "Luminous", "value": 4}, {"name": "Rolling", "value": 5}, {"name": "Sprouting", "value": 6}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 3}, "elementRange": {"min": 0, "max": 2}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 3}, "elementRange": {"min": 0, "max": 2}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "light1Toggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "light2Toggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "light3Toggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `light1Toggle`, `light2Toggle`, `light3Toggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 3 (`size.max` and `elementRange` agree).
+- Seen in #104.
+
+
+#### H60B3 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "DIY", "value": 0}, {"name": "Stippling", "value": 1}, {"name": "Hopping", "value": 2}, {"name": "Flowing Light", "value": 3}, {"name": "Luminous", "value": 4}, {"name": "Sprouting", "value": 5}, {"name": "Rhythm", "value": 6}, {"name": "Shiny", "value": 7}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "bottomLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "nebulaLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "sideLightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `bottomLightToggle`, `brightness`, `colorRgb`, `colorTemperatureK`, `nebulaLightToggle`, `online`, `powerSwitch`, `sideLightToggle`; `""` for `diyScene`, `dreamViewToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push seen: acknowledgement only (`result`).
+- Seen in #126.
+
+
+#### H60C1 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Stippling", "value": 0}, {"name": "Hopping", "value": 1}, {"name": "Colorful", "value": 2}, {"name": "Luminous", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Piano Keys", "value": 5}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 3}, "elementRange": {"min": 0, "max": 2}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 3}, "elementRange": {"min": 0, "max": 2}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 3 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #131.
+
+
+#### H612D (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot", "parameters": {"options": [{"name": "Matrix", "value": 2460679}]}},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Rhythm", "value": 0}, {"name": "Sprouting", "value": 1}, {"name": "Shiny", "value": 2}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 9}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 9}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 10 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `brightness`, `color`, `colorTemInKelvin`, `mode`, `onOff`, `sta`.
+- Seen in #159.
+
+
+#### H612F (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Rhythm", "value": 0}, {"name": "Sprouting", "value": 1}, {"name": "Shiny", "value": 2}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 9}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 9}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 10 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `brightness`, `color`, `colorTemInKelvin`, `mode`, `onOff`, `sta`.
+- Seen in #159.
+
+
+#### H6144 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot", "parameters": {"options": [{"name": "1", "value": 162729}]}},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Spectrum", "value": 1}, {"name": "Rolling", "value": 2}, {"name": "Rhythm", "value": 3}, {"name": "Separation", "value": 4}, {"name": "Hopping", "value": 5}, {"name": "PianoKeys", "value": 6}, {"name": "Fountain", "value": 7}, {"name": "DayAndNight", "value": 8}, {"name": "Sprouting", "value": 9}, {"name": "Shiny", "value": 10}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #99.
+
+
+#### H615A (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Rhythm", "value": 0}, {"name": "Sprouting", "value": 1}, {"name": "Shiny", "value": 2}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`, `musicMode`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #158.
+
+
+#### H615B (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Rhythm", "value": 0}, {"name": "Sprouting", "value": 1}, {"name": "Shiny", "value": 2}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`, `musicMode`.
+- LAN API reachable in at least one capture.
+- Seen in #149.
+
+
+#### H6163 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Spectrum", "value": 1}, {"name": "Rolling", "value": 2}, {"name": "Rhythm", "value": 3}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}}
+]
+```
+
+- Seen in #60.
+
+
+#### H6182 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Dynamic", "value": 1}, {"name": "Calm", "value": 2}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #104.
+
+
+#### H618E (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Spectrum", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Separation", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Fountain", "value": 8}, {"name": "DayAndNight", "value": 9}, {"name": "Sprouting", "value": 10}, {"name": "Shiny", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #134.
+
+
+#### H618F (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Spectrum", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Separation", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Fountain", "value": 8}, {"name": "DayandNight", "value": 9}, {"name": "Sprouting", "value": 10}, {"name": "Shiny", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #131.
+
+
+#### H6199 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Spectrum", "value": 2}, {"name": "Rolling", "value": 3}, {"name": "Rhythm", "value": 4}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #60.
+
+
+#### H619A (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Spectrum", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Separation", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Fountain", "value": 8}, {"name": "DayAndNight", "value": 9}, {"name": "Sprouting", "value": 10}, {"name": "Shiny", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #104.
+
+
+#### H61A0 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Spectrum", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Separation", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Fountain", "value": 8}, {"name": "DayAndNight", "value": 9}, {"name": "Sprouting", "value": 10}, {"name": "Shiny", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 18}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 18}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: `elementRange` 0–14 but `size.max` 18 — the count is clamped to 15 (see §13.6).
+- Seen in #104.
+
+
+#### H61A2 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Spectrum", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Separation", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Fountain", "value": 8}, {"name": "DayandNight", "value": 9}, {"name": "Sprouting", "value": 10}, {"name": "Shiny", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #104.
+
+
+#### H61BE (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Spectrum", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Separation", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Fountain", "value": 8}, {"name": "DayandNight", "value": 9}, {"name": "Sprouting", "value": 10}, {"name": "Shiny", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 20}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 20}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: `elementRange` 0–14 but `size.max` 20 — the count is clamped to 15 (see §13.6).
+- Seen in #83.
+
+
+#### H61E1 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot", "parameters": {"options": [{"name": "Cabs - Christmas", "value": 3184326}, {"name": "Cabs - Valentines", "value": 3475534}, {"name": "Cabs - StPatricks", "value": 3658872}, {"name": "Cabs - Ordanary Time", "value": 3810570}]}},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Spectrum", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Separation", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Fountain", "value": 8}, {"name": "DayAndNight", "value": 9}, {"name": "Sprouting", "value": 10}, {"name": "Shiny", "value": 11}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #83.
+
+
+#### H61F2 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Rhythm", "value": 2}, {"name": "Spectrum", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Separation", "value": 5}, {"name": "Hopping", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Fountain", "value": 8}, {"name": "DayAndNight", "value": 9}, {"name": "Sprouting", "value": 10}, {"name": "Shiny", "value": 11}, {"name": "Splash", "value": 12}, {"name": "Orbit", "value": 13}, {"name": "UFO", "value": 14}, {"name": "Spring", "value": 15}, {"name": "Luminous", "value": 16}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 4}, "elementRange": {"min": 0, "max": 3}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 4}, "elementRange": {"min": 0, "max": 3}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 4 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `brightness`, `color`, `colorTemInKelvin`, `mode`, `onOff`, `sta`.
+- Seen in #159.
+
+
+#### H66A1 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2200, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.movie_setting", "instance": "movieMode", "parameters": {"fields": [{"fieldName": "moveMode", "options": [{"name": {"de": "Spiel", "ja": "\u30b2\u30fc\u30e0", "en": "Game", "it": "Gioco", "fr": "Jeu", "key": "Game", "es": "Juego"}, "value": 0}]}]}},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Rhythm", "value": 1}, {"name": "Spectrum", "value": 2}, {"name": "Rolling", "value": 3}, {"name": "Separation", "value": 4}, {"name": "Hopping", "value": 5}, {"name": "Piano Keys", "value": 6}, {"name": "Fountain", "value": 7}, {"name": "Day and Night", "value": 8}, {"name": "Sprouting", "value": 9}, {"name": "Splash", "value": 10}, {"name": "Spring", "value": 11}, {"name": "Color Painting", "value": 12}, {"name": "Beat", "value": 13}, {"name": "Windmill", "value": 14}, {"name": "Flowing Light", "value": 15}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 14}, "elementRange": {"min": 0, "max": 13}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 14}, "elementRange": {"min": 0, "max": 13}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `gradientToggle`, `lightScene`, `movieMode`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 14 (`size.max` and `elementRange` agree).
+- Seen in #104.
+
+
+#### H6811 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "MeteorShower", "value": 1}, {"name": "Crossing", "value": 2}, {"name": "DreamColor", "value": 3}, {"name": "FloatingMist", "value": 4}, {"name": "Spectrum", "value": 5}, {"name": "FallingSand", "value": 6}, {"name": "ColorFlip", "value": 7}, {"name": "ChristmasNight", "value": 8}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Seen in #85.
+
+
+#### H6840 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Meteor Shower", "value": 1}, {"name": "Crossing", "value": 2}, {"name": "Dream Color", "value": 3}, {"name": "Floating Mist", "value": 4}, {"name": "Spectrum", "value": 5}, {"name": "Separation", "value": 6}, {"name": "Cadence", "value": 7}, {"name": "Dancing Lines", "value": 8}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Seen in #60.
+
+
+#### H7020 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Spectrum", "value": 2}, {"name": "Rolling", "value": 3}, {"name": "Rhythm", "value": 4}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 30}, "elementRange": {"min": 0, "max": 29}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 30}, "elementRange": {"min": 0, "max": 29}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`.
+- Segments: 30 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #131.
+
+
+#### H7037 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Hopping", "value": 1}, {"name": "BouncingBall", "value": 2}, {"name": "Rhythm", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Loop", "value": 5}, {"name": "Separation", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Alternate", "value": 8}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #85.
+
+
+#### H7039 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Hopping", "value": 1}, {"name": "BouncingBall", "value": 2}, {"name": "Rhythm", "value": 3}, {"name": "Rolling", "value": 4}, {"name": "Loop", "value": 5}, {"name": "Separation", "value": 6}, {"name": "PianoKeys", "value": 7}, {"name": "Alternate", "value": 8}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 45}, "elementRange": {"min": 0, "max": 44}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 45}, "elementRange": {"min": 0, "max": 44}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 45 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #150.
+
+
+#### H705A (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Shiny", "value": 2}, {"name": "HeartBeating", "value": 3}, {"name": "Hopping", "value": 4}, {"name": "Luminous", "value": 5}, {"name": "Rolling", "value": 6}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Seen in #85.
+
+
+#### H705E (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 1}, {"name": "Shiny", "value": 2}, {"name": "HeartBeating", "value": 3}, {"name": "Hopping", "value": 4}, {"name": "Luminous", "value": 5}, {"name": "Rolling", "value": 6}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 27}, "elementRange": {"min": 0, "max": 26}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 27}, "elementRange": {"min": 0, "max": 26}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: 27 (`size.max` and `elementRange` agree).
+- Seen in #85.
+
+
+#### H7060 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 4}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 4}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}}
+]
+```
+
+- Segments: `elementRange` 0–14 but `size.max` 4 — the count is clamped to 4 (see §13.6).
+- Seen in #85.
+
+
+#### H7068 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Rhythm", "value": 1}, {"name": "Shiny", "value": 2}, {"name": "Luminous", "value": 3}, {"name": "Hopping", "value": 4}, {"name": "Sprouting", "value": 5}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #85, #114.
+
+
+#### H7070 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `lightScene`, `snapshot`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #150.
+
+
+#### H7076 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot", "parameters": {"options": [{"name": "standard lighting", "value": 3998000}]}},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Stippling", "value": 0}, {"name": "Rhythm", "value": 1}, {"name": "Hopping", "value": 2}, {"name": "Luminous", "value": 3}, {"name": "Beat", "value": 4}, {"name": "Heart Beat", "value": 5}, {"name": "Starlight", "value": 6}, {"name": "Separation", "value": 7}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 15}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: 15 (`size.max` and `elementRange` agree).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `brightness`.
+- LAN API reachable in at least one capture.
+- Seen in #160.
+
+
+#### H707C (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2700, "max": 6500, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Rhythm", "value": 0}, {"name": "Hopping", "value": 1}, {"name": "Luminous", "value": 2}, {"name": "Beat", "value": 3}, {"name": "Touching", "value": 4}, {"name": "Fusion", "value": 5}, {"name": "Dance Stage", "value": 6}, {"name": "Overlap", "value": 7}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 24}, "elementRange": {"min": 0, "max": 23}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 24}, "elementRange": {"min": 0, "max": 23}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Segments: 24 (`size.max` and `elementRange` agree).
+- Seen in #60.
+
+
+#### H70B6 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Floating Mist", "value": 0}, {"name": "Spectrum", "value": 1}, {"name": "Separation", "value": 2}, {"name": "Meteor shower", "value": 3}, {"name": "Hopping", "value": 4}, {"name": "Shrink", "value": 5}, {"name": "Sound Wave", "value": 6}, {"name": "Falling Sand", "value": 7}, {"name": "Color Flip", "value": 8}, {"name": "Christmas Night", "value": 9}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Seen in #85.
+
+
+#### H70C2 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Rhythm", "value": 1}, {"name": "Spectrum", "value": 2}, {"name": "Rolling", "value": 3}, {"name": "Separation", "value": 4}, {"name": "Hopping", "value": 5}, {"name": "PianoKeys", "value": 6}, {"name": "Fountain", "value": 7}, {"name": "DayAndNight", "value": 8}, {"name": "Sprouting", "value": 9}, {"name": "Shiny", "value": 10}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: `elementRange` 0–14 but `size.max` 10 — the count is clamped to 10 (see §13.6).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #150.
+
+
+#### H70C4 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Rhythm", "value": 1}, {"name": "Hopping", "value": 2}, {"name": "Piano Keys", "value": 3}, {"name": "Fountain", "value": 4}, {"name": "Day and Night", "value": 5}, {"name": "Flow", "value": 6}, {"name": "Spin", "value": 7}, {"name": "Spring", "value": 8}, {"name": "Ripple", "value": 9}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: `elementRange` 0–14 but `size.max` 10 — the count is clamped to 10 (see §13.6).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #150.
+
+
+#### H70C5 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Rhythm", "value": 1}, {"name": "Hopping", "value": 2}, {"name": "Piano Keys", "value": 3}, {"name": "Fountain", "value": 4}, {"name": "Day and Night", "value": 5}, {"name": "Flow", "value": 6}, {"name": "Spin", "value": 7}, {"name": "Spring", "value": 8}, {"name": "Ripple", "value": 9}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: `elementRange` 0–14 but `size.max` 10 — the count is clamped to 10 (see §13.6).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #83, #114, #150.
+
+
+#### H70C9 (`devices.types.light`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.color_setting", "instance": "colorTemperatureK", "parameters": {"range": {"min": 2000, "max": 9000, "precision": 1}}},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "diyScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "lightScene"},
+  {"type": "devices.capabilities.dynamic_scene", "instance": "snapshot"},
+  {"type": "devices.capabilities.music_setting", "instance": "musicMode", "parameters": {"fields": [{"fieldName": "musicMode", "options": [{"name": "Energic", "value": 0}, {"name": "Rhythm", "value": 1}, {"name": "Hopping", "value": 2}, {"name": "Piano Keys", "value": 3}, {"name": "Fountain", "value": 4}, {"name": "Day and Night", "value": 5}, {"name": "Flow", "value": 6}, {"name": "Spin", "value": 7}, {"name": "Spring", "value": 8}, {"name": "Ripple", "value": 9}]}, {"fieldName": "sensitivity", "range": {"min": 0, "max": 100, "precision": 1}}, {"fieldName": "autoColor", "options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedBrightness", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}]}},
+  {"type": "devices.capabilities.segment_color_setting", "instance": "segmentedColorRgb", "parameters": {"fields": [{"fieldName": "segment", "size": {"min": 1, "max": 10}, "elementRange": {"min": 0, "max": 14}}, {"fieldName": "rgb", "range": {"min": 0, "max": 16777215, "precision": 1}}]}},
+  {"type": "devices.capabilities.toggle", "instance": "dreamViewToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.toggle", "instance": "gradientToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `powerSwitch`; `""` for `diyScene`, `dreamViewToggle`, `gradientToggle`, `lightScene`, `musicMode`, `segmentedBrightness`, `segmentedColorRgb`, `snapshot`.
+- Segments: `elementRange` 0–14 but `size.max` 10 — the count is clamped to 10 (see §13.6).
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #150.
+
+
+**Plugs and sockets**
+
+
+#### H5080 (`devices.types.socket`)
+
+```json
+[
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `online`, `powerSwitch`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #131, #181.
+
+
+#### H5083 (`devices.types.socket`)
+
+```json
+[
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `online`, `powerSwitch`.
+- Seen in #62.
+
+
+**Thermometers and hygrometers**
+
+
+#### H5053 (`devices.types.thermometer`)
+
+```json
+[
+  {"type": "devices.capabilities.property", "instance": "sensorHumidity"},
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature"}
+]
+```
+
+- Readback: real values for `online`, `sensorHumidity`, `sensorTemperature`.
+- Seen in #173.
+
+
+#### H5075 (`devices.types.thermometer`)
+
+```json
+[
+  {"type": "devices.capabilities.property", "instance": "sensorHumidity"},
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature"}
+]
+```
+
+- Readback: real values for `online`, `sensorHumidity`, `sensorTemperature`.
+- Account (BFF) list: present — `deviceSettings` has `fahOpen`, `battery`, `wifiFuncList`; `lastDeviceData` keys `avgDayHum`, `avgDayTem`, `hum`, `lastTime`, `online`, `tem`.
+- Seen in #83, #99, #102, #132, #159.
+
+
+#### H5110 (`devices.types.thermometer`)
+
+```json
+[
+  {"type": "devices.capabilities.property", "instance": "sensorHumidity"},
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature"}
+]
+```
+
+- Readback: real values for `online`, `sensorHumidity`, `sensorTemperature`.
+- Gateway-bridged via `H5044`.
+- Account (BFF) list: present — `deviceSettings` has `fahOpen`, `battery`, `gatewayInfo`, `wifiFuncList`; `lastDeviceData` keys `avgDayHum`, `avgDayTem`, `hum`, `lastTime`, `online`, `tem`.
+- Seen in #83, #102, #114, #132.
+
+
+#### H5111 (`devices.types.thermometer`)
+
+```json
+[
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature"}
+]
+```
+
+- Readback: real values for `online`, `sensorTemperature`.
+- Gateway-bridged via `H5151`.
+- Account (BFF) list: present — `deviceSettings` has `fahOpen`, `battery`, `gatewayInfo`, `wifiFuncList`; `lastDeviceData` keys `avgDayHum`, `avgDayTem`, `hum`, `lastTime`, `online`, `tem`.
+- Seen in #83, #134, #144.
+
+
+#### H5112 (`devices.types.thermometer`)
+
+```json
+[
+  {"type": "devices.capabilities.property", "instance": "sensorHumidity"},
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature"}
+]
+```
+
+- Readback: real values for `online`; `""` for `sensorHumidity`, `sensorTemperature`.
+- Gateway-bridged via `H5044`.
+- Account (BFF) list: present — `deviceSettings` has `fahOpen`, `battery`, `gatewayInfo`, `wifiFuncList`; `lastDeviceData` keys `avgDayHum`, `avgDayTem`, `hum`, `lastTime`, `online`, `tem`, `tem2`.
+- Seen in #150.
+
+
+#### H5220 (`devices.types.thermometer`)
+
+```json
+[
+  {"type": "devices.capabilities.property", "instance": "sensorHumidity"},
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature"}
+]
+```
+
+- Readback: real values for `online`, `sensorHumidity`, `sensorTemperature`.
+- Gateway-bridged via `H5044`.
+- Account (BFF) list: present — `deviceSettings` has `fahOpen`, `battery`, `gatewayInfo`, `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #114, #128.
+
+
+**Sensors**
+
+
+#### H5058 (`devices.types.sensor`)
+
+```json
+[
+  {"type": "devices.capabilities.event", "instance": "bodyAppearedEvent"}
+]
+```
+
+- Gateway-bridged via `H5043`.
+- Account (BFF) list: present — `deviceSettings` has `battery`, `gatewayInfo`, `wifiFuncList`; `lastDeviceData` keys `gwonline`, `lastTime`, `online`, `read`.
+- Seen in #134.
+
+
+**Air purifiers**
+
+
+#### H7126 (`devices.types.air_purifier`)
+
+```json
+[
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.property", "instance": "airQuality"},
+  {"type": "devices.capabilities.property", "instance": "filterLifeTime"},
+  {"type": "devices.capabilities.work_mode", "instance": "workMode", "parameters": {"fields": [{"fieldName": "workMode", "options": [{"name": "gearMode", "value": 1}, {"name": "Custom", "value": 2}, {"name": "Auto", "value": 3}]}, {"fieldName": "modeValue", "options": [{"name": "gearMode", "value": null}, {"name": "Custom", "value": null}, {"name": "Auto", "value": null}]}]}}
+]
+```
+
+- Readback: real values for `airQuality`, `filterLifeTime`, `online`, `powerSwitch`; `""` for `workMode`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push seen: acknowledgement only (`result`).
+- Seen in #114, #150.
+
+
+#### H7129 (`devices.types.air_purifier`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.mode", "instance": "nightlightScene", "parameters": {"options": [{"name": "Forest", "value": 1}, {"name": "Ocean", "value": 2}, {"name": "Wetland", "value": 3}, {"name": "Relax", "value": 4}, {"name": "Asleep", "value": 5}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.property", "instance": "airQuality"},
+  {"type": "devices.capabilities.property", "instance": "filterLifeTime"},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}}},
+  {"type": "devices.capabilities.toggle", "instance": "nightlightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.work_mode", "instance": "workMode", "parameters": {"fields": [{"fieldName": "workMode", "options": [{"name": "gearMode", "value": 1}, {"name": "Sleep", "value": 5}, {"name": "Auto", "value": 3}, {"name": "Turbo", "value": 7}]}, {"fieldName": "modeValue", "options": [{"name": "gearMode", "value": null}, {"name": "Auto", "value": null}, {"name": "Sleep", "value": null}, {"name": "Turbo", "value": null}]}]}}
+]
+```
+
+- Readback: real values for `airQuality`, `brightness`, `filterLifeTime`, `nightlightToggle`, `online`, `powerSwitch`, `workMode`; `""` for `colorRgb`, `nightlightScene`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- AWS IoT push `state` keys: `onOff`, `sta`.
+- Seen in #150.
+
+
+**Humidifiers**
+
+
+#### H7141 (`devices.types.humidifier`)
+
+```json
+[
+  {"type": "devices.capabilities.event", "instance": "lackWaterEvent"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "humidity", "parameters": {"range": {"min": 40, "max": 70, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.work_mode", "instance": "workMode", "parameters": {"fields": [{"fieldName": "workMode", "options": [{"name": "Manual", "value": 1}, {"name": "Custom", "value": 2}, {"name": "Auto", "value": 3}]}, {"fieldName": "modeValue", "options": [{"name": "Manual", "value": null}, {"name": "Custom", "value": null}, {"name": "Auto", "value": null}]}]}}
+]
+```
+
+- Readback: real values for `online`, `powerSwitch`, `workMode`; `""` for `humidity`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #150.
+
+
+#### H7142 (`devices.types.humidifier`)
+
+```json
+[
+  {"type": "devices.capabilities.event", "instance": "lackWaterEvent"},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.range", "instance": "humidity", "parameters": {"range": {"min": 40, "max": 70, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.work_mode", "instance": "workMode", "parameters": {"fields": [{"fieldName": "workMode", "options": [{"name": "Manual", "value": 1}, {"name": "Custom", "value": 2}, {"name": "Auto", "value": 3}]}, {"fieldName": "modeValue", "options": [{"name": "Manual", "value": null}, {"name": "Custom", "value": null}, {"name": "Auto", "value": null}]}]}}
+]
+```
+
+- Readback: real values for `online`, `powerSwitch`, `workMode`; `""` for `humidity`.
+- Account (BFF) list: present — `deviceSettings` has `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #150.
+
+
+#### H714E (`devices.types.humidifier`)
+
+```json
+[
+  {"type": "devices.capabilities.color_setting", "instance": "colorRgb", "parameters": {"range": {"min": 0, "max": 16777215, "precision": 1}}},
+  {"type": "devices.capabilities.event", "instance": "lackWaterEvent"},
+  {"type": "devices.capabilities.mode", "instance": "nightlightScene", "parameters": {"options": [{"name": "Forest", "value": 1}, {"name": "Ocean", "value": 2}, {"name": "Wetland", "value": 3}, {"name": "Leisurely", "value": 4}, {"name": "Sleep", "value": 5}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.property", "instance": "sensorHumidity"},
+  {"type": "devices.capabilities.range", "instance": "brightness", "parameters": {"range": {"min": 1, "max": 100, "precision": 1}}},
+  {"type": "devices.capabilities.range", "instance": "humidity", "parameters": {"range": {"min": 40, "max": 80, "precision": 1}, "unit": "unit.percent"}},
+  {"type": "devices.capabilities.toggle", "instance": "nightlightToggle", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.work_mode", "instance": "workMode", "parameters": {"fields": [{"fieldName": "workMode", "options": [{"name": "Manual", "value": 1}, {"name": "Custom", "value": 2}, {"name": "Auto", "value": 3}]}, {"fieldName": "modeValue", "options": [{"name": "Manual", "value": null}, {"name": "Custom", "value": null}, {"name": "Auto", "value": null}]}]}}
+]
+```
+
+- Seen in #85.
+
+
+**Heaters**
+
+
+#### H7135 (`devices.types.heater`)
+
+```json
+[
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature"},
+  {"type": "devices.capabilities.temperature_setting", "instance": "targetTemperature", "parameters": {"fields": [{"fieldName": "autoStop", "options": [{"name": "Auto Stop", "value": 1}, {"name": "Maintain", "value": 0}]}, {"fieldName": "temperature", "range": {"min": 5, "max": 30, "precision": 1}}, {"fieldName": "unit", "options": [{"name": "Celsius", "value": "Celsius"}, {"name": "Fahrenheit", "value": "Fahrenheit"}]}]}},
+  {"type": "devices.capabilities.work_mode", "instance": "workMode", "parameters": {"fields": [{"fieldName": "workMode", "options": [{"name": "gearMode", "value": 1}, {"name": "Fan", "value": 9}, {"name": "Auto", "value": 3}]}, {"fieldName": "modeValue", "options": [{"name": "gearMode", "value": null}, {"name": "Fan", "value": null}, {"name": "Auto", "value": null}]}]}}
+]
+```
+
+- Readback: real values for `online`, `powerSwitch`, `sensorTemperature`, `targetTemperature`, `workMode`.
+- Account (BFF) list: present — `deviceSettings` has `fahOpen`, `wifiFuncList`; `lastDeviceData` keys `online`.
+- Seen in #131.
+
+
+**Kettles**
+
+
+#### H717A (`devices.types.kettle`)
+
+```json
+[
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}},
+  {"type": "devices.capabilities.property", "instance": "sensorTemperature"},
+  {"type": "devices.capabilities.temperature_setting", "instance": "sliderTemperature", "parameters": {"fields": [{"fieldName": "temperature", "range": {"min": 40, "max": 100, "precision": 1}}, {"fieldName": "unit", "options": [{"name": "Celsius", "value": "Celsius"}, {"name": "Fahrenheit", "value": "Fahrenheit"}]}]}},
+  {"type": "devices.capabilities.work_mode", "instance": "workMode", "parameters": {"fields": [{"fieldName": "workMode", "options": [{"name": "M1", "value": 2}, {"name": "M2", "value": 3}, {"name": "M3", "value": 4}, {"name": "M4", "value": 5}]}, {"fieldName": "modeValue", "options": [{"name": "M1", "value": null}, {"name": "M2", "value": null}, {"name": "M3", "value": null}, {"name": "M4", "value": null}]}]}}
+]
+```
+
+- Seen in #63.
+
+
+**Aroma diffusers**
+
+
+#### H7161 (`devices.types.aroma_diffuser`)
+
+```json
+[
+  {"type": "devices.capabilities.event", "instance": "lackWaterEvent"},
+  {"type": "devices.capabilities.mode", "instance": "presetScene", "parameters": {"options": [{"name": "Bach", "value": 171396}, {"name": "W\u00e4rme am Kamin", "value": 171397}, {"name": "Morgen", "value": 171398}, {"name": "Gutenachtkuss", "value": 171399}, {"name": "Nachtlicht", "value": 171400}]}},
+  {"type": "devices.capabilities.on_off", "instance": "powerSwitch", "parameters": {"options": [{"name": "on", "value": 1}, {"name": "off", "value": 0}]}}
+]
+```
+
+- Readback: real values for `online`, `powerSwitch`; `""` for `presetScene`.
+- Seen in #99.
+
 
 ## 10. Scene & DIY Modes
 
@@ -2628,6 +4406,100 @@ DIY Styles:
 - `0x02` = Flicker
 - `0x03` = Marquee
 - `0x04` = Music reactive
+
+### 9.6 SKU Segment Count Overrides
+
+The Govee API exposes RGBIC segment counts through three different shapes
+inside `devices.capabilities.segment_color_setting.parameters`:
+
+1. A direct `segmentCount` integer.
+2. `fields[].elementRange.max` — a **0-based** max index (so `max = 14` ⇒ 15
+   segments).
+3. `fields[].size.max` — the protocol-level array-size ceiling.
+
+For most SKUs the parser picks the first shape that yields a value, and
+`elementRange.max + 1` is what the device actually has. **A handful of SKUs
+over-report in `elementRange` while `size.max` matches the physical sections.**
+The H7075 is the first observed case: `elementRange.max = 14` (so the
+parser would return 15) but `size.max = 3` and the device really only has
+3 physical sections. Spawning 15 segment entities on a 3-section wall light
+produces 12 phantom `light.<name>_segment_{3..14}` entities that the
+cloud silently rejects, which then get stuck on whatever color the
+optimistic state happened to set.
+
+The integration handles this with a two-layer correction in
+`custom_components/govee/models/device.py` (`GoveeDevice.segment_count`),
+applied in this order:
+
+1. **Defensive clamp on the API count.** When `fields[].size.max` is
+   present, the parser-derived count is clamped with
+   `min(api_count, size.max)`. This is the *automatic* safety net — it
+   catches any SKU that follows the H7075 over-reporting pattern without
+   requiring a manual dict entry. The H7075 itself would already come
+   out at 3 from this clamp alone; the override (step 2) makes the
+   intent explicit and survives API shape changes.
+
+   **Caveat.** `size.max` is documented in the API as the maximum array
+   *length* accepted in one command, not the segment count. On every
+   capture we hold, the two agree (`size.max == elementRange.max + 1`),
+   so the clamp only fires on the inconsistency that signals the bug.
+   Should a device ever advertise a genuine per-command batch limit
+   below its real segment count, the clamp would remove working
+   entities — pin the true count in `SKU_SEGMENT_OVERRIDES` to override
+   it.
+
+2. **Authoritative override.** `SKU_SEGMENT_OVERRIDES` (in
+   `custom_components/govee/const.py`) maps a SKU to the physical
+   segment count, compared case-insensitively against `GoveeDevice.sku`.
+   When a SKU is present, the override wins over any clamp-derived
+   value. The shipped entries are:
+
+   ```python
+   SKU_SEGMENT_OVERRIDES: Final = {
+       "H7075": 3,  # API reports 15 (elementRange.max=14), device has 3 physical sections
+       "H7076": 4,  # API reports 15 AND size.max 15; only indices 0-3 do anything
+   }
+   ```
+
+**When the clamp can't help.** The H7076 Outdoor Up/Down Wall Light is
+the counter-case to the H7075: it reports `elementRange.max = 14` *and*
+`size.max = 15`, so the two agree and the clamp is a no-op. Only indices
+0–3 physically move the light — `0` = top, `1` = bottom, `2` = part of
+the left side, `3` = everything else — while `4`–`14` are accepted with
+HTTP 200 `"success"` and do nothing (#160). A SKU like this can only be
+corrected by an explicit override entry.
+
+Note that the override caps entities at the count the *cloud API* can
+address, which is not necessarily what the Govee app can reach. The
+H7076's app exposes 17 selectable segments per side over BLE; the cloud
+`segmentedColorRgb` capability collapses all of that into 4 indices, and
+no integration change can recover the finer granularity while the
+capability is the only channel available.
+
+The `govee.set_segment_color` service also validates its `segments` list
+against the same effective `segment_count` and logs a warning + early
+returns for out-of-range indices, instead of dispatching a command the
+cloud would refuse.
+
+**Adding a new SKU.** When you observe a SKU whose `elementRange.max` is
+higher than its physical section count, open a GitHub issue with the
+SKU, the captured API response, and the confirmed section count from the
+official Govee Android app. The change is a one-line entry in
+`SKU_SEGMENT_OVERRIDES` (with a rationale comment matching the H7075
+style), a test case in `TestSegmentCountOverride`, and a release note.
+Follow the same workflow as `FAHRENHEIT_REPORTING_SKUS` in the same
+file (issues #115 / #128 / #129 are precedents).
+
+**Orphan entities after upgrading.** The first time an existing H7075
+install upgrades to a release that includes this fix, the entity
+registry keeps the 12 phantom `light.<name>_segment_{4..15}` entries
+that the previous (unfixed) version created. They have to be manually
+deleted from **Settings → Devices & Services → Entities** (filter by
+`<device>_segment`, select each, **Delete**). This is a one-time
+operation per affected device — the fix only prevents *future* phantom
+entities; it does not retroactively purge existing ones.
+
+Reference: #160 (H7076), PR #161 (H7075).
 
 ---
 
@@ -2766,4 +4638,73 @@ All connections use Perfect Forward Secrecy (PFS), preventing decryption with pr
 
 ---
 
-*This document is based on analysis of the Govee Android app via PCAP capture and community reverse engineering efforts. The undocumented APIs may change without notice.*
+## 13. Findings from Submitted Diagnostics (2026-03 → 2026-09)
+
+Sixty-seven diagnostics downloads (and inline dumps) attached to issues and pull requests between March and September 2026 were read end to end; the per-model results are in [`device-catalog.md`](device-catalog.md) (107 SKUs). The cross-cutting facts, which apply beyond any one model:
+
+### 13.1 Instances the Developer API never reads back
+
+`/device/state` returns `""` for these instances on essentially every capture that advertises them, so an integration must keep its own state for them (optimistic + `RestoreEntity`) and must not treat `""` as "off" or "none":
+
+| Instance | Captures returning `""` | Notes |
+|---|---|---|
+| `lightScene`, `diyScene` | 45 each | on every light seen — the active scene is never reported |
+| `snapshot` | 36 | |
+| `segmentedColorRgb`, `segmentedBrightness` | 34 / 33 | per-segment colour is write-only |
+| `musicMode` | 33 | |
+| `gradientToggle` | 24 | |
+| `dreamViewToggle` | 16 | |
+| `mainLightToggle`, `backgroundLightToggle` | 5 each | ceiling-fan lights (H1250/H1270/H1310/H1370) |
+| `fanToggle`, `fanSpeedMode`, `reverseAirflowToggle` | 2 each | H1310 — see §13.4 |
+| `sensorTemperature`, `sensorHumidity` | 2 each | battery thermometers between uploads (H5179/H5112 class) |
+
+Everything else (`powerSwitch`, `brightness`, `colorRgb`, `colorTemperatureK`, `online`, `workMode` on purifiers/humidifiers, property sensors) reads back with a real value.
+
+### 13.2 Models the account list knows but the Developer API does not return
+
+Seen in `bff_device_values` with no Developer-API entry at all: **H3500, H3510, H5086, H5122, H5126, H5129, H6006, H6046, H605C, H616C, H61B5, H7057, H7075, H7162, H805C**. For these the public API is not a path; support needs the account channels (AWS IoT / BFF) or BLE. The H616C case (#122) was confirmed by Govee support as "not enabled for the Developer API"; the others have not been asked about.
+
+### 13.3 Gateway-bridged sensors
+
+Every gateway relationship observed, from `deviceSettings.gatewayInfo`:
+
+| Sensor | Gateway | Seen in |
+|---|---|---|
+| H5058 | H5043 | #134 |
+| H5109 | H5042 | #62, #83, #96, #132, #134 |
+| H5110 | H5044 | #83, #102, #114, #132 |
+| H5112 | H5044 | #150 |
+| H5220 | H5044 | #114, #128 |
+| H5310 | H5044 | #86, #97, #150, #157 |
+| H5111 | H5151 | #83, #134, #144 |
+
+`lastDeviceData` keys seen across all thermometer/hygrometer entries: `tem`, `tem2`, `hum`, `online`, `gwonline`, `lastTime`, `logTime`, `logType`, `read`, `bind`, `avgDayTem`, `avgDayHum`. `tem2` only appears on dual-probe models (H5112). The account's °C/°F preference (`fahOpen`) sits in `deviceSettings` for thermometers listed there.
+
+### 13.4 AWS IoT push shapes
+
+The `state` object of a device push carried only these keys across every capture: `onOff`, `brightness`, `color`, `colorTemInKelvin`, `mode`, `sta` (`stc` string, undecoded), `result`, `wifiFuncList`. Nothing device-class-specific (no fan, toggle, sensor or segment fields) travels in `state`; that information rides as BLE-format frames in `op.command` (§6.4.1) — the H1310's `aa 31`/`aa 42`/`aa 36` fan and light frames, the H7107's `aa 1d` swing arc, the H5192's `0x24`/`0x12`/`0x0F` probe frames, and light strips' `aa 05`/`aa 13`/`aa a5` status packets all arrive that way. Since 2026.9.0 the integration attaches them to diagnostics as `last_mqtt_message._op_frames`.
+
+Hub `multiSync` frames observed: header `ee 34` (16 captures — leak and thermometer sub-device reports) and `ee 35` (2 captures, #87 — the H5059 wet alarm variant).
+
+### 13.5 Rejected control commands
+
+Every non-success answer to a control write in the captures:
+
+| SKU | Command | Answer |
+|---|---|---|
+| H6022 | `musicMode={"musicMode": 1, ...}` | HTTP 200, `Parameter value out of range` — the H6022 advertises modes 3/4/5/6 only (#186; fixed by sending the first advertised mode) |
+| H6159 | `powerSwitch`, `brightness` over LAN | `device reported a different value than was sent` — the LAN readback disagrees with the write (#149) |
+
+Govee's cloud otherwise answered `200 success` to everything — including commands the device then ignored (H6054 colour in #158, phantom segment indices in #160/#143). A `success` body is not evidence the device acted.
+
+### 13.6 Capability shapes worth knowing
+
+- `segment` fields carry both `size {min,max}` (max array length per command) and `elementRange {min,max}` (index range). **They usually do not agree.** `elementRange` is `0–14` on almost every RGBIC model regardless of how many segments it has, while `size.max` varies per model and tracks the physical count. Captures with `elementRange 0–14` and a different `size.max`: H6061 (21), H61BE (20), H61A0 (18), H6097 (14), H60A1 (13, brightness field only), H70C2/H70C4/H70C5/H70C9 (10), H6072 (8), H6076 (7), H7060 (4). `GoveeDevice.segment_count` therefore clamps the `elementRange`-derived count to `size.max`; `SKU_SEGMENT_OVERRIDES` exists for the case where both numbers are wrong (H7076: both say 15, four segments respond — #160; H7075: 15 vs 3 — #161). A `size.max` *above* `elementRange.max + 1` (H6061, H61BE, H61A0) means the device accepts more indices per call than it advertises indices — the count is still `elementRange.max + 1` there.
+- `musicMode` option value sets differ per model and are not contiguous: H1270 offers 0–11 named effects, H6054 0–7, H6022 {3,4,5,6}. Never assume `1` exists.
+- `workMode` on purifiers/humidifiers/dehumidifiers advertises `modeValue` options with `None` values for named modes (gearMode/Custom/Auto) — the numeric range lives on the manual mode only.
+- Ceiling-fan combos (H1250/H1270/H1310/H1370) report as `devices.types.light`; the fan is detectable only from `fanToggle` + `fanSpeedMode`.
+- Groups (`BaseGroup`, `SameModeGroup`, `DreamViewScenic` in the device list) have numeric ids and a single capability; `/device/state` returns 400 for them.
+
+---
+
+*This document is based on analysis of the Govee Android app via PCAP capture, community reverse engineering efforts, and diagnostics submitted by users. The undocumented APIs may change without notice.*

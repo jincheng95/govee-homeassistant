@@ -10,15 +10,24 @@ from custom_components.govee.api.ble_packet import (
     DIY_MODE_INDICATOR,
     DREAMVIEW_COMMAND,
     DREAMVIEW_INDICATOR,
+    DREAMVIEW_SATURATION_MAX,
+    DREAMVIEW_SEGMENTS_ALL,
+    DREAMVIEW_STYLE_MOVIE,
+    FAN_OSC_COMMAND,
+    FAN_OSC_MULTISYNC_PREFIX,
+    FAN_OSC_PTREAL_PREFIX,
     MUSIC_MODE_COMMAND,
     MUSIC_MODE_INDICATOR,
     MUSIC_PACKET_PREFIX,
     build_diy_scene_packet,
     build_dreamview_packet,
+    build_fan_oscillation_packet,
     build_music_mode_packet,
+    build_music_mode_v3_packet,
     build_packet,
     calculate_checksum,
     encode_packet_base64,
+    music_v3_effect_code,
 )
 
 # ==============================================================================
@@ -342,50 +351,49 @@ class TestMusicModePacketIntegration:
 
 
 class TestBuildDreamviewPacket:
-    """Test DreamView packet building."""
+    """Test DreamView (video/camera sync) packet building."""
 
     def test_packet_length(self):
         """Test DreamView packet is 20 bytes."""
-        packet = build_dreamview_packet(True)
+        packet = build_dreamview_packet()
         assert len(packet) == 20
 
     def test_packet_header(self):
-        """Test DreamView packet has correct header."""
-        packet = build_dreamview_packet(True)
+        """Test DreamView packet selects video mode, not a scene preset."""
+        packet = build_dreamview_packet()
 
         # Byte 0: Standard command prefix (0x33)
         assert packet[0] == MUSIC_PACKET_PREFIX
         assert packet[0] == 0x33
 
-        # Byte 1: DreamView command (0x05, same as music mode)
+        # Byte 1: Colour/mode command (0x05, same as music mode)
         assert packet[1] == DREAMVIEW_COMMAND
         assert packet[1] == 0x05
 
-        # Byte 2: DreamView indicator (0x04, scene mode)
+        # Byte 2: video mode. 0x04 here would be the *scene preset*
+        # sub-command — see docs/govee-protocol-reference.md 6.4.
         assert packet[2] == DREAMVIEW_INDICATOR
-        assert packet[2] == 0x04
+        assert packet[2] == 0x00
 
-    def test_enabled_byte_position(self):
-        """Test enabled value is at correct position (byte 3)."""
-        packet_on = build_dreamview_packet(True)
-        assert packet_on[3] == 0x01
+    def test_video_parameters(self):
+        """Test the video-mode parameter bytes."""
+        packet = build_dreamview_packet()
 
-        packet_off = build_dreamview_packet(False)
-        assert packet_off[3] == 0x00
+        assert packet[3] == DREAMVIEW_SEGMENTS_ALL  # all segments
+        assert packet[4] == DREAMVIEW_STYLE_MOVIE  # movie (not game)
+        assert packet[5] == DREAMVIEW_SATURATION_MAX  # 100% saturation
 
-    def test_enabled_on(self):
-        """Test DreamView enabled packet."""
-        packet = build_dreamview_packet(True)
-        assert packet[3] == 0x01
+    def test_is_not_scene_sunset(self):
+        """Regression: the old packet was byte-for-byte Scene(Sunset).
 
-    def test_enabled_off(self):
-        """Test DreamView disabled packet."""
-        packet = build_dreamview_packet(False)
-        assert packet[3] == 0x00
+        ``33 05 04 01 00...00 33`` is the documented Sunset scene frame, so
+        enabling DreamView used to leave the device on a static orange scene.
+        """
+        assert build_dreamview_packet().hex() != "3305040100000000000000000000000000000033"
 
     def test_valid_checksum(self):
         """Test packet has valid checksum."""
-        packet = build_dreamview_packet(True)
+        packet = build_dreamview_packet()
 
         # Recalculate checksum from first 19 bytes
         expected_checksum = calculate_checksum(list(packet[:19]))
@@ -393,11 +401,11 @@ class TestBuildDreamviewPacket:
 
     def test_different_from_music_mode(self):
         """Test DreamView packet differs from music mode packet."""
-        dreamview_packet = build_dreamview_packet(True)
+        dreamview_packet = build_dreamview_packet()
         music_packet = build_music_mode_packet(True, 50)
 
-        # Byte 2 should differ (0x04 vs 0x01)
-        assert dreamview_packet[2] == 0x04
+        # Byte 2 should differ (0x00 vs 0x01)
+        assert dreamview_packet[2] == 0x00
         assert music_packet[2] == 0x01
 
         # Overall packets should be different
@@ -413,9 +421,9 @@ class TestDreamviewPacketIntegration:
     """Integration tests for DreamView packet generation."""
 
     def test_full_workflow_on(self):
-        """Test complete DreamView ON packet generation workflow."""
+        """Test complete DreamView packet generation workflow."""
         # Build packet
-        packet = build_dreamview_packet(True)
+        packet = build_dreamview_packet()
         assert len(packet) == 20
 
         # Encode for transmission
@@ -425,24 +433,8 @@ class TestDreamviewPacketIntegration:
         # Verify can be decoded back
         decoded = base64.b64decode(encoded)
         assert decoded == packet
-        assert decoded[2] == 0x04  # DreamView indicator
-        assert decoded[3] == 0x01  # Enabled
-
-    def test_full_workflow_off(self):
-        """Test complete DreamView OFF packet generation workflow."""
-        # Build packet
-        packet = build_dreamview_packet(False)
-        assert len(packet) == 20
-
-        # Encode for transmission
-        encoded = encode_packet_base64(packet)
-        assert isinstance(encoded, str)
-
-        # Verify can be decoded back
-        decoded = base64.b64decode(encoded)
-        assert decoded == packet
-        assert decoded[2] == 0x04  # DreamView indicator
-        assert decoded[3] == 0x00  # Disabled
+        assert decoded[2] == 0x00  # Video mode indicator
+        assert decoded[3] == 0x01  # All segments
 
 
 # ==============================================================================
@@ -520,12 +512,12 @@ class TestBuildDiyScenePacket:
         """Test DIY scene packet differs from music and DreamView packets."""
         diy_packet = build_diy_scene_packet(1)
         music_packet = build_music_mode_packet(True, 50)
-        dreamview_packet = build_dreamview_packet(True)
+        dreamview_packet = build_dreamview_packet()
 
-        # Byte 2 should differ (0x0A vs 0x01 vs 0x04)
+        # Byte 2 should differ (0x0A vs 0x01 vs 0x00)
         assert diy_packet[2] == 0x0A
         assert music_packet[2] == 0x01
-        assert dreamview_packet[2] == 0x04
+        assert dreamview_packet[2] == 0x00
 
     @pytest.mark.parametrize("scene_id", [1, 100, 21104832, 0xFFFFFFFF])
     def test_various_scene_ids(self, scene_id: int):
@@ -574,3 +566,111 @@ class TestDiyScenePacketIntegration:
         # Verify scene ID preserved
         recovered_id = int.from_bytes(decoded[3:7], byteorder="little")
         assert recovered_id == scene_id
+
+
+# ==============================================================================
+# Tower Fan Oscillation Packet Tests
+# ==============================================================================
+
+
+def _xor(data: bytes) -> int:
+    """XOR-fold bytes (the packet checksum)."""
+    result = 0
+    for b in data:
+        result ^= b
+    return result
+
+
+class TestBuildFanOscillationPacket:
+    """Test the Tower Fan 2 (H7105/H7107) oscillation packet builder."""
+
+    # Hardware-confirmed OFF frame from homebridge-govee lib/device/fan-H7107.js.
+    HOMEBRIDGE_OFF_B64 = "Mx0AAAAAAAAAAAAAAAAAAAAAAC4="
+
+    def test_off_matches_homebridge_frame(self):
+        """OFF is byte-exact to the frame homebridge-govee proved on hardware."""
+        packet = build_fan_oscillation_packet(False)
+        assert encode_packet_base64(packet) == self.HOMEBRIDGE_OFF_B64
+
+    def test_off_layout(self):
+        """OFF = 0x33 0x1d 0x00, zero-padded, XOR checksum."""
+        packet = build_fan_oscillation_packet(False)
+        assert len(packet) == 20
+        assert packet[0] == FAN_OSC_PTREAL_PREFIX
+        assert packet[1] == FAN_OSC_COMMAND
+        assert packet[2] == 0x00
+        assert packet[3:19] == bytes(16)
+        assert packet[19] == _xor(packet[:19])
+
+    def test_on_bare(self):
+        """ON without a swing tail = 0x33 0x1d 0x01, zero-padded."""
+        packet = build_fan_oscillation_packet(True)
+        assert packet[:3] == bytes([0x33, 0x1D, 0x01])
+        assert packet[3:19] == bytes(16)
+        assert packet[19] == _xor(packet[:19])
+
+    def test_on_with_swing_tail(self):
+        """ON carries the 4 swing-range bytes right after the enable byte."""
+        packet = build_fan_oscillation_packet(True, [0x01, 0x06, 0x03, 0x50])
+        assert packet[:7] == bytes([0x33, 0x1D, 0x01, 0x01, 0x06, 0x03, 0x50])
+        assert packet[7:19] == bytes(12)
+        assert packet[19] == _xor(packet[:19])
+
+    def test_on_tail_truncated_to_four_bytes(self):
+        """Only the first 4 tail bytes are used, each masked to a byte."""
+        packet = build_fan_oscillation_packet(True, [1, 2, 3, 0x1FF, 5, 6])
+        assert packet[3:7] == bytes([1, 2, 3, 0xFF])
+        assert packet[7] == 0x00
+
+    def test_off_ignores_tail(self):
+        """The swing tail is an ON-only payload."""
+        with_tail = build_fan_oscillation_packet(False, [1, 2, 3, 4])
+        assert with_tail == build_fan_oscillation_packet(False)
+
+    def test_multisync_prefix(self):
+        """The multiSync twin swaps the 0x33 prefix for 0x3a."""
+        packet = build_fan_oscillation_packet(False, prefix=FAN_OSC_MULTISYNC_PREFIX)
+        assert packet[0] == 0x3A
+        assert packet[1] == FAN_OSC_COMMAND
+        assert packet[2] == 0x00
+        assert packet[19] == _xor(packet[:19])
+
+
+class TestMusicModeV3Packet:
+    """The app's 33 05 13 selector (#215/#186)."""
+
+    def test_new_effect_carries_effect_and_sensitivity_only(self):
+        packet = build_music_mode_v3_packet(0x31, 25)
+
+        # Same shape as the H612F's own status report: aa 05 13 31 19 (Shiny, 25).
+        assert packet[:5] == bytes([0x33, 0x05, 0x13, 0x31, 0x19])
+        assert packet[5:19] == bytes(14)
+        assert packet[19] == calculate_checksum(list(packet[:19]))
+
+    def test_legacy_effect_adds_dynamic_style_and_auto_colour(self):
+        packet = build_music_mode_v3_packet(0x04, 100)
+
+        assert packet[:7] == bytes([0x33, 0x05, 0x13, 0x04, 0x64, 0x00, 0x00])
+        assert len(packet) == 20
+
+    @pytest.mark.parametrize(("given", "sent"), [(-5, 0), (150, 100)])
+    def test_sensitivity_is_clamped(self, given, sent):
+        assert build_music_mode_v3_packet(0x31, given)[4] == sent
+
+    @pytest.mark.parametrize(
+        ("name", "code"),
+        [
+            ("Rhythm", 0x03),
+            ("Spectrum", 0x04),
+            ("Energic", 0x05),
+            ("Rolling", 0x06),
+            ("Shiny", 0x31),
+            ("PianoKeys", 0x34),
+            ("Day And Night", 0x37),
+        ],
+    )
+    def test_effect_names_map_to_app_codes(self, name, code):
+        assert music_v3_effect_code(name) == code
+
+    def test_unknown_effect_has_no_code(self):
+        assert music_v3_effect_code("Sprouting") is None

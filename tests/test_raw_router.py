@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.govee import lan_udp_health
 from custom_components.govee.api import lan_raw, raw_router
@@ -33,7 +34,7 @@ from custom_components.govee.const import (
     SUFFIX_RIPPLE_LIGHT,
     SUFFIX_SIDE_LIGHT,
 )
-from custom_components.govee.models import GoveeCapability, GoveeDevice
+from custom_components.govee.models import GoveeCapability, GoveeDevice, GoveeDeviceState
 from custom_components.govee.models.device import (
     CAPABILITY_COLOR_SETTING,
     CAPABILITY_ON_OFF,
@@ -111,6 +112,8 @@ def _coordinator(*, enabled: bool = True, on_lan: bool = True, sku: str = "H60B0
     coordinator._govee_zone_state_registry = None
     coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: enabled}
     coordinator.async_control_device = AsyncMock(return_value=True)
+    state = GoveeDeviceState.create_empty(DEVICE_ID)
+    coordinator.get_state = MagicMock(return_value=state)
     coordinator._lan_devices = {}
     if on_lan:
         coordinator._lan_devices[DEVICE_ID] = LanDeviceInfo(
@@ -138,7 +141,6 @@ def _entity(coordinator: Any, instance: str, device: GoveeDevice | None = None) 
         instance,
         "govee_test_light",
         TOGGLE_SUFFIXES.get(instance, "_x"),
-        "mdi:shimmer",
     )
     entity.async_write_ha_state = MagicMock()
     return entity
@@ -391,6 +393,19 @@ class TestOptimisticState:
 
         assert entity.is_on is False
 
+    @pytest.mark.asyncio
+    async def test_raw_write_is_mirrored_into_the_shared_toggles(self, _fast_client):
+        """A raw OFF overrides an earlier cloud ON recorded in ``state.toggles``."""
+        coordinator = _coordinator()
+        state = coordinator.get_state(DEVICE_ID)
+        state.toggles["rippleLightToggle"] = True
+        entity = _entity(coordinator, "rippleLightToggle")
+
+        assert await raw_router.async_zone_power(entity, on=False) is True
+
+        assert state.toggles["rippleLightToggle"] is False
+        assert entity.is_on is False
+
     def test_constraint_is_read_from_the_profile(self):
         # The displacement above must be derived, not hardcoded: same call with
         # a profile whose limit covers all three zones displaces nothing.
@@ -463,6 +478,7 @@ class TestSwitchHook:
         coordinator.async_control_device = AsyncMock(return_value=False)
         entity = _entity(coordinator, "bottomLightToggle")
 
-        await entity.async_turn_on()
+        with pytest.raises(HomeAssistantError):
+            await entity.async_turn_on()
 
         assert entity.is_on is False

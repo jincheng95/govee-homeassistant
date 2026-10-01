@@ -75,9 +75,7 @@ class TestCoordinatorClearing:
         coord = object.__new__(coord_mod.GoveeCoordinator)
         device = _h7150()
         coord._devices = {device.device_id: device}
-        coord._states = {
-            device.device_id: GoveeDeviceState.create_empty(device.device_id)
-        }
+        coord._states = {device.device_id: GoveeDeviceState.create_empty(device.device_id)}
         coord._water_full_changed_at = {}
         coord.async_set_updated_data = MagicMock()
         return coord, device
@@ -236,9 +234,7 @@ class TestWaterFullSensorRestore:
     async def test_restores_cleared_state(self):
         entity, device = self._entity()
         await self._restore(entity, MagicMock(state="off", attributes={}))
-        entity.coordinator.restore_water_full.assert_called_once_with(
-            device.device_id, False, None
-        )
+        entity.coordinator.restore_water_full.assert_called_once_with(device.device_id, False, None)
 
     @pytest.mark.asyncio
     async def test_no_previous_state_skips_restore(self):
@@ -255,12 +251,8 @@ class TestWaterFullSensorRestore:
     @pytest.mark.asyncio
     async def test_garbage_changed_at_restores_without_timestamp(self):
         entity, device = self._entity()
-        await self._restore(
-            entity, MagicMock(state="on", attributes={"changed_at": 12345})
-        )
-        entity.coordinator.restore_water_full.assert_called_once_with(
-            device.device_id, True, None
-        )
+        await self._restore(entity, MagicMock(state="on", attributes={"changed_at": 12345}))
+        entity.coordinator.restore_water_full.assert_called_once_with(device.device_id, True, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -329,9 +321,7 @@ class TestDeviceGating:
         entry = MagicMock()
         entry.runtime_data = coordinator
         added: list = []
-        await button_mod.async_setup_entry(
-            MagicMock(), entry, lambda ents: added.extend(ents)
-        )
+        await button_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
         return [type(e).__name__ for e in added]
 
     async def test_h7150_gets_clear_button(self):

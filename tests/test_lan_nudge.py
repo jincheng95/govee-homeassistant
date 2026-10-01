@@ -116,7 +116,7 @@ def _coord(options: dict[str, Any] | None = None) -> Any:
         poll_interval=60,
     )
     for dev_id in (DEVICE_ID, OTHER_ID):
-        coord._devices[dev_id] = MagicMock(brightness_range=(0, 100))
+        coord._devices[dev_id] = MagicMock(brightness_range=(0, 100), mqtt_outlet_count=0)
         coord._states[dev_id] = GoveeDeviceState.create_empty(dev_id)
         coord._ensure_transport_health(dev_id)
     coord.async_set_updated_data = MagicMock()

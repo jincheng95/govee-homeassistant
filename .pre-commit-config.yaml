@@ -1,10 +1,9 @@
 repos:
   - repo: https://github.com/psf/black
-    rev: 24.10.0
+    rev: 26.5.1
     hooks:
       - id: black
         language_version: python3.12
-        args: [--line-length=119]
 
   - repo: https://github.com/PyCQA/flake8
     rev: 7.1.1
@@ -16,6 +15,5 @@ repos:
     rev: v1.13.0
     hooks:
       - id: mypy
-        additional_dependencies: [types-all]
         args: [--strict]
         files: ^custom_components/govee/

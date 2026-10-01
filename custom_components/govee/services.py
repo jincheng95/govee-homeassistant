@@ -1,9 +1,18 @@
-"""Custom services for Govee integration.
+"""Service actions for the Govee integration.
 
-Provides services for:
-- Refreshing the scene catalog (``govee.refresh_scenes``)
-- Setting per-segment colors on RGBIC devices (``govee.set_segment_color``)
-- Applying a DIY effect to a multi-zone lamp (``govee.apply_diy_effect``, fork)
+Provides:
+- ``govee.refresh_scenes``: re-fetch the scene catalog for one or all devices.
+- ``govee.set_segment_color``: set the colour of individual RGBIC segments.
+- ``govee.send_raw_ptreal``: send a raw BLE ptReal frame (developer/debug aid).
+- ``govee.apply_diy_effect``: compose and upload a DIY effect to a multi-zone
+  lamp (fork).
+
+Actions are registered once from ``async_setup`` so automations that reference
+them validate even while no config entry is loaded (quality-scale rule
+``action-setup``), and invalid input raises ``ServiceValidationError`` (rule
+``action-exceptions``). ``device_id`` accepts either the Home Assistant device
+registry ID (what the device selector produces) or the Govee device ID, so
+automations written against the Govee ID keep working.
 """
 
 from __future__ import annotations
@@ -13,16 +22,18 @@ from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.target import (
     TargetSelection,
     async_extract_referenced_entity_ids,
 )
 
+from .api.ble_packet import calculate_checksum
 from .api.protocol import (
     DIRECTIONS,
     MODE_NONE,
@@ -42,26 +53,38 @@ from .diy_state import (
 )
 from .diy_state import store as diy_store
 from .models import GoveeDevice, RGBColor, SegmentColorCommand
+from .segment_limit import manual_segment_count, segment_count
 
 _LOGGER = logging.getLogger(__name__)
 
-# Service names
+ATTR_DEVICE_ID = "device_id"
+ATTR_RGB_COLOR = "rgb_color"
+ATTR_SEGMENTS = "segments"
+ATTR_FRAME = "frame"
+
 SERVICE_REFRESH_SCENES = "refresh_scenes"
 SERVICE_SET_SEGMENT_COLOR = "set_segment_color"
+SERVICE_SEND_RAW_PTREAL = "send_raw_ptreal"
 SERVICE_APPLY_DIY_EFFECT = "apply_diy_effect"
 
-# Service schemas
 SERVICE_REFRESH_SCENES_SCHEMA = vol.Schema(
     {
-        vol.Optional("device_id"): cv.string,
+        vol.Optional(ATTR_DEVICE_ID): cv.string,
+    }
+)
+
+SERVICE_SEND_RAW_PTREAL_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_FRAME): cv.string,
     }
 )
 
 SERVICE_SET_SEGMENT_COLOR_SCHEMA = vol.Schema(
     {
-        vol.Required("device_id"): cv.string,
-        vol.Required("segments"): vol.All(cv.ensure_list, [cv.positive_int]),
-        vol.Required("rgb_color"): vol.All(
+        vol.Required(ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_SEGMENTS): vol.All(cv.ensure_list, [cv.positive_int]),
+        vol.Required(ATTR_RGB_COLOR): vol.All(
             vol.ExactSequence((cv.byte, cv.byte, cv.byte)),
             vol.Coerce(tuple),
         ),
@@ -140,111 +163,244 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
 )
 
 
-async def async_setup_services(hass: HomeAssistant) -> None:
-    """Set up Govee services."""
+def _loaded_coordinators(hass: HomeAssistant) -> list[GoveeCoordinator]:
+    """Return the coordinator of every loaded Govee config entry."""
+    return [
+        entry.runtime_data
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.state is ConfigEntryState.LOADED
+    ]
 
-    async def async_refresh_scenes(call: ServiceCall) -> None:
-        """Refresh scenes for device(s)."""
-        device_id = call.data.get("device_id")
 
-        # Get all coordinators
-        coordinators = _get_coordinators(hass)
+def _resolve_device_id(hass: HomeAssistant, raw_id: str) -> str:
+    """Map a Home Assistant device registry ID to the Govee device ID.
 
-        for coordinator in coordinators:
-            if device_id:
-                # Refresh specific device
-                if device_id in coordinator.devices:
-                    await coordinator.async_get_scenes(device_id, refresh=True)
-                    _LOGGER.info("Refreshed scenes for device %s", device_id)
-            else:
-                # Refresh all devices
-                for dev_id, device in coordinator.devices.items():
-                    if device.supports_scenes:
-                        await coordinator.async_get_scenes(dev_id, refresh=True)
-                _LOGGER.info("Refreshed scenes for all devices")
+    Anything that is not a registry ID (a Govee device ID, for instance)
+    passes through unchanged.
+    """
+    device_entry = dr.async_get(hass).async_get(raw_id)
+    if device_entry is not None:
+        for domain, identifier in device_entry.identifiers:
+            if domain == DOMAIN:
+                return identifier
+    return raw_id
 
-    async def async_set_segment_color(call: ServiceCall) -> None:
-        """Set color for specific segments."""
-        device_id = call.data["device_id"]
-        segments = call.data["segments"]
-        rgb = call.data["rgb_color"]
 
-        coordinator = _get_coordinator_for_device(hass, device_id)
-        if not coordinator:
-            # A device id the user typed wrong is a user error, not a silent
-            # no-op: returning quietly left the automation looking successful.
-            raise ServiceValidationError(f"Govee device {device_id} not found")
+def _get_coordinator_for_device(hass: HomeAssistant, raw_id: str) -> tuple[GoveeCoordinator, str] | None:
+    """Return ``(coordinator, govee_device_id)`` for a device, or None if unknown."""
+    device_id = _resolve_device_id(hass, raw_id)
+    for coordinator in _loaded_coordinators(hass):
+        if device_id in coordinator.devices:
+            return coordinator, device_id
+    return None
 
-        color = RGBColor(r=rgb[0], g=rgb[1], b=rgb[2])
-        command = SegmentColorCommand(
-            segment_indices=tuple(segments),
-            color=color,
+
+def _device_not_found(raw_id: str) -> ServiceValidationError:
+    """Error for a ``device_id`` that no loaded entry knows."""
+    return ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key="device_not_found",
+        translation_placeholders={"device_id": raw_id},
+    )
+
+
+async def async_refresh_scenes_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.refresh_scenes`` for one device or every device."""
+    raw_id = call.data.get(ATTR_DEVICE_ID)
+    if raw_id:
+        found = _get_coordinator_for_device(hass, raw_id)
+        if found is None:
+            raise _device_not_found(raw_id)
+        coordinator, device_id = found
+        await coordinator.async_get_scenes(device_id, refresh=True)
+        _LOGGER.debug("Refreshed scenes for device %s", device_id)
+        return
+
+    coordinators = _loaded_coordinators(hass)
+    if not coordinators:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="not_loaded",
         )
+    for coordinator in coordinators:
+        for dev_id, device in coordinator.devices.items():
+            if device.supports_scenes:
+                await coordinator.async_get_scenes(dev_id, refresh=True)
+    _LOGGER.debug("Refreshed scenes for all devices")
 
-        await coordinator.async_control_device(device_id, command)
-        _LOGGER.debug(
-            "Set segments %s to color %s on device %s",
-            segments,
-            rgb,
-            device_id,
-        )
 
-    async def async_apply_diy_effect(call: ServiceCall) -> None:
-        """Compose and upload a DIY effect to a multi-zone lamp (fork).
+async def async_set_segment_color_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.set_segment_color``.
 
-        Deliberately *self-contained*: a zone left out of the call is switched
-        off in the uploaded effect, and every field a named zone omits falls
-        back to a fixed default rather than to whatever the config entities
-        happen to be showing. The same call therefore produces the same lamp
-        every time it runs, which is what an automation needs.
+    Rejects any segment index outside the device's effective
+    ``segment_count`` (which already factors in ``SKU_SEGMENT_OVERRIDES`` for
+    SKUs like the H7075 that the API over-reports) with a
+    ``ServiceValidationError``, so the caller learns why nothing happened
+    instead of the cloud silently refusing the command. The fork's hardware
+    cap (``segment_limit.segment_count``) applies on top.
+    """
+    raw_id = call.data[ATTR_DEVICE_ID]
+    segments: list[int] = call.data[ATTR_SEGMENTS]
+    rgb = call.data[ATTR_RGB_COLOR]
 
-        The staged records in :mod:`.diy_state` are updated to match, so the
-        DIY config entities show what was actually sent instead of a draft the
-        service just overwrote.
+    found = _get_coordinator_for_device(hass, raw_id)
+    if found is None:
+        raise _device_not_found(raw_id)
+    coordinator, device_id = found
 
-        Raises:
-            HomeAssistantError: If the target does not resolve to exactly one
-                DIY-capable Govee device, a mode name is not in that zone's
-                table, the effect cannot be encoded (no zone on, or a zone with
-                a mode and no colours), or the upload could not be sent.
-        """
-        coordinator, device, profile, diy = _resolve_diy_target(hass, call)
-        device_id = device.device_id
-
-        store = diy_store(coordinator)
-        for zone in diy.zones:
-            store.update(
-                device_id,
-                zone.zone_key,
-                **_staged_record(zone, _zone_call_data(zone, call.data)),
+    device = coordinator.devices.get(device_id)
+    device_name = device.name if device is not None else device_id
+    if device is not None:
+        options = getattr(getattr(coordinator, "config_entry", None), "options", None)
+        count = segment_count(device, manual_segment_count(options, device_id))
+        bad = [index for index in segments if index >= count]
+        if bad:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="segment_out_of_range",
+                translation_placeholders={
+                    "device": device_name,
+                    "indices": ", ".join(str(index) for index in bad),
+                    "count": str(count),
+                },
             )
 
-        await async_send_diy_effect(coordinator, device, profile, store.effects(device_id, diy))
-        _LOGGER.info("Applied DIY effect to %s", device.name)
+    command = SegmentColorCommand(
+        segment_indices=tuple(segments),
+        color=RGBColor(r=rgb[0], g=rgb[1], b=rgb[2]),
+    )
+    if not await coordinator.async_control_device(device_id, command):
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="command_failed",
+            translation_placeholders={"device": device_name},
+        )
+    _LOGGER.debug("Set segments %s to color %s on device %s", segments, rgb, device_id)
 
-    # Register services
+
+async def async_send_raw_ptreal_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.send_raw_ptreal`` (developer/debug aid for issue #208).
+
+    Sends an arbitrary BLE ptReal command frame to a device over the AWS IoT
+    passthrough. Frames of 19 bytes or fewer get a checksum appended by the
+    coordinator; a 20-byte frame must already carry a valid XOR checksum.
+    """
+    raw_id = call.data[ATTR_DEVICE_ID]
+    raw_frame = call.data[ATTR_FRAME]
+
+    cleaned = raw_frame.replace(" ", "").replace(":", "")
+    try:
+        frame = bytes.fromhex(cleaned)
+    except ValueError:
+        frame = b""
+
+    if not cleaned or len(cleaned) % 2 != 0 or not frame or len(frame) > 20:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_ptreal_frame",
+            translation_placeholders={"frame": raw_frame},
+        )
+
+    if len(frame) == 20 and calculate_checksum(list(frame[:19])) != frame[19]:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_ptreal_frame",
+            translation_placeholders={"frame": raw_frame},
+        )
+
+    found = _get_coordinator_for_device(hass, raw_id)
+    if found is None:
+        raise _device_not_found(raw_id)
+    coordinator, device_id = found
+
+    device = coordinator.devices.get(device_id)
+    device_name = device.name if device is not None else device_id
+
+    if not await coordinator.async_send_raw_ptreal(device_id, frame):
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="ptreal_unavailable",
+            translation_placeholders={"device": device_name},
+        )
+    _LOGGER.debug("Sent raw ptReal frame %s to device %s", frame.hex(), device_id)
+
+
+async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Compose and upload a DIY effect to a multi-zone lamp (fork).
+
+    Deliberately *self-contained*: a zone left out of the call is switched
+    off in the uploaded effect, and every field a named zone omits falls
+    back to a fixed default rather than to whatever the config entities
+    happen to be showing. The same call therefore produces the same lamp
+    every time it runs, which is what an automation needs.
+
+    The staged records in :mod:`.diy_state` are updated to match, so the
+    DIY config entities show what was actually sent instead of a draft the
+    service just overwrote.
+
+    Raises:
+        HomeAssistantError: If the target does not resolve to exactly one
+            DIY-capable Govee device, a mode name is not in that zone's
+            table, the effect cannot be encoded (no zone on, or a zone with
+            a mode and no colours), or the upload could not be sent.
+    """
+    coordinator, device, profile, diy = _resolve_diy_target(hass, call)
+    device_id = device.device_id
+
+    store = diy_store(coordinator)
+    for zone in diy.zones:
+        store.update(
+            device_id,
+            zone.zone_key,
+            **_staged_record(zone, _zone_call_data(zone, call.data)),
+        )
+
+    await async_send_diy_effect(coordinator, device, profile, store.effects(device_id, diy))
+    _LOGGER.info("Applied DIY effect to %s", device.name)
+
+
+@callback
+def async_setup_services(hass: HomeAssistant) -> None:
+    """Register the Govee service actions (called once from ``async_setup``)."""
+
+    async def _refresh_scenes(call: ServiceCall) -> None:
+        await async_refresh_scenes_handler(hass, call)
+
+    async def _set_segment_color(call: ServiceCall) -> None:
+        await async_set_segment_color_handler(hass, call)
+
+    async def _send_raw_ptreal(call: ServiceCall) -> None:
+        await async_send_raw_ptreal_handler(hass, call)
+
+    async def _apply_diy_effect(call: ServiceCall) -> None:
+        await async_apply_diy_effect_handler(hass, call)
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_REFRESH_SCENES,
-        async_refresh_scenes,
+        _refresh_scenes,
         schema=SERVICE_REFRESH_SCENES_SCHEMA,
     )
-
     hass.services.async_register(
         DOMAIN,
         SERVICE_SET_SEGMENT_COLOR,
-        async_set_segment_color,
+        _set_segment_color,
         schema=SERVICE_SET_SEGMENT_COLOR_SCHEMA,
     )
-
     hass.services.async_register(
         DOMAIN,
         SERVICE_APPLY_DIY_EFFECT,
-        async_apply_diy_effect,
+        _apply_diy_effect,
         schema=SERVICE_APPLY_DIY_EFFECT_SCHEMA,
     )
-
-    _LOGGER.debug("Govee services registered")
+    # Admin-only: it sends arbitrary frames to the device (#208 debug aid).
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_SEND_RAW_PTREAL,
+        _send_raw_ptreal,
+        schema=SERVICE_SEND_RAW_PTREAL_SCHEMA,
+    )
 
 
 def _targeted_govee_device_ids(hass: HomeAssistant, call: ServiceCall) -> list[str]:
@@ -327,10 +483,11 @@ def _resolve_diy_target(
         )
 
     candidates: list[tuple[GoveeCoordinator, GoveeDevice]] = []
-    for device_id in device_ids:
-        coordinator = _get_coordinator_for_device(hass, device_id)
-        if coordinator is None:
+    for raw_id in device_ids:
+        found = _get_coordinator_for_device(hass, raw_id)
+        if found is None:
             continue
+        coordinator, device_id = found
         candidates.append((coordinator, coordinator.devices[device_id]))
     if not candidates:
         raise HomeAssistantError(f"Govee device {', '.join(device_ids)} is not known to this integration")
@@ -408,31 +565,3 @@ def _staged_record(zone: DiyZoneSpec, data: dict[str, Any] | None) -> dict[str, 
     if zone.has_flow_rate:
         record["flow_rate"] = int(data.get("flow_rate", DEFAULT_FLOW_RATE))
     return record
-
-
-async def async_unload_services(hass: HomeAssistant) -> None:
-    """Unload Govee services."""
-    hass.services.async_remove(DOMAIN, SERVICE_REFRESH_SCENES)
-    hass.services.async_remove(DOMAIN, SERVICE_SET_SEGMENT_COLOR)
-    hass.services.async_remove(DOMAIN, SERVICE_APPLY_DIY_EFFECT)
-    _LOGGER.debug("Govee services unloaded")
-
-
-def _get_coordinators(hass: HomeAssistant) -> list[GoveeCoordinator]:
-    """Get all Govee coordinators."""
-    coordinators = []
-    for entry in hass.config_entries.async_entries(DOMAIN):
-        if hasattr(entry, "runtime_data") and isinstance(entry.runtime_data, GoveeCoordinator):
-            coordinators.append(entry.runtime_data)
-    return coordinators
-
-
-def _get_coordinator_for_device(
-    hass: HomeAssistant,
-    device_id: str,
-) -> GoveeCoordinator | None:
-    """Get coordinator that manages a specific device."""
-    for coordinator in _get_coordinators(hass):
-        if device_id in coordinator.devices:
-            return coordinator
-    return None
