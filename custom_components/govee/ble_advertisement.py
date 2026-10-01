@@ -172,8 +172,7 @@ class BleAdvertisementHandler:
     def handle_advertisement(self, service_info: Any) -> None:
         """Correlate one BLE advertisement with a known cloud device.
 
-        Matching strategy (see
-        ``docs/_research/2026-04-09_multi-transport-single-entity.md``):
+        Matching strategy:
           1. Extract SKU from the advertising name.
           2. Find cloud devices with that SKU (ignoring group devices).
           3. If exactly one match → unambiguous correlation.
