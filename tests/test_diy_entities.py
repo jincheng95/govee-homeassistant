@@ -1132,7 +1132,7 @@ class TestService:
         with open("custom_components/govee/services.yaml", encoding="utf-8") as handle:
             schema = yaml.safe_load(handle)["apply_diy_effect"]
 
-        assert schema["target"]["device"] == {"integration": "govee"}
+        assert schema["target"] == {"entity": {"integration": "govee", "domain": "light"}}
         fields = {}
         for name, spec in schema["fields"].items():
             fields.update(spec["fields"] if "fields" in spec else {name: spec})

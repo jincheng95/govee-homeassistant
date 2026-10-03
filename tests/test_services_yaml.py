@@ -6,9 +6,9 @@ A service description that HA's schema rejects is not a loud failure: HA logs
 it and drops **the whole service's UI schema**, so the service still exists but
 its dialog loses every field and target. Nothing in a normal unit test touches
 that file, so a rejected block ships silently — which is exactly how a
-`target: {device: {filter: [...]}}` block (a form HA does not accept; the flat
-`device: {integration: govee}` is the right one) reached production and took
-the service dialog with it.
+`target: {device: {filter: [...]}}` block reached production and took the
+service dialog with it. hassfest is stricter still: a service ``target`` may
+carry an ``entity`` filter but never a ``device`` one.
 
 The schema is the real one — ``homeassistant.helpers.service._SERVICES_SCHEMA``,
 what ``async_get_all_descriptions`` applies when it loads the file — reached
@@ -62,5 +62,8 @@ class TestServicesYaml:
         with pytest.raises(vol.Invalid):
             _SERVICES_SCHEMA(broken)
 
-        # The flat form is the accepted one.
-        assert _SERVICES_SCHEMA({"apply_diy_effect": {"target": {"device": {"integration": "govee"}}}})
+    def test_no_service_target_carries_a_device_filter(self):
+        """hassfest rejects ``target.device``; HA's runtime schema does not, so pin it here."""
+        for name, description in _descriptions().items():
+            target = description.get("target") or {}
+            assert "device" not in target, f"{name}: use an entity filter (or a device selector field)"

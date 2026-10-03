@@ -34,8 +34,6 @@ apply_diy_effect:
     omitted field uses its fixed default, not the currently staged value.
     Requires the per-zone lights option.
   target:
-    device:
-      integration: govee
     entity:
       integration: govee
       domain: light
