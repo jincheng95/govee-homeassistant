@@ -115,10 +115,12 @@ custom_components/govee/
 `GoveeCoordinator` is a `DataUpdateCoordinator` and the only owner of device state.
 
 - **Discovery.** Developer API device list, then, with account login, the account list for leak sensors and their hubs, gateway-bridged thermometers, and probe thermometers the Developer API does not return. A rediscovery pass every 5 minutes schedules a reload when a new device appears.
-- **Polling.** One request per device, in parallel, each with its own deadline. Devices whose entities are all disabled are skipped. A total outage raises `UpdateFailed` so entities go unavailable and the coordinator logs once; a rate-limit answer backs the interval off and raises the `rate_limited` repair.
+- **Polling.** One request per device, in parallel, each with its own deadline. Devices whose entities are all disabled are skipped. A total cloud outage raises `UpdateFailed` after LAN reads and transport health refresh, so cloud-dependent entities go unavailable and the coordinator logs once; a rate-limit answer backs the interval off and raises the `rate_limited` repair.
 - **Push.** MQTT (`_on_mqtt_state_update`), OpenAPI events, LAN reads, and BLE advertisements update the state object in place and call `async_set_updated_data` only when a value changed; the advertisement handler uses `async_update_listeners` so it never reschedules the poll.
 - **Control.** `async_control_device(device_id, command)` routes each command to the fastest transport that can carry and confirm it: BLE, then LAN (verified by reading the device back), then MQTT (opt-in, acknowledged at QoS 1), then REST. It applies the optimistic update, paces segment writes, and returns `False` when Govee rejects the command.
 - **Supporting state.** Scene cache with TTL, per-transport health, the segment colour overlay replayed after whole-device writes, MQTT topics per device, credential refresh persisted to `entry.data`, and the repair issues.
+
+Consecutive failed cloud polls still notify listeners of local state and health changes without marking the coordinator successful. The first failure uses Home Assistant's normal failure notification.
 
 ### Config flow (`config_flow.py`)
 
@@ -136,6 +138,8 @@ custom_components/govee/
 ### Entities (`entity.py` and the platforms)
 
 `GoveeEntity` sets the unique id from the device id plus a suffix, builds `device_info` (with `via_device` for hub-attached devices), and reports availability as coordinator health combined with the device's online flag (groups follow coordinator health only). Actions call `_async_send_command`, which raises a translated `HomeAssistantError` when the coordinator returns `False`; invalid input raises `ServiceValidationError`. Entities that keep optimistic state (segments, several switches and numbers) use `RestoreEntity`. Leak-sensor entities subscribe to a dispatcher signal instead of the coordinator so unrelated entities do not churn.
+
+The whole-device `GoveeLightEntity` also accepts healthy LAN transport plus existing device state as sufficient availability for its power, brightness, RGB and colour-temperature controls. Groups and auxiliary entities retain their existing availability. In particular, `GoveeMainLightEntity` opts out because its panel actions reassert ring segments over a non-LAN transport. Scenes and effects do not gain LAN support.
 
 ### Models (`models/`)
 
@@ -162,9 +166,10 @@ update_interval → _async_update_data
   → rediscovery (every 5 min) → reload if a new device appeared
   → gather(_fetch_device_state per pollable device)
   → GoveeAuthError → ConfigEntryAuthFailed (reauth)
-  → every read failed to reach Govee → UpdateFailed (entities unavailable, logged once)
   → partial failures keep the previous state per device
-  → account (BFF) refresh, LAN overlay, transport health
+  → LAN overlay, transport health (also during cloud outages)
+  → every cloud read failed to reach Govee → UpdateFailed (cloud-dependent entities unavailable)
+  → consecutive cloud failures still publish local state and health
   → entities re-render through CoordinatorEntity
 ```
 

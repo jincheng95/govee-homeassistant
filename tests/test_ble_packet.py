@@ -25,10 +25,13 @@ from custom_components.govee.api.ble_packet import (
     build_music_mode_packet,
     build_music_mode_v3_packet,
     build_packet,
+    build_segment_brightness_ptreal,
+    build_segment_color_ptreal,
     calculate_checksum,
     encode_packet_base64,
     music_v3_effect_code,
 )
+from custom_components.govee.models.state import RGBColor
 
 # ==============================================================================
 # Checksum Tests
@@ -674,3 +677,75 @@ class TestMusicModeV3Packet:
 
     def test_unknown_effect_has_no_code(self):
         assert music_v3_effect_code("Sprouting") is None
+
+
+# ==============================================================================
+# H1232 Masked ptReal Segment Frame Tests (issue #223)
+# ==============================================================================
+
+
+class TestSegmentPtrealFrames:
+    """Golden-value tests for the H1232 masked ptReal segment frames (#223).
+
+    All four frames are the reporter's device-verified hex, visually
+    confirmed with ``send_raw_ptreal``, with the checksum appended by
+    ``build_packet``.
+    """
+
+    def test_ring_and_panel_green(self):
+        """FF FF 01 mask = ring (bits 0-15) + main panel (bit 16)."""
+        data = build_segment_color_ptreal(RGBColor(0x00, 0xFF, 0x00), 0xFFFF | (1 << 16))
+        assert build_packet(data) == bytes(
+            [0x33, 0x05, 0x15, 0x01, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x01]
+            + [0x00] * 4
+            + [0xDC]
+        )
+
+    def test_panel_plus_last_three_ring_segments_red(self):
+        """00 E0 01 mask = ring segments 14-16 (bits 13-15) + main panel (bit 16)."""
+        mask = (1 << 13) | (1 << 14) | (1 << 15) | (1 << 16)
+        data = build_segment_color_ptreal(RGBColor(0xFF, 0x00, 0x00), mask)
+        assert build_packet(data) == bytes(
+            [0x33, 0x05, 0x15, 0x01, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xE0, 0x01]
+            + [0x00] * 4
+            + [0x3C]
+        )
+
+    def test_panel_only_blue(self):
+        """00 00 01 mask = main panel only (bit 16), ring unchanged."""
+        data = build_segment_color_ptreal(RGBColor(0x00, 0x00, 0xFF), 1 << 16)
+        assert build_packet(data) == bytes(
+            [0x33, 0x05, 0x15, 0x01, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01]
+            + [0x00] * 4
+            + [0xDC]
+        )
+
+    def test_ring_brightness_10_percent(self):
+        """FF FF 00 mask = ring only (bits 0-15), main panel untouched."""
+        data = build_segment_brightness_ptreal(10, 0xFFFF)
+        assert build_packet(data) == bytes([0x33, 0x05, 0x15, 0x02, 0x0A, 0xFF, 0xFF, 0x00] + [0x00] * 11 + [0x2B])
+
+    def test_color_mask_bit_i_is_segment_i_plus_1(self):
+        """Mask bit 0 addresses internal segment 1 (platform index 0)."""
+        data = build_segment_color_ptreal(RGBColor(1, 2, 3), 0b1)
+        assert data[-3:] == [0x01, 0x00, 0x00]
+
+    def test_color_mask_is_masked_to_24_bits_per_byte(self):
+        """Each mask byte is isolated even if the caller passes a larger int."""
+        data = build_segment_color_ptreal(RGBColor(1, 2, 3), 0x1FFFFFF)
+        assert data[-3:] == [0xFF, 0xFF, 0xFF]
+
+    def test_brightness_is_clamped_to_0_100(self):
+        """Out-of-range brightness percentages are clamped like the other builders."""
+        assert build_segment_brightness_ptreal(150, 0)[4] == 100
+        assert build_segment_brightness_ptreal(-5, 0)[4] == 0
+
+    def test_color_frame_length_matches_payload_before_padding(self):
+        """The colour frame is 15 data bytes before build_packet pads/checksums it."""
+        data = build_segment_color_ptreal(RGBColor(0, 0, 0), 0)
+        assert len(data) == 15
+
+    def test_brightness_frame_length_matches_payload_before_padding(self):
+        """The brightness frame is 8 data bytes before build_packet pads/checksums it."""
+        data = build_segment_brightness_ptreal(0, 0)
+        assert len(data) == 8

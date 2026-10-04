@@ -271,6 +271,13 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
             # Devices the session dropped right after a status query to, and
             # which of them the sweep has quarantined (#195).
             "status_query_strikes": coordinator.mqtt_status_query_strikes,
+            # Every inbound account-topic message, counted before any
+            # filtering, and the last device-attributed state message — lets
+            # a download tell a completely silent session (no inbound at
+            # all) apart from one that filters everything out (#222).
+            "inbound_messages": getattr(mqtt_client, "inbound_total", None),
+            "last_inbound_at": _iso(getattr(mqtt_client, "last_inbound_ts", None)),
+            "last_device_message_at": _iso(getattr(mqtt_client, "last_message_ts", None)),
         }
         # Recent hub multiSync packets (hex) — lets undecoded leak-sensor
         # packet subtypes be reverse-engineered from a download alone (#87).

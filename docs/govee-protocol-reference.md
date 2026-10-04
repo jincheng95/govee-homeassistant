@@ -2158,6 +2158,14 @@ Key observations:
 - Has both `gradientToggle` AND `dreamViewToggle` (hardware HDMI passthrough)
 - `dreamViewToggle` is accepted (HTTP 200) but inert: the light answers `33 60 01 00…` for both on and off and never enters screen sync (issue #213). The integration skips it (`PTREAL_DREAMVIEW_SKUS`) and sends the `33 05 00` video-mode frame over AWS IoT instead (unverified on hardware; `33 60 01 01 01…`, the frame the H2A41 reports when the app starts screen sync, is the other candidate); off restores the last colour
 
+#### H605B — DreamView screen sync note
+
+Diagnostics show `dreamViewToggle` 0 accepted (HTTP 200) but an `aa 05 00` MQTT op frame
+still driving the light in video mode 73s later (issue #220), unlike the H66A0 the ON
+direction does enter screen sync normally. The integration reroutes only OFF to the
+colour-restore path (`DREAMVIEW_OFF_VIA_COLOUR_SKUS`); ON still goes through the REST
+`dreamViewToggle` command. Unverified beyond the reporter's diagnostics.
+
 #### H6104 — WiFi RGB Light (`devices.types.light`)
 
 Basic WiFi light with no segments. From issue #24. Notable for API brightness bug.

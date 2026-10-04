@@ -329,6 +329,55 @@ class TestGoveeDevice:
         assert "Low" in names
         assert "High" in names
 
+    def test_air_purifier_gear_work_mode(self, mock_air_purifier_device):
+        """H7126 (workMode/gearMode, no purifierMode cap) resolves gearMode=1 (#221)."""
+        assert mock_air_purifier_device.purifier_gear_work_mode == 1
+
+    def test_purifier_mode_cap_has_no_gear_work_mode(self):
+        """A real purifierMode capability (H6006) means purifier_gear_work_mode is None."""
+        from custom_components.govee.models.device import (
+            CAPABILITY_MODE,
+            CAPABILITY_ON_OFF,
+            DEVICE_TYPE_PURIFIER,
+            INSTANCE_POWER,
+            INSTANCE_PURIFIER_MODE,
+        )
+
+        device = GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:00:77",
+            sku="H6006",
+            name="Purifier",
+            device_type=DEVICE_TYPE_PURIFIER,
+            capabilities=(
+                GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
+                GoveeCapability(
+                    type=CAPABILITY_MODE,
+                    instance=INSTANCE_PURIFIER_MODE,
+                    parameters={"options": [{"name": "Sleep", "value": 1}]},
+                ),
+            ),
+            is_group=False,
+        )
+        assert device.purifier_gear_work_mode is None
+
+    def test_no_work_mode_cap_has_no_gear_work_mode(self):
+        """A device without workMode or purifierMode (H7121-shaped) is None."""
+        from custom_components.govee.models.device import (
+            CAPABILITY_ON_OFF,
+            DEVICE_TYPE_PURIFIER,
+            INSTANCE_POWER,
+        )
+
+        device = GoveeDevice(
+            device_id="AA:BB:CC:DD:EE:FF:00:78",
+            sku="H7121",
+            name="Purifier",
+            device_type=DEVICE_TYPE_PURIFIER,
+            capabilities=(GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),),
+            is_group=False,
+        )
+        assert device.purifier_gear_work_mode is None
+
     def test_fan_is_not_purifier(self, mock_fan_device):
         """A plain fan (devices.types.fan) must not match is_purifier."""
         assert mock_fan_device.is_purifier is False
@@ -1436,6 +1485,12 @@ class TestSegmentCountOverride:
         """H7026 advertises 30 bulbs but indices 16-29 recolour the whole string (issue #208)."""
         cap = _make_rgbic_segment_capability(element_range_max=29, size_max=30)
         device = _make_rgbic_device("H7026", cap)
+        assert device.segment_count == 16
+
+    def test_h1232_returns_16_segments_for_the_ptreal_ring(self):
+        """H1232 reports 13 (elementRange.max=12) but the ring has 16 segments (issue #223)."""
+        cap = _make_rgbic_segment_capability(element_range_max=12, size_max=13)
+        device = _make_rgbic_device("H1232", cap)
         assert device.segment_count == 16
 
     def test_unknown_sku_returns_api_count(self):

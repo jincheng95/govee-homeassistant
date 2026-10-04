@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -992,3 +993,25 @@ async def test_mqtt_status_query_strikes_ride_along_with_the_id_redacted() -> No
     assert entry["strikes"] == 2
     assert entry["quarantined"] is True
     assert entry["device_id"] == "**REDACTED**"
+
+
+@pytest.mark.asyncio
+async def test_mqtt_inbound_counters_are_in_the_mqtt_block() -> None:
+    """#222: a silent session (0 inbound) must be distinguishable from one that filters."""
+    mqtt_client = MagicMock()
+    mqtt_client.available = True
+    mqtt_client.connected = True
+    mqtt_client.last_messages = {}
+    mqtt_client.recent_multisync = []
+    mqtt_client.recent_probe_frames = []
+    mqtt_client.inbound_total = 5
+    mqtt_client.last_inbound_ts = datetime(2026, 9, 26, 19, 11, tzinfo=timezone.utc)
+    mqtt_client.last_message_ts = None
+    coordinator = _coordinator_stub(mqtt_client=mqtt_client)
+
+    out = await async_get_config_entry_diagnostics(MagicMock(), _entry_stub(coordinator))
+
+    mqtt_info = out["mqtt"]
+    assert mqtt_info["inbound_messages"] == 5
+    assert mqtt_info["last_inbound_at"] == "2026-09-26T19:11:00+00:00"
+    assert mqtt_info["last_device_message_at"] is None

@@ -255,3 +255,71 @@ class TestPurifierModeSelectEntity:
 
         # Command should still be attempted
         mock_coordinator.async_control_device.assert_called_once()
+
+
+class TestPurifierGearWorkModeSelectEntity:
+    """Test the Mode select on workMode/gearMode purifiers (H7126, #221)."""
+
+    @pytest.fixture
+    def mock_coordinator(self, mock_air_purifier_device):
+        """Create a mock coordinator for a gearMode purifier."""
+        from custom_components.govee.models import GoveeDeviceState
+
+        coordinator = MagicMock()
+        coordinator.devices = {mock_air_purifier_device.device_id: mock_air_purifier_device}
+
+        state = GoveeDeviceState(
+            device_id=mock_air_purifier_device.device_id,
+            online=True,
+            power_state=True,
+            source="api",
+        )
+        state.work_mode = 1  # gearMode
+        state.mode_value = 2  # Low
+
+        coordinator.get_state = MagicMock(return_value=state)
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        return coordinator
+
+    @pytest.fixture
+    def gear_mode_entity(self, mock_coordinator, mock_air_purifier_device):
+        """Create a purifier mode select entity for the gearMode fixture."""
+        from custom_components.govee.select import GoveePurifierModeSelectEntity
+
+        options = mock_air_purifier_device.get_purifier_mode_options()
+        entity = GoveePurifierModeSelectEntity(
+            coordinator=mock_coordinator,
+            device=mock_air_purifier_device,
+            options=options,
+        )
+        entity.hass = MagicMock()
+        entity.async_write_ha_state = MagicMock()
+        return entity
+
+    def test_gear_work_mode_resolved(self, gear_mode_entity):
+        """Entity resolves the gearMode workMode value from the device."""
+        assert gear_mode_entity._gear_work_mode == 1
+
+    async def test_select_high_sends_work_mode_command(self, gear_mode_entity, mock_coordinator):
+        """Selecting High sends WorkModeCommand, not ModeCommand (#221)."""
+        from custom_components.govee.models import ModeCommand, WorkModeCommand
+
+        await gear_mode_entity.async_select_option("High")
+
+        call_args = mock_coordinator.async_control_device.call_args
+        device_id, command = call_args[0]
+
+        assert device_id == gear_mode_entity._device_id
+        assert isinstance(command, WorkModeCommand)
+        assert not isinstance(command, ModeCommand)
+        assert command.work_mode == 1
+        assert command.mode_value == 3
+
+    def test_current_option_matches_state(self, gear_mode_entity):
+        """current_option reads work_mode/mode_value for the gear path."""
+        assert gear_mode_entity.current_option == "Low"
+
+    def test_current_option_other_work_mode_falls_back(self, gear_mode_entity, mock_coordinator):
+        """A non-gear work_mode (Auto) falls back to the default option."""
+        mock_coordinator.get_state.return_value.work_mode = 3  # Auto
+        assert gear_mode_entity.current_option == "Sleep"

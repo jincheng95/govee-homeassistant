@@ -605,6 +605,8 @@ class TestHandleMessageGuards:
         client = self._client()
         await client._handle_message(_msg({"msg": "{not json"}))
         client._on_state_update.assert_not_called()
+        assert client.inbound_total == 1
+        assert client.last_inbound_ts is not None
 
     @pytest.mark.asyncio
     async def test_missing_device_id_is_ignored(self):
@@ -612,6 +614,8 @@ class TestHandleMessageGuards:
         await client._handle_message(_msg({"sku": "H6072", "state": {"onOff": 1}}))
         client._on_state_update.assert_not_called()
         assert client.last_message_ts is None
+        assert client.inbound_total == 1
+        assert client.last_inbound_ts is not None
 
     @pytest.mark.asyncio
     async def test_state_less_message_is_ignored_but_counts_as_activity(self):

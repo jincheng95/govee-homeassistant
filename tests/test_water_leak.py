@@ -14,6 +14,7 @@ import pytest
 
 from custom_components.govee.binary_sensor import (
     GoveeLeakBinarySensor,
+    GoveeLeakProbeBinarySensor,
     GoveeWaterLeakBinarySensor,
     async_setup_entry,
 )
@@ -27,6 +28,7 @@ from custom_components.govee.models.device import (
     CAPABILITY_EVENT,
     INSTANCE_BODY_APPEARED_EVENT,
     GoveeLeakSensor,
+    GoveeLeakSensorState,
 )
 
 # --------------------------------------------------------------------------- #
@@ -398,3 +400,84 @@ class TestLeakBatteryUniqueIdCollision:
         state.battery = 70
 
         assert len(await self._setup(device, state, is_bff_leak=False)) == 1
+
+
+class TestDualProbeBinarySensors:
+    """H5059 gets Upper probe / Lower probe moisture entities (#224)."""
+
+    @staticmethod
+    def _sensor(sku: str) -> GoveeLeakSensor:
+        return GoveeLeakSensor(
+            device_id="01:32:7A:C4:06:03:0D:0C",
+            name="Fish tank",
+            sku=sku,
+            hub_device_id="09:C2:60:74:F4:64:AB:FA",
+            sno=3,
+        )
+
+    @staticmethod
+    def _entry(sensor: GoveeLeakSensor, leak_states: dict) -> MagicMock:
+        coordinator = MagicMock()
+        coordinator.devices = {}
+        coordinator.leak_sensors = {sensor.device_id: sensor}
+        coordinator.leak_states = leak_states
+        coordinator.register_leak_hubs = MagicMock()
+        coordinator.is_bff_leak_sensor = MagicMock(return_value=True)
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        entry.options = {}
+        return entry
+
+    @staticmethod
+    async def _probe_entities(entry: MagicMock) -> list:
+        added: list = []
+        await async_setup_entry(MagicMock(), entry, lambda e: added.extend(e))
+        return [e for e in added if isinstance(e, GoveeLeakProbeBinarySensor)]
+
+    @pytest.mark.asyncio
+    async def test_h5059_gets_two_probe_entities(self):
+        sensor = self._sensor("H5059")
+        entry = self._entry(sensor, {})
+        entities = await self._probe_entities(entry)
+        assert len(entities) == 2
+        unique_ids = {e.unique_id for e in entities}
+        assert unique_ids == {
+            f"{sensor.device_id}_leak_upper_probe",
+            f"{sensor.device_id}_leak_lower_probe",
+        }
+        translation_keys = {e._attr_translation_key for e in entities}
+        assert translation_keys == {"leak_upper_probe", "leak_lower_probe"}
+
+    @pytest.mark.asyncio
+    async def test_h5058_gets_no_probe_entities(self):
+        sensor = self._sensor("H5058")
+        entry = self._entry(sensor, {})
+        assert await self._probe_entities(entry) == []
+
+    @pytest.mark.asyncio
+    async def test_is_on_reflects_state_and_none_when_unreported(self):
+        sensor = self._sensor("H5059")
+        state = GoveeLeakSensorState(upper_probe_wet=True, lower_probe_wet=False)
+        entry = self._entry(sensor, {sensor.device_id: state})
+        entities = {e._probe: e for e in await self._probe_entities(entry)}
+
+        assert entities["upper"].is_on is True
+        assert entities["lower"].is_on is False
+
+        # No state reported yet for the device -> both unknown.
+        entry_unknown = self._entry(sensor, {})
+        unknown_entities = {e._probe: e for e in await self._probe_entities(entry_unknown)}
+        assert unknown_entities["upper"].is_on is None
+        assert unknown_entities["lower"].is_on is None
+
+    @pytest.mark.asyncio
+    async def test_dispatcher_update_writes_state(self):
+        sensor = self._sensor("H5059")
+        state = GoveeLeakSensorState(upper_probe_wet=True, lower_probe_wet=False)
+        entry = self._entry(sensor, {sensor.device_id: state})
+        entity = next(e for e in await self._probe_entities(entry) if e._probe == "upper")
+        entity.async_write_ha_state = MagicMock()
+
+        entity._handle_leak_update()
+
+        entity.async_write_ha_state.assert_called_once()

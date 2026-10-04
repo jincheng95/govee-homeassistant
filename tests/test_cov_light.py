@@ -25,6 +25,7 @@ from custom_components.govee.light import (
     MAIN_LIGHT_ON_KELVIN,
     GoveeLightEntity,
     GoveeMainLightEntity,
+    GoveeMainPanelLight,
     GoveeNightLightEntity,
 )
 from custom_components.govee.models import (
@@ -50,6 +51,7 @@ from custom_components.govee.models.device import (
     INSTANCE_BRIGHTNESS,
     INSTANCE_COLOR_RGB,
     INSTANCE_COLOR_TEMP,
+    INSTANCE_MAIN_LIGHT_TOGGLE,
     INSTANCE_NIGHT_LIGHT,
     INSTANCE_POWER,
     INSTANCE_SEGMENT_COLOR,
@@ -646,3 +648,141 @@ class TestLightPlatformSetup:
         names = [type(e).__name__ for e in added]
         assert names.count("GoveeSegmentEntity") == mock_rgbic_device.segment_count
         assert "GoveeGroupedSegmentEntity" not in names
+
+
+# --------------------------------------------------------------------------- #
+# GoveeMainPanelLight (issue #223)
+# --------------------------------------------------------------------------- #
+
+H1232_ID = "AA:BB:CC:DD:EE:FF:12:32"
+
+
+def _h1232() -> GoveeDevice:
+    return _device(H1232_ID, "H1232", DEVICE_TYPE_LIGHT, _POWER, _BRIGHTNESS, _RGB, name="Ceiling Light Pro")
+
+
+def _panel(*, toggled: bool | None = True, state: bool = True) -> GoveeMainPanelLight:
+    device = _h1232()
+    device_state = GoveeDeviceState(device_id=H1232_ID, power_state=True, brightness=100) if state else None
+    if device_state is not None and toggled is not None:
+        device_state.toggles[INSTANCE_MAIN_LIGHT_TOGGLE] = toggled
+    coordinator = _coordinator(device_state, device)
+    coordinator.async_set_main_panel = AsyncMock(return_value=True)
+    entity = GoveeMainPanelLight(coordinator, device)
+    entity.async_write_ha_state = MagicMock()
+    return entity
+
+
+class TestMainPanelProperties:
+    def test_unique_id_translation_key_and_defaults(self):
+        entity = _panel()
+        assert entity.unique_id == f"{H1232_ID}_main_panel"
+        assert entity.translation_key == "govee_main_light_panel"
+        assert entity.supported_color_modes == {ColorMode.RGB}
+        assert entity.rgb_color == (255, 255, 255)
+        assert entity.brightness == 255
+
+    def test_is_on_follows_main_light_toggle(self):
+        assert _panel(toggled=True).is_on is True
+        assert _panel(toggled=False).is_on is False
+        assert _panel(toggled=None).is_on is None
+
+    def test_is_on_none_without_state(self):
+        assert _panel(state=False).is_on is None
+
+
+class TestMainPanelControl:
+    async def test_turn_on_from_off_sends_toggle_only(self):
+        entity = _panel(toggled=False)
+
+        await entity.async_turn_on()
+
+        assert _commands(entity.coordinator) == [
+            ToggleCommand(toggle_instance=INSTANCE_MAIN_LIGHT_TOGGLE, enabled=True)
+        ]
+        entity.coordinator.async_set_main_panel.assert_not_awaited()
+        entity.async_write_ha_state.assert_called_once()
+
+    async def test_colour_and_brightness_go_over_ptreal(self):
+        entity = _panel(toggled=True)
+
+        await entity.async_turn_on(rgb_color=(10, 20, 30), brightness=128)
+
+        assert _commands(entity.coordinator) == []
+        entity.coordinator.async_set_main_panel.assert_awaited_once_with(
+            H1232_ID, rgb=RGBColor(r=10, g=20, b=30), brightness=50
+        )
+        assert entity.rgb_color == (10, 20, 30)
+        assert entity.brightness == 128
+
+    async def test_ptreal_failure_raises(self):
+        entity = _panel(toggled=True)
+        entity.coordinator.async_set_main_panel = AsyncMock(return_value=False)
+
+        with pytest.raises(HomeAssistantError):
+            await entity.async_turn_on(rgb_color=(1, 2, 3))
+
+        entity.async_write_ha_state.assert_not_called()
+
+    async def test_toggle_rejection_raises(self):
+        entity = _panel(toggled=False)
+        entity.coordinator.async_control_device = AsyncMock(return_value=False)
+
+        with pytest.raises(HomeAssistantError):
+            await entity.async_turn_on()
+
+    async def test_turn_off_sends_toggle_off(self):
+        entity = _panel(toggled=True)
+
+        await entity.async_turn_off()
+
+        assert _commands(entity.coordinator) == [
+            ToggleCommand(toggle_instance=INSTANCE_MAIN_LIGHT_TOGGLE, enabled=False)
+        ]
+        entity.async_write_ha_state.assert_called_once()
+
+
+class TestMainPanelRestore:
+    async def _add(self, entity: GoveeMainPanelLight, last: State | None) -> None:
+        with (
+            patch.object(GoveeEntity, "async_added_to_hass", new_callable=AsyncMock),
+            patch.object(entity, "async_get_last_state", new_callable=AsyncMock, return_value=last),
+        ):
+            await entity.async_added_to_hass()
+
+    async def test_restores_colour_and_brightness(self):
+        entity = _panel()
+
+        await self._add(entity, State("light.panel", "on", {"brightness": 77, "rgb_color": [4, 5, 6]}))
+
+        assert entity.brightness == 77
+        assert entity.rgb_color == (4, 5, 6)
+
+    async def test_off_state_without_attributes_keeps_defaults(self):
+        entity = _panel()
+
+        await self._add(entity, State("light.panel", "off", {}))
+
+        assert entity.brightness == 255
+        assert entity.rgb_color == (255, 255, 255)
+
+    async def test_no_last_state_keeps_defaults(self):
+        entity = _panel()
+
+        await self._add(entity, None)
+
+        assert entity.brightness == 255
+
+
+class TestMainPanelSetup:
+    async def test_h1232_gets_the_panel_entity(self):
+        coordinator = _coordinator(None, _h1232())
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        entry.options = {"segment_mode_by_device": {H1232_ID: "disabled"}}
+        added: list = []
+
+        await light_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
+
+        assert [type(e).__name__ for e in added] == ["GoveeLightEntity", "GoveeMainPanelLight"]
+        assert added[1].unique_id == f"{H1232_ID}_main_panel"

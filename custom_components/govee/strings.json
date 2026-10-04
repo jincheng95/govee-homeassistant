@@ -440,6 +440,12 @@
       },
       "lan_udp_connectivity": {
         "name": "LAN (raw)"
+      },
+      "leak_upper_probe": {
+        "name": "Upper probe"
+      },
+      "leak_lower_probe": {
+        "name": "Lower probe"
       }
     },
     "fan": {

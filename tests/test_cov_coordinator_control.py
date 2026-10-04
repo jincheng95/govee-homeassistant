@@ -20,7 +20,12 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 
 import custom_components.govee.coordinator as coord_mod
 from custom_components.govee.api.auth import GoveeIotCredentials
-from custom_components.govee.api.ble_packet import build_packet, encode_packet_base64
+from custom_components.govee.api.ble_packet import (
+    build_packet,
+    build_segment_brightness_ptreal,
+    build_segment_color_ptreal,
+    encode_packet_base64,
+)
 from custom_components.govee.api.exceptions import GoveeApiError, GoveeAuthError
 from custom_components.govee.api.lan_client import LanDevStatus, LanDeviceInfo
 from custom_components.govee.const import CONF_ENABLE_MQTT_CONTROL
@@ -933,6 +938,35 @@ class TestDreamview:
         coord._ble_manager.async_send_dreamview.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_h605b_on_sends_the_rest_toggle(self):
+        # The H605B does enter video mode on ON, only OFF is inert (#220).
+        coord = _coordinator()
+        state = _add(coord, _device(sku="H605B"))
+        coord._ble_manager = _ble_manager()
+
+        assert await coord.async_send_dreamview(DEV, True) is True
+
+        assert _sent(coord) == [ToggleCommand(toggle_instance=INSTANCE_DREAMVIEW, enabled=True)]
+        assert state.dreamview_enabled is True
+        coord._ble_manager.async_send_dreamview.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_h605b_off_restores_the_last_colour_instead_of_the_inert_toggle(self):
+        # Govee accepts dreamViewToggle 0 for the H605B but the light stays in
+        # video mode (#220), so OFF skips REST and restores the last colour.
+        coord = _coordinator()
+        state = _add(coord, _device(sku="H605B"))
+        state.dreamview_enabled = True
+        state.last_color = RGBColor(10, 20, 30)
+        coord._ble_manager = _ble_manager()
+
+        assert await coord.async_send_dreamview(DEV, False) is True
+
+        assert _sent(coord) == [ColorCommand(color=RGBColor(10, 20, 30))]
+        assert state.dreamview_enabled is False
+        coord._ble_manager.async_send_dreamview.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_rest_error_falls_back_to_the_passthrough(self):
         coord = _coordinator()
         state = _add(coord, _device())
@@ -1244,6 +1278,81 @@ class TestReassertSegments:
         assert coord.async_control_device.await_count == 2
 
 
+class TestPtrealSegmentTier:
+    """H1232 ring writes fold into one masked ptReal frame (issue #223)."""
+
+    @pytest.mark.asyncio
+    async def test_passthrough_sends_one_masked_frame_and_skips_rest(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager()
+        command = SegmentColorCommand(segment_indices=(13, 14, 15), color=RGBColor(10, 20, 30))
+
+        assert await coord.async_control_device(DEV, command) is True
+
+        mask = (1 << 13) | (1 << 14) | (1 << 15)
+        expected = encode_packet_base64(build_packet(build_segment_color_ptreal(RGBColor(10, 20, 30), mask)))
+        coord._ble_manager.async_send_ble_packet.assert_awaited_once_with(DEV, "H1232", expected)
+        coord._api_client.control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_passthrough_send_failure_falls_back_to_rest_in_range(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager(result=False)
+        command = SegmentColorCommand(segment_indices=(0,), color=RGBColor(1, 2, 3))
+
+        assert await coord.async_control_device(DEV, command) is True
+
+        coord._ble_manager.async_send_ble_packet.assert_awaited_once()
+        coord._api_client.control_device.assert_awaited_once_with(DEV, "H1232", command)
+
+    @pytest.mark.asyncio
+    async def test_passthrough_send_failure_out_of_range_fails(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager(result=False)
+        command = SegmentColorCommand(segment_indices=(15,), color=RGBColor(1, 2, 3))
+
+        assert await coord.async_control_device(DEV, command) is False
+
+        coord._api_client.control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_passthrough_in_range_index_falls_through_to_rest(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager(available=False)
+        command = SegmentColorCommand(segment_indices=(3,), color=RGBColor(1, 2, 3))
+
+        assert await coord.async_control_device(DEV, command) is True
+
+        coord._api_client.control_device.assert_awaited_once_with(DEV, "H1232", command)
+
+    @pytest.mark.asyncio
+    async def test_no_passthrough_out_of_range_index_fails(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager(available=False)
+        command = SegmentColorCommand(segment_indices=(14,), color=RGBColor(1, 2, 3))
+
+        assert await coord.async_control_device(DEV, command) is False
+
+        coord._api_client.control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_ptreal_sku_is_unaffected(self):
+        coord = _coordinator()
+        _add(coord, _device(caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager()
+        command = SegmentColorCommand(segment_indices=(0,), color=RGBColor(1, 2, 3))
+
+        assert await coord.async_control_device(DEV, command) is True
+
+        coord._api_client.control_device.assert_awaited_once_with(DEV, "H6072", command)
+        coord._ble_manager.async_send_ble_packet.assert_not_awaited()
+
+
 # --------------------------------------------------------------------------- #
 # Scene clearing and the small state helpers
 # --------------------------------------------------------------------------- #
@@ -1399,3 +1508,82 @@ class TestStateHelpers:
         assert state.source == "optimistic"
 
         coord.restore_group_state("nope", True)
+
+
+class TestAsyncSetMainPanel:
+    """H1232 main-panel colour/brightness over masked ptReal (issue #223)."""
+
+    @pytest.mark.asyncio
+    async def test_unsupported_sku_returns_false(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H6072", caps=(_POWER, _RGB)))
+        coord._ble_manager = _ble_manager()
+
+        assert await coord.async_set_main_panel(DEV, rgb=RGBColor(1, 2, 3)) is False
+        coord._ble_manager.async_send_ble_packet.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_device_returns_false(self):
+        coord = _coordinator()
+        coord._ble_manager = _ble_manager()
+
+        assert await coord.async_set_main_panel(DEV, rgb=RGBColor(1, 2, 3)) is False
+
+    @pytest.mark.asyncio
+    async def test_no_passthrough_returns_false(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager(available=False)
+
+        assert await coord.async_set_main_panel(DEV, rgb=RGBColor(1, 2, 3)) is False
+        coord._ble_manager.async_send_ble_packet.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_colour_sends_one_masked_frame(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager()
+
+        assert await coord.async_set_main_panel(DEV, rgb=RGBColor(10, 20, 30)) is True
+
+        mask = 1 << 16
+        expected = encode_packet_base64(build_packet(build_segment_color_ptreal(RGBColor(10, 20, 30), mask)))
+        coord._ble_manager.async_send_ble_packet.assert_awaited_once_with(DEV, "H1232", expected)
+
+    @pytest.mark.asyncio
+    async def test_brightness_sends_one_masked_frame(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager()
+
+        assert await coord.async_set_main_panel(DEV, brightness=50) is True
+
+        mask = 1 << 16
+        expected = encode_packet_base64(build_packet(build_segment_brightness_ptreal(50, mask)))
+        coord._ble_manager.async_send_ble_packet.assert_awaited_once_with(DEV, "H1232", expected)
+
+    @pytest.mark.asyncio
+    async def test_colour_and_brightness_send_both_frames(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager()
+
+        assert await coord.async_set_main_panel(DEV, rgb=RGBColor(1, 2, 3), brightness=80) is True
+
+        assert coord._ble_manager.async_send_ble_packet.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_colour_send_failure_returns_false(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager(result=False)
+
+        assert await coord.async_set_main_panel(DEV, rgb=RGBColor(1, 2, 3)) is False
+
+    @pytest.mark.asyncio
+    async def test_brightness_send_failure_returns_false(self):
+        coord = _coordinator()
+        _add(coord, _device(sku="H1232", caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._ble_manager = _ble_manager(result=False)
+
+        assert await coord.async_set_main_panel(DEV, brightness=50) is False

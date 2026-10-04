@@ -741,3 +741,109 @@ class TestBootstrapFallThrough:
         # ...it fell through to REST, which delivered it.
         coord._api_client.control_device.assert_awaited_once()
         assert coord._api_client.control_device.call_args.args[0] == self.DEVICE_ID
+
+
+class TestCloudOutage:
+    """Cloud failure must not stop local reads or hide a reachable light."""
+
+    @pytest.mark.asyncio
+    async def test_outage_updates_local_state_and_availability(self, monkeypatch):
+        from custom_components.govee.api.exceptions import GoveeConnectionError
+        from custom_components.govee.entity import GoveeEntity
+        from custom_components.govee.light import GoveeLightEntity
+
+        local_id = "AA:BB:CC:DD:EE:FF:00:11"
+        cloud_id = "AA:BB:CC:DD:EE:FF:00:22"
+        ip = "10.0.0.5"
+        coord, _ = _build_coordinator({local_id: _light_device(local_id), cloud_id: _light_device(cloud_id)})
+        client, responder = await _wire_lan(monkeypatch, coord)
+        _correlate(coord, local_id, ip)
+        responder.add(ip, on=True, brightness=60)
+        coord._last_lan_rescan = time.monotonic()
+        coord._api_client.get_device_state = AsyncMock(side_effect=GoveeConnectionError("WAN down"))
+        # Use the real refresh wrapper, with background scheduling/discovery disabled.
+        coord._async_maybe_rediscover_devices = AsyncMock()
+        coord._schedule_refresh = MagicMock()
+        coord._states[cloud_id].online = True
+        local = GoveeLightEntity(coord, coord._devices[local_id], enable_scenes=False)
+        cloud = GoveeLightEntity(coord, coord._devices[cloud_id], enable_scenes=False)
+        cloud_feature = GoveeEntity(coord, coord._devices[local_id])
+        snapshots = []
+        unsub = coord.async_add_listener(
+            lambda: snapshots.append((local.available, local.brightness, cloud.available, cloud_feature.available))
+        )
+        try:
+            await coord.async_refresh()
+            assert coord.last_update_success is False
+            assert snapshots[-1] == (True, 153, False, False)
+            assert coord.get_transport_health(local_id, "lan").is_available
+
+            # A second failed poll must still publish changed local state.
+            responder.devices[ip]["brightness"] = 20
+            await coord.async_refresh()
+            assert coord.last_update_success is False
+            assert len(snapshots) == 2
+            assert snapshots[-1] == (True, 51, False, False)
+
+            # Staleness must be evaluated even while the cloud stays unreachable.
+            responder.go_silent()
+            coord.get_transport_health(local_id, "lan").last_success_ts = datetime.now(timezone.utc) - timedelta(
+                seconds=LAN_STALE_SECONDS + 1
+            )
+            await coord.async_refresh()
+            assert len(snapshots) == 3
+            assert snapshots[-1][0] is False
+            assert not coord.get_transport_health(local_id, "lan").is_available
+
+            # LAN recovery publishes availability without waiting for WAN recovery.
+            responder.silent = False
+            await coord.async_refresh()
+            assert len(snapshots) == 4
+            assert snapshots[-1] == (True, 51, False, False)
+            assert coord.last_update_success is False
+
+            # Normal entity controls reach the fake device via verified LAN writes.
+            local.async_write_ha_state = MagicMock()
+            await local.async_turn_off()
+            assert responder.devices[ip]["on"] is False
+            await local.async_turn_on(brightness=102)
+            assert responder.devices[ip]["on"] is True
+            assert responder.devices[ip]["brightness"] == 40
+            await local.async_turn_on(rgb_color=(12, 34, 56))
+            assert responder.devices[ip]["color"] == (12, 34, 56)
+            await local.async_turn_on(color_temp_kelvin=3500)
+            assert responder.devices[ip]["color_temp"] == 3500
+            coord._api_client.control_device.assert_not_awaited()
+
+            # Cloud recovery restores the normal cloud-dependent entities too.
+            async def cloud_recovers(device_id, sku):
+                state = GoveeDeviceState.create_empty(device_id)
+                state.online = True
+                return state
+
+            coord._api_client.get_device_state.side_effect = cloud_recovers
+            await coord.async_refresh()
+            assert coord.last_update_success is True
+            assert snapshots[-1][0] is True
+            assert snapshots[-1][2:] == (True, True)
+        finally:
+            unsub()
+            await client.async_stop()
+
+    @pytest.mark.asyncio
+    async def test_lan_exception_does_not_skip_staleness_or_mask_cloud_outage(self, monkeypatch):
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+        from custom_components.govee.api.exceptions import GoveeConnectionError
+
+        device_id = "AA:BB:CC:DD:EE:FF:00:11"
+        coord, _ = _build_coordinator({device_id: _light_device(device_id)})
+        _correlate(coord, device_id, "10.0.0.5")
+        coord._transport.record_success(device_id, "lan")
+        coord.get_transport_health(device_id, "lan").last_success_ts = datetime.now(timezone.utc) - timedelta(
+            seconds=LAN_STALE_SECONDS + 1
+        )
+        coord._async_maybe_rescan_lan = AsyncMock(side_effect=OSError("LAN error"))
+        coord._api_client.get_device_state = AsyncMock(side_effect=GoveeConnectionError("WAN down"))
+        with pytest.raises(UpdateFailed, match="unreachable"):
+            await coord._async_update_data()
+        assert not coord.get_transport_health(device_id, "lan").is_available

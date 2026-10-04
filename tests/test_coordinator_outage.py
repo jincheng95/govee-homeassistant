@@ -56,6 +56,7 @@ def coordinator(light_capabilities):
     coord._bff_thermometer_ids = set()
     coord._lan_client = None
     coord._lan_devices = {}
+    coord.last_update_success = True
     coord._rate_limited = False
     # Budget pacing runs on every poll and reads these three. __init__ sets
     # them; this fixture builds the coordinator with object.__new__, so they

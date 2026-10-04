@@ -72,12 +72,14 @@ def _coordinator(
     online: bool = True,
     last_update_success: bool = True,
     route: dict[str, str] | None = None,
+    mqtt_connected_since: datetime | None = None,
 ) -> MagicMock:
     coordinator = MagicMock()
     coordinator.devices = {device.device_id: device}
     coordinator.last_update_success = last_update_success
     coordinator.get_state.return_value = GoveeDeviceState(device_id=device.device_id, online=online)
     coordinator.gateway_route.return_value = route
+    coordinator.mqtt_connected_since = mqtt_connected_since
     health_by_kind = health or {}
     coordinator.get_transport_health.side_effect = lambda _device_id, kind: health_by_kind.get(kind)
     return coordinator
@@ -273,6 +275,7 @@ class _TickCoordinator:
     def __init__(self, device: GoveeDevice, health: dict[str, TransportHealth]) -> None:
         self.devices = {device.device_id: device}
         self.last_update_success = True
+        self.mqtt_connected_since: datetime | None = None
         self._health = health
         self._listeners: list[Any] = []
 
@@ -392,3 +395,53 @@ def test_all_transports_unreachable_returns_unavailable() -> None:
     entity = _sensor(_device(), health)
     assert entity.native_value == "unavailable"
     assert _icon_for(entity.native_value) == "mdi:lan-pending"
+
+
+def test_mqtt_frame_before_current_session_is_not_mqtt() -> None:
+    """#222: a last_success_ts from a previous MQTT session doesn't count."""
+    connected_since = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    stale_stamp = connected_since - timedelta(minutes=5)
+    health = _spec(
+        {
+            "ble": (False, None),
+            "lan": (False, None),
+            "mqtt": (True, stale_stamp),
+            "cloud_api": (False, None),
+        }
+    )
+    coordinator = _coordinator(_device(), health, mqtt_connected_since=connected_since)
+    entity = GoveeConnectionModeSensor(coordinator, _device())
+    assert entity.native_value == "unavailable"
+
+
+def test_mqtt_frame_after_current_session_is_mqtt() -> None:
+    """#222: a frame received after the reconnect does count."""
+    connected_since = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    fresh_stamp = connected_since + timedelta(minutes=1)
+    health = _spec(
+        {
+            "ble": (False, None),
+            "lan": (False, None),
+            "mqtt": (True, fresh_stamp),
+            "cloud_api": (False, None),
+        }
+    )
+    coordinator = _coordinator(_device(), health, mqtt_connected_since=connected_since)
+    entity = GoveeConnectionModeSensor(coordinator, _device())
+    assert entity.native_value == "mqtt"
+
+
+def test_mqtt_frame_with_unknown_connected_since_still_counts() -> None:
+    """When connected_since is unknown (no mqtt client tracked), don't gate."""
+    now = datetime.now(timezone.utc)
+    health = _spec(
+        {
+            "ble": (False, None),
+            "lan": (False, None),
+            "mqtt": (True, now),
+            "cloud_api": (False, None),
+        }
+    )
+    coordinator = _coordinator(_device(), health, mqtt_connected_since=None)
+    entity = GoveeConnectionModeSensor(coordinator, _device())
+    assert entity.native_value == "mqtt"

@@ -11,6 +11,7 @@ bookkeeping in ``_async_update_data``, refreshed-credential persistence and
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -292,6 +293,60 @@ class TestLeakEvent:
 
         assert state.is_wet is False
         assert state.last_wet_time == 1_234
+
+
+class TestLeakDualProbeEvent:
+    """Upper/lower probe bytes are stored only for H5059 (#224)."""
+
+    def test_h5059_stores_both_probes_on_wet_event(self, monkeypatch):
+        coord = _coordinator()
+        state = _with_leak_sensor(coord)
+        coord._leak_sensors[LEAK] = replace(coord._leak_sensors[LEAK], sku="H5059")
+        monkeypatch.setattr(coord_mod, "async_dispatcher_send", MagicMock())
+
+        coord._handle_leak_event(
+            {
+                "hub_device_id": HUB,
+                "sensor_slot": 3,
+                "is_wet": True,
+                "upper_probe_wet": True,
+                "lower_probe_wet": False,
+            }
+        )
+
+        assert state.upper_probe_wet is True
+        assert state.lower_probe_wet is False
+
+    def test_h5058_leaves_probes_none(self, monkeypatch):
+        coord = _coordinator()
+        state = _with_leak_sensor(coord)
+        monkeypatch.setattr(coord_mod, "async_dispatcher_send", MagicMock())
+
+        coord._handle_leak_event(
+            {
+                "hub_device_id": HUB,
+                "sensor_slot": 3,
+                "is_wet": True,
+                "upper_probe_wet": True,
+                "lower_probe_wet": False,
+            }
+        )
+
+        assert state.upper_probe_wet is None
+        assert state.lower_probe_wet is None
+
+    def test_dry_event_clears_both_probes(self, monkeypatch):
+        coord = _coordinator()
+        state = _with_leak_sensor(coord, is_wet=True)
+        coord._leak_sensors[LEAK] = replace(coord._leak_sensors[LEAK], sku="H5059")
+        state.upper_probe_wet = True
+        state.lower_probe_wet = True
+        monkeypatch.setattr(coord_mod, "async_dispatcher_send", MagicMock())
+
+        coord._handle_leak_event({"hub_device_id": HUB, "sensor_slot": 3, "is_wet": False})
+
+        assert state.upper_probe_wet is False
+        assert state.lower_probe_wet is False
 
 
 class TestButtonPress:

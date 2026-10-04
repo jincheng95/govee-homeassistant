@@ -167,6 +167,52 @@ class TestLeakWetDecode:
         assert event["is_wet"] is True
 
 
+class TestLeakDualProbeDecode:
+    """0x34 leak decode emits upper/lower probe flags (issue #224).
+
+    Real H5059-via-H5044 packets from the #224 reporter's physical test:
+    byte 13 = upper probe, byte 14 = lower probe, byte 16 = aggregate.
+    """
+
+    UPPER_WET = bytes.fromhex("ee34050200641e14b86abd055c01000301800006")
+    UPPER_CLEAR = bytes.fromhex("ee34050200641e14ba6abd055c00000300800004")
+    LOWER_WET = bytes.fromhex("ee34050200641e14ba6abd05630001030180003b")
+    LOWER_CLEAR = bytes.fromhex("ee34050200641e14b86abd056300000300800039")
+
+    def _decode_one(self, packet: bytes) -> dict:
+        """Run one packet through the handler; return the emitted event_data."""
+        cb = MagicMock()
+        client = _make_client()
+        client._on_state_update = cb
+        client._handle_multisync(HUB_ID, _multisync([packet]))
+        assert cb.call_count == 1
+        return cb.call_args[0][1]
+
+    def test_upper_probe_wet_decoded(self):
+        event = self._decode_one(self.UPPER_WET)
+        assert event["upper_probe_wet"] is True
+        assert event["lower_probe_wet"] is False
+        assert event["is_wet"] is True
+
+    def test_upper_probe_clear_decoded(self):
+        event = self._decode_one(self.UPPER_CLEAR)
+        assert event["upper_probe_wet"] is False
+        assert event["lower_probe_wet"] is False
+        assert event["is_wet"] is False
+
+    def test_lower_probe_wet_decoded(self):
+        event = self._decode_one(self.LOWER_WET)
+        assert event["upper_probe_wet"] is False
+        assert event["lower_probe_wet"] is True
+        assert event["is_wet"] is True
+
+    def test_lower_probe_clear_decoded(self):
+        event = self._decode_one(self.LOWER_CLEAR)
+        assert event["upper_probe_wet"] is False
+        assert event["lower_probe_wet"] is False
+        assert event["is_wet"] is False
+
+
 class TestPresenceReportDecode:
     """0xAA 0x01 mmWave presence report frames (H5127, issue #124).
 
