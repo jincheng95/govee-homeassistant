@@ -46,6 +46,7 @@ from ..const import (
 )
 from ..diy_previews import preview_map, preview_url
 from ..diy_state import async_send_diy_effect, diy_spec_for, store, zone_lights_enabled
+from ..lan_udp_health import zone_lan_writable
 from ..entity import GoveeEntity
 from ..models import GoveeDevice
 from .zone_light import zone_display_name
@@ -235,6 +236,11 @@ class _GoveeDiyZoneEntityBase(GoveeEntity, RestoreEntity):
         self._zone = zone
         self._zone_key = zone.zone_key
         self._zone_name = diy_zone_display_name(zone)
+
+    @property
+    def available(self) -> bool:
+        """Coordinator availability, or a writable raw LAN link (see ``zone_lan_writable``)."""
+        return zone_lan_writable(self) or super().available
 
     @property
     def _store(self) -> Any:
@@ -565,7 +571,7 @@ class GoveeDiyApplyButton(GoveeEntity, ButtonEntity):
     @property
     def available(self) -> bool:
         """Unavailable without the LAN path — DIY has no cloud equivalent."""
-        return super().available and self._lan_target() is not None
+        return (zone_lan_writable(self) or super().available) and self._lan_target() is not None
 
     def _lan_target(self) -> tuple[str, DeviceProfile] | None:
         # require_option=False: a DIY upload has no cloud equivalent at all,
@@ -668,6 +674,11 @@ class GoveeDiyModePreviewSensor(GoveeEntity, SensorEntity):
         # be turned back into the key the artwork map is filed under.
         self._name_by_mode = {code: name for name, code in zone.modes.items()}
         self._previews = preview_map(zone)
+
+    @property
+    def available(self) -> bool:
+        """Coordinator availability, or a writable raw LAN link (see ``zone_lan_writable``)."""
+        return zone_lan_writable(self) or super().available
 
     @property
     def _store(self) -> Any:

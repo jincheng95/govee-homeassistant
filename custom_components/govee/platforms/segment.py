@@ -31,7 +31,7 @@ from ..const import SIGNAL_SEGMENT_READBACK, SUFFIX_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice, RGBColor, SegmentColorCommand
-from ..api.raw_router import async_segment_color
+from ..api.raw_router import async_segment_color, segments_lan_writable
 from .grouped_segment import segments_optimistic_signal
 
 _LOGGER = logging.getLogger(__name__)
@@ -103,6 +103,11 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         self._rgb_color: tuple[int, int, int] = (255, 255, 255)
         # ``time.monotonic()`` of this segment's last write, 0.0 for never.
         self._written_at: float = 0.0
+
+    @property
+    def available(self) -> bool:
+        """Fork: coordinator availability, or a paint that would leave over raw LAN."""
+        return segments_lan_writable(self) or super().available
 
     @property
     def is_on(self) -> bool:

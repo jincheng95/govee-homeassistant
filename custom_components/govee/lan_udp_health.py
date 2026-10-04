@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from .api.protocol import Transport
 from .models.transport import TransportHealth
-from .zone_state import profile_for
+from .zone_state import profile_for, zone_lights_enabled
 
 if TYPE_CHECKING:
     from .coordinator import GoveeCoordinator
@@ -26,6 +26,9 @@ _LOGGER = logging.getLogger(__name__)
 
 TRANSPORT_LAN_UDP: Final = "lan_udp"
 """Transport kind for the raw write-only UDP path (see models/transport.py)."""
+
+TRANSPORT_LAN: Final = "lan"
+"""Upstream's verified LAN transport kind."""
 
 REASON_NO_LAN_PRESENCE: Final = "no_lan_presence"
 REASON_NO_RAW_PROFILE: Final = "no_raw_profile"
@@ -101,6 +104,38 @@ def _gate_reason(device: Any, *, on_lan: bool) -> str | None:
     return None
 
 
+def lan_writable(coordinator: GoveeCoordinator, device: Any, *, option_on: bool) -> bool:
+    """Whether a raw LAN frame to ``device`` has somewhere to go right now.
+
+    True only when all of these hold: ``option_on``; the device is not a
+    group; the coordinator holds its state; its profile carries
+    ``Transport.LAN_RAW``; and its ``lan_udp`` or upstream ``lan`` health is
+    available. Entities use it to stay available through a cloud outage.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device: The coordinator's device record.
+        option_on: The option gate of the calling entity.
+    """
+    if not option_on or getattr(device, "is_group", False):
+        return False
+    device_id = getattr(device, "device_id", None)
+    if device_id is None or coordinator.get_state(device_id) is None:
+        return False
+    profile = profile_for(_sku(device))
+    if profile is None or not profile.carries(Transport.LAN_RAW):
+        return False
+    return any(_transport_up(coordinator, device_id, kind) for kind in (TRANSPORT_LAN_UDP, TRANSPORT_LAN))
+
+
+def zone_lan_writable(entity: Any) -> bool:
+    """:func:`lan_writable` for a zone or DIY entity, gated by ``enable_zone_lights``."""
+    coordinator = entity.coordinator
+    entry = getattr(coordinator, "config_entry", None)
+    option_on = entry is not None and zone_lights_enabled(entry)
+    return lan_writable(coordinator, entity._device, option_on=option_on)
+
+
 def note_send(coordinator: GoveeCoordinator, device_id: str) -> None:
     """Stamp an outbound raw frame, and clear a standing ``send_failed``.
 
@@ -136,6 +171,12 @@ def _health(coordinator: GoveeCoordinator, device_id: str) -> TransportHealth | 
     """The device's ``lan_udp`` health entry, provisioning the device if new."""
     coordinator._ensure_transport_health(device_id)
     return coordinator.get_transport_health(device_id, TRANSPORT_LAN_UDP)  # type: ignore[arg-type]
+
+
+def _transport_up(coordinator: GoveeCoordinator, device_id: str, kind: str) -> bool:
+    """Whether ``kind`` health for the device is available, without provisioning it."""
+    health = coordinator.get_transport_health(device_id, kind)  # type: ignore[arg-type]
+    return health is not None and health.is_available is True
 
 
 def _devices(coordinator: GoveeCoordinator) -> dict[str, Any]:

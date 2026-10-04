@@ -30,7 +30,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from ..api.protocol import ha_to_percent  # fork: level-space churn guard
-from ..api.raw_router import async_segment_color
+from ..api.raw_router import async_segment_color, segments_lan_writable
 from ..api.segment_readback import SegmentReading
 from ..child_power import async_ensure_device_powered
 from ..const import SIGNAL_SEGMENT_READBACK
@@ -128,9 +128,10 @@ class GoveeSegmentGroupEntity(GoveeEntity, LightEntity, RestoreEntity):
         """Return True if entity is available.
 
         Groups don't depend on coordinator state updates. Just check the
-        coordinator is healthy.
+        coordinator is healthy, or that a paint would leave over raw LAN
+        (``segments_lan_writable``).
         """
-        return self.coordinator.last_update_success
+        return segments_lan_writable(self) or self.coordinator.last_update_success
 
     @property
     def is_on(self) -> bool:

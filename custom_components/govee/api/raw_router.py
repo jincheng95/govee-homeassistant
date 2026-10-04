@@ -15,6 +15,7 @@ import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Final
 
+from ..lan_udp_health import lan_writable
 from ..segment_limit import manual_segment_count, segment_count
 from ..zone_state import ZONE_KEY_BY_TOGGLE, profile_for, registry, set_switch_state
 from . import ble_raw_write, lan_raw, mqtt_raw_write
@@ -286,6 +287,32 @@ async def async_segment_color(
     return await async_route_frames(
         coordinator, device_id, sku, profile, frames, what=f"segments {list(segments)} -> {rgb}"
     )
+
+
+def segments_lan_writable(entity: Any) -> bool:
+    """Whether a segment paint from ``entity`` would leave over raw LAN now.
+
+    :func:`~..lan_udp_health.lan_writable` gated by ``enable_lan_raw_write``,
+    plus a profile segment form (zone colour on ``segment_zone``, else
+    ``SEGMENT_COLOR``) whose mask width matches the device's segment count.
+    """
+    coordinator = _coordinator(entity)
+    device = getattr(entity, "_device", None)
+    option_on = getattr(coordinator, "config_entry", None) is not None and lan_raw.lan_write_enabled(coordinator)
+    if device is None or not lan_writable(coordinator, device, option_on=option_on):
+        return False
+    profile = profile_for(_sku(entity))
+    if profile is None:  # pragma: no cover - lan_writable already required a profile
+        return False
+    zone_key = profile.segment_zone_key
+    capability = Capability.ZONE_COLOR
+    if zone_key is None:
+        zone_key, capability = SEGMENT_ZONE_KEY, Capability.SEGMENT_COLOR
+    try:
+        supported = profile.supports(capability, zone=zone_key)
+    except GoveeProtocolError:
+        return False
+    return supported and _segment_count_matches(entity, profile, zone_key)
 
 
 def _masked_segment_frames(

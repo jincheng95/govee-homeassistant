@@ -42,6 +42,7 @@ from ..api.protocol import (
 )
 from ..const import SUFFIX_ZONE, SUFFIX_ZONE_FLOW_RATE
 from ..entity import GoveeEntity
+from ..lan_udp_health import zone_lan_writable
 from ..models import GoveeDevice, ToggleCommand
 from ..zone_state import (
     ZONE_KEY_BY_TOGGLE,
@@ -212,6 +213,11 @@ class _GoveeZoneEntityBase(GoveeEntity):
         self._profile = profile
         self._zone = zone
         self._zone_key = zone.key
+
+    @property
+    def available(self) -> bool:
+        """Coordinator availability, or a writable raw LAN link (see ``zone_lan_writable``)."""
+        return zone_lan_writable(self) or super().available
 
     @property
     def _codec(self) -> GoveeCodec:
