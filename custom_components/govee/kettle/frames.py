@@ -4,7 +4,7 @@ The H7175 reports in its AWS IoT push, besides ``sta`` (see
 :mod:`.manager`), BLE-format frames in ``op.command``. Frames are 20 bytes
 with an XOR checksum of the first 19 in the last byte; a frame that fails it
 is skipped. Byte 0 is ``aa`` for a status frame and ``3a`` for a command or
-its echo. Layouts (see ``docs/_research/2026-09-30_h7175-kettle.md``):
+its echo. Layouts:
 
 ==================================  ==============================================
 Frame                               Meaning

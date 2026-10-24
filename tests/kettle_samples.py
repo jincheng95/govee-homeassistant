@@ -3,7 +3,7 @@
 Source: one H7175 on an account that displays Fahrenheit, idle, custom slot
 4 selected in the Govee app (target 176 °F). The ``/user/devices`` capability
 block, the ``/device/state`` capabilities and the MQTT push are verbatim
-(device id and name replaced). See docs/_research/2026-09-30_h7175-kettle.md.
+(device id and name replaced).
 """
 
 from __future__ import annotations

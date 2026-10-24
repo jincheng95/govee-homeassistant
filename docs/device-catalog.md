@@ -1816,7 +1816,7 @@ Account (BFF) list: yes — `deviceSettings` carries `address`, `bleName`, `devi
 
 ## H7175
 
-Developer API type `devices.types.kettle` (gooseneck kettle); see docs/_research/2026-09-30_h7175-kettle.md.
+Developer API type `devices.types.kettle` (gooseneck kettle).
 
 Capabilities:
 
