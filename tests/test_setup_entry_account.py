@@ -23,6 +23,7 @@ from custom_components.govee.api import (
     GoveeConnectionError,
     GoveeIotCredentials,
 )
+from custom_components.govee.registry import get_registry_device
 from custom_components.govee.const import (
     CONF_API_KEY,
     CONF_EMAIL,
@@ -78,6 +79,8 @@ def _api_client(device, state, *, devices_error: Exception | None = None) -> Mag
     client.last_raw_state = {}
     client.last_raw_devices = []
     client.recent_commands = []
+    # Persisted at unload; the store needs real data, not a mock.
+    client.export_request_counts = MagicMock(return_value={})
     return client
 
 
@@ -259,7 +262,7 @@ async def test_services_resolve_registry_and_govee_ids(hass, mock_rgbic_device, 
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        ha_device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, mock_rgbic_device.device_id)})
+        ha_device = get_registry_device(dr.async_get(hass), (DOMAIN, mock_rgbic_device.device_id), entry.entry_id)
         assert ha_device is not None
 
         await hass.services.async_call(

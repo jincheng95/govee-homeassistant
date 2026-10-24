@@ -48,6 +48,12 @@
         "state": {
           "on": "mdi:water-alert"
         }
+      },
+      "kettle_keep_warm": {
+        "default": "mdi:thermometer-chevron-up"
+      },
+      "reported_online": {
+        "default": "mdi:cloud-check-outline"
       }
     },
     "button": {
@@ -87,6 +93,9 @@
       },
       "govee_main_light_panel": {
         "default": "mdi:ceiling-light"
+      },
+      "govee_ring_light": {
+        "default": "mdi:circle-outline"
       }
     },
     "number": {
@@ -121,6 +130,9 @@
       },
       "govee_nightlight_scene_select": {
         "default": "mdi:weather-night"
+      },
+      "kettle_brew_mode": {
+        "default": "mdi:kettle-steam"
       }
     },
     "sensor": {
@@ -163,6 +175,21 @@
       },
       "ieee_address": {
         "default": "mdi:identifier"
+      },
+      "kettle_heating_status": {
+        "default": "mdi:kettle-steam"
+      },
+      "kettle_keep_warm_minutes": {
+        "default": "mdi:timer-outline"
+      },
+      "kettle_diy_slot": {
+        "default": "mdi:star-outline"
+      },
+      "kettle_keep_warm_remaining": {
+        "default": "mdi:timer-sand"
+      },
+      "last_measurement": {
+        "default": "mdi:clock-check-outline"
       }
     },
     "switch": {
@@ -192,6 +219,11 @@
       },
       "govee_bottom_light": {
         "default": "mdi:floor-lamp"
+      }
+    },
+    "water_heater": {
+      "kettle": {
+        "default": "mdi:kettle"
       }
     }
   }

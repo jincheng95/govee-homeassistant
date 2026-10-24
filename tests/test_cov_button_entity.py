@@ -29,6 +29,7 @@ from custom_components.govee.models.device import (
     INSTANCE_POWER,
     INSTANCE_WATER_FULL_EVENT,
 )
+from .coordinator_mocks import follow_online_flag
 
 
 def _dehumidifier(*, is_group: bool = False) -> GoveeDevice:
@@ -51,7 +52,7 @@ def _coordinator(device: GoveeDevice, state: GoveeDeviceState | None, last_updat
     coordinator.get_state = MagicMock(return_value=state)
     coordinator.async_control_device = AsyncMock(return_value=True)
     coordinator.last_update_success = last_update_success
-    return coordinator
+    return follow_online_flag(coordinator)
 
 
 def _state(device: GoveeDevice, online: bool = True) -> GoveeDeviceState:

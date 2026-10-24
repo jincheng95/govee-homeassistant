@@ -11,8 +11,8 @@ from dataclasses import asdict
 from typing import Any
 
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import (
     config_validation as cv,
     device_registry as dr,
@@ -20,6 +20,7 @@ from homeassistant.helpers import (
     issue_registry as ir,
 )
 from homeassistant.helpers.device_registry import DeviceEntry
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
 from .api import (
@@ -47,9 +48,9 @@ from .const import (
     DEFAULT_POLL_INTERVAL,
     DEFAULT_SEGMENT_MODE,
     DOMAIN,
-    HUB_DEVICE_IDENTIFIER,
     KEY_IOT_CREDENTIALS,
     KEY_IOT_LOGIN_FAILED,
+    LEGACY_HUB_DEVICE_IDENTIFIER,
     SEGMENT_MODE_BOTH,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_GROUPS,
@@ -65,10 +66,13 @@ from .const import (
     SUFFIX_DIY_STYLE_SELECT,
     SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SCENE_SELECT,
+    SUFFIX_SEGMENT,
     SUFFIX_ZONE,
+    hub_device_identifier,
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .diy_previews import async_register_previews
+from .registry import device_config_entry_ids, get_registry_device
 from .repairs import async_cleanup_legacy_issues, async_create_mqtt_issue
 from .segment_limit import (
     is_individual_segment_suffix,
@@ -82,6 +86,10 @@ __all__ = ["GoveeConfigEntry"]
 
 _LOGGER = logging.getLogger(__name__)
 
+# Saved cloud request counters (see _async_attach_request_counts_store).
+REQUEST_COUNTS_STORAGE_VERSION = 1
+REQUEST_COUNTS_SAVE_DELAY = 60  # seconds; coalesces the saves of a busy poll
+
 # Configuration is UI-only; reject any YAML under the ``govee:`` key.
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -93,6 +101,7 @@ PLATFORMS: list[Platform] = [
     Platform.LIGHT,  # Main light + segments
     Platform.FAN,  # Fan devices
     Platform.HUMIDIFIER,  # Humidifiers / dehumidifiers
+    Platform.WATER_HEATER,  # H7175 kettles
     Platform.SWITCH,
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
@@ -157,6 +166,50 @@ def _persist_iot_credentials(
     hass.config_entries.async_update_entry(entry, data=new_data)
 
 
+def _request_counts_store(hass: HomeAssistant, entry: GoveeConfigEntry) -> Store[dict[str, Any]]:
+    """Per-entry storage for the cloud request counters."""
+    return Store(hass, REQUEST_COUNTS_STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}.request_counts")
+
+
+async def _async_attach_request_counts_store(
+    hass: HomeAssistant, entry: GoveeConfigEntry, api_client: GoveeApiClient
+) -> None:
+    """Carry the day's request count across reloads and restarts.
+
+    The client is rebuilt on every reload; budget pacing reads its daily
+    count, so a count that restarted at zero would let a reload mid-day push
+    the install past Govee's daily cap. Counts are saved shortly after each
+    request and flushed when the entry unloads.
+    """
+    store = _request_counts_store(hass, entry)
+    try:
+        saved = await store.async_load()
+    except (HomeAssistantError, NotImplementedError, ValueError) as err:
+        # A file of another storage version (no migration) or unreadable
+        # content: start from zero rather than fail setup.
+        _LOGGER.debug("Ignoring unreadable saved request counts: %s", err)
+        saved = None
+    api_client.import_request_counts(saved)
+
+    @callback
+    def _schedule_save() -> None:
+        store.async_delay_save(api_client.export_request_counts, REQUEST_COUNTS_SAVE_DELAY)
+
+    async def _flush() -> None:
+        # Detach first: a late request on this unloaded client (an in-flight
+        # service call) must not schedule a save over the next client's counts.
+        api_client.set_request_listener(None)
+        await store.async_save(api_client.export_request_counts())
+
+    api_client.set_request_listener(_schedule_save)
+    entry.async_on_unload(_flush)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> None:
+    """Delete the entry's saved request counters when the entry is removed."""
+    await _request_counts_store(hass, entry).async_remove()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> bool:
     """Set up Govee from a config entry.
 
@@ -179,6 +232,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
 
     # Create API client (uses HA-managed clientsession via hass=hass).
     api_client = GoveeApiClient(api_key, hass=hass)
+    await _async_attach_request_counts_store(hass, entry, api_client)
 
     # Optionally get IoT credentials for MQTT
     # Credentials are cached to avoid repeated login attempts on reload
@@ -274,6 +328,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GoveeConfigEntry) -> boo
 
     # Store coordinator in entry
     entry.runtime_data = coordinator
+
+    # Before cleanup, so the old shared diagnostics device is not mistaken
+    # for one this entry no longer owns.
+    _async_migrate_hub_device(hass, entry)
 
     # Clean up orphaned entities (e.g., groups that are now disabled)
     await _async_cleanup_orphaned_entities(hass, entry, coordinator)
@@ -413,8 +471,65 @@ def _owned_device_identifiers(entry: GoveeConfigEntry, coordinator: GoveeCoordin
     owned = set(coordinator.devices)
     owned.update(coordinator.leak_sensors)
     owned.update(coordinator.hub_device_ids)
-    owned.add(HUB_DEVICE_IDENTIFIER)
+    owned.add(hub_device_identifier(entry.entry_id))
     return owned
+
+
+def _async_migrate_hub_device(hass: HomeAssistant, entry: GoveeConfigEntry) -> None:
+    """Move this entry off the diagnostics device that every entry used to share.
+
+    The device used to be identified by one fixed id, so with two accounts both
+    entries' hub sensors landed on one merged device. When the entry is the
+    device's only owner, the device is re-identified in place, keeping its id,
+    area and name. When another entry still shares it, this entry's hub
+    sensors are moved to a device of their own (entity ids are unchanged; they
+    are keyed by the entry id) and the entry leaves the shared device, which
+    the last remaining entry then re-identifies the same way.
+    """
+    device_registry = dr.async_get(hass)
+    legacy = get_registry_device(device_registry, (DOMAIN, LEGACY_HUB_DEVICE_IDENTIFIER), entry.entry_id)
+    if legacy is None or entry.entry_id not in device_config_entry_ids(legacy):
+        return
+
+    new_identifiers = {(DOMAIN, hub_device_identifier(entry.entry_id))}
+    current = get_registry_device(device_registry, (DOMAIN, hub_device_identifier(entry.entry_id)), entry.entry_id)
+    if device_config_entry_ids(legacy) == {entry.entry_id} and current is None:
+        device_registry.async_update_device(legacy.id, new_identifiers=new_identifiers)
+        _LOGGER.debug("Moved the diagnostics device to a per-entry identifier")
+        return
+
+    if current is None:
+        current = device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers=new_identifiers,
+            name=legacy.name,
+            manufacturer=legacy.manufacturer,
+            model=legacy.model,
+        )
+        # Carry the user's area and rename over to the entry's own device.
+        device_registry.async_update_device(current.id, area_id=legacy.area_id, name_by_user=legacy.name_by_user)
+    entity_registry = er.async_get(hass)
+    for entity_entry in er.async_entries_for_device(entity_registry, legacy.id, include_disabled_entities=True):
+        if entity_entry.config_entry_id == entry.entry_id:
+            entity_registry.async_update_entity(entity_entry.entity_id, device_id=current.id)
+    # Entities were moved first: leaving the device would otherwise delete them.
+    device_registry.async_update_device(legacy.id, remove_config_entry_id=entry.entry_id)
+    _LOGGER.debug("Split this entry's diagnostics sensors off the shared diagnostics device")
+
+
+def _segment_index_out_of_range(suffix: str, device: Any) -> bool:
+    """True when a ``_segment_N`` suffix names a segment the device no longer has.
+
+    Only a count lowered deliberately (a SKU override or the size.max clamp)
+    is trusted. A zero count or one taken straight from the API parser may be
+    a transient bad response, and acting on it would delete live entities.
+    """
+    segment_count = device.segment_count
+    resolution = device.segment_count_resolution
+    if segment_count <= 0 or not resolution or resolution.get("source") not in ("override", "size_max"):
+        return False
+    index = suffix[len(SUFFIX_SEGMENT) :]
+    return index.isdigit() and int(index) >= segment_count
 
 
 async def _async_cleanup_orphaned_entities(
@@ -525,6 +640,11 @@ async def _async_cleanup_orphaned_entities(
                 elif _is_phantom_segment(coordinator, owner_id, suffix):
                     should_remove = True
                     removal_reason = "segment above the hardware count"
+                elif remove_unknown and _segment_index_out_of_range(suffix, coordinator.devices[owner_id]):
+                    # Left over from before a lower count applied (SKU override
+                    # or size.max clamp); the light platform no longer creates it.
+                    should_remove = True
+                    removal_reason = "segment beyond device segment count"
             elif suffix == SUFFIX_SCENE_SELECT and not enable_scenes:
                 should_remove = True
                 removal_reason = "scenes disabled"

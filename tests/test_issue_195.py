@@ -297,3 +297,165 @@ class TestPermanentSkuExclusion:
         assert client.async_publish_status_query.await_args_list == [call("GD/a"), call("GD/c")]
         assert coord._status_query_strikes == {}
         assert coord.mqtt_status_query_strikes == []
+
+    @pytest.mark.asyncio
+    async def test_six_h5108_units_cost_no_strikes(self, sleeps):
+        """The H5108 report (issue #237): six units on one account on
+        v2026.10.0. Each query closed the session within ~5s, two strikes
+        apiece, about 35 minutes of churn after every restart, and the
+        account's MQTT-only plug readings were silent the whole time. None
+        of the six may be queried, so the plugs' session is never touched.
+        """
+        units = ("B", "C", "D", "E", "F", "G")
+        coord, client = _coord(
+            devices=("A",) + units,
+            skus={device_id: "H5108" for device_id in units},
+        )
+
+        await coord._poll_mqtt_status()
+
+        assert client.async_publish_status_query.await_args_list == [call("GD/a")]
+        assert coord._status_query_strikes == {}
+        assert coord.mqtt_status_query_strikes == []
+
+
+class TestAccountWideRefusal:
+    """AWS IoT can refuse every status query an account publishes, not just
+    one device's. The session then drops on the first query of every new
+    session whichever device it goes to, and the per-device quarantine would
+    work through the whole account two drops at a time, each reconnect
+    backing off further. Seen on one account across an H6054, an H7170 and an
+    H7126 in a row, each drop about 10 ms after the session's first query.
+    """
+
+    def _drop_on(self, coord, device_id: str) -> None:
+        coord._status_query_in_flight = device_id
+        coord._on_mqtt_disconnected()
+
+    def test_three_models_in_a_row_stop_the_sweep(self, caplog):
+        coord, _ = _coord(devices=("A", "B", "C", "D"), skus={"A": "H6054", "B": "H7170", "C": "H7126", "D": "H6001"})
+
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            for device_id in ("A", "A", "B", "B", "C"):
+                self._drop_on(coord, device_id)
+
+        assert coord._status_queries_refused is True
+        assert coord.mqtt_status_queries_refused is True
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        # A and B reached the quarantine first; the third model is the account.
+        assert len(warnings) == 3
+        assert "3 different models in a row" in warnings[-1]
+        assert "Lamp C (H7126)" in warnings[-1]
+        assert coord._status_query_quarantine == {"A", "B"}
+
+    def test_the_refusal_is_reported_once(self, caplog):
+        coord, _ = _coord(devices=("A", "B", "C", "D"), skus={"A": "H6054", "B": "H7170", "C": "H7126", "D": "H6001"})
+
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            for device_id in ("A", "B", "C", "D"):
+                self._drop_on(coord, device_id)
+
+        refusals = [r for r in caplog.records if "different models in a row" in r.getMessage()]
+        assert len(refusals) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_query_goes_out_once_refused(self, sleeps):
+        coord, client = _coord()
+        coord._status_queries_refused = True
+
+        await coord._poll_mqtt_status()
+
+        client.async_publish_status_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refusal_also_stops_the_power_monitoring_tick(self, sleeps):
+        """The 60 s H5086 tick (#200) goes through the same guard."""
+        coord, client = _coord(devices=("A", "P"), skus={"P": "H5086"})
+        coord._status_queries_refused = True
+
+        await coord._poll_mqtt_status(power_monitoring_only=True)
+
+        client.async_publish_status_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_power_monitoring_tick_queries_only_outlets_and_skips_excluded(self, sleeps):
+        coord, client = _coord(devices=("A", "P", "T"), skus={"P": "H5086", "T": "H5108"})
+
+        await coord._poll_mqtt_status(power_monitoring_only=True)
+
+        assert client.async_publish_status_query.await_args_list == [call("GD/p")]
+
+    @pytest.mark.asyncio
+    async def test_an_answered_query_clears_the_count(self, monkeypatch):
+        """The #195 case: one model refuses, the others answer, so it stays a
+        per-device quarantine however many sweeps it takes.
+        """
+        coord, client = _coord(devices=("A", "B"), skus={"A": "H6001", "B": "H60B0"})
+        refusing = {"B"}
+
+        async def _sleep(_delay: float) -> None:
+            if coord._status_query_in_flight in refusing:
+                client.connected = False
+                coord._on_mqtt_disconnected()
+
+        monkeypatch.setattr(coord_mod.asyncio, "sleep", _sleep)
+
+        for _ in range(3):
+            client.connected = True
+            await coord._poll_mqtt_status()
+
+        assert coord._status_queries_refused is False
+        assert coord._status_query_quarantine == {"B"}
+        assert coord._status_query_unanswered_skus == set()
+
+    def test_several_units_of_one_model_count_once(self):
+        """Six units of one model that refuses its query are one model, not
+        the account (the H5075 report), so the quarantine still handles them.
+        """
+        units = ("B", "C", "D", "E", "F", "G")
+        coord, _ = _coord(devices=("A",) + units, skus={device_id: "H5199" for device_id in units})
+
+        for device_id in units:
+            self._drop_on(coord, device_id)
+            self._drop_on(coord, device_id)
+
+        assert coord._status_queries_refused is False
+        assert coord._status_query_quarantine == set(units)
+
+    def test_two_models_are_not_enough(self):
+        coord, _ = _coord(devices=("A", "B", "C"), skus={"A": "H6054", "B": "H7170"})
+
+        for device_id in ("A", "B"):
+            self._drop_on(coord, device_id)
+
+        assert coord._status_queries_refused is False
+
+    @pytest.mark.asyncio
+    async def test_the_reported_sequence(self, monkeypatch):
+        """Every new session dies on its first query, whichever device: the
+        sweep stops after the third model instead of quarantining them all.
+        """
+        devices = ("A", "B", "C", "D", "E", "F")
+        coord, client = _coord(
+            devices=devices,
+            skus={"A": "H6054", "B": "H7170", "C": "H7126", "D": "H5106", "E": "H5106", "F": "H7131"},
+        )
+
+        async def _sleep(_delay: float) -> None:
+            if coord._status_query_in_flight is not None:
+                client.connected = False
+                coord._on_mqtt_disconnected()
+
+        monkeypatch.setattr(coord_mod.asyncio, "sleep", _sleep)
+
+        sessions = 0
+        for _ in range(12):  # each reconnect runs its own sweep
+            client.connected = True
+            before = client.async_publish_status_query.await_count
+            await coord._poll_mqtt_status()
+            if client.async_publish_status_query.await_count > before:
+                sessions += 1
+
+        assert coord._status_queries_refused is True
+        assert sessions == 5  # A, A, B, B, C; nothing after
+        assert coord._status_query_quarantine == {"A", "B"}

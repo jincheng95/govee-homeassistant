@@ -21,7 +21,7 @@ from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.helpers.dispatcher import DATA_DISPATCHER
 
 from custom_components.govee.api.probe_thermometer import probes_for_sku
-from custom_components.govee.const import CONF_API_TEMPERATURE_UNIT, DOMAIN, HUB_DEVICE_IDENTIFIER
+from custom_components.govee.const import CONF_API_TEMPERATURE_UNIT, DOMAIN, hub_device_identifier
 from custom_components.govee.models import GoveeCapability, GoveeDevice, GoveeDeviceState, ProbeReading
 from custom_components.govee.models.device import (
     CAPABILITY_PROPERTY,
@@ -60,6 +60,7 @@ from custom_components.govee.sensor import (
     GoveeThermoBatterySensor,
     async_setup_entry,
 )
+from .coordinator_mocks import follow_online_flag
 
 LEAK_SIGNAL = f"{DOMAIN}_leak_update"
 
@@ -179,6 +180,8 @@ def _fleet_coordinator(*, mqtt: bool) -> MagicMock:
     coordinator.mqtt_client = MagicMock() if mqtt else None
     coordinator.get_state.side_effect = states.get
     coordinator.is_bff_leak_sensor.return_value = False
+    # Account-data thermometers (#258) are covered in test_issue_258.py.
+    coordinator.is_bff_thermometer.return_value = False
     coordinator.leak_sensors = {
         sensor.device_id: sensor
         for sensor in (
@@ -346,7 +349,7 @@ class TestMqttStatusSensor:
         entity = self._entity(None)
         assert entity.native_value == "unavailable"
         assert entity.unique_id == "entry1_mqtt_status"
-        assert entity.device_info["identifiers"] == {(DOMAIN, HUB_DEVICE_IDENTIFIER)}
+        assert entity.device_info["identifiers"] == {(DOMAIN, hub_device_identifier("entry1"))}
         assert entity.device_class == SensorDeviceClass.ENUM
         assert entity.entity_category == EntityCategory.DIAGNOSTIC
         assert entity.options == ["connected", "disconnected", "unavailable"]
@@ -368,7 +371,7 @@ class TestMqttLastReceivedSensor:
         assert entity.native_value == stamp
         assert entity.unique_id == "entry1_mqtt_last_received"
         assert entity.device_class == SensorDeviceClass.TIMESTAMP
-        assert entity.device_info["identifiers"] == {(DOMAIN, HUB_DEVICE_IDENTIFIER)}
+        assert entity.device_info["identifiers"] == {(DOMAIN, hub_device_identifier("entry1"))}
 
     def test_none_until_the_first_push(self):
         coordinator = MagicMock()
@@ -397,7 +400,7 @@ class TestBffAvailabilityMixin:
         coordinator.is_water_detector.return_value = water_detector
         state = GoveeDeviceState(device_id=device.device_id, online=online) if has_state else None
         coordinator.get_state.return_value = state
-        return GoveeTemperatureSensor(coordinator, device)
+        return GoveeTemperatureSensor(follow_online_flag(coordinator), device)
 
     def test_regular_thermometer_follows_the_online_flag(self):
         assert self._entity(online=True).available is True

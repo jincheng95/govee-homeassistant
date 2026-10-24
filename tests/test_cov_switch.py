@@ -71,6 +71,7 @@ from custom_components.govee.switch import (
     GoveeProbeLivePollingSwitch,
     GoveeSocketSwitchEntity,
 )
+from .coordinator_mocks import follow_online_flag
 
 # --------------------------------------------------------------------------- #
 # Device builders
@@ -274,7 +275,7 @@ def _coordinator(device: GoveeDevice, state: GoveeDeviceState | None, **override
     coordinator.mqtt_connected = False
     for name, value in overrides.items():
         setattr(coordinator, name, value)
-    return coordinator
+    return follow_online_flag(coordinator)
 
 
 def _attach(entity):

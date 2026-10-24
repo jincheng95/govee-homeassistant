@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import voluptuous as vol
 import yaml
+from tests.coordinator_mocks import follow_online_flag
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
@@ -140,7 +141,7 @@ def _coordinator(
             firmware="1.0.0",
             last_correlated_ts=0.0,
         )
-    return coordinator
+    return follow_online_flag(coordinator)
 
 
 def _entry(coordinator: Any, *, zone_lights: bool = True, lan_raw_write_on: bool | None = None) -> Any:

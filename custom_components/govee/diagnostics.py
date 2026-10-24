@@ -21,7 +21,7 @@ from typing import Any
 # monkeypatch). It is the same shared module object the hoisted helper calls, so
 # patches applied here still take effect there.
 from homeassistant.components import network  # noqa: F401
-from homeassistant.components.diagnostics import async_redact_data
+from homeassistant.components.diagnostics import REDACTED, async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
@@ -39,6 +39,9 @@ from .const import (
     CONF_EMAIL,
     CONF_LAN_TARGETS,
     CONF_PASSWORD,
+    CONF_SEGMENT_COUNT_BY_DEVICE,
+    CONF_SEGMENT_GROUPS_BY_DEVICE,
+    CONF_SEGMENT_MODE_BY_DEVICE,
     DOMAIN,
 )
 from .coordinator import GoveeCoordinator
@@ -208,9 +211,10 @@ def _device_diag(
     per-transport health — enough to debug state-shape issues (e.g. #83) from a
     download alone.
     """
-    return {
+    record: dict[str, Any] = {
         "sku": device.sku,
-        "name": device.name,
+        # The user's chosen name, redacted like "deviceName" in the raw payloads.
+        "name": REDACTED,
         "device_type": device.device_type,
         "is_group": device.is_group,
         "capabilities": [
@@ -237,6 +241,10 @@ def _device_diag(
         # so an over-reported count is diagnosable from a download alone.
         "segment_resolution": device.segment_count_resolution,
     }
+    # H7175 kettles: recent distinct pushed frames, command echoes included.
+    if device.decodes_kettle_frames:
+        record["recent_frames"] = coordinator.kettles.recent_frames(device_id)
+    return record
 
 
 def _leak_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
@@ -246,10 +254,23 @@ def _leak_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
     for device_id, sensor in coordinator.leak_sensors.items():
         state = states.get(device_id)
         out[device_id] = {
-            "sensor": dataclasses.asdict(sensor),
+            "sensor": _leak_sensor_diag(sensor),
             "state": dataclasses.asdict(state) if state else None,
         }
     return out
+
+
+def _leak_sensor_diag(sensor: Any) -> dict[str, Any]:
+    """Leak sensor record with its user-assigned name redacted."""
+    return {**dataclasses.asdict(sensor), "name": REDACTED}
+
+
+def _command_confirm_diag(coordinator: GoveeCoordinator) -> dict[str, Any] | None:
+    """The confirm counters with device ids hashed, or None while the option is off."""
+    counters = coordinator.command_confirm_counters
+    if not isinstance(counters, dict):
+        return None
+    return _anonymize_device_keys(counters)
 
 
 def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
@@ -271,6 +292,9 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
             # Devices the session dropped right after a status query to, and
             # which of them the sweep has quarantined (#195).
             "status_query_strikes": coordinator.mqtt_status_query_strikes,
+            # Whether the sweep stopped because AWS IoT refuses every status
+            # query on the account, not one device's.
+            "status_queries_refused": coordinator.mqtt_status_queries_refused,
             # Every inbound account-topic message, counted before any
             # filtering, and the last device-attributed state message — lets
             # a download tell a completely silent session (no inbound at
@@ -308,6 +332,10 @@ def _runtime_diag(coordinator: GoveeCoordinator) -> dict[str, Any]:
         # alone, without asking the user to enable debug logging. The
         # "device" key in each record is redacted like everything else.
         "recent_commands": coordinator.api_client.recent_commands,
+        # Confirm-and-resend counters per light (confirm_commands option, #245):
+        # confirmed, resent, unconfirmed, unverified, skipped_budget,
+        # superseded. None while the option is off.
+        "command_confirm": _command_confirm_diag(coordinator),
         # PII-free census of the BFF device list — shows whether the BFF API
         # returns a given leak SKU and if it carries discovery fields (#87).
         "bff_device_census": coordinator.bff_device_census,
@@ -493,6 +521,11 @@ def _redact(data: dict[str, Any]) -> dict[str, Any]:
     for key in ("devices", "leak_sensors"):
         if isinstance(redacted.get(key), dict):
             redacted[key] = _anonymize_device_keys(redacted[key])
+    # The per-device segment options are keyed by device id too.
+    options = redacted.get("config_entry", {}).get("options")
+    for option_key in (CONF_SEGMENT_MODE_BY_DEVICE, CONF_SEGMENT_GROUPS_BY_DEVICE, CONF_SEGMENT_COUNT_BY_DEVICE):
+        if isinstance(options, dict) and isinstance(options.get(option_key), dict):
+            options[option_key] = _anonymize_device_keys(options[option_key])
     # The LAN reality probe captures unknown keys, so additionally scrub the whole
     # lan_discovery subtree by value shape (catches a MAC/IP under any key name).
     if isinstance(redacted.get("lan_discovery"), dict):
@@ -575,7 +608,7 @@ async def async_get_device_diagnostics(
             if leak_id == govee_id or sensor.hub_device_id == govee_id:
                 state = coordinator.leak_states.get(leak_id)
                 leak_info[leak_id] = {
-                    "sensor": dataclasses.asdict(sensor),
+                    "sensor": _leak_sensor_diag(sensor),
                     "state": dataclasses.asdict(state) if state else None,
                 }
 

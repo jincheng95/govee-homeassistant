@@ -75,6 +75,17 @@ class GoveeConnectionError(GoveeApiError):
         super().__init__(message)
 
 
+class GoveeDeviceOfflineError(GoveeApiError):
+    """Govee refused a command because the device is offline (#242).
+
+    The control endpoint answers HTTP 200 with body code 400 and
+    ``"Device is offline. Please check the Wi-Fi connection."``.
+    """
+
+    def __init__(self, message: str = "Device is offline", code: int | None = 400) -> None:
+        super().__init__(message, code=code)
+
+
 class GoveeDeviceNotFoundError(GoveeApiError):
     """Device not found (expected for group devices)."""
 

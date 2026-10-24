@@ -759,6 +759,24 @@ class TestFetchDeviceStatePreservation:
         assert result.brightness == 30
 
     @pytest.mark.asyncio
+    async def test_polled_heater_target_and_auto_stop_replace_the_previous_values(self):
+        """A target or auto-stop changed in the Govee app shows up on the next poll."""
+        coord = _coordinator()
+        existing = _add(coord, _light())
+        existing.heater_temperature = 22
+        existing.heater_auto_stop = 1
+        fresh = GoveeDeviceState.create_empty(DEV)
+        fresh.power_state = True
+        fresh.heater_temperature = 25
+        fresh.heater_auto_stop = 0
+        self._poll(coord, fresh)
+
+        result = await coord._fetch_device_state(DEV, coord._devices[DEV])
+
+        assert result.heater_temperature == 25
+        assert result.heater_auto_stop == 0
+
+    @pytest.mark.asyncio
     async def test_music_mode_and_dreamview_persist_while_the_device_is_on(self):
         coord = _coordinator()
         existing = _add(coord, _light())
@@ -829,7 +847,8 @@ class TestFetchDeviceStatePreservation:
 
         assert first is existing and second is existing
         assert coord._rate_limited is True
-        assert coord.update_interval == timedelta(seconds=45)
+        # A window shorter than the configured 60 s poll never speeds polling up.
+        assert coord.update_interval == timedelta(seconds=60)
         create_issue.assert_called_once_with(coord.hass, coord._config_entry, "45 seconds")
 
     @pytest.mark.asyncio

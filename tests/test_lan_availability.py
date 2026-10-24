@@ -6,6 +6,7 @@ import pytest
 
 from custom_components.govee.light import GoveeLightEntity, GoveeMainLightEntity, GoveeNightLightEntity
 from custom_components.govee.models.transport import TransportHealth
+from .coordinator_mocks import follow_online_flag
 
 
 @pytest.mark.parametrize(
@@ -28,7 +29,7 @@ def test_light_availability(mock_light_device, mock_device_state, cloud_ok, lan_
     coord.get_transport_health.return_value = (
         None if lan_ok is None else TransportHealth(transport="lan", is_available=lan_ok)
     )
-    light = GoveeLightEntity(coord, mock_light_device)
+    light = GoveeLightEntity(follow_online_flag(coord), mock_light_device)
     assert light.available is expected
 
 

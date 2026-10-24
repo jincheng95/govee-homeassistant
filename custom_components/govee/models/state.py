@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from collections.abc import Iterable
 from typing import Any, Protocol
 
+from .energy_counter import answers_other_client, uptime_from_sta
+
 # Candidate keys a thermometer/hygrometer reading may hide behind. The Govee
 # state shape varies by SKU and transport: REST returns either a plain number
 # under ``value`` or a STRUCT; AWS IoT pushes use flat keys whose naming is not
@@ -255,6 +257,25 @@ class GoveeDeviceState:
     # "Fahrenheit"). Not heater-specific despite the capability's origins —
     # kettles declare it too, under a different instance name (issue #171).
     device_temperature_unit: str | None = None
+    # Kettle target temperature (``sliderTemperature``), in the unit the
+    # kettle reports, not normalised to °C.
+    kettle_target_temperature: float | None = None
+    # H7175 kettle, from its AWS IoT frames (kettle/frames.py). The poll
+    # reports ``{"workMode": 1}`` alone for a custom slot, so the slot is
+    # remembered in ``kettle_mode_value``. Preset temperatures are
+    # ``{workMode: {modeValue: temperature}}`` in the kettle's unit; the DIY
+    # slot is the custom slot the Govee app marks "DIY", not the selection.
+    kettle_mode_value: int | None = None
+    kettle_preset_temperatures: dict[int, dict[int, float]] = field(default_factory=dict)
+    kettle_diy_slot: int | None = None
+    kettle_heating_status: str | None = None
+    kettle_keep_warm_enabled: bool | None = None
+    kettle_keep_warm_minutes: int | None = None
+    kettle_keep_warm_remaining: int | None = None
+    # Whether the kettle sits on its base, and the aa 17 frame as hex (for the
+    # diagnostics: its byte 4 top bit is an unknown flag, see kettle/frames.py).
+    kettle_on_base: bool | None = None
+    kettle_base_frame: str | None = None
 
     # Purifier state
     purifier_mode: int | None = None  # Purifier mode value (1=Sleep, 2=Low, 3=High, etc.)
@@ -299,6 +320,8 @@ class GoveeDeviceState:
     power_draw: float | None = None  # Watts
     energy_total: float | None = None  # kWh used today; the device resets it at midnight
     power_factor: int | None = None  # Percent, 0-100
+    on_time: int | None = None  # Seconds the outlet was on today; resets with energy_total
+    uptime: int | None = None  # Seconds since the plug booted, from the push's ``sta``
 
     # Standalone water-leak detector trip (H5054, issue #62). True when water
     # is detected. Arrives via the bodyAppearedEvent event capability — the
@@ -531,6 +554,12 @@ class GoveeDeviceState:
                 unit = value.get("unit") if isinstance(value, dict) else None
                 if isinstance(unit, str) and unit:
                     self.device_temperature_unit = unit
+                # Kettle setpoint, e.g. {"unit": "Fahrenheit", "targetTemperature": 176}.
+                if instance == "sliderTemperature" and isinstance(value, dict):
+                    slider = value.get("targetTemperature", value.get("temperature"))
+                    parsed_slider = _coerce_sensor_value(slider, ())
+                    if parsed_slider is not None:
+                        self.kettle_target_temperature = parsed_slider
 
                 # Heaters report target temperature + autoStop in a STRUCT.
                 # Capturing autoStop here lets temperature-change commands
@@ -637,6 +666,34 @@ class GoveeDeviceState:
         # A confirmed push ends the optimistic grace window — from this point
         # on API polls are authoritative again for power/brightness.
         self.clear_optimistic_window()
+
+    def update_light_zones_from_frames(self, frames: Iterable[bytes]) -> bool:
+        """Apply the Ceiling Light Pro's ``aa 30 <main> <ring>`` zone frame (H1252, #223).
+
+        Byte 2 is ``01`` while the main panel is lit, byte 3 while the RGBIC
+        ring is. The Developer API returns ``""`` for both toggles on poll,
+        so this frame is the only live source. Only a full 20-byte frame
+        with a valid XOR checksum counts. The device-wide ``onOff`` is left
+        alone: the zones were only verified with the fixture powered.
+
+        Args:
+            frames: Decoded (not base64) frames from ``op.command``.
+
+        Returns:
+            True if the zone frame was recognised.
+        """
+        for raw in frames:
+            if len(raw) != 20 or raw[0] != 0xAA or raw[1] != 0x30:
+                continue
+            checksum = 0
+            for byte in raw[:19]:
+                checksum ^= byte
+            if checksum != raw[19]:
+                continue
+            self.toggles["mainLightToggle"] = raw[2] == 0x01
+            self.toggles["backgroundLightToggle"] = raw[3] == 0x01
+            return True
+        return False
 
     def update_ceiling_fan_from_frames(self, frames: Iterable[bytes]) -> bool:
         """Apply the status frames a ceiling-fan combo carries in its AWS push.
@@ -1051,7 +1108,7 @@ class GoveeDeviceState:
                 return True
         return False
 
-    def update_power_monitoring_from_frames(self, frames: Iterable[bytes]) -> bool:
+    def update_power_monitoring_from_frames(self, frames: Iterable[bytes], sta: Any = None) -> bool:
         """Apply live power-monitoring readings from a smart outlet's (H5086)
         AWS IoT ``aa 19`` status frame.
 
@@ -1077,14 +1134,25 @@ class GoveeDeviceState:
         thermometer's convention (byte 19 was ``0x00`` in both captures), so
         none is checked here.
 
+        The plug's uptime comes along in the push's ``sta`` field, which
+        lets the energy sensor tell a reboot from a reset (see
+        :mod:`.energy_counter`). Replies to another client's status query
+        are ignored, as they can carry a bogus energy counter; our next
+        query gets the real readings.
+
         Args:
             frames: Decoded (not base64) frames from ``op.command``.
+            sta: The push's ``sta`` field.
 
         Returns:
             True if the frame was recognised.
         """
+        if answers_other_client(sta):
+            return False
         for raw in frames:
             if len(raw) >= 16 and raw[0] == 0xAA and raw[1] == 0x19:
+                self.on_time = int.from_bytes(raw[2:5], "big")
+                self.uptime = uptime_from_sta(sta)
                 self.energy_total = round(int.from_bytes(raw[5:8], "big") / 10000.0, 4)
                 self.voltage = round(int.from_bytes(raw[8:10], "big") / 100.0, 2)
                 self.current = round(int.from_bytes(raw[10:12], "big") / 100.0, 2)

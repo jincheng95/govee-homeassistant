@@ -37,13 +37,17 @@ from .const import (
     DEFAULT_SEGMENT_MODE,
     DOMAIN,
     MAIN_LIGHT_TOGGLE_SKUS,
+    PTREAL_LIGHT_ZONE_SKUS,
     PTREAL_MAIN_PANEL_BIT,
+    PTREAL_ZONE_MAX_KELVIN,
+    PTREAL_ZONE_MIN_KELVIN,
     SEGMENT_MODE_BOTH,
     SEGMENT_MODE_GROUPED,
     SEGMENT_MODE_GROUPS,
     SEGMENT_MODE_INDIVIDUAL,
     SUFFIX_MAIN_LIGHT_TOGGLE,
     SUFFIX_MAIN_PANEL,
+    SUFFIX_RING,
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .entity import GoveeEntity
@@ -57,7 +61,7 @@ from .models import (
     SceneCommand,
     ToggleCommand,
 )
-from .models.device import INSTANCE_MAIN_LIGHT_TOGGLE, INSTANCE_NIGHT_LIGHT
+from .models.device import INSTANCE_BACKGROUND_LIGHT_TOGGLE, INSTANCE_MAIN_LIGHT_TOGGLE, INSTANCE_NIGHT_LIGHT
 from .platforms.grouped_segment import GoveeGroupedSegmentEntity
 from .platforms.segment import GoveeSegmentEntity
 from .platforms.segment_group import async_segment_group_entities
@@ -117,6 +121,10 @@ async def async_setup_entry(
                 # over ptReal, alongside the ring segments created elsewhere
                 # in this function (issue #223).
                 entities.append(GoveeMainPanelLight(coordinator, device))
+            if device.sku.upper() in PTREAL_LIGHT_ZONE_SKUS:
+                # H1252: the ring as one light, next to the main panel above
+                # (issue #223).
+                entities.append(GoveeRingLight(coordinator, device))
 
         # Appliances whose only light is the nightlight (e.g. H5089 outlet
         # extender, H7124 purifier) get a dedicated nightlight light entity —
@@ -778,81 +786,110 @@ class GoveeNightLightEntity(GoveeEntity, LightEntity):
 
 
 class GoveeMainPanelLight(GoveeEntity, LightEntity, RestoreEntity):
-    """The H1232 Ceiling Light Pro's main downlight panel (issue #223).
+    """The Ceiling Light Pro's main downlight panel (H1232/H1252, issue #223).
 
     This fixture's 17th internal segment is a separate main panel, not part
-    of the RGBIC ring, and the Platform API cannot reach it at all — colour
-    and brightness only land through the masked ptReal frames in
-    ``coordinator.async_set_main_panel``. On/off uses the working
-    ``mainLightToggle`` capability over the normal command path. The API
-    never reports the panel's colour or brightness, so like the ring
-    segments (``GoveeSegmentEntity``) this entity keeps purely optimistic
-    local state persisted via ``RestoreEntity``.
+    of the RGBIC ring, and the Platform API cannot reach it at all — colour,
+    colour temperature and brightness only land through the masked ptReal
+    frames in ``coordinator.async_set_main_panel``. On/off uses the
+    ``mainLightToggle`` capability over the normal command path (on the
+    H1252 the coordinator sends it as a ptReal zone frame). The API never
+    reports the panel's colour or brightness, so like the ring segments
+    (``GoveeSegmentEntity``) this entity keeps purely optimistic local state
+    persisted via ``RestoreEntity``.
     """
 
     _attr_translation_key = "govee_main_light_panel"
-    _attr_supported_color_modes = {ColorMode.RGB}
-    _attr_color_mode = ColorMode.RGB
+    _attr_supported_color_modes = {ColorMode.COLOR_TEMP, ColorMode.RGB}
+    _attr_min_color_temp_kelvin = PTREAL_ZONE_MIN_KELVIN
+    _attr_max_color_temp_kelvin = PTREAL_ZONE_MAX_KELVIN
+
+    _toggle_instance = INSTANCE_MAIN_LIGHT_TOGGLE
+    _unique_suffix = SUFFIX_MAIN_PANEL
 
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice) -> None:
-        """Initialize the main-panel entity."""
+        """Initialize the zone entity."""
         super().__init__(coordinator, device)
-        self._attr_unique_id = f"{device.device_id}{SUFFIX_MAIN_PANEL}"
+        self._attr_unique_id = f"{device.device_id}{self._unique_suffix}"
         self._rgb_color: tuple[int, int, int] = (255, 255, 255)
+        self._color_temp_kelvin: int | None = None
+        self._color_mode = ColorMode.RGB
         self._brightness: int = 255
+
+    async def _async_set_zone(self, *, rgb: RGBColor | None, brightness: int | None, kelvin: int | None) -> bool:
+        """Send the zone's ptReal frames through the coordinator."""
+        return await self.coordinator.async_set_main_panel(
+            self._device_id, rgb=rgb, brightness=brightness, kelvin=kelvin
+        )
 
     @property
     def is_on(self) -> bool | None:
-        """Return True when the panel's mainLightToggle is on."""
+        """Return True when the zone's toggle is on."""
         state = self.device_state
         if state is None:
             return None
-        return state.toggles.get(INSTANCE_MAIN_LIGHT_TOGGLE)
+        return state.toggles.get(self._toggle_instance)
 
     @property
     def brightness(self) -> int:
-        """Return the optimistic panel brightness (0-255)."""
+        """Return the optimistic zone brightness (0-255)."""
         return self._brightness
 
     @property
+    def color_mode(self) -> ColorMode:
+        """Return whether the zone was last set to a colour or a colour temperature."""
+        return self._color_mode
+
+    @property
     def rgb_color(self) -> tuple[int, int, int]:
-        """Return the optimistic panel RGB colour."""
+        """Return the optimistic zone RGB colour."""
         return self._rgb_color
 
+    @property
+    def color_temp_kelvin(self) -> int | None:
+        """Return the optimistic zone colour temperature."""
+        return self._color_temp_kelvin
+
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Light the panel, sending colour/brightness over ptReal if given."""
+        """Light the zone, sending colour, colour temperature or brightness over ptReal if given."""
         if not self.is_on:
             # The coordinator mirrors the sent toggle into state.toggles.
             await self._async_send_command(
-                ToggleCommand(toggle_instance=INSTANCE_MAIN_LIGHT_TOGGLE, enabled=True),
+                ToggleCommand(toggle_instance=self._toggle_instance, enabled=True),
             )
 
         rgb: RGBColor | None = None
+        kelvin: int | None = None
         if ATTR_RGB_COLOR in kwargs:
             r, g, b = kwargs[ATTR_RGB_COLOR]
             self._rgb_color = (r, g, b)
+            self._color_mode = ColorMode.RGB
             rgb = RGBColor(r=r, g=g, b=b)
+        elif ATTR_COLOR_TEMP_KELVIN in kwargs:
+            kelvin = max(PTREAL_ZONE_MIN_KELVIN, min(PTREAL_ZONE_MAX_KELVIN, int(kwargs[ATTR_COLOR_TEMP_KELVIN])))
+            self._color_temp_kelvin = kelvin
+            self._color_mode = ColorMode.COLOR_TEMP
 
         device_brightness: int | None = None
         if ATTR_BRIGHTNESS in kwargs:
             self._brightness = kwargs[ATTR_BRIGHTNESS]
             device_brightness = round(self._brightness * 100 / HA_BRIGHTNESS_MAX)
 
-        if rgb is not None or device_brightness is not None:
-            if not await self.coordinator.async_set_main_panel(self._device_id, rgb=rgb, brightness=device_brightness):
+        if rgb is not None or kelvin is not None or device_brightness is not None:
+            if not await self._async_set_zone(rgb=rgb, brightness=device_brightness, kelvin=kelvin):
                 raise self._command_failed()
 
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Switch the panel off via mainLightToggle."""
+        """Switch the zone off via its toggle."""
         await self._async_send_command(
-            ToggleCommand(toggle_instance=INSTANCE_MAIN_LIGHT_TOGGLE, enabled=False),
+            ToggleCommand(toggle_instance=self._toggle_instance, enabled=False),
         )
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
-        """Restore the optimistic colour/brightness from the last known state."""
+        """Restore the optimistic colour, colour temperature and brightness from the last known state."""
         await super().async_added_to_hass()
 
         last_state = await self.async_get_last_state()
@@ -862,3 +899,25 @@ class GoveeMainPanelLight(GoveeEntity, LightEntity, RestoreEntity):
             if last_state.attributes.get("rgb_color"):
                 r, g, b = last_state.attributes["rgb_color"]
                 self._rgb_color = (r, g, b)
+            if last_state.attributes.get("color_temp_kelvin"):
+                self._color_temp_kelvin = int(last_state.attributes["color_temp_kelvin"])
+            if last_state.attributes.get("color_mode") == ColorMode.COLOR_TEMP:
+                self._color_mode = ColorMode.COLOR_TEMP
+
+
+class GoveeRingLight(GoveeMainPanelLight):
+    """The Ceiling Light Pro's RGBIC ring as one light (H1252, issue #223).
+
+    The app only drives the ring together with the panel; ptReal reaches it
+    on its own. On/off goes through ``backgroundLightToggle`` (sent as the
+    ``33 30 01`` zone frame), colour, colour temperature and brightness as
+    one masked frame over all ring segments (``coordinator.async_set_ring``).
+    """
+
+    _attr_translation_key = "govee_ring_light"
+    _toggle_instance = INSTANCE_BACKGROUND_LIGHT_TOGGLE
+    _unique_suffix = SUFFIX_RING
+
+    async def _async_set_zone(self, *, rgb: RGBColor | None, brightness: int | None, kelvin: int | None) -> bool:
+        """Send the ring's ptReal frames through the coordinator."""
+        return await self.coordinator.async_set_ring(self._device_id, rgb=rgb, brightness=brightness, kelvin=kelvin)

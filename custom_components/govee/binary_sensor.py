@@ -38,6 +38,7 @@ from .const import (
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .entity import GoveeEntity
+from .kettle.entities import kettle_binary_sensors
 from .models import TransportKind
 from .models.transport import TRANSPORT_KINDS
 from .models.device import GoveeLeakSensor, leak_sensor_device_info
@@ -103,6 +104,10 @@ async def async_setup_entry(
         # the full per-transport last-received / last-sent breakdown as
         # attributes. The granular per-transport entities below stay opt-in.
         entities.append(GoveeDeviceConnectivity(coordinator, device))
+        # What the account data says about a BFF thermometer, which the
+        # transport-based connectivity above does not show (#258).
+        if coordinator.is_bff_thermometer(device.device_id):
+            entities.append(GoveeReportedOnlineBinarySensor(coordinator, device))
 
     # Transport connectivity entities are opt-in to avoid creating 3×N
     # diagnostic entities by default.
@@ -121,6 +126,8 @@ async def async_setup_entry(
                 )
     else:
         _LOGGER.debug("Transport connectivity entities disabled via options; skipping")
+
+    entities.extend(kettle_binary_sensors(coordinator))
 
     # Leak sensor entities — always exposed when leak sensors are discovered.
     # Register hub devices first so leak sensors' `via_device` link resolves
@@ -318,6 +325,36 @@ class GoveeOccupancyBinarySensor(GoveeEntity, BinarySensorEntity):
         """Return True when a body is present."""
         state = self.device_state
         return state.presence if state else None
+
+
+class GoveeReportedOnlineBinarySensor(GoveeEntity, BinarySensorEntity):
+    """The account data's own online flag for a BFF thermometer (#258).
+
+    The thermometer's availability and its Connectivity diagnostic follow the
+    transports and ignore this flag, which flaps between uploads (#97). This
+    shows it as is: off when Govee says the sensor is offline, rather than
+    the entity going unavailable.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "reported_online"
+
+    def __init__(self, coordinator: GoveeCoordinator, device: Any) -> None:
+        """Initialize the reported-online binary sensor."""
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_reported_online"
+
+    @property
+    def available(self) -> bool:
+        """Available whenever the coordinator is and a state exists."""
+        return self.coordinator.last_update_success and self.device_state is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the online flag from the account data."""
+        state = self.device_state
+        return None if state is None else state.online
 
 
 class GoveeDeviceConnectivity(GoveeEntity, BinarySensorEntity):

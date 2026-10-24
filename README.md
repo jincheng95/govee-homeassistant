@@ -97,7 +97,7 @@ Govee in Home Assistant has several integrations, and it's easy to pick one that
 | **Humidifiers & dehumidifiers** | H7140, H7141, H7150, H7151, H7152 | Modes + target‑humidity setpoint; dehumidifiers add a **Water Tank Full** sensor (real‑time event push, API key only) with a paired **Clear Water Alert** button. The pump model (H7152) also gets a **Pump State** problem sensor, a **Mode** (Pump / Water Tank) sensor and live **Temperature** / **Humidity**, decoded from the AWS IoT push — account login required, and they update when the device pushes |
 | **Aroma diffusers** | H7161 | Power switch + light/mist scene selector |
 | **Space heaters** | H7130, H7131, H713B, H721C | Power switch, target‑temperature number, auto‑stop switch; temperature unit follows what the device itself reports |
-| **Kettles** | H717A, H7170 | Power switch and a water‑temperature sensor (unit follows what the kettle declares) |
+| **Kettles** | H717A, H7170, H7175 | Power switch and a water‑temperature sensor (unit follows what the kettle declares); see [Kettles](#kettles) |
 | **Thermometers / hygrometers** | H5053, H5075, H5103, H5107, H5109, H5110, H5111, H5112, H5179, H5220, H5301, H5310 | Temperature & humidity sensors, **Battery** (account login) + a "Last Changed" timestamp; gateway‑bridged models (H5301/H5310 via an H5044) nest under the hub; models that report °F without saying so are converted automatically |
 | **Probe (cooking) thermometers** | H5192 | Core and ambient temperature per probe, plus the four alarm limits as editable numbers. These are **pull** devices — they answer a read and otherwise stay silent — so a **Live polling** switch (off by default, to spare the battery) controls whether readings update |
 | **Air‑quality & CO₂ monitors** | H5106, H5140 | CO₂ (ppm), air‑quality (AQI), temperature & humidity sensors |
@@ -171,6 +171,7 @@ After setup, open **Settings** > **Devices & services** > **Govee Cloud Integrat
 | **Enable DIY scene selector** | `on` | Create a per‑device dropdown for your DIY scenes. |
 | **Expose per‑device transport connectivity sensors** | `off` | Add diagnostic binary sensors showing each device's MQTT/BLE/LAN reachability. |
 | **Send power, brightness, and color over MQTT (faster, experimental)** | `off` | Routes those commands through Govee's MQTT channel instead of the REST API — lower latency, bypasses REST rate limits. Requires account login; falls back to REST automatically. Uses an undocumented channel, so leave off if commands misbehave. |
+| **Confirm light commands and resend dropped ones** | `off` | After a power-off, brightness, colour or colour-temperature command to a light, waits a few seconds for the light's own AWS IoT report and resends the command once over the cloud API if it still shows the old value. See [Confirming light commands](#confirming-light-commands-confirm_commands). |
 | **LAN device addresses / subnets (advanced)** | *(blank)* | Only needed when LAN‑enabled devices sit on a different subnet/VLAN than Home Assistant. Comma‑separated IPs, broadcast addresses, and/or CIDR subnets (/24 or smaller). Leave blank when everything shares HA's network — discovery is automatic. Enter `off` to disable LAN discovery and local control entirely. Pin a device with `device_id=ip` (for example `AA:BB:CC:DD:EE:FF:00:11=10.20.0.51`) when its scan reply cannot cross the VLAN; add a trailing `!` only for firmware that accepts LAN commands but never answers a status read, which turns off the LAN health checks for that device. |
 
 RGBIC devices get a second step after submitting, where you choose a **segment mode** for each device individually — see [Segments](#rgbic-segment-control).
@@ -191,6 +192,17 @@ This matters beyond speed: Govee's cloud sometimes answers a color command with 
 
 Commands always use optimistic updates, so the UI reflects your action immediately and reconciles with the next confirmed state. MQTT publishes are acknowledged by the broker (QoS 1); an unacknowledged send falls through to REST rather than being reported as success.
 
+### Confirming light commands (`confirm_commands`)
+
+Govee's cloud occasionally answers a command with `success` and never delivers it, and an MQTT publish is never acknowledged by the device. LAN writes are already read back; turning on **Confirm light commands and resend dropped ones** gives cloud and MQTT commands to lights the same safety net:
+
+- After a power-off, brightness, colour or colour-temperature command, the integration waits a few seconds for the light's own AWS IoT report and, if none arrives, sends it **one** status query (subject to the same rules as the periodic re-query).
+- If the report still shows the value from before the command, the command is **resent once** over the cloud API. A resend is never confirmed again, and it is skipped when it would not fit the daily request budget or the per-minute reserve, or while a 429 back-off is active.
+- If something else changed the light in the meantime (the app, a button), nothing is resent.
+- **Lights only.** Kettles, heaters, humidifiers, fans and other appliances are never resent, groups are skipped, and a power-on is never resent.
+
+The cost is one status query per light command and, only for a dropped command, one extra cloud request. It needs account login, and lights that have not reported over AWS IoT yet are left as they are. Counters (`confirmed`, `resent`, `unconfirmed`, `unverified`, `skipped_budget`, `superseded`) per light appear under `command_confirm` in the diagnostics download.
+
 ---
 
 ## RGBIC segment control
@@ -203,6 +215,19 @@ For RGBIC strips/bars you can control individual lighting segments. After saving
 - **Disabled** — no segment entities.
 
 Segment colors aren't reliably returned by the API, so segment entities keep optimistic state and restore it across restarts.
+
+**H8057 fourth segment:** the Platform API advertises brightness indices 0–3 but RGB indices 0–2;
+RGB writes to index 3 are rejected with application-level 400 "Parameter value out of range."
+The four existing segment entities keep their identities. Segment 4 color (including black for off)
+uses the existing AWS IoT `ptReal` passthrough with mask `0x000008`, so configure Govee account login
+and keep MQTT connected. Segments 1–3 retain their REST route; brightness routing is unchanged.
+For a mixed `govee.set_segment_color` or grouped-entity request, lower indices go to REST first,
+then index 3 goes to MQTT. Success requires both parts; a failure can leave a partially applied
+request. If passthrough is unavailable or publishing fails, Home Assistant reports an error with
+connection/retry guidance and never retries index 3 through REST. Lower-index writes remain usable.
+Only Segment 4 RGB has been verified on H8057 hardware: the masked blue command independently
+turned the fourth physical segment blue. This does not establish private support for other indices
+or segment brightness.
 
 There's also an action for automations. `device_id` accepts the Home Assistant device (what the device picker produces) or the Govee device ID:
 
@@ -314,6 +339,22 @@ Some gateway‑bridged sensors are listed by Govee with no reading attached. Whe
 
 ---
 
+## Kettles
+
+All kettles get a power switch and a water‑temperature sensor whose unit follows what the kettle declares, even when the API‑unit option is set.
+
+**H7175.** A **water heater** entity carries the target temperature, the brew modes and power; the existing power switch keeps its entity and is named "Power". Mode states are fixed keys, shown translated: `off`, `custom_1`–`custom_4`, `green_tea`, `oolong_tea`, `coffee`, `black_tea_boil` and `manual` (a target set directly, with no preset). Choosing a mode while the kettle is off switches it on in that mode; setting the target selects `manual`. A **Brew mode** selector offers the same keys and only selects the mode, as the Govee app does; its options are what automations and dashboard buttons should use (`select.select_option` with `option: green_tea`, ...).
+
+A kettle starts heating on command but does not report until asked, so after a command the integration re‑reads it twice (after 5 and 20 seconds) and polls a heating kettle every cycle, both only while the daily request budget allows. A value the kettle pushed, or a command just set, is kept over a cloud read that still shows the old value for up to 45 seconds.
+
+With account login the kettle's real‑time push updates the water temperature and adds a **Heating status** sensor, **Keep warm** and **On base** binary sensors, a **Button** event for the kettle's own button, and diagnostic **Keep warm duration**, **Keep warm remaining** and **DIY slot** sensors (the custom slot the Govee app marks "DIY"). The push carries no unit, so its temperatures are used only once a cloud poll has told the integration the kettle's unit; that poll is never skipped.
+
+**Custom slot labels.** Govee's API only calls the custom slots Custom 1–4. In ⚙️ Configure → *Kettle slot labels* you can give them labels (for example the names from the Govee app). Labels are display text only: the mode stays `custom_1`–`custom_4`, so automations keep working when a label changes, and the labels appear in the water heater's and Brew mode selector's `labels` attribute for dashboards.
+
+The H717A and H7170 keep their power switch and temperature sensor; their frames are unknown.
+
+---
+
 ## Known limitations
 
 - Everything runs through Govee's cloud unless a device supports the LAN API or is within Bluetooth range; there is no fully local mode.
@@ -334,6 +375,7 @@ Actions raise an error when a device is unknown or Govee rejects the command, so
 - `govee.set_segment_color` sets the RGB color of specific segments on an RGBIC device.
 - `govee.apply_diy_effect` composes and uploads a DIY effect to one multi‑zone lamp (fork; see [above](#goveeapply_diy_effect)).
 - `govee.send_raw_ptreal` sends one raw BLE ptReal frame to a device over the AWS IoT passthrough. It is an admin‑only debugging aid and needs account login.
+- `govee.request_status` asks a device to report its status over the real‑time connection (account login), once or every `interval` seconds for `duration` seconds. It spends no cloud API requests; use it to follow a heating kettle closely.
 
 `device_id` accepts the Home Assistant device or the Govee device ID for every action.
 
@@ -346,6 +388,9 @@ Actions raise an error when a device is unknown or Govee rejects the command, so
 | `govee.apply_diy_effect` | target or `device_id` (required) | Fork. One multi‑zone lamp; the eight effect fields are listed [above](#goveeapply_diy_effect). |
 | `govee.send_raw_ptreal` | `device_id` (required) | The device to send to. |
 | | `frame` (required) | Hex bytes, spaces or colons allowed; 19 bytes or fewer get the checksum appended. |
+| `govee.request_status` | `device_id` (required) | The device to ask. |
+| | `duration` (optional) | Keep asking for this many seconds, up to 120; 0 (default) asks once. |
+| | `interval` (optional) | Seconds between queries, at least 3 (default 5). |
 
 ```yaml
 action: govee.refresh_scenes

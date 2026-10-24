@@ -31,7 +31,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoredExtraData, RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .api.probe_thermometer import probes_for_sku
 from .const import (
@@ -39,13 +41,15 @@ from .const import (
     DEFAULT_API_TEMPERATURE_UNIT,
     DOMAIN,
     GOVEE_DAILY_REQUEST_LIMIT,
-    HUB_DEVICE_IDENTIFIER,
+    hub_device_identifier,
     resolve_fahrenheit_conversion,
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .entity import GoveeEntity
+from .kettle.entities import kettle_sensors
 from .models import GoveeDevice, TransportHealth, TransportKind
 from .models.device import GoveeLeakSensor, leak_sensor_device_info
+from .models.energy_counter import EnergyCounter
 from .platforms.diy_effect import (
     async_diy_preview_entities,
 )
@@ -74,13 +78,15 @@ PARALLEL_UPDATES = 0
 
 _PRIORITY_ORDER: tuple[TransportKind, ...] = ("ble", "lan", "mqtt", "cloud_api")
 
-# Device info shared by the hub-level diagnostic sensors.
-_HUB_DEVICE_INFO = DeviceInfo(
-    identifiers={(DOMAIN, HUB_DEVICE_IDENTIFIER)},
-    name="Govee Integration",
-    manufacturer="Govee",
-    model="Cloud API",
-)
+
+def _hub_device_info(entry_id: str) -> DeviceInfo:
+    """Device info of the entry's own hub-level diagnostics device."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, hub_device_identifier(entry_id))},
+        name="Govee Integration",
+        manufacturer="Govee",
+        model="Cloud API",
+    )
 
 
 def _is_delivering(
@@ -194,6 +200,9 @@ async def async_setup_entry(
             entities.append(GoveeFilterLifeSensor(coordinator, device))
         if device.supports_temperature_sensor or device.supports_humidity_sensor:
             entities.append(GoveeSensorReadingTimestampSensor(coordinator, device))
+        # The device-side time of the account-data reading (#258).
+        if coordinator.is_bff_thermometer(device.device_id):
+            entities.append(GoveeLastMeasurementSensor(coordinator, device))
         # Battery level from the BFF API, for either a BFF-synthesized
         # thermo-hygrometer (H5301, #86) OR a Developer-API BLE-bridged
         # thermometer whose battery the BFF carries but the Developer API does
@@ -211,6 +220,8 @@ async def async_setup_entry(
         state = coordinator.get_state(device.device_id)
         if state is not None and state.battery is not None and not coordinator.is_bff_leak_sensor(device.device_id):
             entities.append(GoveeThermoBatterySensor(coordinator, device))
+
+    entities.extend(kettle_sensors(coordinator))
 
     # Register gateway hubs (leak + thermo) before async_add_entities so the
     # entities' `via_device` links resolve (must run after orphan-cleanup in
@@ -256,12 +267,13 @@ class GoveeRateLimitSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity):
         """Initialize the rate limit sensor."""
         super().__init__(coordinator)
 
+        self._entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_rate_limit"
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for the integration hub."""
-        return _HUB_DEVICE_INFO
+        return _hub_device_info(self._entry_id)
 
     @property
     def native_value(self) -> int:
@@ -318,12 +330,13 @@ class GoveeMqttStatusSensor(CoordinatorEntity["GoveeCoordinator"], SensorEntity)
         """Initialize the MQTT status sensor."""
         super().__init__(coordinator)
 
+        self._entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_mqtt_status"
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for the integration hub."""
-        return _HUB_DEVICE_INFO
+        return _hub_device_info(self._entry_id)
 
     @property
     def native_value(self) -> str:
@@ -354,12 +367,13 @@ class GoveeMqttLastReceivedSensor(CoordinatorEntity["GoveeCoordinator"], SensorE
     ) -> None:
         """Initialize the MQTT last-received timestamp sensor."""
         super().__init__(coordinator)
+        self._entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_mqtt_last_received"
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for the integration hub."""
-        return _HUB_DEVICE_INFO
+        return _hub_device_info(self._entry_id)
 
     @property
     def native_value(self) -> datetime | None:
@@ -459,7 +473,12 @@ class GoveeTemperatureSensor(_BffThermometerAvailabilityMixin, SensorEntity):
         if unit_hint is None:
             unit_hint = self.coordinator.account_temperature_unit(self._device_id)
 
-        if resolve_fahrenheit_conversion(self._device.sku, api_unit, unit_hint):
+        if self._device.decodes_kettle_frames:
+            # H7175: the kettle's declared unit wins over the API-unit option.
+            fahrenheit = self.coordinator.kettles.reports_fahrenheit(self._device_id)
+        else:
+            fahrenheit = resolve_fahrenheit_conversion(self._device.sku, api_unit, unit_hint)
+        if fahrenheit:
             return (value - 32.0) * (5.0 / 9.0)
 
         return value
@@ -568,32 +587,62 @@ class GoveePowerSensor(GoveeEntity, SensorEntity):
         return state.power_draw if state else None
 
 
-class GoveeEnergySensor(GoveeEntity, SensorEntity):
-    """Cumulative energy from a power-monitoring smart outlet (H5086).
+class GoveeEnergySensor(GoveeEntity, SensorEntity, RestoreEntity):
+    """Energy used today by a power-monitoring smart outlet (H5086).
 
-    The device's counter covers one day: it resets to zero at midnight, not
-    when the outlet is switched off and on (confirmed on two units, issue
-    #200). ``TOTAL_INCREASING`` rather than ``TOTAL``, because Home Assistant's
-    energy dashboard treats a drop to zero as exactly that kind of meter reset
-    rather than as a discontinuity to discard. See
+    ``TOTAL`` with a ``last_reset`` from an :class:`EnergyCounter`, persisted
+    with the entity's restore state (issue #200). See
     :class:`GoveeVoltageSensor`.
     """
 
     _attr_has_entity_name = True
     _attr_translation_key = "outlet_energy"
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 3
 
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice) -> None:
         super().__init__(coordinator, device)
         self._attr_unique_id = f"{device.device_id}_energy"
+        self._counter: EnergyCounter | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the counter before tracking any reading."""
+        extra_data = await self.async_get_last_extra_data()
+        if extra_data is not None:
+            self._counter = EnergyCounter.from_dict(extra_data.as_dict())
+        await super().async_added_to_hass()
+        self._track_reading()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._track_reading()
+        super()._handle_coordinator_update()
+
+    def _track_reading(self) -> None:
+        """Feed the counter with the latest reading."""
+        state = self.device_state
+        if state is None or state.energy_total is None or state.on_time is None or state.uptime is None:
+            return
+        reading = (round(state.energy_total * 10000), state.on_time, state.uptime)
+        now = dt_util.utcnow()
+        if self._counter is None:
+            self._counter = EnergyCounter.new(now, *reading)
+        else:
+            self._counter.update(now, *reading)
 
     @property
     def native_value(self) -> float | None:
-        state = self.device_state
-        return state.energy_total if state else None
+        return self._counter.energy_deciwatt_hours / 10000 if self._counter else None
+
+    @property
+    def last_reset(self) -> datetime | None:
+        return self._counter.last_reset if self._counter else None
+
+    @property
+    def extra_restore_state_data(self) -> ExtraStoredData | None:
+        return RestoredExtraData(self._counter.as_dict()) if self._counter else None
 
 
 class GoveePowerFactorSensor(GoveeEntity, SensorEntity):
@@ -881,6 +930,28 @@ class GoveeSensorReadingTimestampSensor(GoveeEntity, SensorEntity):
     @property
     def native_value(self) -> datetime | None:
         return self.coordinator.sensor_reading_changed_at(self._device.device_id)
+
+
+class GoveeLastMeasurementSensor(_BffThermometerAvailabilityMixin, SensorEntity):
+    """When the thermometer itself took the reading the account data carries (#258).
+
+    The BFF ``lastTime`` is the device's own clock, so a sensor that stopped
+    uploading shows its real age (days, not "5 minutes ago"), unlike
+    :class:`GoveeSensorReadingTimestampSensor`, which only stamps a change.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "last_measurement"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice) -> None:
+        super().__init__(coordinator, device)
+        self._attr_unique_id = f"{device.device_id}_last_measurement"
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.bff_last_measurement_at(self._device.device_id)
 
 
 class GoveeAllDataLastUpdatedSensor(GoveeEntity, SensorEntity):

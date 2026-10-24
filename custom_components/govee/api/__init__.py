@@ -12,6 +12,7 @@ from .exceptions import (
     GoveeAuthError,
     GoveeConnectionError,
     GoveeDeviceNotFoundError,
+    GoveeDeviceOfflineError,
     GoveeLoginRejectedError,
     GoveeRateLimitError,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "GoveeAuthError",
     "GoveeConnectionError",
     "GoveeDeviceNotFoundError",
+    "GoveeDeviceOfflineError",
     "GoveeLoginRejectedError",
     "GoveeRateLimitError",
 ]

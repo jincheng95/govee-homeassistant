@@ -52,6 +52,7 @@ custom_components/govee/
 ├── switch.py            # Plugs, toggles, music mode, DreamView, probe polling
 ├── fan.py               # Tower fans and ceiling fans
 ├── humidifier.py        # Humidifiers and dehumidifiers
+├── water_heater.py      # H7175 kettle
 ├── number.py            # Music sensitivity, heater target, probe limits
 ├── sensor.py            # Readings and diagnostic sensors
 ├── binary_sensor.py     # Connectivity, leak, occupancy, water-tank sensors
@@ -59,11 +60,15 @@ custom_components/govee/
 ├── button.py            # Refresh scenes, clear water alert
 ├── services.py          # Service actions (registered from async_setup)
 ├── repairs.py           # Repairs framework integration
+├── registry.py          # Device-registry lookups across HA versions (2026.10 deprecations)
 ├── diagnostics.py       # Diagnostics for troubleshooting
 ├── scene_cache.py       # Scene / DIY scene cache with TTL
 ├── transport_health.py  # Per-device, per-transport health tracker
 ├── ble_advertisement.py # BLE advertisement correlation and enrolment
 ├── ble_passthrough.py   # BLE frames tunnelled over AWS IoT
+├── status_burst.py      # Repeated AWS IoT status queries (govee.request_status)
+├── kettle/              # H7175 kettle: frames.py decoder, manager.py coordinator helper,
+│                        #   modes.py brew modes, entities.py kettle entities, labels.py slot labels
 ├── const.py             # Constants
 ├── icons.json           # Entity icons by translation key
 ├── strings.json         # UI strings (mirrored in translations/en.json)
@@ -187,7 +192,7 @@ About 3,250 tests across 92 files (`pytest --co -q | tail -1` for the current co
 - Coordinator manages all state - entities are `CoordinatorEntity` subscribers
 - MQTT is optional - polling is the fallback; a total cloud outage raises `UpdateFailed` (after the LAN reads and health refresh) so cloud-dependent entities go unavailable; a whole-device light whose LAN transport is healthy stays available (#226)
 - Rate limits: 100/min, 10,000/day
-- Orphan cleanup (`__init__.py`) only removes entities of devices missing from a complete discovery; leak sensors, hubs, and the `hub` diagnostics device are protected, and `async_remove_config_entry_device` covers manual deletion
+- Orphan cleanup (`__init__.py`) only removes entities of devices missing from a complete discovery; leak sensors, hubs, and the per-entry `<entry_id>_hub` diagnostics device are protected (setup migrates the old shared `hub` device first), and `async_remove_config_entry_device` covers manual deletion
 
 ## 2FA Authentication Flow
 
@@ -243,8 +248,8 @@ Reference: `docs/govee-protocol-reference.md`
 
 ### Device ID Detection
 - **Regular devices**: MAC address format `03:9C:DC:06:75:4B:10:7C`
-- **Group devices**: Numeric-only IDs like `11825917`
-- Detection: `device_id.isdigit()` returns True for groups
+- **Group devices**: short numeric-only IDs like `11825917`, or an explicit group `type`
+- Detection: `looks_like_group_id(device_id, device_type)` in `models/device.py`; an all-digit ID longer than 11 characters is a real device (an 18-digit H5054, #243)
 
 ### Segment Capability Parsing
 RGBIC segment count is in `fields[].elementRange.max + 1`:
@@ -320,7 +325,7 @@ Update both files when changing option labels:
 
 **Exception: a broken release.** If a release that has already gone out breaks users (the integration fails to load or set up, or a regression stops previously working devices from working), cut a hotfix release immediately, even if one was already cut that day. Keep the hotfix to the regression alone, and say in its release notes which release it corrects. An ordinary bug, a wrong value or a missing feature is not a broken release and waits for the end-of-day release.
 
-**The end-of-day release is automated.** The GitHub Actions workflow `.github/workflows/daily-release.yml` runs at 03:00 UTC (11pm EDT, 10pm EST). Plain shell steps do the release: they skip the day when a release already went out (Eastern time), when CI on `main` isn't green, or when nothing under `custom_components/` changed since the last tag. That last check is a hard file check, `git diff --name-only <tag>..HEAD -- custom_components/`, ignoring the manifest version, so a day with only docs, test, plan or CI changes never produces a release. Otherwise they bump the version, push with the `RELEASE_TOKEN` admin token (which bypasses the required checks and triggers CI), wait for the five required checks, and run `gh release create`. Claude Code (`anthropics/claude-code-action`) only writes the notes and posts the replies: one on every issue and PR that a released commit references (`#N` in the subject), plus each entry queued in `docs/release-replies.md` (`## #N`, `close: yes|no`, a brief), which it then clears. Sessions only merge to `main` with CI green; they don't bump the version or cut the day's release. For a thread no commit references (a thank-you, a close, a request for data), queue an entry instead of posting it. Run the workflow by hand from the Actions tab: `dry_run` (the default) reports what would ship without releasing. A broken-release hotfix is cut by hand with the steps below. Claude cloud routines can't create releases (GitHub refuses that session type), so don't move this job back to one.
+**The end-of-day release is automated.** The GitHub Actions workflow `.github/workflows/daily-release.yml` runs at 03:00 UTC (11pm EDT, 10pm EST). Plain shell steps do the release: they skip the day when a release already went out (Eastern time), when CI on `main` isn't green, or when nothing under `custom_components/` changed since the last tag. That last check is a hard file check, `git diff --name-only <tag>..HEAD -- custom_components/`, ignoring the manifest version, so a day with only docs, test, plan or CI changes never produces a release. Otherwise they bump the version, push with a one-hour token from the `govee-ha-release` GitHub App (a bypass actor on the "Protect main" ruleset, so the push skips the required checks and triggers CI; the App key is a secret of the `release` environment, which only `main` can use), wait for the five required checks, and run `gh release create`. Claude Code (`anthropics/claude-code-action`) only drafts the notes and the replies, in its own job with no write token; `scripts/release_replies.py` vets the drafts and posts them as `govee-ha-release[bot]`: one on every issue and PR that a released commit references (`#N` in the subject), plus each entry queued in `docs/release-replies.md` (`## #N`, `close: yes|no`, a brief), which it then clears. Sessions only merge to `main` with CI green; they don't bump the version or cut the day's release. For a thread no commit references (a thank-you, a close, a request for data), queue an entry instead of posting it. Run the workflow by hand from the Actions tab: `dry_run` (the default) reports what would ship without releasing. A broken-release hotfix is cut by hand with the steps below. Claude cloud routines can't create releases (GitHub refuses that session type), so don't move this job back to one.
 
 1. **Bump version** in `manifest.json` (CalVer: `YYYY.MM.patch`)
 2. **Commit**: stage explicit paths (`git add custom_components tests ...`), never a bare `git add -A` (sandbox placeholder dotfiles sit in the repo root)

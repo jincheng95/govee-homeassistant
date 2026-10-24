@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 
+from ..const import PTREAL_ZONE_MAX_KELVIN, PTREAL_ZONE_MIN_KELVIN
 from ..models.state import RGBColor
 
 # Music mode packet constants
@@ -185,6 +186,12 @@ SEGMENT_PTREAL_INDICATOR = 0x15
 SEGMENT_PTREAL_COLOR_OP = 0x01
 SEGMENT_PTREAL_BRIGHTNESS_OP = 0x02
 
+# Ceiling Light Pro light-zone switch (H1252, issue #223): ``33 30 <zone> <on>``
+# switches one zone; the device reports both as ``aa 30 <main> <ring>``.
+LIGHT_ZONE_PTREAL_COMMAND = 0x30
+LIGHT_ZONE_MAIN = 0x00
+LIGHT_ZONE_RING = 0x01
+
 
 def build_segment_color_ptreal(rgb: RGBColor, mask: int) -> list[int]:
     """Build the masked ptReal segment colour frame data (H1232, issue #223).
@@ -237,6 +244,67 @@ def build_segment_brightness_ptreal(pct: int, mask: int) -> list[int]:
         mask & 0xFF,
         (mask >> 8) & 0xFF,
         (mask >> 16) & 0xFF,
+    ]
+
+
+def build_segment_color_temp_ptreal(kelvin: int, white: RGBColor, mask: int) -> list[int]:
+    """Build the masked ptReal segment colour-temperature frame data (H1252, issue #223).
+
+    Same layout as ``build_segment_color_ptreal``, but the five bytes after
+    the colour carry the colour temperature (big-endian Kelvin) and its RGB
+    white point, with the colour itself full white. Verified on an H1252
+    (6500 K and 2700 K on the main panel and the ring, from holger-dunst).
+
+    Args:
+        kelvin: Colour temperature, clamped to PTREAL_ZONE_MIN_KELVIN -
+                PTREAL_ZONE_MAX_KELVIN.
+        white: RGB approximation of ``kelvin``.
+        mask: 3-byte little-endian segment bitmask, as for
+              ``build_segment_color_ptreal``.
+
+    Returns:
+        Packet data bytes (before ``build_packet`` padding/checksum).
+    """
+    kelvin = max(PTREAL_ZONE_MIN_KELVIN, min(PTREAL_ZONE_MAX_KELVIN, int(kelvin)))
+    return [
+        MUSIC_PACKET_PREFIX,  # 0x33
+        SEGMENT_PTREAL_COMMAND,  # 0x05
+        SEGMENT_PTREAL_INDICATOR,  # 0x15
+        SEGMENT_PTREAL_COLOR_OP,  # 0x01
+        0xFF,
+        0xFF,
+        0xFF,
+        (kelvin >> 8) & 0xFF,
+        kelvin & 0xFF,
+        white.r,
+        white.g,
+        white.b,
+        mask & 0xFF,
+        (mask >> 8) & 0xFF,
+        (mask >> 16) & 0xFF,
+    ]
+
+
+def build_light_zone_ptreal(zone: int, on: bool) -> list[int]:
+    """Build the ptReal light-zone on/off frame data (H1252, issue #223).
+
+    Args:
+        zone: ``LIGHT_ZONE_MAIN`` (main panel) or ``LIGHT_ZONE_RING`` (ring).
+        on: True to light the zone, False to switch it off.
+
+    Returns:
+        Packet data bytes (before ``build_packet`` padding/checksum).
+
+    Raises:
+        ValueError: ``zone`` is neither zone.
+    """
+    if zone not in (LIGHT_ZONE_MAIN, LIGHT_ZONE_RING):
+        raise ValueError(f"unknown light zone {zone}")
+    return [
+        MUSIC_PACKET_PREFIX,  # 0x33
+        LIGHT_ZONE_PTREAL_COMMAND,  # 0x30
+        zone,
+        0x01 if on else 0x00,
     ]
 
 

@@ -21,7 +21,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import AbortFlow
-from homeassistant.helpers import config_validation as cv, issue_registry as ir
+from homeassistant.helpers import config_validation as cv, device_registry as dr, issue_registry as ir
 from homeassistant.helpers.service_info.bluetooth import BluetoothServiceInfo
 from homeassistant.helpers.selector import (
     SelectSelector,
@@ -41,19 +41,23 @@ from .api import (
 )
 from .api.auth import _derive_client_id
 from .api.client import validate_api_key
+from .kettle.labels import slot_keys, validate_slot_labels
 from .models import GoveeDevice
+from .registry import get_registry_device
 from .const import (
     CONF_API_KEY,
     CONF_API_TEMPERATURE_UNIT,
     CONF_EMAIL,
     CONF_ENABLE_DIY_SCENES,
     CONF_ENABLE_GROUPS,
+    CONF_CONFIRM_COMMANDS,
     CONF_ENABLE_BLE_RAW_WRITE,
     CONF_ENABLE_LAN_NUDGE,
     CONF_ENABLE_LAN_RAW_WRITE,
     CONF_ENABLE_MQTT_CONTROL,
     CONF_ENABLE_SCENES,
     CONF_ENABLE_ZONE_LIGHTS,
+    CONF_KETTLE_SLOT_LABELS,
     CONF_EXPOSE_TRANSPORT_ENTITIES,
     CONF_LAN_TARGETS,
     CONF_MQTT_STATUS_INTERVAL,
@@ -70,6 +74,7 @@ from .const import (
     DEFAULT_DAILY_REQUEST_BUDGET,
     DEFAULT_ENABLE_DIY_SCENES,
     DEFAULT_ENABLE_GROUPS,
+    DEFAULT_CONFIRM_COMMANDS,
     DEFAULT_ENABLE_BLE_RAW_WRITE,
     DEFAULT_ENABLE_LAN_NUDGE,
     DEFAULT_ENABLE_LAN_RAW_WRITE,
@@ -748,6 +753,10 @@ class GoveeOptionsFlow(OptionsFlow):
         self._device_groups: dict[str, dict[str, list[int]]] = {}
         self._device_counts: dict[str, int] = {}
         self._device_index: int = 0
+        # Kettle slot labels (the "kettle_slots" menu entry).
+        self._slot_labels: dict[str, dict[str, str]] = {}
+        self._kettles: list[GoveeDevice] = []
+        self._kettle_index: int = 0
 
     def _coordinator_devices(self) -> list[GoveeDevice]:
         """Devices of the running coordinator, or none if the entry is not loaded.
@@ -779,7 +788,39 @@ class GoveeOptionsFlow(OptionsFlow):
             return set()
         return {device_id for device_id in overrides if device_id not in known}
 
+    def _options_with_segment_modes(
+        self,
+        data: dict[str, Any],
+        edits: dict[str, str],
+        group_edits: dict[str, dict[str, list[int]]] | None = None,
+        count_edits: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        """Return ``data`` with the saved per-device segment modes plus ``edits``.
+
+        Options are replaced wholesale on save, so the stored map must be carried
+        over: a device not walked through in this run (unticked, or the entry is
+        not loaded and no device list exists) keeps the mode it already had.
+        Fork: the segment-group and segment-count maps are carried the same way.
+        """
+        saved = self.config_entry.options
+        result = dict(data)
+        modes = {**saved.get(CONF_SEGMENT_MODE_BY_DEVICE, {}), **edits}
+        if modes:
+            result[CONF_SEGMENT_MODE_BY_DEVICE] = modes
+        result[CONF_SEGMENT_GROUPS_BY_DEVICE] = {**saved.get(CONF_SEGMENT_GROUPS_BY_DEVICE, {}), **(group_edits or {})}
+        result[CONF_SEGMENT_COUNT_BY_DEVICE] = {**saved.get(CONF_SEGMENT_COUNT_BY_DEVICE, {}), **(count_edits or {})}
+        return result
+
     async def async_step_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Open the options: a menu when an H7175 kettle has custom slots, else the general settings."""
+        if user_input is None and self._kettles_with_slots():
+            return self.async_show_menu(step_id="init", menu_options=["general", "kettle_slots"])
+        return await self.async_step_general(user_input)
+
+    async def async_step_general(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
@@ -824,7 +865,7 @@ class GoveeOptionsFlow(OptionsFlow):
                     )
                     return await self.async_step_select_segment_devices()
                 _LOGGER.debug("No RGBIC devices found, saving options")
-                return self.async_create_entry(title="", data=user_input)
+                return self._async_finish(self._options_with_segment_modes(user_input, {}))
 
         # On a validation error, re-show the form with the user's entries kept;
         # otherwise seed it from the saved options.
@@ -832,7 +873,7 @@ class GoveeOptionsFlow(OptionsFlow):
         _LOGGER.debug("Showing global options form with current values: %s", source)
 
         return self.async_show_form(
-            step_id="init",
+            step_id="general",
             data_schema=vol.Schema(
                 {
                     vol.Optional(
@@ -933,6 +974,10 @@ class GoveeOptionsFlow(OptionsFlow):
                         default=source.get(CONF_ENABLE_LAN_NUDGE, DEFAULT_ENABLE_LAN_NUDGE),
                     ): bool,
                     vol.Optional(
+                        CONF_CONFIRM_COMMANDS,
+                        default=source.get(CONF_CONFIRM_COMMANDS, DEFAULT_CONFIRM_COMMANDS),
+                    ): bool,
+                    vol.Optional(
                         CONF_API_TEMPERATURE_UNIT,
                         default=source.get(CONF_API_TEMPERATURE_UNIT, DEFAULT_API_TEMPERATURE_UNIT),
                     ): SelectSelector(
@@ -949,6 +994,85 @@ class GoveeOptionsFlow(OptionsFlow):
                 }
             ),
             errors=errors,
+        )
+
+    def _kettles_with_slots(self) -> list[GoveeDevice]:
+        """Loaded H7175 kettles with custom slots to label."""
+        return [
+            device
+            for device in self._coordinator_devices()
+            if device.decodes_kettle_frames and not device.is_group and slot_keys(device)
+        ]
+
+    def _saved_slot_labels(self) -> dict[str, dict[str, str]]:
+        """Saved slot labels, without kettles removed from Home Assistant.
+
+        Only devices gone from the device registry are dropped, so a kettle
+        missing from one device-list fetch keeps its labels.
+        """
+        saved = self.config_entry.options.get(CONF_KETTLE_SLOT_LABELS)
+        if not isinstance(saved, dict):
+            return {}
+        registry = dr.async_get(self.hass)
+        return {
+            str(device_id): dict(labels)
+            for device_id, labels in saved.items()
+            if isinstance(labels, dict)
+            and get_registry_device(registry, (DOMAIN, str(device_id)), self.config_entry.entry_id)
+        }
+
+    def _async_finish(self, data: dict[str, Any], labels: dict[str, dict[str, str]] | None = None) -> ConfigFlowResult:
+        """Save the options. Saving replaces them all, so the slot labels are carried over."""
+        result = {key: value for key, value in data.items() if key != CONF_KETTLE_SLOT_LABELS}
+        labels = self._saved_slot_labels() if labels is None else labels
+        if labels:
+            result[CONF_KETTLE_SLOT_LABELS] = labels
+        return self.async_create_entry(title="", data=result)
+
+    async def async_step_kettle_slots(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ) -> ConfigFlowResult:
+        """Label a kettle's custom slots, one kettle at a time (opt-in, from the menu).
+
+        Fields are ``slot_1``..``slot_N`` in slot order; a blank field means
+        no label. Labels are display text only: the mode stays ``custom_N``.
+        """
+        if not self._kettles:
+            self._kettles = self._kettles_with_slots()
+            self._slot_labels = self._saved_slot_labels()
+            self._kettle_index = 0
+        loaded = {device.device_id for device in self._coordinator_devices()}
+        if self._kettle_index >= len(self._kettles) or self._kettles[self._kettle_index].device_id not in loaded:
+            return self.async_abort(reason="kettle_unavailable")
+        device = self._kettles[self._kettle_index]
+        fields = {f"slot_{index}": key for index, key in enumerate(slot_keys(device), start=1)}
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            labels = {key: str(user_input.get(field) or "").strip() for field, key in fields.items()}
+            slot_errors = validate_slot_labels(device, labels)
+            errors = {field: slot_errors[key] for field, key in fields.items() if key in slot_errors}
+            if not errors:
+                kept = {key: label for key, label in labels.items() if label}
+                if kept:
+                    self._slot_labels[device.device_id] = kept
+                else:
+                    self._slot_labels.pop(device.device_id, None)
+                self._kettle_index += 1
+                if self._kettle_index < len(self._kettles):
+                    return await self.async_step_kettle_slots()
+                return self._async_finish(dict(self.config_entry.options), self._slot_labels)
+        saved = self._slot_labels.get(device.device_id, {})
+        current = (
+            user_input if user_input is not None else {field: saved.get(key, "") for field, key in fields.items()}
+        )
+        return self.async_show_form(
+            step_id="kettle_slots",
+            data_schema=vol.Schema(
+                {vol.Optional(field, description={"suggested_value": current.get(field, "")}): str for field in fields}
+            ),
+            errors=errors,
+            description_placeholders={"device_name": device.name},
         )
 
     async def async_step_select_segment_devices(
@@ -978,7 +1102,7 @@ class GoveeOptionsFlow(OptionsFlow):
             else:
                 # No devices selected, save global options only
                 _LOGGER.debug("No devices selected, saving global options only")
-                return self.async_create_entry(title="", data=self._global_options)
+                return self._async_finish(self._options_with_segment_modes(self._global_options, {}))
 
         # Show device selector
         all_device_ids = list(rgbic_devices.keys())
@@ -1048,15 +1172,11 @@ class GoveeOptionsFlow(OptionsFlow):
                     return await self.async_step_configure_device_mode()
 
                 # Done — build final data and save
-                new_data = {
-                    **self._global_options,
-                    CONF_SEGMENT_MODE_BY_DEVICE: self._device_modes,
-                    CONF_SEGMENT_GROUPS_BY_DEVICE: self._device_groups,
-                    CONF_SEGMENT_COUNT_BY_DEVICE: self._device_counts,
-                }
+                new_data = self._options_with_segment_modes(
+                    self._global_options, self._device_modes, self._device_groups, self._device_counts
+                )
                 _LOGGER.debug("Options saved: %s", new_data)
-                _LOGGER.debug("Device modes configured: %s", self._device_modes)
-                return self.async_create_entry(title="", data=new_data)
+                return self._async_finish(new_data)
 
             return self.async_show_form(
                 step_id="configure_device_mode",

@@ -25,6 +25,7 @@ from custom_components.govee.models.device import (
     INSTANCE_THERMOSTAT_TOGGLE,
     INSTANCE_WORK_MODE,
 )
+from .coordinator_mocks import follow_online_flag
 
 # ==============================================================================
 # Heater Device Fixtures
@@ -257,7 +258,7 @@ class TestHeaterTemperatureNumberEntity:
 
         coordinator.get_state = MagicMock(return_value=state)
         coordinator.async_control_device = AsyncMock(return_value=True)
-        return coordinator
+        return follow_online_flag(coordinator)
 
     @pytest.fixture
     def heater_temp_entity(self, mock_coordinator, mock_heater_device):
@@ -393,7 +394,7 @@ class TestFanSpeedSelectEntity:
 
         coordinator.get_state = MagicMock(return_value=state)
         coordinator.async_control_device = AsyncMock(return_value=True)
-        return coordinator
+        return follow_online_flag(coordinator)
 
     @pytest.fixture
     def fan_speed_entity(self, mock_coordinator, mock_heater_device):
@@ -612,7 +613,7 @@ class TestH7131FanSpeedSelectEntity:
 
         coordinator.get_state = MagicMock(return_value=state)
         coordinator.async_control_device = AsyncMock(return_value=True)
-        return coordinator
+        return follow_online_flag(coordinator)
 
     @pytest.fixture
     def fan_speed_entity(self, mock_coordinator, mock_h7131_device):
@@ -727,7 +728,7 @@ class TestAutoStopSwitchEntity:
 
         coordinator.get_state = MagicMock(return_value=state)
         coordinator.async_control_device = AsyncMock(return_value=True)
-        return coordinator
+        return follow_online_flag(coordinator)
 
     @pytest.fixture
     def auto_stop_entity(self, mock_coordinator, mock_heater_device):

@@ -4,6 +4,8 @@ Provides:
 - ``govee.refresh_scenes``: re-fetch the scene catalog for one or all devices.
 - ``govee.set_segment_color``: set the colour of individual RGBIC segments.
 - ``govee.send_raw_ptreal``: send a raw BLE ptReal frame (developer/debug aid).
+- ``govee.request_status``: ask a device for its status over AWS IoT, once or
+  repeatedly for a while (a status burst).
 - ``govee.apply_diy_effect``: compose and upload a DIY effect to a multi-zone
   lamp (fork).
 
@@ -43,7 +45,7 @@ from .api.protocol import (
     GoveeProtocolError,
     resolve_mode,
 )
-from .const import DOMAIN
+from .const import DOMAIN, REQUEST_STATUS_MIN_INTERVAL
 from .coordinator import GoveeCoordinator
 from .diy_state import (
     DEFAULT_FLOW_RATE,
@@ -54,6 +56,7 @@ from .diy_state import (
 from .diy_state import store as diy_store
 from .models import GoveeDevice, RGBColor, SegmentColorCommand
 from .segment_limit import manual_segment_count, segment_count
+from .status_burst import STATUS_BURST_MAX_DURATION, STATUS_BURST_MIN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,11 +64,14 @@ ATTR_DEVICE_ID = "device_id"
 ATTR_RGB_COLOR = "rgb_color"
 ATTR_SEGMENTS = "segments"
 ATTR_FRAME = "frame"
+ATTR_DURATION = "duration"
+ATTR_INTERVAL = "interval"
 
 SERVICE_REFRESH_SCENES = "refresh_scenes"
 SERVICE_SET_SEGMENT_COLOR = "set_segment_color"
 SERVICE_SEND_RAW_PTREAL = "send_raw_ptreal"
 SERVICE_APPLY_DIY_EFFECT = "apply_diy_effect"
+SERVICE_REQUEST_STATUS = "request_status"
 
 SERVICE_REFRESH_SCENES_SCHEMA = vol.Schema(
     {
@@ -77,6 +83,16 @@ SERVICE_SEND_RAW_PTREAL_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_DEVICE_ID): cv.string,
         vol.Required(ATTR_FRAME): cv.string,
+    }
+)
+
+SERVICE_REQUEST_STATUS_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_DEVICE_ID): cv.string,
+        vol.Optional(ATTR_DURATION, default=0): vol.All(
+            vol.Coerce(float), vol.Range(min=0, max=STATUS_BURST_MAX_DURATION)
+        ),
+        vol.Optional(ATTR_INTERVAL, default=5): vol.All(vol.Coerce(float), vol.Range(min=STATUS_BURST_MIN_INTERVAL)),
     }
 )
 
@@ -359,6 +375,41 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
     _LOGGER.info("Applied DIY effect to %s", device.name)
 
 
+async def async_request_status_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.request_status``.
+
+    Sends an AWS IoT status query now, and with a ``duration`` keeps sending
+    one every ``interval`` seconds until it has passed. The device's pushes
+    are applied as usual. MQTT only: no cloud requests are spent.
+    """
+    found = _get_coordinator_for_device(hass, call.data[ATTR_DEVICE_ID])
+    if found is None:
+        raise _device_not_found(call.data[ATTR_DEVICE_ID])
+    coordinator, device_id = found
+    if not coordinator.status_query_possible(device_id):
+        device = coordinator.devices.get(device_id)
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="status_query_unavailable",
+            translation_placeholders={"device": device.name if device is not None else device_id},
+        )
+    duration = call.data[ATTR_DURATION]
+    if duration > 0:
+        coordinator.status_burst.start(device_id, duration, call.data[ATTR_INTERVAL])
+        return
+    if coordinator.status_query_throttled(device_id):
+        device = coordinator.devices.get(device_id)
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="status_query_throttled",
+            translation_placeholders={
+                "device": device.name if device is not None else device_id,
+                "seconds": str(REQUEST_STATUS_MIN_INTERVAL),
+            },
+        )
+    await coordinator.async_request_status(device_id, user=True)
+
+
 @callback
 def async_setup_services(hass: HomeAssistant) -> None:
     """Register the Govee service actions (called once from ``async_setup``)."""
@@ -374,6 +425,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def _apply_diy_effect(call: ServiceCall) -> None:
         await async_apply_diy_effect_handler(hass, call)
+
+    async def _request_status(call: ServiceCall) -> None:
+        await async_request_status_handler(hass, call)
 
     hass.services.async_register(
         DOMAIN,
@@ -400,6 +454,15 @@ def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_SEND_RAW_PTREAL,
         _send_raw_ptreal,
         schema=SERVICE_SEND_RAW_PTREAL_SCHEMA,
+    )
+    # Admin-only: repeated status queries can make AWS IoT drop the account's
+    # session for every device (#195).
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_REQUEST_STATUS,
+        _request_status,
+        schema=SERVICE_REQUEST_STATUS_SCHEMA,
     )
 
 

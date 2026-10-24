@@ -115,6 +115,8 @@ def _fleet_coordinator() -> MagicMock:
     coordinator = MagicMock()
     coordinator.devices = _fleet()
     coordinator.is_bff_leak_sensor.return_value = False
+    # Account-data thermometers (#258) are covered in test_issue_258.py.
+    coordinator.is_bff_thermometer.return_value = False
     coordinator.leak_sensors = {
         sensor.device_id: sensor
         for sensor in (_leak_sensor(LEAK_A1, HUB_A), _leak_sensor(LEAK_A2, HUB_A), _leak_sensor(LEAK_B1, HUB_B))

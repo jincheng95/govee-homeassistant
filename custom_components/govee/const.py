@@ -17,6 +17,12 @@ CONF_ENABLE_SCENES: Final = "enable_scenes"
 CONF_ENABLE_DIY_SCENES: Final = "enable_diy_scenes"
 CONF_EXPOSE_TRANSPORT_ENTITIES: Final = "expose_transport_entities"
 CONF_ENABLE_MQTT_CONTROL: Final = "enable_mqtt_control"
+# Confirm light commands against the device's AWS IoT report and resend a
+# dropped one once (command_confirm.py, #245).
+CONF_CONFIRM_COMMANDS: Final = "confirm_commands"
+# Display labels for H7175 custom slots, set in the options flow:
+# {device_id: {"custom_1": "Herbal tea", ...}}. The mode state stays custom_N.
+CONF_KETTLE_SLOT_LABELS: Final = "kettle_slot_labels"
 
 # Standalone water-detector (H5054) leak-poll interval (seconds). These RF-only
 # sensors deliver their trip only via the account warnMessage history (issue
@@ -226,15 +232,34 @@ SKU_SEGMENT_OVERRIDES: Final = {
 # advertised count via masked ptReal frames (``build_segment_color_ptreal`` /
 # ``build_segment_brightness_ptreal`` in api/ble_packet.py). The true ring
 # segment count lives in SKU_SEGMENT_OVERRIDES.
-# Deliberately narrow: only the H1232 is verified against real hardware,
-# though H60A6/H1252 (same fixture family) are plausibly identical (#223).
-PTREAL_SEGMENT_SKUS: Final = frozenset({"H1232"})
+# Deliberately narrow: verified against real hardware on the H1232 and the
+# H1252 (#223); the H60A6 (same fixture family) is plausibly identical. The
+# H1252 already advertises all 16 ring segments over the API, so for it this
+# only folds a multi-segment write into one frame.
+PTREAL_SEGMENT_SKUS: Final = frozenset({"H1232", "H1252"})
 
 # SKUs whose 17th internal segment is a separate main panel, not a ring
 # segment, addressed by this bit in the same 3-byte little-endian ptReal
 # segment mask (bit i = internal segment i+1). Reporter-verified on the
-# H1232 only (#223).
-PTREAL_MAIN_PANEL_BIT: Final = {"H1232": 16}
+# H1232 and the H1252 (#223).
+PTREAL_MAIN_PANEL_BIT: Final = {"H1232": 16, "H1252": 16}
+
+# The ring of those fixtures: internal segments 1-16, bits 0-15 of the mask.
+# Fixed, never derived from a segment count, so a ring write can never carry
+# the main panel's bit.
+PTREAL_RING_MASK: Final = 0xFFFF
+
+# SKUs whose mainLightToggle / backgroundLightToggle the Platform API accepts
+# (HTTP 200 "success") but ignores, while the app's ``33 30 <zone> <on>``
+# ptReal frame switches each zone (zone 0 = main panel, 1 = ring). The device
+# reports both zones in an ``aa 30 <main> <ring>`` status frame. Verified on
+# an H1252 (#223); the H1232's REST toggles work.
+PTREAL_LIGHT_ZONE_SKUS: Final = frozenset({"H1252"})
+
+# Colour-temperature range of those zones, the fixture's whole-device
+# colorTemperatureK range. The frame builder clamps to it.
+PTREAL_ZONE_MIN_KELVIN: Final = 2700
+PTREAL_ZONE_MAX_KELVIN: Final = 6500
 
 
 def resolve_fahrenheit_conversion(sku: str, api_unit: str, device_unit_hint: str | None = None) -> bool:
@@ -272,6 +297,7 @@ DEFAULT_ENABLE_DIY_SCENES: Final = True
 DEFAULT_SEGMENT_MODE: Final = "individual"  # "disabled", "grouped", "individual", "both", or "groups"
 DEFAULT_EXPOSE_TRANSPORT_ENTITIES: Final = False
 DEFAULT_ENABLE_MQTT_CONTROL: Final = False
+DEFAULT_CONFIRM_COMMANDS: Final = False
 DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
 DEFAULT_LAN_TARGETS: Final = ""
 DEFAULT_ENABLE_LAN_NUDGE: Final = True
@@ -288,6 +314,24 @@ DEFAULT_PROBE_POLL_INTERVAL: Final = 30  # seconds
 # is currently on screen), so a lower default would multiply request volume
 # with device count. 5 minutes keeps most devices fresh without that.
 DEFAULT_MQTT_STATUS_INTERVAL: Final = 300  # seconds (5 minutes)
+# Power-monitoring outlets (H5086) only send their readings in answer to a
+# status query, and their energy counter resets at midnight: whatever they
+# used since the last reading before then is lost. So they are queried at the
+# app's own cadence, whatever the interval for the other devices (issue #200).
+POWER_MONITORING_STATUS_INTERVAL: Final = 60  # seconds
+# Least time between two status queries to one device outside the sweep
+# (govee.request_status, its bursts, kettle follow-ups), whichever sent them.
+REQUEST_STATUS_MIN_INTERVAL: Final = 3  # seconds
+# A connected AWS IoT session is checked this long after it came up: if status
+# queries went out (at least MQTT_SILENT_MIN_QUERIES) and not one message came
+# back, the session is silent (#222). It is reconnected once, then a repair
+# asks the user to re-enter the account login.
+MQTT_SILENT_CHECK_DELAY: Final = 1800  # seconds
+MQTT_SILENT_MIN_QUERIES: Final = 3
+# A device the cloud reports offline still counts as reachable when a local
+# transport (LAN, BLE) is healthy or AWS IoT carried a message from it this
+# recently (#242): the Developer API's online flag lags or is wrong for some.
+REACHABLE_PUSH_WINDOW: Final = 600  # seconds
 
 # Bounds for the configurable water-detector poll interval (seconds). The lower
 # bound keeps the unverified account-API rate limit at arm's length; the upper
@@ -332,6 +376,26 @@ LOCAL_READING_FRESHNESS_FACTOR: Final = 1.5
 # wrong values, and against cloud-only fields the local frames never carry.
 MAX_LOCAL_FRESH_SKIPS: Final = 5
 
+# Diagnostics: how many distinct pushed frames are kept per H7175 kettle.
+KETTLE_FRAME_HISTORY: Final = 50
+# H7175 follow-up reads: seconds after an accepted command at which the kettle
+# is re-read (one cloud read, then a status query), skipped while fewer than
+# KETTLE_FOLLOWUP_MIN_REMAINING requests are left in Govee's window.
+KETTLE_FOLLOWUP_DELAYS: Final = (5, 20)
+KETTLE_FOLLOWUP_MIN_REMAINING: Final = 10
+# Without a heating status, an H7175 counts as heating (polled every cycle)
+# while more than this many degrees (its own unit) below its target.
+KETTLE_HEATING_TOLERANCE: Final = 2
+# How long a value an H7175 pushed, or a command set, is kept over cloud
+# reads that disagree (the cloud lags the kettle by several seconds).
+KETTLE_PROTECT_SECONDS: Final = 45
+# Diagnostics: per kind of H7175 status frame, how many of the latest
+# distinct ones are kept.
+KETTLE_FRAME_HISTORY_PER_KIND: Final = 10
+# ...and how many kinds at most: the kind comes from the frame's first bytes,
+# so a stream of unexpected frames must not grow the history without bound.
+KETTLE_FRAME_KINDS_MAX: Final = 32
+
 # How long a device must have been off with no observed state change before
 # its poll cadence is stretched. Half an hour: long enough that a light
 # someone is actively using never qualifies, short enough that a house's
@@ -364,6 +428,14 @@ MQTT_STATUS_QUERY_SPACING: Final = 1.0
 # before that device is quarantined from the sweep. Two, so a coincidental
 # network drop during a sweep does not cost a device its status queries.
 MQTT_STATUS_QUERY_QUARANTINE_STRIKES: Final = 2
+# How many different SKUs the session has to drop right after querying, with
+# no status query answered in between, before the drops are put down to the
+# account rather than to any one device: AWS IoT is then refusing every status
+# query the account publishes. Quarantining devices one at a time would cost
+# two session drops per device, each reconnect backing off further, before
+# push state settled. Counted per SKU, so several units of one model that
+# refuses its query (the six H5075s above) still look like one model.
+MQTT_STATUS_QUERY_ACCOUNT_REFUSAL_SKUS: Final = 3
 # SKUs left out of the sweep outright, rather than learning the hard way via
 # the quarantine above. Every one here is a BLE/LoRa gateway-bridged sensor
 # (see FAHRENHEIT_REPORTING_SKUS): it has an AWS IoT topic on the account but
@@ -393,7 +465,13 @@ MQTT_STATUS_QUERY_QUARANTINE_STRIKES: Final = 2
 #     query to it drops the session just as the H5075's did (issue #195).
 #     Not in FAHRENHEIT_REPORTING_SKUS: that list needs a reading showing
 #     which unit the model reports in.
-MQTT_STATUS_QUERY_EXCLUDED_SKUS: Final = frozenset({"H5110", "H5220", "H5111", "H5075", "H5074"})
+#   H5108 (thermo-hygrometer): same class. Confirmed on v2026.10.0 with six
+#     units on one account: a status query to any of them closed the session
+#     within ~5s, and the two strikes apiece added up to ~35 minutes of
+#     reconnect churn after every restart, during which the account's
+#     MQTT-only readings (H5086 plug power) stopped arriving (issue #237).
+#     Its readings still arrive through the cloud poll.
+MQTT_STATUS_QUERY_EXCLUDED_SKUS: Final = frozenset({"H5110", "H5220", "H5111", "H5075", "H5074", "H5108"})
 
 # Optimistic state handling
 # Grace window (seconds) during which API polls do NOT overwrite optimistic
@@ -504,9 +582,18 @@ CONF_SEGMENT_MODE_BY_DEVICE: Final = "segment_mode_by_device"
 CONF_SEGMENT_GROUPS_BY_DEVICE: Final = "segment_groups_by_device"
 CONF_SEGMENT_COUNT_BY_DEVICE: Final = "segment_count_by_device"
 
-# Identifier of the integration-level "Govee Integration" device that carries
-# the hub-wide diagnostics (rate limit, MQTT status).
-HUB_DEVICE_IDENTIFIER: Final = "hub"
+# The integration-level "Govee Integration" device that carries the hub-wide
+# diagnostics (rate limit, MQTT status) is identified per config entry, so two
+# accounts get two devices. Older installs used one shared identifier for every
+# entry; setup migrates that device to the per-entry one.
+LEGACY_HUB_DEVICE_IDENTIFIER: Final = "hub"
+HUB_DEVICE_IDENTIFIER_SUFFIX: Final = "_hub"
+
+
+def hub_device_identifier(entry_id: str) -> str:
+    """Identifier of the diagnostics device that belongs to ``entry_id``."""
+    return f"{entry_id}{HUB_DEVICE_IDENTIFIER_SUFFIX}"
+
 
 # Segment mode options
 SEGMENT_MODE_DISABLED: Final = "disabled"
@@ -592,6 +679,8 @@ SUFFIX_MAIN_LIGHT_TOGGLE: Final = "_main_light_toggle"
 # H1232 ptReal main panel light (#223); distinct from SUFFIX_MAIN_LIGHT_TOGGLE,
 # which is used by the H1270 GoveeMainLightEntity.
 SUFFIX_MAIN_PANEL: Final = "_main_panel"
+# H1252 ptReal ring light (#223), the counterpart of SUFFIX_MAIN_PANEL.
+SUFFIX_RING: Final = "_ring"
 SUFFIX_BACKGROUND_LIGHT: Final = "_background_light"
 SUFFIX_NEBULA_LIGHT: Final = "_nebula_light"
 SUFFIX_RIPPLE_LIGHT: Final = "_ripple_light"
@@ -609,3 +698,14 @@ SUFFIX_HEATER_AUTO_STOP: Final = "_heater_auto_stop"
 SUFFIX_PURIFIER_MODE_SELECT: Final = "_purifier_mode_select"
 SUFFIX_PRESET_SCENE_SELECT: Final = "_preset_scene_select"
 SUFFIX_NIGHTLIGHT_SCENE_SELECT: Final = "_nightlight_scene_select"
+# H7175 kettle. The water heater is suffixed so the kettle's existing power
+# switch keeps its bare-device-id unique_id.
+SUFFIX_KETTLE: Final = "_kettle"
+SUFFIX_KETTLE_HEATING_STATUS: Final = "_kettle_heating_status"
+SUFFIX_KETTLE_KEEP_WARM_STATUS: Final = "_kettle_keep_warm_status"
+SUFFIX_KETTLE_KEEP_WARM_MINUTES: Final = "_kettle_keep_warm_minutes"
+SUFFIX_KETTLE_KEEP_WARM_REMAINING: Final = "_kettle_keep_warm_remaining"
+SUFFIX_KETTLE_DIY_SLOT: Final = "_kettle_diy_slot"
+SUFFIX_KETTLE_BREW_MODE: Final = "_kettle_brew_mode"
+SUFFIX_KETTLE_ON_BASE: Final = "_kettle_on_base"
+SUFFIX_KETTLE_BUTTON: Final = "_kettle_button"

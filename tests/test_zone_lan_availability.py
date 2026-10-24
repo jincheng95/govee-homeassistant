@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests.coordinator_mocks import follow_online_flag
 
 from custom_components.govee import lan_udp_health
 from custom_components.govee.api import raw_router
@@ -89,6 +90,7 @@ def _coordinator(
         if ok is not None
     }
     coordinator.get_transport_health = MagicMock(side_effect=lambda _id, kind: health.get(kind))
+    follow_online_flag(coordinator)
     coordinator._lan_devices = {
         device.device_id: LanDeviceInfo(
             device_id=device.device_id,

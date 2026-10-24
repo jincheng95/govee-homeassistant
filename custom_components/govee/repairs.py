@@ -41,6 +41,7 @@ _LOGGER = logging.getLogger(__name__)
 # Issue IDs
 ISSUE_RATE_LIMITED = "rate_limited"
 ISSUE_MQTT_DISCONNECTED = "mqtt_disconnected"
+ISSUE_MQTT_SILENT = "mqtt_silent"
 
 # Issue-id prefixes retired when the rate-limit repair was consolidated into
 # ISSUE_RATE_LIMITED. An install that hit either one before the rename carries
@@ -133,6 +134,33 @@ def async_delete_mqtt_issue(
         DOMAIN,
         f"{ISSUE_MQTT_DISCONNECTED}_{entry.entry_id}",
     )
+
+
+@callback
+def async_create_mqtt_silent_issue(hass: HomeAssistant, entry: ConfigEntry, minutes: int) -> None:
+    """Create a repair for a connected real-time session that receives nothing (#222).
+
+    Not fixable here: only a fresh account login (Reconfigure) issues new
+    AWS IoT credentials, and that needs the user's password and possibly a
+    verification code.
+    """
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        f"{ISSUE_MQTT_SILENT}_{entry.entry_id}",
+        is_fixable=False,
+        is_persistent=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=ISSUE_MQTT_SILENT,
+        translation_placeholders={"entry_title": entry.title, "minutes": str(minutes)},
+    )
+    _LOGGER.debug("Created mqtt_silent repair issue for entry %s", entry.entry_id)
+
+
+@callback
+def async_delete_mqtt_silent_issue(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the silent-session repair once a message arrives."""
+    ir.async_delete_issue(hass, DOMAIN, f"{ISSUE_MQTT_SILENT}_{entry.entry_id}")
 
 
 async def async_create_fix_flow(

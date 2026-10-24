@@ -54,6 +54,7 @@ from custom_components.govee.select import (
     GoveeSnapshotSelectEntity,
     _snapshot_id,
 )
+from .coordinator_mocks import follow_online_flag
 
 
 def _cap(cap_type: str, instance: str, params: dict | None = None) -> GoveeCapability:
@@ -123,7 +124,7 @@ def _coordinator(device: GoveeDevice, state: GoveeDeviceState | None) -> MagicMo
     coordinator.async_send_diy_scene = AsyncMock(return_value=True)
     coordinator.async_get_scenes = AsyncMock(return_value=[])
     coordinator.async_get_diy_scenes = AsyncMock(return_value=[])
-    return coordinator
+    return follow_online_flag(coordinator)
 
 
 def _state(device: GoveeDevice, **kwargs) -> GoveeDeviceState:

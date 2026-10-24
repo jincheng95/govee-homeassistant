@@ -28,6 +28,7 @@ from custom_components.govee.platforms.grouped_segment import (
     segments_optimistic_signal,
 )
 from custom_components.govee.platforms.segment import GoveeSegmentEntity
+from .coordinator_mocks import follow_online_flag
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:22"
 
@@ -41,7 +42,7 @@ def _coordinator(*, power_state: bool = True) -> MagicMock:
     state = GoveeDeviceState.create_empty(DEVICE_ID)
     state.power_state = power_state
     coordinator.get_state = MagicMock(return_value=state)
-    return coordinator
+    return follow_online_flag(coordinator)
 
 
 def _hass() -> MagicMock:

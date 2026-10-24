@@ -19,3 +19,9 @@ updates:
       - dependency-name: "aiomqtt"
       - dependency-name: "bleak-retry-connector"
       - dependency-name: "cryptography"
+
+  # Keep SHA-pinned workflow actions current
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

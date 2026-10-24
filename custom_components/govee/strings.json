@@ -87,6 +87,13 @@
     "step": {
       "init": {
         "title": "Govee options",
+        "menu_options": {
+          "general": "General settings",
+          "kettle_slots": "Kettle slot labels"
+        }
+      },
+      "general": {
+        "title": "Govee options",
         "description": "If you have RGBIC devices, per-device segment settings will appear after submitting.",
         "data": {
           "poll_interval": "Polling interval (seconds)",
@@ -100,6 +107,7 @@
           "enable_diy_scenes": "Enable DIY scene selector",
           "expose_transport_entities": "Expose per-device transport connectivity sensors",
           "enable_mqtt_control": "Send power, brightness, and color over MQTT (faster, experimental)",
+          "confirm_commands": "Confirm light commands and resend dropped ones",
           "lan_targets": "LAN device addresses and subnets (advanced)",
           "enable_lan_nudge": "Re-check device state locally after cloud updates",
           "enable_lan_raw_write": "Send segment colours over the local network",
@@ -112,17 +120,28 @@
           "api_temperature_unit": "Auto (default) first uses the temperature unit your Govee account reports for the device, then falls back to converting the thermometers known to report Fahrenheit (for example H5179, H5109, H5110, H5111, H5053, H5075, H5100), and trusts the rest. Choose Fahrenheit if a reading still looks about 1.8 times too high (for example 74 instead of 23), or Celsius to force no conversion. Govee's API omits unit metadata, so the value cannot always be auto-detected.",
           "water_detector_poll_interval": "How often standalone Govee water and leak detectors (for example H5054) are checked for a leak. These RF-only sensors have no push channel, so a leak surfaces with up to this much delay. Lower reacts faster but makes more account API calls; raise it if you have many detectors. Range 60 to 3600 seconds, default 120. Requires email and password login; ignored if you have no such detectors.",
           "probe_poll_interval": "How often an armed probe (cooking) thermometer such as the H5192 is read over AWS IoT while its Live polling switch is on. These devices never volunteer a reading, so this interval is the update rate. Costs battery rather than API quota. Range 10 to 600 seconds, default 30. Requires email and password login.",
-          "mqtt_status_interval": "How often every MQTT-connected device is asked for its current status over AWS IoT. Devices are largely poll-triggered responders, not autonomous pushers; this mirrors what the Govee app itself does while its device list is on screen, so state keeps updating without the app open. Lower reacts faster but publishes more per device; raise it if you have many devices. Range 60 to 3600 seconds, default 300. Set 0 to turn the re-query off and rely on what devices push on their own. Queries go out one device per second; a device whose query makes AWS IoT close the session twice is left out until the next reload (a warning names it). Requires email and password login (MQTT credentials); ignored when MQTT is unavailable.",
+          "mqtt_status_interval": "How often every MQTT-connected device is asked for its current status over AWS IoT. Devices are largely poll-triggered responders, not autonomous pushers; this mirrors what the Govee app itself does while its device list is on screen, so state keeps updating without the app open. Lower reacts faster but publishes more per device; raise it if you have many devices. Range 60 to 3600 seconds, default 300. Set 0 to turn the re-query off and rely on what devices push on their own. Queries go out one device per second; a device whose query makes AWS IoT close the session twice is left out until the next reload (a warning names it). If the session closes right after queries to three different models in a row with none answered, AWS IoT is refusing status queries for the whole account, and the re-query stops until the next reload (a warning says so). Requires email and password login (MQTT credentials); ignored when MQTT is unavailable.",
           "enable_groups": "Surfaces the device groups you created in the Govee app as single light entities. A command to a group is sent once and synced to all members by Govee's cloud, so it syncs better than grouping the lights with Home Assistant helpers. State is best-effort (groups cannot be polled), and group lights only support power, brightness, and color.",
           "enable_scenes": "Creates a scene dropdown per device that has scenes, and exposes the scenes as light effects. Turn off to save one API request per device at startup.",
           "enable_diy_scenes": "Creates a DIY scene dropdown per device that has DIY scenes created in the Govee app.",
           "expose_transport_entities": "Adds one connectivity binary sensor per transport (cloud API, MQTT, Bluetooth, LAN) for every device. Off by default because it creates four extra diagnostic entities per device.",
           "enable_mqtt_control": "Routes power, brightness, and color commands through Govee's MQTT channel instead of the REST cloud API, reducing latency and bypassing REST rate limits. Requires email and password login (MQTT credentials). Falls back to REST automatically when MQTT is unavailable, and for any device that has not yet answered over MQTT (it answers the periodic status query, so keep that on). Experimental: it uses an undocumented channel, so leave it off if commands behave unexpectedly.",
+          "confirm_commands": "After a power-off, brightness, colour or colour-temperature command to a light, waits a few seconds for the light's own real-time (AWS IoT) report and asks for one status if none comes. If the light still shows the old value, the command is sent once more over the cloud API. Lights only: appliances such as kettles, heaters and fans are never resent, and a power-on is never resent. A resend uses one cloud request, only when the daily budget and rate limit allow it. Requires email and password login; lights that have not reported over AWS IoT are left as they are. Off by default.",
           "lan_targets": "Only needed when LAN-enabled Govee devices are on a different subnet or VLAN than Home Assistant, so the local discovery scan cannot reach them. Enter a comma-separated list of device IPs (10.20.0.51), broadcast addresses (10.20.0.255), and subnets in CIDR notation (10.20.0.0/24, /24 or smaller). Subnets are scanned device by device, since most routers drop cross-VLAN broadcasts. Leave blank if all devices share Home Assistant's network. Advanced: if a device still is not found because its scan reply cannot cross the VLAN, pin it with device_id=ip (AA:BB:CC:DD:EE:FF:00:11=10.20.0.51) to skip discovery for that device. Add a trailing ! (=10.20.0.51!) only for firmware that accepts LAN commands but never answers a status read. That turns off every LAN health check for the device, so a wrong IP will look like it is working while the device never responds. Enter off to turn LAN discovery and local control off entirely.",
           "enable_lan_nudge": "When the cloud reports a change made outside Home Assistant, the device's real state is read over the local network instead of trusting the push. Locally discovered devices only.",
           "enable_lan_raw_write": "Segment colour and brightness act immediately instead of taking Govee's cloud round trip. Works on locally discovered lamps with a supported model; others keep using the cloud. Segment state can't be read back, so entities show the last command sent. Zone lights do not need this option \u2014 they always use the local network.",
           "enable_ble_raw_write": "For lamps with no local Wi-Fi control. Needs a Bluetooth adapter or an active Bluetooth proxy in range. While a command is being sent, the Govee phone app may briefly be unable to connect.",
           "enable_zone_lights": "Each zone becomes its own light and the lamp's own entity becomes a dimmable master. Automations that set an effect on the lamp entity must target a zone or the scene selector instead. Zone state shows the last command sent \u2014 the device cannot report it back."
+        }
+      },
+      "kettle_slots": {
+        "title": "Kettle slot labels: {device_name}",
+        "description": "Optional display labels for the kettle's custom slots, for example the names you gave them in the Govee app. The mode itself stays Custom 1-4 (custom_1-custom_4 in automations); the labels appear in the entities' labels attribute. Leave a field blank for no label. A label may not repeat another label, a built-in mode, Manual or Off.",
+        "data": {
+          "slot_1": "Custom 1",
+          "slot_2": "Custom 2",
+          "slot_3": "Custom 3",
+          "slot_4": "Custom 4"
         }
       },
       "select_segment_devices": {
@@ -160,7 +179,13 @@
       "segment_groups_empty_group": "Every group needs at least one segment.",
       "segment_groups_too_large": "A group can have at most 16 segments.",
       "segment_groups_out_of_range": "One of the segment numbers is outside this device's segment count.",
-      "segment_groups_overlap": "Groups cannot share the same segment."
+      "segment_groups_overlap": "Groups cannot share the same segment.",
+      "duplicate_slot_label": "Two slots have the same label.",
+      "reserved_slot_label": "This label is a built-in mode, Manual or Off.",
+      "slot_label_too_long": "Use at most 40 characters."
+    },
+    "abort": {
+      "kettle_unavailable": "The kettle is no longer available. Open the options again."
     }
   },
   "selector": {
@@ -194,6 +219,9 @@
       },
       "govee_main_light_panel": {
         "name": "Main light"
+      },
+      "govee_ring_light": {
+        "name": "Ring light"
       }
     },
     "number": {
@@ -243,6 +271,20 @@
       },
       "govee_nightlight_scene_select": {
         "name": "Night light scene"
+      },
+      "kettle_brew_mode": {
+        "name": "Brew mode",
+        "state": {
+          "custom_1": "Custom 1",
+          "custom_2": "Custom 2",
+          "custom_3": "Custom 3",
+          "custom_4": "Custom 4",
+          "green_tea": "Green tea",
+          "oolong_tea": "Oolong tea",
+          "coffee": "Coffee",
+          "black_tea_boil": "Black tea / boil",
+          "manual": "Manual"
+        }
       }
     },
     "switch": {
@@ -365,6 +407,9 @@
       "sensor_reading_changed": {
         "name": "Last changed"
       },
+      "last_measurement": {
+        "name": "Last measurement"
+      },
       "all_data_last_updated": {
         "name": "Last update received"
       },
@@ -402,11 +447,39 @@
       },
       "diy_mode_preview": {
         "name": "{zone_name} DIY mode preview"
+      },
+      "kettle_heating_status": {
+        "name": "Heating status",
+        "state": {
+          "idle": "Idle",
+          "heating": "Heating",
+          "keeping_warm": "Keeping warm",
+          "reached_target": "Reached target",
+          "scheduled": "Scheduled"
+        }
+      },
+      "kettle_keep_warm_minutes": {
+        "name": "Keep warm duration"
+      },
+      "kettle_diy_slot": {
+        "name": "DIY slot",
+        "state": {
+          "custom_1": "Custom 1",
+          "custom_2": "Custom 2",
+          "custom_3": "Custom 3",
+          "custom_4": "Custom 4"
+        }
+      },
+      "kettle_keep_warm_remaining": {
+        "name": "Keep warm remaining"
       }
     },
     "binary_sensor": {
       "device_connectivity": {
         "name": "Connectivity"
+      },
+      "reported_online": {
+        "name": "Reported online"
       },
       "cloud_api_connectivity": {
         "name": "Cloud API"
@@ -446,6 +519,12 @@
       },
       "leak_lower_probe": {
         "name": "Lower probe"
+      },
+      "kettle_keep_warm": {
+        "name": "Keep warm"
+      },
+      "kettle_on_base": {
+        "name": "On base"
       }
     },
     "fan": {
@@ -504,6 +583,31 @@
               "press": "Press"
             }
           }
+        }
+      },
+      "kettle_button": {
+        "name": "Button",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "pressed": "Pressed"
+            }
+          }
+        }
+      }
+    },
+    "water_heater": {
+      "kettle": {
+        "state": {
+          "custom_1": "Custom 1",
+          "custom_2": "Custom 2",
+          "custom_3": "Custom 3",
+          "custom_4": "Custom 4",
+          "green_tea": "Green tea",
+          "oolong_tea": "Oolong tea",
+          "coffee": "Coffee",
+          "black_tea_boil": "Black tea / boil",
+          "manual": "Manual"
         }
       }
     }
@@ -596,11 +700,32 @@
           "name": "Ring zone"
         }
       }
+    },
+    "request_status": {
+      "name": "Request status",
+      "description": "Asks a device to report its status over AWS IoT (the real-time connection), once or repeatedly for a while. Needs the account login. Spends no cloud API requests.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The device to ask. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "Keep asking for this many seconds (up to 120). 0 asks once."
+        },
+        "interval": {
+          "name": "Interval",
+          "description": "Seconds between queries while repeating (at least 3)."
+        }
+      }
     }
   },
   "exceptions": {
     "command_failed": {
       "message": "Govee did not accept the command for {device}. Check the device's connectivity and the API rate limit, then try again."
+    },
+    "device_offline": {
+      "message": "Govee reports {device} as offline, so it did not receive the command. Check that the device has power and a Wi-Fi connection, then try again."
     },
     "device_not_found": {
       "message": "No loaded Govee device matches {device_id}."
@@ -628,6 +753,21 @@
     },
     "ptreal_unavailable": {
       "message": "Could not send the raw ptReal frame to {device}. This requires the account (email/password) login with AWS IoT connected, and the device must not be a group."
+    },
+    "segment_passthrough_failed": {
+      "message": "Segment 4 of {device} can only be set over the AWS IoT passthrough, which is not connected or did not accept the command. Check the Govee account login and MQTT connection, then try again. Other requested segments may already have changed."
+    },
+    "kettle_manual_no_target": {
+      "message": "{device} has no target temperature yet, so Manual cannot be selected."
+    },
+    "kettle_target_with_mode": {
+      "message": "Setting a target temperature puts {device} in Manual, so it cannot be combined with the {mode} mode."
+    },
+    "status_query_unavailable": {
+      "message": "Cannot ask {device} for its status: this needs the account (email/password) login with AWS IoT connected, and the device must have a topic, not be a group, a model left out of status queries or quarantined, and AWS IoT must not be refusing status queries for the account."
+    },
+    "status_query_throttled": {
+      "message": "{device} was asked for its status less than {seconds} seconds ago. Wait a moment and try again."
     }
   },
   "issues": {
@@ -658,6 +798,10 @@
           "entry_not_found": "The Govee entry no longer exists."
         }
       }
+    },
+    "mqtt_silent": {
+      "title": "Govee real-time updates are silent for {entry_title}",
+      "description": "The real-time (AWS IoT) session for {entry_title} is connected, but in {minutes} minutes not one message arrived, although the integration asked the devices for their status several times. Reconnecting once did not help. Everything keeps working over polling.\n\nThis usually means the saved account sign-in no longer gets updates. Go to the integration page and select **Reconfigure** to sign in again, which fetches fresh real-time credentials. This repair clears itself as soon as a real-time message arrives."
     },
     "mqtt_2fa_required": {
       "title": "Govee account requires verification",

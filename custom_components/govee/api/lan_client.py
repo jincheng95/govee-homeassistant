@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..const import LAN_READ_WINDOW, LAN_WRITE_CONFIRM_TIMEOUT
+from ..models.device import looks_like_group_id
 from ..models.state import RGBColor
 from .lan import (
     LAN_COMMAND_PORT,
@@ -207,8 +208,8 @@ def correlate_scan(
     ``device_ids`` by exact string first, then by a hex-normalized fallback
     (upper-case, all non-hex characters stripped) so differing MAC formatting
     between the scan reply and the developer API still resolves. Group ids
-    (``device_id.isdigit()``) are skipped — groups are virtual and never answer a
-    LAN scan. An IP is NEVER used to guess identity.
+    (:func:`looks_like_group_id`) are skipped — groups are virtual and never
+    answer a LAN scan. An IP is NEVER used to guess identity.
 
     Args:
         scan_records: Decoded LAN scan replies (each a mapping with ``device``,
@@ -223,7 +224,7 @@ def correlate_scan(
         used) so MAC-format drift is observable without hardware.
     """
     # Exclude groups: they are numeric, virtual, and never answer a LAN scan.
-    non_group_ids = [device_id for device_id in device_ids if not device_id.isdigit()]
+    non_group_ids = [device_id for device_id in device_ids if not looks_like_group_id(device_id)]
     exact_ids = set(non_group_ids)
     normalized_ids: dict[str, str] = {}
     for device_id in non_group_ids:

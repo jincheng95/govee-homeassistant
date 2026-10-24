@@ -118,7 +118,7 @@ class TestSecondProbeEntity:
         return SimpleNamespace(
             device_state=state,
             coordinator=coordinator,
-            _device=SimpleNamespace(sku=sku),
+            _device=SimpleNamespace(sku=sku, decodes_kettle_frames=False),
             _device_id="AA:BB:CC:DD:EE:FF:00:11",
         )
 
@@ -143,4 +143,8 @@ class TestSecondProbeEntity:
 
     def test_distinct_unique_id_from_probe_one(self):
         """Sharing a unique_id would make HA drop one of the two entities."""
-        assert GoveeSecondProbeTemperatureSensor._attr_translation_key != GoveeTemperatureSensor._attr_translation_key
+        # On instances: Home Assistant 2026.10 makes _attr_translation_key a
+        # property on the class, so comparing the classes compares one object.
+        probe_one = object.__new__(GoveeTemperatureSensor)
+        probe_two = object.__new__(GoveeSecondProbeTemperatureSensor)
+        assert probe_two._attr_translation_key != probe_one._attr_translation_key

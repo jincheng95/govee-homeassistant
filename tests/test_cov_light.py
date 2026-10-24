@@ -26,6 +26,7 @@ from custom_components.govee.light import (
     GoveeLightEntity,
     GoveeMainLightEntity,
     GoveeMainPanelLight,
+    GoveeRingLight,
     GoveeNightLightEntity,
 )
 from custom_components.govee.models import (
@@ -48,6 +49,7 @@ from custom_components.govee.models.device import (
     DEVICE_TYPE_LIGHT,
     DEVICE_TYPE_PLUG,
     DEVICE_TYPE_PURIFIER,
+    INSTANCE_BACKGROUND_LIGHT_TOGGLE,
     INSTANCE_BRIGHTNESS,
     INSTANCE_COLOR_RGB,
     INSTANCE_COLOR_TEMP,
@@ -678,7 +680,9 @@ class TestMainPanelProperties:
         entity = _panel()
         assert entity.unique_id == f"{H1232_ID}_main_panel"
         assert entity.translation_key == "govee_main_light_panel"
-        assert entity.supported_color_modes == {ColorMode.RGB}
+        assert entity.supported_color_modes == {ColorMode.COLOR_TEMP, ColorMode.RGB}
+        assert entity.color_mode == ColorMode.RGB
+        assert (entity.min_color_temp_kelvin, entity.max_color_temp_kelvin) == (2700, 6500)
         assert entity.rgb_color == (255, 255, 255)
         assert entity.brightness == 255
 
@@ -710,10 +714,24 @@ class TestMainPanelControl:
 
         assert _commands(entity.coordinator) == []
         entity.coordinator.async_set_main_panel.assert_awaited_once_with(
-            H1232_ID, rgb=RGBColor(r=10, g=20, b=30), brightness=50
+            H1232_ID, rgb=RGBColor(r=10, g=20, b=30), brightness=50, kelvin=None
         )
         assert entity.rgb_color == (10, 20, 30)
         assert entity.brightness == 128
+
+    async def test_colour_temperature_goes_over_ptreal_clamped(self):
+        entity = _panel(toggled=True)
+
+        await entity.async_turn_on(color_temp_kelvin=9000)
+
+        entity.coordinator.async_set_main_panel.assert_awaited_once_with(
+            H1232_ID, rgb=None, brightness=None, kelvin=6500
+        )
+        assert entity.color_mode == ColorMode.COLOR_TEMP
+        assert entity.color_temp_kelvin == 6500
+
+        await entity.async_turn_on(rgb_color=(1, 2, 3))
+        assert entity.color_mode == ColorMode.RGB
 
     async def test_ptreal_failure_raises(self):
         entity = _panel(toggled=True)
@@ -758,6 +776,16 @@ class TestMainPanelRestore:
         assert entity.brightness == 77
         assert entity.rgb_color == (4, 5, 6)
 
+    async def test_restores_colour_temperature_mode(self):
+        entity = _panel()
+
+        await self._add(
+            entity, State("light.panel", "on", {"color_temp_kelvin": 3000, "color_mode": ColorMode.COLOR_TEMP})
+        )
+
+        assert entity.color_temp_kelvin == 3000
+        assert entity.color_mode == ColorMode.COLOR_TEMP
+
     async def test_off_state_without_attributes_keeps_defaults(self):
         entity = _panel()
 
@@ -786,3 +814,65 @@ class TestMainPanelSetup:
 
         assert [type(e).__name__ for e in added] == ["GoveeLightEntity", "GoveeMainPanelLight"]
         assert added[1].unique_id == f"{H1232_ID}_main_panel"
+
+    async def test_h1252_gets_panel_and_ring_entities(self):
+        device = _device(H1252_ID, "H1252", DEVICE_TYPE_LIGHT, _POWER, _BRIGHTNESS, _RGB, name="Ceiling Light Pro")
+        coordinator = _coordinator(None, device)
+        entry = MagicMock()
+        entry.runtime_data = coordinator
+        entry.options = {"segment_mode_by_device": {H1252_ID: "disabled"}}
+        added: list = []
+
+        await light_mod.async_setup_entry(MagicMock(), entry, lambda ents: added.extend(ents))
+
+        assert [type(e).__name__ for e in added] == ["GoveeLightEntity", "GoveeMainPanelLight", "GoveeRingLight"]
+        assert added[2].unique_id == f"{H1252_ID}_ring"
+        assert added[2].translation_key == "govee_ring_light"
+
+
+H1252_ID = "AA:BB:CC:DD:EE:FF:12:52"
+
+
+def _ring(*, toggled: bool | None = True) -> GoveeRingLight:
+    device = _device(H1252_ID, "H1252", DEVICE_TYPE_LIGHT, _POWER, _BRIGHTNESS, _RGB, name="Ceiling Light Pro")
+    device_state = GoveeDeviceState(device_id=H1252_ID, power_state=True, brightness=100)
+    if toggled is not None:
+        device_state.toggles[INSTANCE_BACKGROUND_LIGHT_TOGGLE] = toggled
+    coordinator = _coordinator(device_state, device)
+    coordinator.async_set_ring = AsyncMock(return_value=True)
+    coordinator.async_set_main_panel = AsyncMock(return_value=True)
+    entity = GoveeRingLight(coordinator, device)
+    entity.async_write_ha_state = MagicMock()
+    return entity
+
+
+class TestRingLight:
+    def test_is_on_follows_background_light_toggle(self):
+        assert _ring(toggled=True).is_on is True
+        assert _ring(toggled=False).is_on is False
+
+    async def test_turn_on_from_off_sends_ring_toggle(self):
+        entity = _ring(toggled=False)
+
+        await entity.async_turn_on()
+
+        assert _commands(entity.coordinator) == [
+            ToggleCommand(toggle_instance=INSTANCE_BACKGROUND_LIGHT_TOGGLE, enabled=True)
+        ]
+
+    async def test_colour_temperature_and_brightness_go_to_the_ring(self):
+        entity = _ring(toggled=True)
+
+        await entity.async_turn_on(color_temp_kelvin=4000, brightness=255)
+
+        entity.coordinator.async_set_ring.assert_awaited_once_with(H1252_ID, rgb=None, brightness=100, kelvin=4000)
+        entity.coordinator.async_set_main_panel.assert_not_awaited()
+
+    async def test_turn_off_sends_ring_toggle_off(self):
+        entity = _ring(toggled=True)
+
+        await entity.async_turn_off()
+
+        assert _commands(entity.coordinator) == [
+            ToggleCommand(toggle_instance=INSTANCE_BACKGROUND_LIGHT_TOGGLE, enabled=False)
+        ]

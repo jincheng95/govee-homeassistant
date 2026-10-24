@@ -9,11 +9,15 @@ jobs:
     runs-on: "ubuntu-latest"
     name: Check style formatting
     steps:
-      - uses: "actions/checkout@v4"
-      - uses: "actions/setup-python@v5"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       # Pinned to the version in .pre-commit-config.yaml so both runs agree.
       - run: python3 -m pip install black==26.5.1
       # --check fails the job on unformatted files; --diff shows what to fix.
       - run: black --check --diff .
+      # Repo Claude settings must never ride in via a PR (release job ignores them).
+      - name: Forbid committed Claude settings
+        run: |
+          if git ls-files '.claude/settings*.json' | grep -q .; then echo "::error::.claude/settings*.json must not be committed (the release job ignores repo Claude settings, see SECURITY.md)"; exit 1; fi
