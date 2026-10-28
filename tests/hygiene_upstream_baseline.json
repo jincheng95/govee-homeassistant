@@ -1,6 +1,6 @@
 {
   "upstream_ref": "upstream/main",
-  "upstream_commit": "2c9f40ae768ee67115d638990be646b8131673b6",
+  "upstream_commit": "b9f20a841ce33013fce79177195dd9e1e05c124e",
   "identifiers": {
     "device_ids": [
       "00a90cf1815aa91f4d2c0c9dc5037d98bd0907746d923318b2bd03f4fb52895f",
@@ -175,6 +175,8 @@
       "cb6fcf07db9dd9452153f138de0d0a73eddff52f84f64552d7ab933963ecd96a",
       "d6ce862d308f28461aca19534183127ee3bc1ce6c9de8e85f6e8615494126ef0"
     ],
-    "secrets": []
+    "secrets": [
+      "6f6d72dcbdfad12b1dd7b65ab480e1c2983ec6482089eaf3f9c2b7ad8add9d24"
+    ]
   }
 }
