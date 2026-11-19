@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -83,6 +84,18 @@ class BleAdvertisementHandler:
 
     def __init__(self, coordinator: GoveeCoordinator) -> None:
         self._coord = coordinator
+        # Devices whose same-SKU advert from another address was already logged.
+        self._mac_mismatch_logged: set[str] = set()
+
+    def _supports_commands(self, sku: str) -> bool:
+        """Keep unverified H6104 commands behind an explicit options opt-in.
+
+        Advertising alone cannot prove that a light accepts our GATT frames.
+        Do not add H6104 to the hardware-verified model allowlist until tested.
+        """
+        if sku in BLE_COMMAND_SUPPORTED_MODELS:
+            return True
+        return sku == "H6104" and self._coord.h6104_ble_enabled
 
     def setup_subscriptions(self) -> list[Any]:
         """Register name-prefix and manufacturer-ID callbacks.
@@ -149,7 +162,7 @@ class BleAdvertisementHandler:
         for device_id, device in list(coord._devices.items()):
             if device_id in coord._ble_devices or device.is_group:
                 continue
-            if device.sku not in BLE_COMMAND_SUPPORTED_MODELS:
+            if not self._supports_commands(device.sku):
                 continue
             address = ble_address_from_device_id(device_id)
             if address is None:
@@ -175,10 +188,16 @@ class BleAdvertisementHandler:
         Matching strategy:
           1. Extract SKU from the advertising name.
           2. Find cloud devices with that SKU (ignoring group devices).
-          3. If exactly one match → unambiguous correlation.
-          4. If multiple same-SKU → MAC tiebreaker: the cloud ID's last six
-             octets are the BLE MAC (see ``ble_address_from_device_id``).
+          3. If exactly one match → correlate, but only when the advert's
+             address equals the MAC carried in the cloud ID (see
+             ``ble_address_from_device_id``). A neighbour's light of the same
+             model must never be enrolled in place of the owner's. The bare
+             SKU match is kept only for IDs that carry no MAC.
+          4. If multiple same-SKU → MAC tiebreaker on the same derived MAC.
           5. If no match or ambiguous → skip.
+
+        An enrolled device is never re-pointed at a different address by a
+        later advert.
         """
         coord = self._coord
 
@@ -187,12 +206,23 @@ class BleAdvertisementHandler:
             return
 
         candidates = [(did, dev) for did, dev in coord._devices.items() if dev.sku == ble_sku and not dev.is_group]
+        ble_mac = service_info.address.upper()
 
         matched_id: str | None = None
         if len(candidates) == 1:
-            matched_id = candidates[0][0]
+            only_id = candidates[0][0]
+            expected_mac = ble_address_from_device_id(only_id)
+            if expected_mac is None or expected_mac == ble_mac:
+                matched_id = only_id
+            elif only_id not in self._mac_mismatch_logged:
+                self._mac_mismatch_logged.add(only_id)
+                _LOGGER.debug(
+                    "Ignoring %s BLE advert from %s: this account's device expects %s",
+                    ble_sku,
+                    ble_mac,
+                    expected_mac,
+                )
         elif len(candidates) > 1:
-            ble_mac = service_info.address.upper()
             for did, _dev in candidates:
                 if ble_address_from_device_id(did) == ble_mac:
                     matched_id = did
@@ -202,8 +232,8 @@ class BleAdvertisementHandler:
             return
 
         # BLE advertisement visibility != BLE command capability (issue #59).
-        # Only enroll SKUs whose BLE command set is verified.
-        if ble_sku not in BLE_COMMAND_SUPPORTED_MODELS:
+        # Only enroll verified SKUs or an explicitly opted-in H6104.
+        if not self._supports_commands(ble_sku):
             if ble_sku not in coord._ble_ignored_skus_logged:
                 coord._ble_ignored_skus_logged.add(ble_sku)
                 _LOGGER.info(
@@ -242,14 +272,26 @@ class BleAdvertisementHandler:
             coord._ble_devices[matched_id] = GoveeBLEDevice(
                 service_info.device,
                 segmented=ble_sku in SEGMENTED_MODELS,
+                legacy_uart=ble_sku == "H6104",
             )
             changed = True
+            if ble_sku == "H6104":
+                coord._ble_devices[matched_id].register_report_callback(
+                    partial(coord._apply_h6104_ble_report, matched_id)
+                )
+                _LOGGER.debug(
+                    "H6104 BLE control and experimental status readback enabled for %s",
+                    coord._devices[matched_id].name,
+                )
             _LOGGER.info(
                 "BLE transport available for %s (SKU=%s)",
                 coord._devices[matched_id].name,
                 ble_sku,
             )
         else:
+            if coord._ble_devices[matched_id].address.upper() != ble_mac:
+                # Another radio of the same model; keep the enrolled one.
+                return
             coord._ble_devices[matched_id].set_ble_device_and_advertisement_data(
                 service_info.device,
                 service_info.advertisement,

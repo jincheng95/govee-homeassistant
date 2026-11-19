@@ -60,6 +60,9 @@ def _make_segment_entity(
     entity._segment_index = 3
     entity._is_on = True
     entity._brightness = 255
+    entity._brightness_supported = True
+    entity._cloud_brightness = False
+    entity._brightness_range = (0, 100)
     entity._rgb_color = (255, 255, 255)
     entity.async_write_ha_state = MagicMock()
 
@@ -232,6 +235,9 @@ class TestSegmentTurnOffLogic:
         segment._segment_index = 0
         segment._is_on = True
         segment._brightness = 255
+        segment._brightness_supported = True
+        segment._cloud_brightness = False
+        segment._brightness_range = (0, 100)
         segment._rgb_color = (255, 255, 255)
         segment.async_write_ha_state = MagicMock()
 

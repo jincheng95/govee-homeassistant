@@ -10,16 +10,19 @@ ever opened.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from dataclasses import replace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 
 import custom_components.govee.coordinator as coord_mod
+import custom_components.govee.ble_advertisement as ble_mod
+from custom_components.govee.api.ble import BLE_COMMAND_SUPPORTED_MODELS, SEGMENTED_MODELS, GoveeBLEDevice
 from custom_components.govee.api.auth import GoveeIotCredentials
 from custom_components.govee.api.ble_packet import (
     build_packet,
@@ -29,7 +32,7 @@ from custom_components.govee.api.ble_packet import (
 )
 from custom_components.govee.api.exceptions import GoveeApiError, GoveeAuthError
 from custom_components.govee.api.lan_client import LanDevStatus, LanDeviceInfo
-from custom_components.govee.const import CONF_ENABLE_MQTT_CONTROL
+from custom_components.govee.const import CONF_ENABLE_H6104_BLE, CONF_ENABLE_MQTT_CONTROL
 from custom_components.govee.ble_passthrough import BlePassthroughManager
 from custom_components.govee.coordinator import GoveeCoordinator
 from custom_components.govee.models import (
@@ -45,6 +48,7 @@ from custom_components.govee.models import (
     PowerCommand,
     RGBColor,
     SceneCommand,
+    SegmentBrightnessCommand,
     SegmentColorCommand,
     ToggleCommand,
 )
@@ -67,6 +71,13 @@ from custom_components.govee.models.device import (
 
 DEV = "AA:BB:CC:DD:EE:FF:00:11"
 IP = "10.0.0.5"
+
+
+@pytest.fixture(autouse=True)
+def _mock_h6104_status_queries(monkeypatch):
+    """These routing tests mock writes; readback has dedicated reply tests."""
+    monkeypatch.setattr(GoveeBLEDevice, "async_read_status", AsyncMock(return_value=[]))
+
 
 CREDS = GoveeIotCredentials(
     token="tok",
@@ -111,6 +122,15 @@ _MUSIC_STRUCT = GoveeCapability(
 # --------------------------------------------------------------------------- #
 
 
+_BACKGROUND_TASKS: list[asyncio.Task[None]] = []
+
+
+def _track(coro: Any) -> asyncio.Task[None]:
+    task = asyncio.get_running_loop().create_task(coro)
+    _BACKGROUND_TASKS.append(task)
+    return task
+
+
 def _coordinator(*, iot: GoveeIotCredentials | None = None, options: dict[str, Any] | None = None) -> GoveeCoordinator:
     """A real coordinator over a mocked hass/entry, with HA notifications stubbed."""
     entry = MagicMock()
@@ -118,6 +138,7 @@ def _coordinator(*, iot: GoveeIotCredentials | None = None, options: dict[str, A
     entry.title = "Govee"
     entry.options = options if options is not None else {}
     entry.data = {}
+    entry.async_create_background_task.side_effect = lambda hass, coro, name=None: _track(coro)
     coord = GoveeCoordinator(
         hass=MagicMock(),
         config_entry=entry,
@@ -231,6 +252,65 @@ class TestControlDeviceTiers:
         health = coord._transport.get(DEV, "cloud_api")
         assert health.last_send_ts is not None and health.last_success_ts is not None
         coord.async_set_updated_data.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_segment_brightness_goes_through_the_segment_queue(self, monkeypatch):
+        monkeypatch.setattr(coord_mod, "SEGMENT_COMMAND_PACING_SECONDS", 0)
+        coord = _coordinator()
+        _add(coord, _device(caps=(_POWER, _BRIGHTNESS, _RGB, _SEGMENTS)))
+        command = SegmentBrightnessCommand(segment_indices=(0, 2), brightness=40)
+
+        assert await coord.async_control_device(DEV, command) is True
+
+        assert DEV in coord._segment_locks
+        assert _sent(coord) == [command]
+        # Brightness does not touch the tracked segment colours (#131 replay).
+        assert DEV not in coord._segment_colors
+
+    @pytest.mark.asyncio
+    async def test_rejected_segment_colour_is_not_left_for_the_ring_replay(self, monkeypatch):
+        # A colour Govee rejected must not be replayed by a later whole-device
+        # write (#131): the tracking returns to what it was before the send.
+        monkeypatch.setattr(coord_mod, "SEGMENT_COMMAND_PACING_SECONDS", 0)
+        coord = _coordinator()
+        _add(coord, _device(caps=(_POWER, _RGB, _SEGMENTS)))
+        coord.record_segment_color(DEV, 0, (0, 255, 0))
+        coord._api_client.control_device = AsyncMock(return_value=False)
+        command = SegmentColorCommand(segment_indices=(0, 1), color=RGBColor(255, 0, 0))
+
+        assert await coord.async_control_device(DEV, command) is False
+
+        assert coord._segment_colors[DEV] == {0: (0, 255, 0)}
+
+    @pytest.mark.asyncio
+    async def test_failed_segment_send_keeps_a_newer_concurrent_write(self, monkeypatch):
+        monkeypatch.setattr(coord_mod, "SEGMENT_COMMAND_PACING_SECONDS", 0)
+        coord = _coordinator()
+        _add(coord, _device(caps=(_POWER, _RGB, _SEGMENTS)))
+
+        async def rejected_after_a_newer_write(*_args):
+            coord.record_segment_color(DEV, 0, (0, 0, 255))
+            return False
+
+        coord._api_client.control_device = AsyncMock(side_effect=rejected_after_a_newer_write)
+        command = SegmentColorCommand(segment_indices=(0,), color=RGBColor(255, 0, 0))
+
+        assert await coord.async_control_device(DEV, command) is False
+
+        assert coord._segment_colors[DEV] == {0: (0, 0, 255)}
+
+    @pytest.mark.asyncio
+    async def test_segment_api_exception_rolls_back_the_tracking(self, monkeypatch):
+        monkeypatch.setattr(coord_mod, "SEGMENT_COMMAND_PACING_SECONDS", 0)
+        coord = _coordinator()
+        _add(coord, _device(caps=(_POWER, _RGB, _SEGMENTS)))
+        coord._api_client.control_device = AsyncMock(side_effect=GoveeAuthError("key revoked"))
+        command = SegmentColorCommand(segment_indices=(2,), color=RGBColor(255, 0, 0))
+
+        with pytest.raises(ConfigEntryAuthFailed):
+            await coord.async_control_device(DEV, command)
+
+        assert coord._segment_colors.get(DEV, {}) == {}
 
     @pytest.mark.asyncio
     async def test_segment_rejection_records_a_failure(self, monkeypatch):
@@ -429,6 +509,150 @@ class TestLanTierEdges:
             )
             is False
         )
+
+
+class TestH6104BleTier:
+    """Route commands after a real H6104 enrollment; only the GATT write is mocked."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cloud_online", [False, True])
+    @pytest.mark.parametrize("reason", ["stale_advertisement", "connection failed"])
+    async def test_idle_reconnect_and_unsupported_cloud_toggle_guard(self, monkeypatch, cloud_online, reason):
+        coord = _coordinator(options={CONF_ENABLE_H6104_BLE: True})
+        state = _add(coord, _device(sku="H6104"))
+        state.online = cloud_online
+        ble = GoveeBLEDevice(MagicMock(), legacy_uart=True)
+        ble._idle_disconnected = True
+        coord._ble_devices[DEV] = ble
+        coord._transport.record_failure(DEV, "ble", reason)
+        monkeypatch.setattr(coord_mod, "HAS_BLUETOOTH", True)
+        write = AsyncMock()
+        monkeypatch.setattr(ble, "_write", write)
+        if reason == "stale_advertisement":
+            assert coord._ble_write_eligible(DEV) is True
+            assert coord.device_reachable(DEV) is True
+            assert await coord.async_send_dreamview(DEV, True) is True
+            write.assert_awaited_once()
+            assert state.dreamview_enabled is True
+        else:
+            assert coord._ble_write_eligible(DEV) is False
+            with pytest.raises(HomeAssistantError) as exc:
+                await coord.async_send_dreamview(DEV, True)
+            assert exc.value.translation_key == "h6104_bluetooth_required"
+            write.assert_not_awaited()
+        coord._api_client.control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unenrolled_tv_never_sends_unsupported_cloud_toggle(self):
+        coord = _coordinator(options={CONF_ENABLE_H6104_BLE: True})
+        _add(coord, _device(sku="H6104"))
+        with pytest.raises(HomeAssistantError) as exc:
+            await coord.async_send_dreamview(DEV, True)
+        assert exc.value.translation_key == "h6104_bluetooth_required"
+        coord._api_client.control_device.assert_not_awaited()
+
+    def test_reconnected_tv_remains_actionable_before_next_poll(self):
+        coord = _coordinator(options={CONF_ENABLE_H6104_BLE: True})
+        state = _add(coord, _device(sku="H6104"))
+        state.online = False
+        coord._ble_devices[DEV] = MagicMock(is_connected=True, idle_disconnected=False, supports_readback=True)
+        coord._transport.record_failure(DEV, "ble", "stale_advertisement")
+        assert coord.device_reachable(DEV) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("api_mode,effect", [(5, 0), (6, 1), (4, 2), (3, 3)])
+    async def test_music_cloud_ids_are_translated_to_legacy_ble_codes(self, monkeypatch, api_mode, effect):
+        coord = _coordinator()
+        state = _add(coord, _device(sku="H6104"))
+        state.color = RGBColor(10, 20, 30)
+        ble = GoveeBLEDevice(MagicMock(), legacy_uart=True)
+        write = AsyncMock()
+        monkeypatch.setattr(ble, "_write", write)
+        coord._ble_devices[DEV] = ble
+        assert await coord._try_ble_command(DEV, MusicModeCommand(music_mode=api_mode, sensitivity=80)) is True
+        frame = write.call_args.args[0]
+        assert frame[:5] == bytes([0x33, 5, 1, effect, 80])
+        assert frame[5:8] == (bytes([10, 20, 30]) if effect in (1, 2) else bytes(3))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", [1, 3])
+    async def test_music_on_and_off_use_ble_and_update_mode_switches(self, monkeypatch, mode):
+        coord = _coordinator(options={CONF_ENABLE_H6104_BLE: True})
+        state = _add(coord, _device(sku="H6104", caps=(_POWER, _RGB, _MUSIC_STRUCT)))
+        state.dreamview_enabled = True
+        state.last_color = RGBColor(10, 20, 30)
+        ble = GoveeBLEDevice(MagicMock(), legacy_uart=True)
+        write = AsyncMock()
+        monkeypatch.setattr(ble, "_write", write)
+        monkeypatch.setattr(coord_mod, "HAS_BLUETOOTH", True)
+        coord._ble_devices[DEV] = ble
+        coord._transport.record_success(DEV, "ble")
+        assert await coord.async_send_music_mode(DEV, True, sensitivity=70, music_mode=mode) is True
+        assert write.call_args.args[0][:5] == bytes.fromhex("3305010346")
+        assert state.music_mode_enabled is True
+        assert state.music_mode_name == "Rhythm"
+        assert state.music_sensitivity == 70
+        assert state.dreamview_enabled is False
+        assert await coord.async_send_music_mode(DEV, False) is True
+        assert write.call_args.args[0][:6] == bytes.fromhex("3305020a141e")
+        assert state.music_mode_enabled is False
+        coord._api_client.control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "command,head",
+        [
+            (PowerCommand(power_on=True), bytes.fromhex("330101")),
+            (PowerCommand(power_on=False), bytes.fromhex("330100")),
+            (BrightnessCommand(brightness=50), bytes.fromhex("33047f")),
+            (ColorCommand(color=RGBColor(r=255, g=0, b=64)), bytes.fromhex("330502ff0040")),
+            (ColorTempCommand(kelvin=3000), None),
+            (MusicModeCommand(music_mode=5, sensitivity=80), bytes.fromhex("3305010050")),
+            (MusicModeCommand(music_mode=5, sensitivity=80, auto_color=0, rgb=0xFF0000), None),
+            (ToggleCommand(toggle_instance=INSTANCE_DREAMVIEW, enabled=True), bytes.fromhex("330500000132")),
+            (ToggleCommand(toggle_instance=INSTANCE_DREAMVIEW, enabled=False), bytes.fromhex("330502ffffff")),
+        ],
+    )
+    @pytest.mark.parametrize("write_fails", [False, True])
+    async def test_enroll_and_control(self, monkeypatch, command, head, write_fails):
+        _BACKGROUND_TASKS.clear()
+        coord = _coordinator(options={CONF_ENABLE_H6104_BLE: True})
+        _add(coord, _device(sku="H6104"))
+        monkeypatch.setattr(ble_mod, "GoveeBLEDevice", GoveeBLEDevice, raising=False)
+        monkeypatch.setattr(ble_mod, "SEGMENTED_MODELS", SEGMENTED_MODELS, raising=False)
+        monkeypatch.setattr(ble_mod, "BLE_COMMAND_SUPPORTED_MODELS", BLE_COMMAND_SUPPORTED_MODELS, raising=False)
+        bt = MagicMock()
+        bt.async_scanner_count.return_value = 1
+        monkeypatch.setattr(ble_mod, "bt_component", bt, raising=False)
+        monkeypatch.setattr(coord_mod, "HAS_BLUETOOTH", True)
+        info = MagicMock()
+        info.name = "ihoment_H6104_ABCD"
+        info.address = "CC:DD:EE:FF:00:11"
+        ble_mod.BleAdvertisementHandler(coord).handle_advertisement(info)
+        write = AsyncMock(side_effect=TimeoutError("gatt") if write_fails else None)
+        monkeypatch.setattr(coord._ble_devices[DEV], "_write", write)
+
+        if isinstance(command, ToggleCommand):
+            if write_fails:
+                with pytest.raises(HomeAssistantError) as exc:
+                    await coord.async_send_dreamview(DEV, command.enabled)
+                assert exc.value.translation_key == "h6104_bluetooth_required"
+                coord._api_client.control_device.assert_not_awaited()
+                return
+            assert await coord.async_send_dreamview(DEV, command.enabled) is True
+        else:
+            assert await coord.async_control_device(DEV, command) is True
+        await asyncio.gather(*_BACKGROUND_TASKS)
+
+        if head is not None:
+            write.assert_awaited_once()
+            assert write.call_args.args[0].startswith(head)
+        else:
+            write.assert_not_awaited()
+        if head is None or write_fails:
+            coord._api_client.control_device.assert_awaited_once()
+        else:
+            coord._api_client.control_device.assert_not_awaited()
 
 
 class TestBleTier:
@@ -1160,6 +1384,114 @@ class TestRawPtreal:
 
         assert await coord.async_send_raw_ptreal(DEV, bytes([0x33])) is False
 
+    @pytest.mark.asyncio
+    async def test_frame_list_goes_out_in_one_message(self):
+        coord = _coordinator()
+        _add(coord, _device())
+        coord._ble_manager = _ble_manager()
+
+        upload = build_packet([0xA3, 0x00, 0x01, 0x02])
+        activate = [0x33, 0x05, 0x04, 0xDC, 0x83]
+
+        assert await coord.async_send_raw_ptreal(DEV, [upload, bytes(activate)]) is True
+
+        coord._ble_manager.async_send_ble_packet.assert_awaited_once_with(
+            DEV,
+            "H6072",
+            [encode_packet_base64(upload), encode_packet_base64(build_packet(activate))],
+        )
+
+    @pytest.mark.asyncio
+    async def test_frame_list_with_a_bad_frame_sends_nothing(self):
+        coord = _coordinator()
+        _add(coord, _device())
+        coord._ble_manager = _ble_manager()
+
+        assert await coord.async_send_raw_ptreal(DEV, [bytes([0x33]), bytes(21)]) is False
+        assert await coord.async_send_raw_ptreal(DEV, []) is False
+        coord._ble_manager.async_send_ble_packet.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_healthy_lan_carries_the_frames(self):
+        coord = _coordinator()
+        _add(coord, _device())
+        coord._ble_manager = _ble_manager(available=False)
+        client = MagicMock()
+        client.async_send_command = AsyncMock(return_value=True)
+        _lan_ready(coord, client)
+
+        frames = [build_packet([0xA3, 0x00, 0x01, 0x02]), bytes([0x33, 0x05, 0x04, 0xDC, 0x83])]
+        assert await coord.async_send_raw_ptreal(DEV, frames) is True
+
+        client.async_send_command.assert_awaited_once_with(
+            IP,
+            "ptReal",
+            {"command": [encode_packet_base64(frames[0]), encode_packet_base64(build_packet(list(frames[1])))]},
+        )
+        coord._ble_manager.async_send_ble_packet.assert_not_awaited()
+        lan = coord._transport.get(DEV, "lan")
+        assert lan is not None and lan.last_send_ts is not None
+
+    @pytest.mark.asyncio
+    async def test_lan_send_failure_falls_back_to_aws_iot(self):
+        coord = _coordinator()
+        _add(coord, _device())
+        coord._ble_manager = _ble_manager()
+        client = MagicMock()
+        client.async_send_command = AsyncMock(return_value=False)
+        _lan_ready(coord, client)
+
+        assert await coord.async_send_raw_ptreal(DEV, bytes([0x33, 0x05, 0x01])) is True
+
+        client.async_send_command.assert_awaited_once()
+        coord._ble_manager.async_send_ble_packet.assert_awaited_once_with(
+            DEV, "H6072", encode_packet_base64(build_packet([0x33, 0x05, 0x01]))
+        )
+        lan = coord._transport.get(DEV, "lan")
+        assert lan is not None and lan.last_failure_reason == "send_failed"
+
+    @pytest.mark.parametrize("gate", ["unhealthy", "suppressed", "not_correlated"])
+    @pytest.mark.asyncio
+    async def test_lan_gates_route_to_aws_iot(self, gate):
+        coord = _coordinator()
+        _add(coord, _device())
+        coord._ble_manager = _ble_manager()
+        client = MagicMock()
+        client.async_send_command = AsyncMock(return_value=True)
+        _lan_ready(coord, client)
+        if gate == "unhealthy":
+            coord._record_transport_failure(DEV, "lan", "stale")
+        elif gate == "suppressed":
+            coord._lan_writes_suppressed = MagicMock(return_value=True)
+        else:
+            coord._lan_devices.clear()
+
+        assert coord._lan_ptreal_ip(DEV, coord._devices[DEV]) is None
+        assert await coord.async_send_raw_ptreal(DEV, bytes([0x33])) is True
+        client.async_send_command.assert_not_awaited()
+        coord._ble_manager.async_send_ble_packet.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_write_only_lan_override_skips_the_health_gate(self):
+        coord = _coordinator()
+        _add(coord, _device())
+        coord._ble_manager = _ble_manager()
+        client = MagicMock()
+        client.async_send_command = AsyncMock(return_value=True)
+        _lan_ready(coord, client)
+        coord._record_transport_failure(DEV, "lan", "never_reads")
+        coord._lan_write_only.add(DEV)
+
+        assert coord._lan_ptreal_ip(DEV, coord._devices[DEV]) == IP
+
+    def test_group_never_rides_lan(self):
+        coord = _coordinator()
+        _add(coord, _device())
+        _lan_ready(coord, MagicMock())
+
+        assert coord._lan_ptreal_ip(DEV, replace(coord._devices[DEV], is_group=True)) is None
+        assert coord._lan_ptreal_ip("11825917", coord._devices[DEV]) is None
+
 
 # --------------------------------------------------------------------------- #
 # Optimistic state application
@@ -1599,6 +1931,67 @@ class TestPtrealSegmentTier:
 # --------------------------------------------------------------------------- #
 
 
+class TestRefreshScenes:
+    """The "Refresh scenes" button / govee.refresh_scenes path (ENT-5)."""
+
+    _DIY = GoveeCapability(type="devices.capabilities.dynamic_scene", instance="diyScene", parameters={})
+    _SCENES = GoveeCapability(type="devices.capabilities.dynamic_scene", instance="lightScene", parameters={})
+
+    def _ready(self, *caps: GoveeCapability) -> GoveeCoordinator:
+        coord = _coordinator()
+        _add(coord, _device(caps=(_POWER, *caps)))
+        coord.async_get_scenes = AsyncMock(return_value=[{"name": "Aurora", "value": {"id": 9}}])
+        coord.async_get_diy_scenes = AsyncMock(return_value=[{"name": "Glow", "value": 7}])
+        return coord
+
+    @pytest.mark.asyncio
+    async def test_refreshes_both_catalogs_and_tells_the_entities(self):
+        coord = self._ready(self._SCENES, self._DIY)
+
+        with patch.object(coord_mod, "async_dispatcher_send") as send:
+            await coord.async_refresh_scenes(DEV)
+
+        coord.async_get_scenes.assert_awaited_once_with(DEV, refresh=True)
+        coord.async_get_diy_scenes.assert_awaited_once_with(DEV, refresh=True)
+        send.assert_called_once_with(
+            coord.hass,
+            f"govee_scenes_refreshed_{DEV}",
+            [{"name": "Aurora", "value": {"id": 9}}],
+            [{"name": "Glow", "value": 7}],
+        )
+
+    @pytest.mark.asyncio
+    async def test_device_without_diy_scenes_skips_that_fetch(self):
+        coord = self._ready()
+
+        with patch.object(coord_mod, "async_dispatcher_send") as send:
+            await coord.async_refresh_scenes(DEV)
+
+        coord.async_get_diy_scenes.assert_not_awaited()
+        assert send.call_args[0][3] == []
+
+    @pytest.mark.asyncio
+    async def test_device_without_scenes_skips_that_fetch(self):
+        coord = self._ready(self._DIY)
+
+        with patch.object(coord_mod, "async_dispatcher_send") as send:
+            await coord.async_refresh_scenes(DEV)
+
+        coord.async_get_scenes.assert_not_awaited()
+        coord.async_get_diy_scenes.assert_awaited_once_with(DEV, refresh=True)
+        assert send.call_args[0][2] == []
+
+    @pytest.mark.asyncio
+    async def test_unknown_device_does_nothing(self):
+        coord = self._ready()
+
+        with patch.object(coord_mod, "async_dispatcher_send") as send:
+            await coord.async_refresh_scenes("nope")
+
+        coord.async_get_scenes.assert_not_awaited()
+        send.assert_not_called()
+
+
 class TestClearScene:
     def _ready(self, device: GoveeDevice | None = None) -> tuple[GoveeCoordinator, GoveeDeviceState]:
         coord = _coordinator()
@@ -1617,7 +2010,7 @@ class TestClearScene:
         coord = _coordinator()
         coord.async_control_device = AsyncMock(return_value=True)
 
-        await coord.async_clear_scene("nope")
+        assert await coord.async_clear_scene("nope") is True
 
         coord.async_control_device.assert_not_awaited()
 
@@ -1629,7 +2022,7 @@ class TestClearScene:
         state.active_scene_name = "stale"
         state.source = "api"
 
-        await coord.async_clear_scene(DEV)
+        assert await coord.async_clear_scene(DEV) is True
 
         coord.async_control_device.assert_not_awaited()
         assert state.active_scene_name is None
@@ -1640,7 +2033,7 @@ class TestClearScene:
         coord, state = self._ready()
         state.color = RGBColor(10, 20, 30)
 
-        await coord.async_clear_scene(DEV)
+        assert await coord.async_clear_scene(DEV) is True
 
         assert self._commands(coord) == [ColorCommand(color=RGBColor(10, 20, 30))]
         assert state.active_scene is None
@@ -1696,7 +2089,8 @@ class TestClearScene:
     async def test_device_without_colour_capabilities_sends_nothing(self):
         coord, state = self._ready(_device(caps=(_POWER, _BRIGHTNESS)))
 
-        await coord.async_clear_scene(DEV)
+        # Nothing could be sent, which is not a rejection.
+        assert await coord.async_clear_scene(DEV) is True
 
         coord.async_control_device.assert_not_awaited()
         assert state.active_scene == "7"
@@ -1706,7 +2100,7 @@ class TestClearScene:
         coord, state = self._ready()
         coord.async_control_device = AsyncMock(return_value=False)
 
-        await coord.async_clear_scene(DEV)
+        assert await coord.async_clear_scene(DEV) is False
 
         assert state.active_scene == "7"
         assert state.active_diy_scene == "9"

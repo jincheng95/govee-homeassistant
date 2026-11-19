@@ -970,6 +970,18 @@ class TestMasterDemotion:
         assert master.effect_list is None
         assert master._enable_scenes is False
 
+    def test_master_loses_the_diy_effects_too(self):
+        """DIY scenes joined the effect list upstream; they leave with it."""
+        coordinator = _coordinator()
+        master = as_master_light(GoveeLightEntity(coordinator, _device(), True, True), _entry(coordinator))
+        master._diy_effect_names = []
+        state = coordinator.get_state(DEVICE_ID)
+        state.active_diy_scene = "77"
+        master._diy_scene_id_to_effect = {"77": "DIY: Aurora"}
+
+        assert master._enable_diy_scenes is False
+        assert master.effect is None
+
     def test_master_reports_no_effect(self):
         """The attribute follows the list off the master (roadmap 1.4).
 

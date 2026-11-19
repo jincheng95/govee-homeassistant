@@ -99,6 +99,9 @@ def _segment_entity(coordinator: Any, *, sku: str = LAN_SKU, segment_count: int 
     entity._segment_index = 0
     entity._is_on = True
     entity._brightness = 255
+    entity._brightness_supported = True
+    entity._cloud_brightness = False
+    entity._brightness_range = (0, 100)
     entity._rgb_color = (255, 255, 255)
     entity.async_write_ha_state = MagicMock()
     return entity

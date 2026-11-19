@@ -11,7 +11,7 @@ import pytest
 from custom_components.govee.api import lan
 
 
-def _install_fake_endpoint(monkeypatch, responses, *, bind_error=None):
+def _install_fake_endpoint(monkeypatch, responses, *, bind_error=None, sender=None):
     """Patch socket + event loop so async_scan_lan_devices runs offline.
 
     Returns the MagicMock transport so tests can assert on sendto. ``responses``
@@ -34,7 +34,8 @@ def _install_fake_endpoint(monkeypatch, responses, *, bind_error=None):
 
     async def _sleep(_timeout):
         for resp in responses:
-            proto.datagram_received(json.dumps(resp).encode("utf-8"), ("192.168.1.50", 4002))
+            source = sender or resp["msg"]["data"].get("ip") or "192.168.1.50"
+            proto.datagram_received(json.dumps(resp).encode("utf-8"), (source, 4002))
 
     monkeypatch.setattr(lan.asyncio, "sleep", _sleep)
     return transport, sock
@@ -265,12 +266,11 @@ class TestScanReplyWithoutAnIp:
         record = self._record(self._h6076_reply(ip="192.0.2.206"), source="192.0.2.206")
         assert record["ip"] == "192.0.2.206"
 
-    def test_a_disagreeing_pair_prefers_the_reported_field(self):
-        # Documented choice: the device is the authority on its own address.
-        # The two only disagree behind NAT / a relay, where the reported field
-        # is the routable one and the source address is the middlebox.
+    def test_a_disagreeing_pair_trusts_the_source_address(self):
+        # The source address wins; the body value is kept for diagnostics.
         record = self._record(self._h6076_reply(ip="10.9.9.9"), source="192.0.2.206")
-        assert record["ip"] == "10.9.9.9"
+        assert record["ip"] == "192.0.2.206"
+        assert record["reported_ip"] == "10.9.9.9"
 
     def test_the_device_correlates_at_the_source_address(self):
         # The end of the chain: a reply with no ip must still produce a
@@ -374,6 +374,53 @@ def test_rawprobe_captures_undecodable_as_unparsed():
 
     captured = proto.replies["10.0.0.5"][0]
     assert "_unparsed" in captured
+
+
+@pytest.mark.asyncio
+async def test_scan_endpoint_failure_releases_the_socket(monkeypatch):
+    _transport, sock = _install_fake_endpoint(monkeypatch, [])
+
+    async def _boom(_factory, sock=None):
+        raise OSError("cannot attach")
+
+    lan.asyncio.get_running_loop().create_datagram_endpoint = _boom
+
+    with pytest.raises(OSError):
+        await lan.async_scan_lan_devices(interface_ips=["10.0.0.2"], timeout=0.01)
+
+    sock.close.assert_called_once()
+    dropped = [c for c in sock.setsockopt.call_args_list if c.args[1] == lan.socket.IP_DROP_MEMBERSHIP]
+    assert dropped
+
+
+@pytest.mark.asyncio
+async def test_probe_endpoint_failure_releases_the_socket(monkeypatch):
+    _install_fake_probe_endpoint(monkeypatch, [])
+    sock = MagicMock()
+    monkeypatch.setattr(lan.socket, "socket", lambda *a, **k: sock)
+
+    async def _boom(_factory, sock=None):
+        raise OSError("cannot attach")
+
+    lan.asyncio.get_running_loop().create_datagram_endpoint = _boom
+
+    with pytest.raises(OSError):
+        await lan.async_probe_lan_raw(["10.0.0.5"], timeout=0.01)
+
+    sock.close.assert_called_once()
+
+
+def test_deeply_nested_datagrams_never_raise():
+    # json.loads raises RecursionError (not ValueError) on deep nesting; a LAN
+    # host must not be able to make the socket callback raise.
+    hostile = b"[" * 100000
+    scan = lan._ScanProtocol()
+    scan.datagram_received(hostile, ("10.0.0.5", 4002))
+    assert scan.responses == {}
+
+    probe = lan._RawProbeProtocol()
+    probe.datagram_received(hostile, ("10.0.0.5", 4002))
+    assert "_unparsed" in probe.replies["10.0.0.5"][0]
 
 
 def test_rawprobe_caps_replies_per_ip():

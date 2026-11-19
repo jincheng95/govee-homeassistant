@@ -102,6 +102,7 @@ def as_master_light(entity: LightEntity, entry: ConfigEntry) -> LightEntity:
     # upstream's separate scene `select` entity.
     entity._attr_supported_features = LightEntityFeature(0)
     entity._enable_scenes = False
+    entity._enable_diy_scenes = False
     # Deliberately NOT renamed: `name = None` is what keeps the master above
     # the device page's divider (see the module docstring).
     _LOGGER.debug("Govee zone lights: %s demoted to a master (power + brightness)", getattr(device, "name", "?"))

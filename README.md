@@ -92,7 +92,7 @@ Govee in Home Assistant has several integrations, and it's easy to pick one that
 | **Multi‑zone lamps** | H60B0, H60B2, H60B3 | Per‑zone on/off switches (Light Zone 1/2/3); the H60B3 uplighter adds Nebula/Side/Bottom light switches, the H60B0 Ripple/Side/Bottom |
 | **Smart plugs / sockets** | H5080, H5083, H5089, H5160, H5161 | Switch; outlet extenders (H5089) expose each outlet separately **plus** an RGB Night Light; three‑outlet strips (H5160/H5161) get per‑outlet switches with account login that follow the strip’s own outlet reports |
 | **Ceiling fan + light combos** | H1310, H1370 | Separate Main Light & Background Light **and** a Fan entity (on/off, speed, reverse, oscillation). Govee's cloud never reports the fan's state, so with account login the integration reads it from the fan's own push frames — the entity follows the remote and the app; without it, state is what HA last sent |
-| **Tower / pedestal fans** | H7101, H7102, H7105, H7106, H7107 | Fan (speed, oscillation, preset modes); on the Tower Fan 2 (H7105/H7107) oscillation needs account login — see below |
+| **Tower / pedestal fans** | H7101, H7102, H7106, H7107 | Fan (speed, oscillation, preset modes); on the Tower Fan 2 (H7107) oscillation needs account login — see below |
 | **Air purifiers** | H7120–H7127 | Fan / work modes, filter‑life sensor, air‑quality (AQI) sensor, optional nightlight |
 | **Humidifiers & dehumidifiers** | H7140, H7141, H7150, H7151, H7152 | Modes + target‑humidity setpoint; dehumidifiers add a **Water Tank Full** sensor (real‑time event push, API key only) with a paired **Clear Water Alert** button. The pump model (H7152) also gets a **Pump State** problem sensor, a **Mode** (Pump / Water Tank) sensor and live **Temperature** / **Humidity**, decoded from the AWS IoT push — account login required, and they update when the device pushes |
 | **Aroma diffusers** | H7161 | Power switch + light/mist scene selector |
@@ -144,7 +144,7 @@ In the same setup flow you can enter your **Govee account email and password**. 
 - **Leak‑sensor support** (H5054 / H5055 / H5058 / H5059 via an H5040/H5043/H5044 hub)
 - **Battery levels** on battery‑powered sensors — the developer API doesn't expose them at all
 - **Thermometers the developer API doesn't return** (e.g. H5301, H5310), and readings for those it returns empty (e.g. H5179, H5112)
-- **Oscillation on the Tower Fan 2 (H7105/H7107)** — the developer API's oscillation toggle is accepted but does nothing on these fans; with account login the integration sends the raw frame the fan actually obeys
+- **Oscillation on the Tower Fan 2 (H7107)** — the developer API's oscillation toggle is accepted but does nothing on this fan; with account login the integration sends the raw frame the fan actually obeys
 - **MQTT‑based control**, if you turn it on in options
 
 #### Two‑factor (email code)
@@ -188,7 +188,42 @@ Every device also gets two diagnostic timestamps — **Last Update Received** an
 
 This matters beyond speed: Govee's cloud sometimes answers a color command with `success` and never delivers it to the device (the light doesn't change, and nothing reports an error). Sending color locally sidesteps the cloud entirely — see [Colors don't apply](#troubleshooting).
 
-**Command routing.** Each command takes the fastest transport that can carry it *and confirm it*, falling back automatically: **BLE → LAN → MQTT → cloud REST**. LAN carries power, brightness, color and color temperature — exactly the four values a device reports back, which is what makes verify‑by‑read possible. MQTT (opt‑in) carries power, brightness and color. Direct BLE control is deliberately limited to the models confirmed to honour it: the H6199, and the H1270 over the encrypted BLE transport its firmware requires. Other models (the H6072 among them) advertise Bluetooth but silently drop writes, so they are never sent BLE commands. Everything else — scenes, segments, music mode, work modes, toggles — always goes over the cloud API, with one exception: Tower Fan 2 (H7105/H7107) oscillation goes over the AWS IoT session when account login is configured, because the cloud toggle is a no-op on those fans.
+**Command routing.** Each command takes the fastest eligible transport, falling back automatically on errors: **BLE → LAN → MQTT → cloud REST**. LAN carries power, brightness, color and color temperature — exactly the four values a device reports back, which is what makes verify‑by‑read possible. MQTT (opt‑in) carries power, brightness and color. Automatic direct BLE control is deliberately limited to the models confirmed to honour it: the H6199, and the H1270 over the encrypted BLE transport its firmware requires. An experimental H6104 opt-in is also available, as described below. Other models (the H6072 among them) advertise Bluetooth but silently drop writes, so they are never sent BLE commands. Everything else — scenes, segments, music mode, work modes, toggles — always goes over the cloud API, with one exception: Tower Fan 2 (H7107) oscillation goes over the AWS IoT session when account login is configured, because the cloud toggle is a no-op on that fan.
+
+### Experimental H6104 TV backlight Bluetooth control
+
+Enable **Govee → Configure → Enable experimental H6104 Bluetooth control** to
+use a connectable Home Assistant Bluetooth adapter or ESPHome Bluetooth proxy.
+Keep the light in your Govee account for discovery and configuration. The
+experimental option is disabled by default and applies only to H6104.
+
+The H6104 uses its legacy FFE0/FFE1 Bluetooth UART for power, brightness, RGB,
+TV/DreamView and music controls. The **DreamView** switch selects camera/TV mode;
+selecting a solid color or music clears TV mode. **TV sensitivity** changes the
+camera response, and **TV screen area** selects part or all of the screen. These
+settings restore locally and are sent immediately if TV mode is active. They do
+not change camera frame rate or calibration. Music effects and sensitivity use
+the legacy device protocol and may vary with firmware.
+
+The Bluetooth connection is released after five idle seconds to free the proxy
+slot, and reconnects for commands and periodic status reads. Seeing Bluetooth
+**Disconnected** while idle is expected. The Govee app or another controller can
+compete for that connection. If the device ignores commands, disable the option
+and collect integration diagnostics before trying a different protocol.
+
+Status readback uses checksummed AA01 power, AA04 brightness, AA05 mode/color and
+EE20 brightness reports. Received values correct optimistic state and temporarily
+win over stale cloud readings; newer commands and MQTT changes take precedence.
+Missing, unknown or malformed replies do not fabricate state. Kelvin values are
+not inferred from tint replies. Firmware support varies; an all-zero OFF reply
+is trusted only after an ON reply establishes power-read support, because OFF is
+identical to an echoed query. Test ON before OFF after a reload.
+
+Idle monitoring follows the integration polling cadence rather than maintaining
+a continuous connection. Diagnostics include bounded accepted/candidate status
+frames and per-query results. Command delivery alone does not establish physical
+success. H6104 TV mode requires Bluetooth when this option is enabled; it cannot
+fall back to the unsupported cloud DreamView toggle.
 
 Commands always use optimistic updates, so the UI reflects your action immediately and reconciles with the next confirmed state. MQTT publishes are acknowledged by the broker (QoS 1); an unacknowledged send falls through to REST rather than being reported as success.
 
@@ -343,7 +378,7 @@ Some gateway‑bridged sensors are listed by Govee with no reading attached. Whe
 
 All kettles get a power switch and a water‑temperature sensor whose unit follows what the kettle declares, even when the API‑unit option is set.
 
-**H7175.** A **water heater** entity carries the target temperature, the brew modes and power; the existing power switch keeps its entity and is named "Power". Mode states are fixed keys, shown translated: `off`, `custom_1`–`custom_4`, `green_tea`, `oolong_tea`, `coffee`, `black_tea_boil` and `manual` (a target set directly, with no preset). Choosing a mode while the kettle is off switches it on in that mode; setting the target selects `manual`. A **Brew mode** selector offers the same keys and only selects the mode, as the Govee app does; its options are what automations and dashboard buttons should use (`select.select_option` with `option: green_tea`, ...).
+**H7175 and H7170.** A **water heater** entity carries the target temperature, the brew modes and power; the existing power switch keeps its entity and is named "Power". Mode states are fixed keys, shown translated: `off`, `custom_1`–`custom_4`, `green_tea`, `oolong_tea`, `coffee`, `black_tea_boil` and `manual` (a target set directly, with no preset). Choosing a mode while the kettle is off switches it on in that mode; setting the target selects `manual`. A **Brew mode** selector offers the same keys and only selects the mode, as the Govee app does; its options are what automations and dashboard buttons should use (`select.select_option` with `option: green_tea`, ...).
 
 A kettle starts heating on command but does not report until asked, so after a command the integration re‑reads it twice (after 5 and 20 seconds) and polls a heating kettle every cycle, both only while the daily request budget allows. A value the kettle pushed, or a command just set, is kept over a cloud read that still shows the old value for up to 45 seconds.
 
@@ -351,7 +386,7 @@ With account login the kettle's real‑time push updates the water temperature a
 
 **Custom slot labels.** Govee's API only calls the custom slots Custom 1–4. In ⚙️ Configure → *Kettle slot labels* you can give them labels (for example the names from the Govee app). Labels are display text only: the mode stays `custom_1`–`custom_4`, so automations keep working when a label changes, and the labels appear in the water heater's and Brew mode selector's `labels` attribute for dashboards.
 
-The H717A and H7170 keep their power switch and temperature sensor; their frames are unknown.
+The H717A keeps its power switch and temperature sensor; its frames are unknown. The H7170 shares the H7175 frames (verified on hardware); its button events are not confirmed.
 
 ---
 
@@ -486,7 +521,7 @@ Removing the entry deletes its devices and entities. Your Govee API key and acco
 | A **"Govee real‑time updates unavailable"** repair appears | Real‑time push is down; polling keeps everything working. The integration retries with backoff and clears the repair itself when the connection returns (this can take a few minutes after an outage). If it stays, open the repair and select **Submit**: that retries the account sign‑in and reconnects. If a second repair then asks you to reconfigure, the account needs a verification code or a new password. Two Home Assistant installs on one Govee account will kick each other off AWS IoT in turn — use separate accounts. |
 | A **"Govee API rate limited for …"** repair appears | Polling is spending the API budget faster than Govee allows. Open the repair and select **Submit** to double the polling interval (up to 300 s), or raise it yourself under **Configure**. |
 | No real‑time updates / no leak sensors | Add your Govee account email/password (enables MQTT). API key alone is polling‑only. |
-| Tower Fan 2 (H7105/H7107) oscillation does nothing | Govee's cloud accepts the toggle and the motor ignores it. Add account login — the integration then sends the frame the fan actually obeys. |
+| Tower Fan 2 (H7107) oscillation does nothing | Govee's cloud accepts the toggle and the motor ignores it. Add account login — the integration then sends the frame the fan actually obeys. |
 | Ceiling fan entity (H1310/H1370) doesn't follow the remote or the app | The cloud never reports fan state. Add account login so the fan's own push frames are read; without it the entity only knows what HA last sent. |
 | Per‑outlet switches on an H5160/H5161 are unavailable | They exist only over the AWS IoT session — add account login. They are optimistic: they show what HA last set, not what the buttons or the app did. |
 | LAN sensor shows Disconnected / device not found locally | Enable **LAN Control** for the device in the Govee Home app. Across subnets/VLANs, add the device's IP or subnet under **LAN device addresses** in ⚙️ Configure. |

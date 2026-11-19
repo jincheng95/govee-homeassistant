@@ -14,6 +14,7 @@ from typing import Any, Final
 from homeassistant.helpers.device_registry import DeviceInfo
 
 from ..const import (
+    BFF_SEGMENT_COUNT_SKUS,
     MAIN_LIGHT_TOGGLE_SKUS,
     MOVIE_MODE_DREAMVIEW_SKUS,
     MULTI_OUTLET_MQTT_SKUS,
@@ -40,11 +41,18 @@ PRESENCE_SENSOR_SKUS = frozenset({"H5127"})
 # therefore SKU-locked, issue #114 follow-up.
 PUMP_DEHUMIDIFIER_SKUS = frozenset({"H7152"})
 
+# Dehumidifiers whose ``aa 10 81`` status frames carry a packed temperature and
+# humidity reading (no capability exists for either). The H7152 first, then the
+# tank-only H7151 with the same layout (#283). Separate from
+# PUMP_DEHUMIDIFIER_SKUS because the H7151 has no pump or hose. H7150: no data.
+FRAME_CLIMATE_DEHUMIDIFIER_SKUS = frozenset({"H7152", "H7151"})
+
 # Kettles whose AWS IoT push (``sta`` temperatures and BLE-format status
-# frames, see kettle/frames.py) is decoded. Verified on the H7175 only: other
-# kettles (H717A, H7170) share the capability family but their frames are
-# unknown, so their pushes are handled as before.
-KETTLE_FRAME_SKUS = frozenset({"H7175"})
+# frames, see kettle/frames.py) is decoded. Verified on the H7175 and the
+# H7170 (#278, same frames, correct 104-212 F on hardware): the H717A shares
+# the capability family but its frames are unknown, so its pushes are handled
+# as before.
+KETTLE_FRAME_SKUS = frozenset({"H7170", "H7175"})
 
 # Smart outlets that report live voltage/current/power/energy over AWS IoT
 # push frames rather than any capability (issue #200). Detection is
@@ -156,6 +164,9 @@ INSTANCE_BRIGHTNESS = "brightness"
 INSTANCE_COLOR_RGB = "colorRgb"
 INSTANCE_COLOR_TEMP = "colorTemperatureK"
 INSTANCE_SEGMENT_COLOR = "segmentedColorRgb"
+# Per-segment brightness: a STRUCT of ``segment`` (index array) and
+# ``brightness`` (0-100 in every captured device), sibling of segmentedColorRgb.
+INSTANCE_SEGMENT_BRIGHTNESS = "segmentedBrightness"
 INSTANCE_SCENE = "lightScene"
 INSTANCE_DIY = "diyScene"
 # Saved device "snapshots" — a third dynamic_scene instance whose named options
@@ -415,6 +426,9 @@ class GoveeDevice:
     # Gateway/hub this device is bridged through (e.g. H5310 via H5044). Empty
     # for directly-connected devices. Used for DeviceInfo via_device (#86).
     hub_device_id: str = ""
+    # Segment count reported by the account's BFF deviceSettings.segmentCount.
+    # Only honoured for SKUs in BFF_SEGMENT_COUNT_SKUS (#301).
+    bff_segment_count: int | None = None
 
     @property
     def supports_power(self) -> bool:
@@ -440,6 +454,22 @@ class GoveeDevice:
     def supports_segments(self) -> bool:
         """Check if device supports segment control (RGBIC)."""
         return any(cap.is_segment_color for cap in self.capabilities)
+
+    @property
+    def supports_segment_brightness(self) -> bool:
+        """Check if device advertises per-segment brightness (segmentedBrightness)."""
+        return self.get_capability(CAPABILITY_SEGMENT_COLOR, INSTANCE_SEGMENT_BRIGHTNESS) is not None
+
+    @property
+    def segment_brightness_range(self) -> tuple[int, int]:
+        """Get the segmentedBrightness ``brightness`` field range. Default (0, 100)."""
+        cap = self.get_capability(CAPABILITY_SEGMENT_COLOR, INSTANCE_SEGMENT_BRIGHTNESS)
+        if cap is not None:
+            for cap_field in cap.parameters.get("fields", []):
+                if cap_field.get("fieldName") == "brightness":
+                    range_data = cap_field.get("range") or {}
+                    return (int(range_data.get("min", 0)), int(range_data.get("max", 100)))
+        return (0, 100)
 
     @property
     def light_toggle_instances(self) -> list[str]:
@@ -723,7 +753,7 @@ class GoveeDevice:
         capability exists for that one at all, see
         GoveeDeviceState.update_temperature_from_frames. The capability path
         is read-only — surfaced as an HA sensor either way."""
-        if self.sku.upper() in PUMP_DEHUMIDIFIER_SKUS:
+        if self.sku.upper() in FRAME_CLIMATE_DEHUMIDIFIER_SKUS:
             return True
         return any(
             cap.type == CAPABILITY_PROPERTY and cap.instance == INSTANCE_SENSOR_TEMPERATURE
@@ -737,7 +767,7 @@ class GoveeDevice:
         reverse-engineered live humidity reading alongside temperature — no
         capability exists for that one at all, see
         GoveeDeviceState.update_temperature_from_frames."""
-        if self.sku.upper() in PUMP_DEHUMIDIFIER_SKUS:
+        if self.sku.upper() in FRAME_CLIMATE_DEHUMIDIFIER_SKUS:
             return True
         return any(
             cap.type == CAPABILITY_PROPERTY and cap.instance == INSTANCE_SENSOR_HUMIDITY for cap in self.capabilities
@@ -1351,12 +1381,15 @@ class GoveeDevice:
 
         Priority order:
 
-        1. ``SKU_SEGMENT_OVERRIDES`` — authoritative for known SKUs (e.g. H7075
+        1. ``bff_segment_count`` — for SKUs in ``BFF_SEGMENT_COUNT_SKUS`` (e.g.
+           H3A53, whose count follows the installed length), the count the
+           account reports; ignored when unset or not positive.
+        2. ``SKU_SEGMENT_OVERRIDES`` — authoritative for known SKUs (e.g. H7075
            has 3 physical sections even though the API reports 15).
-        2. ``fields[].size.max`` — defensive clamp on the API-reported count,
+        3. ``fields[].size.max`` — defensive clamp on the API-reported count,
            since ``size.max`` is the protocol-level array ceiling that matches
            physical sections on devices where ``elementRange.max`` over-reports.
-        3. The parser's raw ``elementRange.max + 1`` (or ``segmentCount``).
+        4. The parser's raw ``elementRange.max + 1`` (or ``segmentCount``).
 
         The size.max clamp is applied to the API count *before* the override
         lookup so unknown SKUs that follow the same over-reporting pattern as
@@ -1373,8 +1406,10 @@ class GoveeDevice:
         Returns None for devices without a segment capability. Otherwise:
         ``api_count`` (the parser's raw count), ``size_max`` (the
         ``fields[].size.max`` ceiling, or None), ``override`` (the
-        ``SKU_SEGMENT_OVERRIDES`` entry, or None), ``effective`` (what
-        :attr:`segment_count` returns), and ``source``: ``override``,
+        ``SKU_SEGMENT_OVERRIDES`` entry, or None), ``bff`` (the
+        ``bff_segment_count`` value, or None), ``effective`` (what
+        :attr:`segment_count` returns), and ``source``: ``bff`` (an
+        allow-listed SKU with a positive BFF count), ``override``,
         ``size_max`` (the clamp lowered the API count) or ``api``.
         """
         for cap in self.capabilities:
@@ -1399,7 +1434,10 @@ class GoveeDevice:
                 # override as the authoritative source for known ones.
                 clamped = min(api_count, size_max) if size_max is not None else api_count
                 override = SKU_SEGMENT_OVERRIDES.get(self.sku.upper())
-                if override is not None:
+                bff = self.bff_segment_count
+                if self.sku.upper() in BFF_SEGMENT_COUNT_SKUS and bff is not None and bff > 0:
+                    effective, source = bff, "bff"
+                elif override is not None:
                     effective, source = override, "override"
                 elif clamped < api_count:
                     effective, source = clamped, "size_max"
@@ -1409,6 +1447,7 @@ class GoveeDevice:
                     "api_count": api_count,
                     "size_max": size_max,
                     "override": override,
+                    "bff": bff,
                     "effective": effective,
                     "source": source,
                 }

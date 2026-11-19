@@ -78,7 +78,10 @@
               "sleep": "mdi:sleep",
               "auto": "mdi:fan-auto",
               "custom": "mdi:format-list-bulleted-type",
-              "turbo": "mdi:car-turbocharger"
+              "turbo": "mdi:car-turbocharger",
+              "low": "mdi:fan-speed-1",
+              "medium": "mdi:fan-speed-2",
+              "high": "mdi:fan-speed-3"
             }
           }
         }
@@ -101,6 +104,9 @@
     "number": {
       "govee_music_sensitivity": {
         "default": "mdi:microphone"
+      },
+      "govee_tv_sensitivity": {
+        "default": "mdi:camera-metering-center"
       }
     },
     "select": {
@@ -133,6 +139,9 @@
       },
       "kettle_brew_mode": {
         "default": "mdi:kettle-steam"
+      },
+      "govee_tv_area": {
+        "default": "mdi:monitor-screenshot"
       }
     },
     "sensor": {

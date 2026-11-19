@@ -10,12 +10,15 @@ fallbacks, and every entity-creation branch of ``async_setup_entry``.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from custom_components.govee import select as select_mod
+from custom_components.govee.entity import GoveeEntity
+from custom_components.govee.scene_cache import scenes_refreshed_signal
 from custom_components.govee.models import (
     GoveeCapability,
     GoveeDevice,
@@ -120,7 +123,7 @@ def _coordinator(device: GoveeDevice, state: GoveeDeviceState | None) -> MagicMo
     coordinator.last_update_success = True
     coordinator.get_state = MagicMock(return_value=state)
     coordinator.async_control_device = AsyncMock(return_value=True)
-    coordinator.async_clear_scene = AsyncMock()
+    coordinator.async_clear_scene = AsyncMock(return_value=True)
     coordinator.async_send_diy_scene = AsyncMock(return_value=True)
     coordinator.async_get_scenes = AsyncMock(return_value=[])
     coordinator.async_get_diy_scenes = AsyncMock(return_value=[])
@@ -188,6 +191,38 @@ class TestSceneSelect:
         scene_select.coordinator.get_state.return_value.active_scene = "999"
         assert scene_select.current_option == SCENE_NONE
 
+    def test_current_option_none_while_light_off_and_back_when_on(self, scene_select):
+        """The scene is hidden while off but kept, so it shows again once on."""
+        state = scene_select.coordinator.get_state.return_value
+        state.active_scene = "2"
+
+        state.power_state = False
+        assert scene_select.current_option == SCENE_NONE
+        assert state.active_scene == "2"
+
+        state.power_state = True
+        assert scene_select.current_option == "Sunset"
+
+    def test_current_option_shown_when_power_unknown(self, scene_select):
+        """Only a known-off light hides the scene."""
+        state = scene_select.coordinator.get_state.return_value
+        state.active_scene = "2"
+        state.power_state = None
+        assert scene_select.current_option == "Sunset"
+
+    async def test_select_none_while_off_sends_nothing(self, scene_select):
+        """Clearing would switch the light on, so "None" while off is a no-op."""
+        state = scene_select.coordinator.get_state.return_value
+        state.active_scene = "2"
+        state.power_state = False
+
+        await scene_select.async_select_option(SCENE_NONE)
+
+        scene_select.coordinator.async_clear_scene.assert_not_awaited()
+        scene_select.coordinator.async_control_device.assert_not_awaited()
+        assert state.active_scene == "2"
+        scene_select.async_write_ha_state.assert_called_once()
+
     async def test_select_scene_sends_scene_command(self, scene_select, mock_light_device):
         await scene_select.async_select_option("Party")
 
@@ -211,6 +246,31 @@ class TestSceneSelect:
         scene_select.coordinator.async_clear_scene.assert_awaited_once_with(mock_light_device.device_id)
         scene_select.coordinator.async_control_device.assert_not_awaited()
         scene_select.async_write_ha_state.assert_called_once()
+
+    async def test_refresh_rebuilds_the_options(self, scene_select, mock_light_device):
+        scene_select.hass = MagicMock()
+        scene_select.hass.data = {}
+        with patch.object(GoveeEntity, "async_added_to_hass", new_callable=AsyncMock):
+            await scene_select.async_added_to_hass()
+        signal = scenes_refreshed_signal(mock_light_device.device_id)
+
+        # A failed fetch (empty catalog) keeps what is there.
+        async_dispatcher_send(scene_select.hass, signal, [], [])
+        assert scene_select.options == [SCENE_NONE, "Sunrise", "Sunset", "Party", "Movie"]
+        scene_select.async_write_ha_state.assert_not_called()
+
+        async_dispatcher_send(scene_select.hass, signal, [{"name": "Aurora", "value": {"id": 9}}], [])
+        assert scene_select.options == [SCENE_NONE, "Aurora"]
+        assert scene_select._scene_map["Aurora"] == (9, "Aurora")
+        scene_select.async_write_ha_state.assert_called_once()
+
+    async def test_select_none_rejected_raises(self, scene_select):
+        scene_select.coordinator.async_clear_scene = AsyncMock(return_value=False)
+
+        with pytest.raises(HomeAssistantError):
+            await scene_select.async_select_option(SCENE_NONE)
+
+        scene_select.async_write_ha_state.assert_not_called()
 
     async def test_unknown_option_raises_validation_error(self, scene_select):
         with pytest.raises(ServiceValidationError):
@@ -282,6 +342,30 @@ class TestDIYSceneSelect:
         diy_select.coordinator.get_state.return_value = None
         assert diy_select.current_option == SCENE_NONE
 
+    def test_current_option_none_while_light_off_and_back_when_on(self, diy_select):
+        """The DIY scene is hidden while off but kept, so it shows again once on."""
+        state = diy_select.coordinator.get_state.return_value
+        state.active_diy_scene = "101"
+
+        state.power_state = False
+        assert diy_select.current_option == SCENE_NONE
+        assert state.active_diy_scene == "101"
+
+        state.power_state = True
+        assert diy_select.current_option == "Lava"
+
+    async def test_select_none_while_off_sends_nothing(self, diy_select):
+        """Clearing would switch the light on, so "None" while off is a no-op."""
+        state = diy_select.coordinator.get_state.return_value
+        state.active_diy_scene = "101"
+        state.power_state = False
+
+        await diy_select.async_select_option(SCENE_NONE)
+
+        diy_select.coordinator.async_clear_scene.assert_not_awaited()
+        assert state.active_diy_scene == "101"
+        diy_select.async_write_ha_state.assert_called_once()
+
     async def test_select_sends_through_diy_path(self, diy_select, diy_device):
         await diy_select.async_select_option("Waves")
 
@@ -298,6 +382,30 @@ class TestDIYSceneSelect:
         diy_select.coordinator.async_clear_scene.assert_awaited_once_with(diy_device.device_id)
         diy_select.coordinator.async_send_diy_scene.assert_not_awaited()
         diy_select.async_write_ha_state.assert_called_once()
+
+    async def test_refresh_rebuilds_the_options_from_the_diy_catalog(self, diy_select, diy_device):
+        diy_select.hass = MagicMock()
+        diy_select.hass.data = {}
+        with patch.object(GoveeEntity, "async_added_to_hass", new_callable=AsyncMock):
+            await diy_select.async_added_to_hass()
+
+        async_dispatcher_send(
+            diy_select.hass,
+            scenes_refreshed_signal(diy_device.device_id),
+            [{"name": "Not DIY", "value": {"id": 1}}],
+            [{"name": "Glow", "value": 7}],
+        )
+
+        assert diy_select.options == [SCENE_NONE, "Glow"]
+        assert diy_select._scene_map["Glow"] == (7, "Glow")
+
+    async def test_select_none_rejected_raises(self, diy_select):
+        diy_select.coordinator.async_clear_scene = AsyncMock(return_value=False)
+
+        with pytest.raises(HomeAssistantError):
+            await diy_select.async_select_option(SCENE_NONE)
+
+        diy_select.async_write_ha_state.assert_not_called()
 
     async def test_unknown_option_raises_validation_error(self, diy_select):
         with pytest.raises(ServiceValidationError):
@@ -347,13 +455,13 @@ class TestHdmiSourceSelect:
         mock_hdmi_device_state.hdmi_source = 3
         assert hdmi_select.current_option == "HDMI 3"
 
-    def test_current_option_falls_back_to_first(self, hdmi_select, mock_hdmi_device_state):
+    def test_current_option_unknown_when_source_unknown(self, hdmi_select, mock_hdmi_device_state):
         mock_hdmi_device_state.hdmi_source = None
-        assert hdmi_select.current_option == "HDMI 1"
+        assert hdmi_select.current_option is None
         mock_hdmi_device_state.hdmi_source = 9  # not one of the offered ports
-        assert hdmi_select.current_option == "HDMI 1"
+        assert hdmi_select.current_option is None
         hdmi_select.coordinator.get_state.return_value = None
-        assert hdmi_select.current_option == "HDMI 1"
+        assert hdmi_select.current_option is None
 
     def test_current_option_none_without_options(self, mock_hdmi_device):
         entity = GoveeHdmiSourceSelectEntity(_coordinator(mock_hdmi_device, None), mock_hdmi_device, [])
@@ -486,13 +594,13 @@ class TestNightlightSceneSelectFallbacks:
         entity.async_write_ha_state = MagicMock()
         return entity
 
-    def test_current_option_falls_back_to_first(self, nightlight_device):
+    def test_current_option_unknown_when_scene_unknown(self, nightlight_device):
         entity = self._entity(nightlight_device, _state(nightlight_device, nightlight_scene=None))
-        assert entity.current_option == "Forest"
+        assert entity.current_option is None
         entity.coordinator.get_state.return_value.nightlight_scene = 42
-        assert entity.current_option == "Forest"
+        assert entity.current_option is None
         entity.coordinator.get_state.return_value = None
-        assert entity.current_option == "Forest"
+        assert entity.current_option is None
 
     def test_current_option_none_without_options(self, nightlight_device):
         entity = GoveeNightlightSceneSelectEntity(_coordinator(nightlight_device, None), nightlight_device, [])

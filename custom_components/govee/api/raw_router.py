@@ -315,6 +315,29 @@ def segments_lan_writable(entity: Any) -> bool:
     return supported and _segment_count_matches(entity, profile, zone_key)
 
 
+def segment_brightness_raw(entity: Any) -> bool:
+    """Whether a raw segment paint from ``entity`` can carry a brightness frame.
+
+    True when a raw option is on and the profile declares the brightness form
+    that matches its segment form (``ZONE_BRIGHTNESS`` on ``segment_zone``,
+    else ``SEGMENT_BRIGHTNESS``).
+    """
+    profile = profile_for(_sku(entity))
+    if profile is None:
+        return False
+    coordinator = _coordinator(entity)
+    if getattr(coordinator, "config_entry", None) is None or not raw_write_enabled(coordinator):
+        return False
+    zone_key = profile.segment_zone_key
+    capability = Capability.ZONE_BRIGHTNESS
+    if zone_key is None:
+        zone_key, capability = SEGMENT_ZONE_KEY, Capability.SEGMENT_BRIGHTNESS
+    try:
+        return profile.supports(capability, zone=zone_key)
+    except GoveeProtocolError:
+        return False
+
+
 def _masked_segment_frames(
     entity: Any,
     profile: DeviceProfile,

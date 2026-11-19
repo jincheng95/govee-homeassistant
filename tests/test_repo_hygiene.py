@@ -421,7 +421,7 @@ class TestNoRealIdentifiers:
 
     def test_no_research_dump_directory(self):
         """Raw research dumps are provenance, and provenance is not public."""
-        prefixes = ("docs/_research/", "docs/plans/", "docs/research/", "docs/sweeps/")
+        prefixes = ("docs/_research/", "docs/plans/", "docs/research/", "docs/sweeps/", "docs/upstream/")
         dumps = [p for p in _tracked_files() if p.startswith(prefixes)]
 
         assert dumps == []

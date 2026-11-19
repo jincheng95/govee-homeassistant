@@ -15,6 +15,7 @@ from custom_components.govee.models import (
     ColorCommand,
     ColorTempCommand,
     SceneCommand,
+    SegmentBrightnessCommand,
     SegmentColorCommand,
     OscillationCommand,
     WorkModeCommand,
@@ -245,6 +246,35 @@ class TestGoveeDevice:
     def test_supports_segments(self, mock_rgbic_device):
         """Test segment support detection."""
         assert mock_rgbic_device.supports_segments is True
+
+    def test_segment_brightness_capability(self, mock_rgbic_device, mock_light_device):
+        """segmentedBrightness is detected and its brightness field range read."""
+        assert mock_rgbic_device.supports_segment_brightness is True
+        assert mock_rgbic_device.segment_brightness_range == (0, 100)
+        assert mock_light_device.supports_segment_brightness is False
+        assert mock_light_device.segment_brightness_range == (0, 100)
+
+    def test_segment_brightness_range_from_fields(self):
+        """A non-default brightness field range is honoured; a missing field falls back."""
+        from custom_components.govee.models import GoveeCapability, GoveeDevice
+
+        def device(fields):
+            cap = GoveeCapability(
+                type="devices.capabilities.segment_color_setting",
+                instance="segmentedBrightness",
+                parameters={"fields": fields},
+            )
+            return GoveeDevice(
+                device_id="AA:BB:CC:DD:EE:FF:00:99",
+                sku="H6000",
+                name="Strip",
+                device_type="light",
+                capabilities=(cap,),
+            )
+
+        custom = device([{"fieldName": "brightness", "range": {"min": 1, "max": 50}}])
+        assert custom.segment_brightness_range == (1, 50)
+        assert device([{"fieldName": "segment"}]).segment_brightness_range == (0, 100)
 
     def test_is_plug(self, mock_plug_device):
         """Test plug detection."""
@@ -939,6 +969,28 @@ class TestGoveeDeviceState:
         assert state.active_scene is None
         assert state.active_scene_name is None
 
+    def test_music_mode_cleared_by_mqtt_power_off(self):
+        """An MQTT power-off push ends music mode (#286)."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.apply_optimistic_music_mode(True)
+        state.update_from_mqtt({"onOff": 0})
+        assert state.music_mode_enabled is False
+        assert state.music_mode_value is None
+
+    def test_active_diy_scene_cleared_on_color_change(self):
+        """Setting an RGB color ends a running DIY scene too."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.apply_optimistic_diy_scene("456")
+        state.apply_optimistic_color(RGBColor(255, 0, 0))
+        assert state.active_diy_scene is None
+
+    def test_active_diy_scene_cleared_on_color_temp_change(self):
+        """Setting a color temperature ends a running DIY scene too."""
+        state = GoveeDeviceState.create_empty("test_id")
+        state.apply_optimistic_diy_scene("456")
+        state.apply_optimistic_color_temp(4000)
+        assert state.active_diy_scene is None
+
     def test_scene_clears_color_and_color_temp(self):
         """Test activating scene clears stale color and color temp.
 
@@ -1325,6 +1377,13 @@ class TestCommands:
         assert value["segment"] == [0, 1, 2]
         assert value["rgb"] == 16711680  # Red
 
+    def test_segment_brightness_command(self):
+        """segmentedBrightness mirrors the capability's segment/brightness STRUCT fields."""
+        cmd = SegmentBrightnessCommand(segment_indices=(0, 3), brightness=40)
+        assert cmd.capability_type == "devices.capabilities.segment_color_setting"
+        assert cmd.instance == "segmentedBrightness"
+        assert cmd.get_value() == {"segment": [0, 3], "brightness": 40}
+
     def test_command_immutable(self):
         """Test that commands are immutable."""
         cmd = PowerCommand(power_on=True)
@@ -1614,6 +1673,7 @@ class TestSegmentCountResolution:
             "api_count": 15,
             "size_max": 15,
             "override": 4,
+            "bff": None,
             "effective": 4,
             "source": "override",
         }
@@ -1636,6 +1696,7 @@ class TestSegmentCountResolution:
             "api_count": 15,
             "size_max": None,
             "override": None,
+            "bff": None,
             "effective": 15,
             "source": "api",
         }

@@ -78,6 +78,7 @@ LAN_MULTICAST_TTL = 2  # let a scan / reply cross at most one router hop
 # is bounded by the window regardless of device_count — 11 devices cost the same
 # ~2s as one. The cap bounds send-loop work against a large CIDR sweep, not wait.
 LAN_PROBE_WINDOW = 2.5  # seconds to collect all probe replies
+LAN_SCAN_MAX_RESPONSES = 256  # stop recording new scan responders past this many
 LAN_PROBE_MAX_DEVICES = 64  # hard cap on how many IPs we probe in one batch
 LAN_PROBE_MAX_REPLIES_PER_IP = 32  # guard against a chatty device flooding output
 
@@ -338,11 +339,24 @@ async def async_get_lan_broadcast_addresses(hass: HomeAssistant) -> list[str]:
     return broadcasts
 
 
+def _gateway_addresses(interface_ips: list[str]) -> set[str]:
+    """First host (.1 of the /24) of each known local interface subnet."""
+    gateways: set[str] = set()
+    for iface in interface_ips:
+        try:
+            gateways.add(str(next(IPv4Network(f"{iface}/24", strict=False).hosts())))
+        except (AddressValueError, ValueError):
+            continue
+    return gateways
+
+
 class _ScanProtocol(asyncio.DatagramProtocol):
     """Collects well-formed Govee ``scan`` responses; ignores everything else."""
 
-    def __init__(self) -> None:
+    def __init__(self, interface_ips: list[str] | None = None) -> None:
         self.responses: dict[str, dict[str, Any]] = {}
+        self._gateways = _gateway_addresses(interface_ips or [])
+        self._logged_gateway: set[str] = set()
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         try:
@@ -353,20 +367,31 @@ class _ScanProtocol(asyncio.DatagramProtocol):
             body = msg.get("data", {})
             if not isinstance(body, dict):
                 return
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, RecursionError):
             return
 
         record = {field: body[field] for field in _RESPONSE_FIELDS if field in body}
         if not record:
             return
-        # Some firmwares omit "ip" in the body; fall back to the datagram source
-        # address so every responder has a usable address (redacted downstream).
-        # Fork: an empty "ip" counts as absent. A non-empty field wins over the
-        # source address, which differs only behind NAT/relay.
-        if not record.get("ip"):
-            record["ip"] = addr[0]
+        # Trust the datagram source over the body's "ip" (a spoofed or stale body
+        # must not redirect later control traffic); keep the body value for
+        # diagnostics. Exception: Docker's UDP proxy rewrites the source to the
+        # bridge gateway, so a gateway source keeps the body address.
+        source = addr[0]
+        reported = record.get("ip")
+        if reported and reported != source and source in self._gateways:
+            device_key = str(record.get("device") or reported)
+            if device_key not in self._logged_gateway:
+                self._logged_gateway.add(device_key)
+                _LOGGER.debug("LAN scan: reply source is a local gateway (docker proxy?), keeping reported address")
+        else:
+            record["ip"] = source
+            if reported is not None and reported != source:
+                record["reported_ip"] = reported
         # Dedupe by the device id (MAC) when present, else by IP.
         key = str(record.get("device") or record["ip"])
+        if key not in self.responses and len(self.responses) >= LAN_SCAN_MAX_RESPONSES:
+            return
         self.responses[key] = record
 
     def error_received(self, exc: Exception) -> None:  # pragma: no cover - rare
@@ -399,7 +424,7 @@ class _RawProbeProtocol(asyncio.DatagramProtocol):
             return  # chatty device / broadcast storm — keep the dump bounded
         try:
             payload: Any = json.loads(data.decode("utf-8", errors="replace"))
-        except ValueError:
+        except (ValueError, RecursionError):
             payload = {"_unparsed": data.decode("utf-8", errors="replace")[:512]}
         bucket.append(payload)
 
@@ -535,7 +560,12 @@ async def async_scan_lan_devices(
     sock = _build_socket()  # raises OSError if port 4002 cannot be bound
     joined = _join_group(sock, interfaces)
 
-    transport, protocol = await loop.create_datagram_endpoint(_ScanProtocol, sock=sock)
+    try:
+        transport, protocol = await loop.create_datagram_endpoint(lambda: _ScanProtocol(interfaces), sock=sock)
+    except BaseException:
+        _drop_group(sock, joined)
+        sock.close()
+        raise
     assert isinstance(protocol, _ScanProtocol)
     try:
         _send_scan(sock, transport, interfaces)
@@ -596,7 +626,12 @@ async def async_probe_lan_raw(
     sock = _build_socket()  # raises OSError if port 4002 cannot be bound
     joined = _join_group(sock, interfaces)  # catch multicast replies too
 
-    transport, protocol = await loop.create_datagram_endpoint(_RawProbeProtocol, sock=sock)
+    try:
+        transport, protocol = await loop.create_datagram_endpoint(_RawProbeProtocol, sock=sock)
+    except BaseException:
+        _drop_group(sock, joined)
+        sock.close()
+        raise
     assert isinstance(protocol, _RawProbeProtocol)
     try:
         for ip in targets:

@@ -17,6 +17,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
+    CONF_ENABLE_H6104_BLE,
+    DEFAULT_ENABLE_H6104_BLE,
     HEATER_AUTO_STOP_STRUCT_SKUS,
     SUFFIX_BACKGROUND_LIGHT,
     SUFFIX_BOTTOM_LIGHT,
@@ -156,7 +158,10 @@ async def async_setup_entry(
         # Create switch for DreamView (Movie Mode) toggle
         # Skip for group devices - groups don't support DreamView
         # DreamView uses BLE passthrough via MQTT (REST API returns 400 for some devices)
-        if device.supports_dreamview and not device.is_group:
+        h6104_tv_mode = (
+            device.sku == "H6104" and entry.options.get(CONF_ENABLE_H6104_BLE, DEFAULT_ENABLE_H6104_BLE) is True
+        )
+        if (device.supports_dreamview or h6104_tv_mode) and not device.is_group:
             entities.append(GoveeDreamViewSwitchEntity(coordinator, device))
             _LOGGER.debug(
                 "Created DreamView switch entity for %s (REST-first with BLE fallback)",
@@ -760,8 +765,9 @@ class GoveeMusicModeSwitchEntity(GoveeEntity, SwitchEntity):
     def is_on(self) -> bool:
         """Return True if music mode is on."""
         state = self.device_state
-        if state and state.music_mode_enabled is not None:
-            return state.music_mode_enabled
+        if state:
+            # The state is authoritative; None means music mode is not running (#286)
+            self._is_on = bool(state.music_mode_enabled)
         return self._is_on
 
     async def async_turn_on(self, **kwargs: Any) -> None:

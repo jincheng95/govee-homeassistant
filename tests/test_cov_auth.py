@@ -458,14 +458,16 @@ class TestSessionOwnership:
 
 class TestGetIotKey:
     async def test_failure_is_logged_without_leaking_secrets(self, caplog):
-        body = {"status": 401, "message": "token expired", "token": "SECRET-TOKEN-XYZ"}
-        client = GoveeAuthClient(session=_session(get=[_response(401, body)]))
+        # 403, not 401: an HTTP 401 is raised as GoveeAuthError before the body
+        # is read, so the re-login runs (tests/test_auth_robustness.py).
+        body = {"status": 403, "message": "token expired", "token": "SECRET-TOKEN-XYZ"}
+        client = GoveeAuthClient(session=_session(get=[_response(403, body)]))
 
         with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
             with pytest.raises(GoveeApiError) as exc_info:
                 await client.get_iot_key("tok")
 
-        assert exc_info.value.code == 401
+        assert exc_info.value.code == 403
         assert "token expired" in str(exc_info.value)
         logged = " ".join(r.getMessage() for r in caplog.records)
         assert "[REDACTED]" in logged
@@ -1065,6 +1067,30 @@ class TestDiagnosticsViews:
         assert "AA:11" not in dump
         assert "Kitchen Sink" not in dump
         assert "GW" not in dump
+
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [
+            ({"segmentCount": 6}, 6),
+            ({"segmentCount": "12"}, 12),
+            ({}, None),
+            ({"segmentCount": 0}, None),
+            ({"segmentCount": -3}, None),
+            ({"segmentCount": "many"}, None),
+            ({"segmentCount": True}, None),
+            (json.dumps({"segmentCount": 8}), 8),
+        ],
+    )
+    def test_bff_segment_counts_keeps_positive_counts_only(self, settings, expected):
+        client = GoveeAuthClient(session=_session())
+        client._last_bff_raw_devices = [
+            "garbage",
+            {"sku": "H3A53", "deviceExt": {"deviceSettings": settings}},
+            {"sku": "H3A53", "device": "", "deviceExt": {"deviceSettings": {"segmentCount": 4}}},
+        ]
+        client._last_bff_raw_devices[1]["device"] = "AA:01"
+
+        assert client.bff_segment_counts() == ({} if expected is None else {"AA:01": expected})
 
     def test_census_and_values_skip_entries_that_are_not_objects(self):
         # A malformed entry cannot reach the retained list through the fetch (it

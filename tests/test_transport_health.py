@@ -21,6 +21,8 @@ from custom_components.govee.transport_health import TransportHealthTracker
 def _bare_coordinator() -> GoveeCoordinator:
     """Construct a coordinator without running DataUpdateCoordinator.__init__."""
     coord = object.__new__(GoveeCoordinator)
+    coord._ble_connect_backoff_until = {}
+    coord._ble_connect_failures = {}
     coord._devices = {}
     coord._states = {}
     coord._ble_devices = {}
@@ -41,6 +43,38 @@ def _bare_coordinator() -> GoveeCoordinator:
     coord._command_generation = {}
     coord._deferred_power_off = set()
     return coord
+
+
+class TestLiveGattStaleness:
+    @pytest.mark.parametrize("connected", [False, True])
+    @pytest.mark.parametrize("readback", [False, True])
+    def test_idle_advertisement_does_not_expire_a_live_connection(self, connected, readback):
+        coord = _bare_coordinator()
+        coord._devices = {"dev1": MagicMock()}
+        coord._ble_devices = {"dev1": MagicMock(is_connected=connected, supports_readback=readback)}
+        coord._transport.ensure("dev1")
+        old = datetime.now(timezone.utc) - timedelta(minutes=10)
+        health = coord._transport.get("dev1", "ble")
+        health.mark_success(old)
+        coord._refresh_ble_staleness()
+        assert health.is_available is (connected and readback)
+        assert coord._ble_write_eligible("dev1") is (connected and readback)
+        # A connection is not a new advertisement or confirmed read.
+        assert health.last_success_ts == old
+
+    def test_a_live_connection_does_not_erase_a_real_write_failure(self):
+        tracker = TransportHealthTracker()
+        tracker.record_failure("dev1", "ble", "gatt write failed")
+        tracker.refresh_ble_staleness(["dev1"], {"dev1"}, {"dev1"})
+        assert tracker.get("dev1", "ble").is_available is False
+        assert tracker.get("dev1", "ble").last_failure_reason == "gatt write failed"
+
+    def test_connected_device_recovers_from_stale_advertisement(self):
+        tracker = TransportHealthTracker()
+        tracker.record_failure("dev1", "ble", "stale_advertisement")
+        tracker.refresh_ble_staleness(["dev1"], {"dev1"}, {"dev1"})
+        assert tracker.get("dev1", "ble").is_available is True
+        assert tracker.get("dev1", "ble").last_failure_reason is None
 
 
 class TestTransportHealth:

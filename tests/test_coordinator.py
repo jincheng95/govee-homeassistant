@@ -502,6 +502,7 @@ class TestOptimisticUpdates:
 
         coord = object.__new__(GoveeCoordinator)
         coord._states = {sample_state.device_id: sample_state}
+        coord._devices = {}
 
         coord._apply_optimistic_update(
             sample_state.device_id,
@@ -524,6 +525,7 @@ class TestOptimisticUpdates:
 
         coord = object.__new__(GoveeCoordinator)
         coord._states = {sample_state.device_id: sample_state}
+        coord._devices = {}
 
         coord._apply_optimistic_update(
             sample_state.device_id,
@@ -1343,7 +1345,7 @@ class TestBleAdvertisementHandling:
         coord._ble_ignored_skus_logged = set()
         coord._ble_handler = BleAdvertisementHandler(coord)
 
-        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_754B", "CC:DD:EE:FF:00:11")
         coord._handle_ble_advertisement(info)
 
         assert "AA:BB:CC:DD:EE:FF:00:11" not in coord._ble_devices
@@ -1352,7 +1354,7 @@ class TestBleAdvertisementHandling:
     def test_single_sku_match_creates_ble_device(self, sample_device):
         """BLE advertisement matching a single cloud device by SKU creates a GoveeBLEDevice."""
         coord = self._make_coordinator_with_devices({"AA:BB:CC:DD:EE:FF:00:11": sample_device})
-        info = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_754B", "CC:DD:EE:FF:00:11")
 
         coord._handle_ble_advertisement(info)
 
@@ -1455,8 +1457,8 @@ class TestBleAdvertisementHandling:
     def test_repeated_advertisement_refreshes_existing(self, sample_device):
         """Second advertisement for same device refreshes the BLEDevice reference."""
         coord = self._make_coordinator_with_devices({"AA:BB:CC:DD:EE:FF:00:11": sample_device})
-        info1 = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
-        info2 = self._make_service_info("Govee_H6072_754B", "AA:BB:CC:DD:EE:FF")
+        info1 = self._make_service_info("Govee_H6072_754B", "CC:DD:EE:FF:00:11")
+        info2 = self._make_service_info("Govee_H6072_754B", "CC:DD:EE:FF:00:11")
 
         coord._handle_ble_advertisement(info1)
         coord._handle_ble_advertisement(info2)
@@ -1478,7 +1480,7 @@ class TestBleAdvertisementHandling:
 
         coord = self._make_coordinator_with_devices({"AA:BB:CC:DD:EE:FF:00:11": sample_device})
         coord.hass = MagicMock()
-        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_754B", "CC:DD:EE:FF:00:11")
 
         coord._handle_ble_advertisement(info)
 
@@ -1498,7 +1500,7 @@ class TestBleAdvertisementHandling:
 
         coord = self._make_coordinator_with_devices({"AA:BB:CC:DD:EE:FF:00:11": sample_device})
         coord.hass = MagicMock()
-        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_754B", "CC:DD:EE:FF:00:11")
 
         coord._handle_ble_advertisement(info)
 
@@ -1523,7 +1525,7 @@ class TestBleAdvertisementHandling:
         offline_state.online = False
         coord._states["AA:BB:CC:DD:EE:FF:00:11"] = offline_state
 
-        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_754B", "CC:DD:EE:FF:00:11")
         coord._handle_ble_advertisement(info)
 
         assert coord._states["AA:BB:CC:DD:EE:FF:00:11"].online is True
@@ -1546,7 +1548,7 @@ class TestBleAdvertisementHandling:
         coord._states["AA:BB:CC:DD:EE:FF:00:11"] = offline_state
         original_id = id(offline_state)
 
-        info = self._make_service_info("Govee_H6072_EEFF", "AA:BB:CC:DD:EE:FF")
+        info = self._make_service_info("Govee_H6072_754B", "CC:DD:EE:FF:00:11")
         coord._handle_ble_advertisement(info)
 
         new_state = coord._states["AA:BB:CC:DD:EE:FF:00:11"]
@@ -1567,6 +1569,8 @@ class TestTryBleCommand:
         from custom_components.govee.coordinator import GoveeCoordinator
 
         coord = object.__new__(GoveeCoordinator)
+        coord._ble_connect_backoff_until = {}
+        coord._ble_connect_failures = {}
         coord._ble_devices = {}
         coord._transport = TransportHealthTracker()
         coord._devices = {}
@@ -1725,7 +1729,7 @@ class TestClearSceneOnHdmiSyncBox:
         state.hdmi_source = 2
         coord._states[device.device_id] = state
 
-        await coord.async_clear_scene(device.device_id)
+        assert await coord.async_clear_scene(device.device_id) is True
 
         coord.async_control_device.assert_awaited_once()
         sent_id, sent_command = coord.async_control_device.await_args.args
@@ -1735,6 +1739,21 @@ class TestClearSceneOnHdmiSyncBox:
         assert sent_command.value == 2
         # And local scene state was cleared
         assert state.active_diy_scene is None
+
+    @pytest.mark.asyncio
+    async def test_clear_scene_rejected_hdmi_reselect_reports_failure(self):
+        """A rejected source re-select returns False and keeps the scene."""
+        device = self._make_sync_box()
+        coord = self._make_coord(device)
+        coord.async_control_device.return_value = False
+
+        state = GoveeDeviceState.create_empty(device.device_id)
+        state.active_diy_scene = "1234"
+        state.hdmi_source = 2
+        coord._states[device.device_id] = state
+
+        assert await coord.async_clear_scene(device.device_id) is False
+        assert state.active_diy_scene == "1234"
 
     @pytest.mark.asyncio
     async def test_clear_scene_falls_back_to_first_hdmi_option(self):
@@ -3247,6 +3266,13 @@ class _FakeReadClient:
     async def async_read_batch(self, ips: list[str], window: float = 1.0) -> dict[str, Any]:
         self.read_calls.append(list(ips))
         return {ip: self.batch[ip] for ip in ips if ip in self.batch}
+
+    async def async_scan(self, **kwargs: Any) -> list[dict[str, Any]]:
+        # Rescans run on the client's own socket; delegate to the (patched)
+        # module scan so each test controls what the scan returns.
+        import custom_components.govee.coordinator as coord_mod
+
+        return await coord_mod.async_scan_lan_devices(**kwargs)
 
 
 class TestLanReadPath:

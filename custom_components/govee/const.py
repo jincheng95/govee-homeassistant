@@ -17,6 +17,8 @@ CONF_ENABLE_SCENES: Final = "enable_scenes"
 CONF_ENABLE_DIY_SCENES: Final = "enable_diy_scenes"
 CONF_EXPOSE_TRANSPORT_ENTITIES: Final = "expose_transport_entities"
 CONF_ENABLE_MQTT_CONTROL: Final = "enable_mqtt_control"
+# H6104 advertises BLE, but its light command protocol is not hardware-verified.
+CONF_ENABLE_H6104_BLE: Final = "enable_h6104_ble"
 # Confirm light commands against the device's AWS IoT report and resend a
 # dropped one once (command_confirm.py, #245).
 CONF_CONFIRM_COMMANDS: Final = "confirm_commands"
@@ -135,6 +137,14 @@ CONF_API_TEMPERATURE_UNIT: Final = "api_temperature_unit"
 #     °F reading. The login-enabled BFF harvest returned no thermo-hygrometers
 #     for the account, so no fahOpen hint exists and the model list is the only
 #     signal. Also reported as #85, where the option was the workaround.
+#   H5108 (fridge/freezer thermometer, temperature-only): same class as the
+#     H5111. The raw_api_state of a fridge unit carried sensorTemperature 36.86 (a
+#     plausible °F value, no unit field) and Auto read it as °C, so HA showed
+#     98.3°F. Setting the Govee app to °C changed nothing: the API keeps
+#     returning the same °F-scale numbers.
+#   H5105 (thermo-hygrometer): same class. The raw_api_state carried
+#     sensorTemperature 74.48 (plausible indoor °F, no unit field) and Auto read
+#     it as °C, so HA showed 166.1°F.
 # SKUs whose Platform API listing omits colorRgb although the device reports a
 # colour over AWS IoT (#240, H7073: only powerSwitch, brightness and scenes are
 # listed, the status push carries ``color`` {r,g,b}). With IoT credentials the
@@ -145,6 +155,8 @@ FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
     {
         "H5179",
         "H5310",
+        "H5105",
+        "H5108",
         "H5109",
         "H5110",
         "H5111",
@@ -238,6 +250,12 @@ SKU_SEGMENT_OVERRIDES: Final = {
     "H1232": 16,
 }
 
+# SKUs whose segment count follows the installed length, so no static count is
+# right: the account's BFF ``deviceSettings.segmentCount`` is authoritative and
+# ranks above SKU_SEGMENT_OVERRIDES (``GoveeDevice.bff_segment_count``).
+# H3A53: count follows the install length (9 -> 11), read from BFF deviceSettings (issue #301).
+BFF_SEGMENT_COUNT_SKUS: Final = frozenset({"H3A53"})
+
 # SKUs whose RGBIC ring segments are addressable past the Platform API's
 # advertised count via masked ptReal frames (``build_segment_color_ptreal`` /
 # ``build_segment_brightness_ptreal`` in api/ble_packet.py). The true ring
@@ -246,7 +264,10 @@ SKU_SEGMENT_OVERRIDES: Final = {
 # H1252 (#223); the H60A6 (same fixture family) is plausibly identical. The
 # H1252 already advertises all 16 ring segments over the API, so for it this
 # only folds a multi-segment write into one frame.
-PTREAL_SEGMENT_SKUS: Final = frozenset({"H1232", "H1252"})
+# H1A42 (#261): the cloud segmentedColorRgb call returns 200 but does nothing;
+# the reporter confirmed the raw frames over AWS IoT ptReal (first segment
+# ``33 05 15 01 00 FF 00 00 00 00 00 00 01 00 00``, all 15 with mask ``FF 7F 00``).
+PTREAL_SEGMENT_SKUS: Final = frozenset({"H1232", "H1252", "H1A42"})
 
 # SKUs whose 17th internal segment is a separate main panel, not a ring
 # segment, addressed by this bit in the same 3-byte little-endian ptReal
@@ -311,6 +332,7 @@ DEFAULT_ENABLE_DIY_SCENES: Final = True
 DEFAULT_SEGMENT_MODE: Final = "individual"  # "disabled", "grouped", "individual", "both", or "groups"
 DEFAULT_EXPOSE_TRANSPORT_ENTITIES: Final = False
 DEFAULT_ENABLE_MQTT_CONTROL: Final = False
+DEFAULT_ENABLE_H6104_BLE: Final = False
 DEFAULT_CONFIRM_COMMANDS: Final = False
 DEFAULT_API_TEMPERATURE_UNIT: Final = "auto"
 DEFAULT_LAN_TARGETS: Final = ""
@@ -527,6 +549,11 @@ LAN_WRITE_CONFIRM_TIMEOUT: Final = 0.5
 # MACs to device_ids. Re-promotes demoted devices and picks up new ones / IP
 # reassignments. Mirrors DEVICE_REDISCOVERY_INTERVAL throttling.
 LAN_RESCAN_INTERVAL: Final = 300
+# While setup found no LAN device, the poll retries LAN setup starting at
+# LAN_RESCAN_INTERVAL and doubling after each empty attempt up to this cap, so
+# cloud-only installs don't scan every five minutes forever. An options change
+# reloads the entry, which starts the backoff over.
+LAN_SETUP_RETRY_MAX_INTERVAL: Final = 3600
 # Consecutive solicited-read misses before a device is demoted out of the LAN
 # device map so both reads and writes fall back to MQTT/REST.
 LAN_READ_MISS_DEMOTE_THRESHOLD: Final = 3
@@ -640,8 +667,17 @@ CONFIG_VERSION: Final = 2
 # on every 5-minute poll.
 IOT_RELOGIN_MIN_INTERVAL: Final = 900  # 15 minutes
 
+# Background retry of an account login that failed at setup with a network
+# error (network/DNS not ready at boot, connection reset, timeout). Starts at
+# 5 minutes and doubles per failure up to 6 hours: every attempt that reaches
+# Govee is a full password login, and repeated logins trip its 2FA hardening.
+ACCOUNT_LOGIN_RETRY_INTERVAL: Final = 300  # 5 minutes
+ACCOUNT_LOGIN_RETRY_MAX_INTERVAL: Final = 6 * 3600  # 6 hours
+
 KEY_IOT_CREDENTIALS: Final = "iot_credentials"
 KEY_IOT_LOGIN_FAILED: Final = "iot_login_failed"
+# KEY_IOT_LOGIN_FAILED value stored when the account login needs a 2FA code.
+LOGIN_FAILED_2FA: Final = "2FA verification required"
 
 # Fork: dispatcher signal carrying decoded per-segment readback for ONE device
 # (`reference` §6.2 `aa a5`, pushed over MQTT). Format with the device id.

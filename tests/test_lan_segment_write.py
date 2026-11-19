@@ -40,7 +40,7 @@ from custom_components.govee.api.protocol import (
     get_profile,
 )
 from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE
-from custom_components.govee.models import GoveeDeviceState, SegmentColorCommand
+from custom_components.govee.models import GoveeDeviceState, SegmentBrightnessCommand, SegmentColorCommand
 from custom_components.govee.platforms.grouped_segment import GoveeGroupedSegmentEntity
 from custom_components.govee.platforms.segment import GoveeSegmentEntity
 
@@ -121,6 +121,9 @@ def _segment_entity(coordinator: Any, *, sku: str = LAN_SKU, segment_count: int 
     entity._segment_index = index
     entity._is_on = True
     entity._brightness = 255
+    entity._brightness_supported = True
+    entity._cloud_brightness = False
+    entity._brightness_range = (0, 100)
     entity._rgb_color = (255, 255, 255)
     entity.async_write_ha_state = MagicMock()
     return entity
@@ -141,6 +144,9 @@ def _grouped_entity(coordinator: Any, *, sku: str = LAN_SKU, segment_count: int 
     entity._segment_indices = tuple(range(segment_count))
     entity._is_on = True
     entity._brightness = 255
+    entity._brightness_supported = True
+    entity._cloud_brightness = False
+    entity._brightness_range = (0, 100)
     entity._rgb_color = (255, 255, 255)
     entity.async_write_ha_state = MagicMock()
     # The grouped entity broadcasts to its individual segments on every write.
@@ -550,3 +556,67 @@ class TestZoneOwnedSegments:
         await entity.async_turn_on(rgb_color=(255, 0, 0))
 
         assert raw_client.hexes == [GOLDEN_SEG0_RED]
+
+
+# ==============================================================================
+# 6. Brightness: raw route first, cloud only where Govee advertises it
+# ==============================================================================
+
+
+class TestSegmentBrightnessRouting:
+    """One send per call; the cloud brightness command only where it exists."""
+
+    @pytest.mark.parametrize("sku", [LAN_SKU, ZONE_SKU])
+    def test_a_profile_brightness_form_counts_when_a_raw_option_is_on(self, sku):
+        assert raw_router.segment_brightness_raw(_segment_entity(_coordinator(), sku=sku)) is True
+
+    def test_the_raw_options_off_claims_no_raw_brightness(self):
+        assert raw_router.segment_brightness_raw(_segment_entity(_coordinator(enabled=False))) is False
+
+    def test_an_unprofiled_sku_claims_no_raw_brightness(self):
+        assert raw_router.segment_brightness_raw(_segment_entity(_coordinator(), sku="H9999")) is False
+
+    def test_no_config_entry_claims_no_raw_brightness(self):
+        coordinator = _coordinator()
+        coordinator.config_entry = None
+        assert raw_router.segment_brightness_raw(_segment_entity(coordinator)) is False
+
+    def test_a_profile_without_the_constant_claims_no_raw_brightness(self):
+        entity = _segment_entity(_coordinator())
+        with patch.object(type(get_profile(LAN_SKU)), "supports", side_effect=raw_router.GoveeProtocolError("x")):
+            assert raw_router.segment_brightness_raw(entity) is False
+
+    @pytest.mark.asyncio
+    async def test_a_raw_paint_keeps_the_brightness_and_sends_nothing_else(self, raw_client):
+        coordinator = _coordinator()
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(brightness=HA_BRIGHTNESS_32_PERCENT)
+
+        # The colour frame carries the segment's current white.
+        assert raw_client.hexes == ["33051501ffffff000000000001000000000000dc", GOLDEN_SEG0_LEVEL_32]
+        assert entity.brightness == HA_BRIGHTNESS_32_PERCENT
+        coordinator.async_control_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_cloud_fallback_skips_a_brightness_govee_does_not_advertise(self, raw_client):
+        coordinator = _coordinator(enabled=False)
+        entity = _segment_entity(coordinator)
+
+        await entity.async_turn_on(brightness=HA_BRIGHTNESS_32_PERCENT)
+
+        commands = [call.args[1] for call in coordinator.async_control_device.await_args_list]
+        assert [type(command) for command in commands] == [SegmentColorCommand]
+        assert entity.brightness == 255
+
+    @pytest.mark.asyncio
+    async def test_a_cloud_fallback_sends_an_advertised_brightness(self, raw_client):
+        coordinator = _coordinator(enabled=False)
+        entity = _grouped_entity(coordinator)
+        entity._cloud_brightness = True
+
+        await entity.async_turn_on(brightness=HA_BRIGHTNESS_32_PERCENT)
+
+        commands = [call.args[1] for call in coordinator.async_control_device.await_args_list]
+        assert [type(command) for command in commands] == [SegmentBrightnessCommand]
+        assert entity.brightness == HA_BRIGHTNESS_32_PERCENT

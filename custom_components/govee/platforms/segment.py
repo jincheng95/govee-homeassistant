@@ -26,12 +26,13 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from ..api.protocol import ha_to_percent  # fork: level-space churn guard
 from ..api.segment_readback import SegmentReading
+from ..brightness import ha_to_device_brightness
 from ..child_power import async_ensure_device_powered
 from ..const import SIGNAL_SEGMENT_READBACK, SUFFIX_SEGMENT
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
-from ..models import GoveeDevice, RGBColor, SegmentColorCommand
-from ..api.raw_router import async_segment_color, segments_lan_writable
+from ..models import GoveeDevice, RGBColor, SegmentBrightnessCommand, SegmentColorCommand
+from ..api.raw_router import async_segment_color, segment_brightness_raw, segments_lan_writable
 from .grouped_segment import segments_optimistic_signal
 
 _LOGGER = logging.getLogger(__name__)
@@ -104,6 +105,13 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         # ``time.monotonic()`` of this segment's last write, 0.0 for never.
         self._written_at: float = 0.0
 
+        # Segment brightness is only real when the device advertises
+        # segmentedBrightness; otherwise nothing could ever send it.
+        self._cloud_brightness = device.supports_segment_brightness
+        # Fork: a raw profile with a segment brightness frame can send it too.
+        self._brightness_supported = self._cloud_brightness or segment_brightness_raw(self)
+        self._brightness_range = device.segment_brightness_range
+
     @property
     def available(self) -> bool:
         """Fork: coordinator availability, or a paint that would leave over raw LAN."""
@@ -115,9 +123,9 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         return self._is_on
 
     @property
-    def brightness(self) -> int:
-        """Return brightness (0-255)."""
-        return self._brightness
+    def brightness(self) -> int | None:
+        """Return brightness (0-255), or None when the device cannot set it per segment."""
+        return self._brightness if self._brightness_supported else None
 
     @property
     def rgb_color(self) -> tuple[int, int, int]:
@@ -125,31 +133,43 @@ class GoveeSegmentEntity(GoveeEntity, LightEntity, RestoreEntity):
         return self._rgb_color
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn the segment on with optional parameters."""
-        # Update brightness if provided
-        if ATTR_BRIGHTNESS in kwargs:
-            self._brightness = kwargs[ATTR_BRIGHTNESS]
+        """Turn the segment on with optional parameters.
 
-        # Update color if provided
-        if ATTR_RGB_COLOR in kwargs:
-            self._rgb_color = kwargs[ATTR_RGB_COLOR]
+        The optimistic values are only stored once the write is accepted, so
+        a rejected command never leaves an unsent colour behind for the next
+        state write or the restore cache.
+        """
+        send_brightness = self._brightness_supported and ATTR_BRIGHTNESS in kwargs
+        brightness = kwargs[ATTR_BRIGHTNESS] if send_brightness else self._brightness
+        rgb_color = tuple(kwargs.get(ATTR_RGB_COLOR, self._rgb_color))
 
-        # Create segment color command
-        r, g, b = self._rgb_color
+        r, g, b = rgb_color
         color = RGBColor(r=r, g=g, b=b)
+        indices = (self._segment_index,)
 
         await async_ensure_device_powered(self.coordinator, self._device_id)
 
-        if await async_segment_color(
-            self, self._rgb_color, (self._segment_index,), brightness=kwargs.get(ATTR_BRIGHTNESS)
-        ):
-            # Fork: a raw paint bypasses async_control_device, so record it here
-            # for the whole-device replay (issue #131).
-            self.coordinator.record_segment_color(self._device_id, self._segment_index, self._rgb_color)
+        # Fork: one raw route carries colour and brightness together.
+        if await async_segment_color(self, (r, g, b), indices, brightness=brightness if send_brightness else None):
+            self.coordinator.record_segment_color(self._device_id, self._segment_index, (r, g, b))
+            self._rgb_color = (r, g, b)
+            self._is_on = True
+            self._brightness = brightness
         else:
-            await self._async_send_command(SegmentColorCommand(segment_indices=(self._segment_index,), color=color))
+            send_brightness = send_brightness and self._cloud_brightness
+            # A lit segment changing only its brightness needs no colour write; an
+            # off segment is black and has to be relit with its colour first.
+            if ATTR_RGB_COLOR in kwargs or not send_brightness or not self._is_on:
+                await self._async_send_command(SegmentColorCommand(segment_indices=indices, color=color))
+                self._rgb_color = (r, g, b)
+                self._is_on = True
+            if send_brightness:
+                device_brightness = ha_to_device_brightness(self._brightness_range, brightness)
+                await self._async_send_command(
+                    SegmentBrightnessCommand(segment_indices=indices, brightness=device_brightness)
+                )
+                self._brightness = brightness
 
-        self._is_on = True
         self._written_at = time.monotonic()  # fork: opens the readback grace
         self.async_write_ha_state()
 

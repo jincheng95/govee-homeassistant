@@ -28,6 +28,7 @@ from homeassistant.util import color as color_util
 from homeassistant.util import dt as dt_util
 
 from .api import (
+    Govee2FACodeInvalidError,
     Govee2FARequiredError,
     GoveeApiClient,
     GoveeApiError,
@@ -37,9 +38,11 @@ from .api import (
     GoveeDeviceNotFoundError,
     GoveeDeviceOfflineError,
     GoveeIotCredentials,
+    GoveeLoginRejectedError,
     GoveeRateLimitError,
 )
-from .api.auth import GoveeAuthClient, _derive_client_id
+from .api.auth import GoveeAuthClient, _derive_client_id, is_connection_error
+from .api.ble_status import H6104Report
 from .api.openapi_events import GoveeOpenApiEventClient
 from .ble_passthrough import BlePassthroughManager
 from .command_confirm import CommandConfirmer, PendingConfirm
@@ -76,6 +79,10 @@ from .api.lan_client import (
 )
 from .api.lan_control import command_to_lan, lan_brightness_to_device
 from .const import (
+    ACCOUNT_LOGIN_RETRY_INTERVAL,
+    ACCOUNT_LOGIN_RETRY_MAX_INTERVAL,
+    CONF_ENABLE_H6104_BLE,
+    DEFAULT_ENABLE_H6104_BLE,
     HEATER_AUTO_STOP_STRUCT_SKUS,
     CONF_API_TEMPERATURE_UNIT,
     CONF_EMAIL,
@@ -92,6 +99,7 @@ from .const import (
     DEFAULT_DAILY_REQUEST_BUDGET,
     KETTLE_FOLLOWUP_MIN_REMAINING,
     DEFAULT_ENABLE_MQTT_CONTROL,
+    BFF_SEGMENT_COUNT_SKUS,
     MQTT_COLOR_SKUS,
     DEFAULT_MQTT_STATUS_INTERVAL,
     DEFAULT_PROBE_POLL_INTERVAL,
@@ -107,11 +115,13 @@ from .const import (
     LAN_CORRELATION_TTL_SECONDS,
     LAN_READ_MISS_DEMOTE_THRESHOLD,
     LAN_RESCAN_INTERVAL,
+    LAN_SETUP_RETRY_MAX_INTERVAL,
     LAN_WRITE_CONFIRM_TIMEOUT,
     LAN_WRITE_SUPPRESS_SECONDS,
     LAN_WRITE_SUPPRESS_THRESHOLD,
     LEAK_DUAL_PROBE_SKUS,
     LOCAL_READING_FRESHNESS_FACTOR,
+    LOGIN_FAILED_2FA,
     MAX_BUDGET_PACED_INTERVAL,
     MAX_LOCAL_FRESH_SKIPS,
     MAX_MQTT_STATUS_INTERVAL,
@@ -181,6 +191,7 @@ from .models.commands import (
     PowerCommand,
     RangeCommand,
     SceneCommand,
+    SegmentBrightnessCommand,
     SegmentColorCommand,
     TemperatureSettingCommand,
     ToggleCommand,
@@ -220,14 +231,14 @@ from .models.device import (
     MAINS_POWERED_BATTERY_SKUS,
     MAINS_POWERED_DEVICE_TYPES,
     PROBE_THERMOMETER_BFF_SKUS,
-    PUMP_DEHUMIDIFIER_SKUS,
+    FRAME_CLIMATE_DEHUMIDIFIER_SKUS,
     looks_like_group_id,
 )
 from .models.device import GoveeLeakSensor, GoveeLeakSensorState
 from .api.lan_nudge import async_cancel_nudges, async_note_cloud_push
 from . import lan_udp_health
 from . import lan_confirm
-from .scene_cache import SceneCacheManager
+from .scene_cache import SceneCacheManager, scenes_refreshed_signal
 from .repairs import (
     async_create_mqtt_issue,
     async_create_rate_limit_issue,
@@ -236,6 +247,9 @@ from .repairs import (
     async_delete_mqtt_silent_issue,
     async_delete_rate_limit_issue,
 )
+
+# Ceiling of the re-login back-off after repeated rejections (6 hours).
+IOT_RELOGIN_MAX_INTERVAL = 21600
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -410,6 +424,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     # coordinators that skip __init__ working.
     _budget_pacing_announced = False
     _header_deferred = False
+    # Set by async_shutdown. Timer callbacks run as untracked hass tasks, so
+    # one that was mid-await when the entry unloaded must not re-arm itself
+    # or open a second MQTT session on the dead coordinator.
+    _shut_down = False
+    # Set once Govee definitively refuses the stored login; only an entry reload clears it.
+    _relogin_disabled = False
+    # Consecutive re-logins Govee rejected or failed; doubles the retry interval (reset on success).
+    _relogin_rejections = 0
     # Per poll cycle: devices whose "read" handed back held state instead of a
     # fresh cloud answer, and whether any device answered 429. Reset at the
     # start of every cycle; class defaults for the same reason as above.
@@ -427,6 +449,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     _mqtt_silence_unsub: CALLBACK_TYPE | None = None
     _mqtt_silent_reconnected = False
     _mqtt_silent_reported = False
+    # True until a session arms the check, so only a live session clears the repair.
+    _mqtt_silent_cleared = True
     # Gateway readings the cloud received while the session got nothing, the
     # last device-side lastTime seen per thermometer, and a guard so the timer
     # and the BFF refresh never handle one silent session twice (#222).
@@ -476,6 +500,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         )
 
         self._config_entry = config_entry
+        self._h6104_tv_settings: dict[str, tuple[int, int]] = {}
+        self._h6104_tv_settings_locks: dict[str, asyncio.Lock] = {}
+        self._h6104_ble_fields: dict[str, dict[str, tuple[Any, datetime]]] = {}
+        self._h6104_last_write: dict[str, datetime] = {}
+        self._h6104_last_query: dict[str, float] = {}
         # The options this instance was built with. The entry's update listener
         # compares against this to tell an options change from a data-only
         # write, such as storing a refreshed account token (#132) — reloading
@@ -483,6 +512,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self.options_snapshot: dict[str, Any] = dict(config_entry.options)
         self._api_client = api_client
         self._iot_credentials = iot_credentials
+        self._login_retry_unsub: CALLBACK_TYPE | None = None
+        # Delay before the next background login retry; doubles per failure.
+        self._login_retry_delay: float = ACCOUNT_LOGIN_RETRY_INTERVAL
         self._enable_groups = enable_groups
         # Opt-in: route power/brightness/color over MQTT instead of REST.
         self._enable_mqtt_control = config_entry.options.get(CONF_ENABLE_MQTT_CONTROL, DEFAULT_ENABLE_MQTT_CONTROL)
@@ -554,6 +586,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # SKUs for which we've already logged "advertised but not on the
         # BLE command allowlist" — avoid spamming the log on every advert.
         self._ble_ignored_skus_logged: set[str] = set()
+
+        # Per-device BLE connect back-off (#246): a failing link (no free
+        # connection slot, out of range) must not cost every command a retry.
+        self._ble_connect_backoff_until: dict[str, float] = {}
+        self._ble_connect_failures: dict[str, int] = {}
 
         # BLE advertisement subscription + correlation handler (audit H1).
         self._ble_handler = BleAdvertisementHandler(self)
@@ -779,6 +816,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._lan_write_suppressed_until: dict[str, float] = {}
         # Monotonic timestamp of the last LAN rescan, for throttling (LAN-011).
         self._last_lan_rescan: float = 0.0
+        # Set by async_shutdown so a setup retry still in flight never opens a
+        # socket after unload.
+        self._lan_closed = False
+        # Wait before the next LAN setup retry while no client is running;
+        # doubles after each empty retry (see LAN_SETUP_RETRY_MAX_INTERVAL).
+        self._lan_retry_interval: float = LAN_RESCAN_INTERVAL
         # Startup discovery steps that failed or timed out in this session.
         # While non-empty, the orphan cleanup in __init__.py must not treat
         # entities of not-yet-discovered devices as stale.
@@ -901,6 +944,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             health = self._transport.get(device_id, kind)
             if health is not None and health.is_available:
                 return True
+        device = self._devices.get(device_id)
+        if device is not None and device.sku == "H6104" and self._ble_write_eligible(device_id):
+            return True
         last = self.mqtt_last_receive_for(device_id)
         return last is not None and (dt_util.utcnow() - last).total_seconds() <= REACHABLE_PUSH_WINDOW
 
@@ -1009,7 +1055,15 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
     def _refresh_ble_staleness(self) -> None:
         """Mark BLE unavailable for devices whose last advertisement is stale."""
-        self._transport.refresh_ble_staleness(self._devices, set(self._ble_devices.keys()))
+        self._transport.refresh_ble_staleness(
+            self._devices,
+            set(self._ble_devices.keys()),
+            {
+                did
+                for did, client in self._ble_devices.items()
+                if client.supports_readback is True and client.is_connected is True
+            },
+        )
 
     def _refresh_lan_staleness(self) -> None:
         """Mark LAN unavailable for non-LAN or stale-read devices (issue #57).
@@ -1520,7 +1574,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 self._lan_write_only.add(device_id)
         return resolved
 
-    async def _async_setup_lan(self) -> None:
+    async def _async_setup_lan(self, *, retry: bool = False) -> None:
         """Set up the LAN (UDP) transport — the LAST step of coordinator setup.
 
         Auto-enables the local UDP transport (issue #57) when at least one
@@ -1540,6 +1594,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         LAN-011 fills in the runtime read/rescan/health wiring; this method only
         owns the lifecycle (open LAST, correlate, leak-proof teardown).
+
+        Args:
+            retry: ``True`` when called from the poll's throttled setup retry;
+                the user-facing warnings were already logged by the first
+                attempt, so repeats drop to debug.
         """
         raw_targets = self._config_entry.options.get(CONF_LAN_TARGETS, "")
         # Rollback escape hatch: an explicit "off" disables LAN with no socket
@@ -1547,13 +1606,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if isinstance(raw_targets, str) and raw_targets.strip().lower() == "off":
             _LOGGER.debug("Govee LAN transport disabled via %s='off'", CONF_LAN_TARGETS)
             return
+        # Every attempt (setup or the poll's retry) starts the rescan throttle,
+        # so a failed attempt is retried after LAN_RESCAN_INTERVAL, not per poll.
+        self._last_lan_rescan = time.monotonic()
 
         # Tolerate a stale / invalid targets option: a bad cross-VLAN entry must
         # not break LAN setup, let alone the integration. Fall back to no extras.
         try:
             extra_targets = expand_lan_targets(raw_targets if isinstance(raw_targets, str) else "")
         except LanTargetError as err:
-            _LOGGER.warning(
+            _LOGGER.log(
+                logging.DEBUG if retry else logging.WARNING,
                 "Ignoring invalid %s option (%r): %s",
                 CONF_LAN_TARGETS,
                 raw_targets,
@@ -1576,14 +1639,22 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 broadcast_targets=broadcast_targets,
             )
         except OSError as err:
-            _LOGGER.info("Govee LAN discovery scan could not bind, LAN disabled: %s", err)
+            _LOGGER.log(
+                logging.DEBUG if retry else logging.INFO,
+                "Govee LAN discovery scan could not bind, LAN disabled: %s",
+                err,
+            )
             return
 
+        # A poll's setup retry can still be scanning when the entry unloads.
+        if self._lan_closed:
+            return
         client = GoveeLanClient(self._on_lan_dev_status)
         await client.async_start(interface_ips)
-        if not client.available:
-            # Clean degrade: the :4002 bind failed (held by a non-sharing app).
-            # Release whatever it grabbed and stay LAN-disabled (client None).
+        if not client.available or self._lan_closed:
+            # Clean degrade: the :4002 bind failed (held by a non-sharing app),
+            # or the entry unloaded meanwhile. Release whatever it grabbed and
+            # stay LAN-disabled (client None).
             await client.async_stop()
             return
 
@@ -1838,6 +1909,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 LAN_READ_MISS_DEMOTE_THRESHOLD,
             )
 
+    def _lan_client_running(self) -> bool:
+        """Return whether a LAN client is running (re-read after an await)."""
+        return self._lan_client is not None
+
     async def _async_maybe_rescan_lan(self) -> None:
         """Re-scan + re-correlate LAN devices on a throttled cadence (issue #57).
 
@@ -1848,13 +1923,33 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device (blocking #3). Never raises: a scan hiccup must not fail the poll.
         :meth:`_request_lan_rescan` can clear the throttle so an unknown-IP push
         forces the next call to run.
+
+        When setup left LAN off (nothing answered or correlated yet, or the
+        :4002 bind failed), the full LAN setup is retried instead, so lights
+        whose Wi-Fi came up after Home Assistant still get local control
+        without a reload. The retry starts at ``LAN_RESCAN_INTERVAL`` and
+        doubles after each empty attempt up to ``LAN_SETUP_RETRY_MAX_INTERVAL``;
+        success resets it, and an options change reloads the entry, which
+        starts over. ``"off"`` is honoured by :meth:`_async_setup_lan` itself.
         """
-        if self._lan_client is None:
-            return
         now = time.monotonic()
-        if now - self._last_lan_rescan < LAN_RESCAN_INTERVAL:
+        interval = LAN_RESCAN_INTERVAL if self._lan_client is not None else self._lan_retry_interval
+        if now - self._last_lan_rescan < interval:
             return
         self._last_lan_rescan = now
+
+        if self._lan_client is None:
+            try:
+                await self._async_setup_lan(retry=True)
+            except Exception as err:  # noqa: BLE001 — never fail the poll
+                _LOGGER.debug("Govee LAN setup retry failed: %s", err)
+            if not self._lan_client_running():
+                # Still nothing: back off so a cloud-only install isn't scanned
+                # every five minutes forever.
+                self._lan_retry_interval = min(self._lan_retry_interval * 2, LAN_SETUP_RETRY_MAX_INTERVAL)
+            else:
+                self._lan_retry_interval = LAN_RESCAN_INTERVAL
+            return
 
         raw_targets = self._config_entry.options.get(CONF_LAN_TARGETS, "")
         try:
@@ -1865,7 +1960,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         try:
             interface_ips = await async_get_lan_interface_ips(self.hass)
             broadcast_targets = await async_get_lan_broadcast_addresses(self.hass)
-            scan = await async_scan_lan_devices(
+            # Scan through the running client's own :4002 socket: a second
+            # socket on :4002 would split unicast replies with it on Linux.
+            scan = await self._lan_client.async_scan(
                 interface_ips=interface_ips,
                 extra_targets=extra_targets,
                 broadcast_targets=broadcast_targets,
@@ -2021,7 +2118,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
     async def _start_mqtt(self) -> None:
         """Start MQTT client for real-time updates."""
-        if not self._iot_credentials:
+        if not self._iot_credentials or self._shut_down:
             return
 
         self._mqtt_client = GoveeAwsIotClient(
@@ -2206,6 +2303,95 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if changed_at is not None:
             self._water_full_changed_at.setdefault(device_id, changed_at)
 
+    def schedule_account_login_retry(self) -> None:
+        """Arm the next background retry of a setup login that failed transiently.
+
+        Called by the entry setup once the first refresh succeeded, so a setup
+        that ends in ConfigEntryNotReady never leaves a timer behind (the
+        retried setup logs in again itself).
+        """
+        if self._login_retry_unsub:
+            self._login_retry_unsub()
+            self._login_retry_unsub = None
+        if self._shut_down:
+            return
+        delay = self._login_retry_delay
+        self._login_retry_delay = min(delay * 2, ACCOUNT_LOGIN_RETRY_MAX_INTERVAL)
+        self._login_retry_unsub = async_call_later(self.hass, delay, self._account_login_retry_callback)
+
+    async def _account_login_retry_callback(self, _now: Any = None) -> None:
+        """Timer callback: retry the account login once."""
+        self._login_retry_unsub = None
+        await self._async_retry_account_login()
+
+    async def _async_retry_account_login(self) -> None:
+        """Retry an account login that failed at setup with a network error.
+
+        A network or DNS error at boot used to leave real-time updates off
+        until the next restart. This retries on a backing-off timer while the
+        failure stays network-level: success stores the credentials and
+        reloads the entry so MQTT, device topics and the account-only sensors
+        all start. Any other outcome (bad password, 2FA, login refused, a
+        malformed answer after the password was accepted) stores the failure
+        marker, raises the repair and stops retrying, since it would fail the
+        same way again and repeated logins trip Govee's 2FA hardening.
+        """
+        if self._iot_credentials:
+            return
+        email = self._config_entry.data.get(CONF_EMAIL)
+        password = self._config_entry.data.get(CONF_PASSWORD)
+        if not email or not password:
+            return
+
+        credentials: GoveeIotCredentials | None = None
+        error: Exception | None = None
+        try:
+            async with GoveeAuthClient(hass=self.hass) as auth_client:
+                credentials = await auth_client.login(
+                    email,
+                    password,
+                    client_id=_derive_client_id(email),
+                )
+        except Exception as err:  # noqa: BLE001 - classified below
+            error = err
+
+        if self._shut_down:
+            # The entry unloaded (reload, reconfigure, removal) while the login
+            # was in flight. Whatever came back belongs to a dead coordinator:
+            # writing a marker or a repair, or reloading, would act on the new
+            # entry with a stale result, or resurrect a removed one.
+            return
+        if isinstance(error, Govee2FARequiredError):
+            _LOGGER.warning(
+                "Govee account requires email verification (2FA). Use Reconfigure to "
+                "enter a verification code; continuing with polling-only mode"
+            )
+            self._persist_login_failed(LOGIN_FAILED_2FA)
+            self._async_create_iot_reauth_issue("mqtt_2fa_required")
+            # The setup-time "sign-in failed" repair offers a retry that would
+            # only hit 2FA again; the 2FA repair replaces it.
+            async_delete_mqtt_issue(self.hass, self._config_entry)
+            return
+        if error is not None and is_connection_error(error):
+            _LOGGER.debug("Account login retry failed, will try again in %ds: %s", int(self._login_retry_delay), error)
+            self.schedule_account_login_retry()
+            return
+        if error is not None or credentials is None:
+            _LOGGER.warning("Failed to get MQTT credentials: %s", error)
+            self._persist_login_failed(str(error))
+            async_create_mqtt_issue(self.hass, self._config_entry, f"account sign-in failed: {error}")
+            return
+
+        _LOGGER.debug("Account login succeeded on retry; reloading to start real-time updates")
+        self._persist_refreshed_credentials(credentials)
+        self.hass.config_entries.async_schedule_reload(self._config_entry.entry_id)
+
+    def _persist_login_failed(self, reason: str) -> None:
+        """Store the login-failure marker so later setups skip the login."""
+        new_data = dict(self._config_entry.data)
+        new_data[KEY_IOT_LOGIN_FAILED] = reason
+        self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
+
     async def _async_refresh_iot_credentials(self) -> bool:
         """Log in again to replace an account token the BFF has stopped accepting.
 
@@ -2232,9 +2418,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # API-key-only setup: nothing to log in with, and no BFF data was
             # ever expected. Nothing to recover.
             return False
+        if self._relogin_disabled:
+            return False
 
         now = time.monotonic()
-        if (now - self._last_iot_relogin) < IOT_RELOGIN_MIN_INTERVAL:
+        interval = min(IOT_RELOGIN_MIN_INTERVAL * 2**self._relogin_rejections, IOT_RELOGIN_MAX_INTERVAL)
+        if (now - self._last_iot_relogin) < interval:
             _LOGGER.debug("Skipping IoT re-login: attempted too recently")
             return False
         self._last_iot_relogin = now
@@ -2256,9 +2445,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 "battery levels and gateway-bridged sensor readings stay "
                 "unavailable until then."
             )
+            self._relogin_disabled = True
+            self._persist_login_failed(LOGIN_FAILED_2FA)
             self._async_create_iot_reauth_issue("mqtt_2fa_required")
             return False
-        except GoveeAuthError as err:
+        except (GoveeAuthError, Govee2FACodeInvalidError) as err:
+            self._relogin_disabled = True
+            self._persist_login_failed(str(err))
             _LOGGER.warning(
                 "Account token expired and re-login was rejected: %s. "
                 "Use Reconfigure to update the account credentials.",
@@ -2266,10 +2459,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             )
             self._async_create_iot_reauth_issue("mqtt_token_expired")
             return False
+        except GoveeLoginRejectedError as err:
+            # Any non-200 answer lands here, outages included: back off, never latch.
+            self._relogin_rejections += 1
+            _LOGGER.warning("Account re-login was rejected: %s", err)
+            return False
         except Exception as err:
+            self._relogin_rejections += 1
             _LOGGER.warning("Account re-login failed: %s", err)
             return False
 
+        self._relogin_rejections = 0
         self._iot_credentials = credentials
         self._persist_refreshed_credentials(credentials)
         ir.async_delete_issue(self.hass, DOMAIN, f"mqtt_token_expired_{self._config_entry.entry_id}")
@@ -2370,6 +2570,19 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         except Exception as err:
             _LOGGER.warning("Unexpected error fetching device topics: %s", err)
 
+    def _apply_bff_segment_counts(self, counts: dict[str, int]) -> None:
+        """Adopt the account's segment count for SKUs in ``BFF_SEGMENT_COUNT_SKUS`` (#301).
+
+        Runs during setup, before platforms are forwarded, so segment entities
+        are created from the account count. Without BFF data the API count stays.
+        """
+        for device_id, count in counts.items():
+            device = self._devices.get(device_id)
+            if device is None or device.sku.upper() not in BFF_SEGMENT_COUNT_SKUS:
+                continue
+            _LOGGER.debug("Segment count for %s from the account: %d", device.sku, count)
+            self._devices[device_id] = dataclasses.replace(device, bff_segment_count=count)
+
     async def _discover_leak_sensors(self) -> None:
         """Discover leak sensor sub-devices via BFF API.
 
@@ -2386,13 +2599,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._bff_device_census = auth_client.bff_device_census()
             self._bff_response_skeleton = auth_client.bff_response_skeleton()
             self._bff_device_values = auth_client.bff_device_values()
+            bff_segment_counts.update(auth_client.bff_segment_counts())
             return result
 
+        bff_segment_counts: dict[str, int] = {}
         try:
             # A short-lived auth client per call, consistent with
             # _fetch_device_topics(). The hass= param shares HA's managed
             # aiohttp.ClientSession, so no new TCP connections are created.
             fetched = await self._async_bff_call(_op, "leak-sensor list")
+            self._apply_bff_segment_counts(bff_segment_counts)
             if fetched is None:
                 return
             sensor_data, hub_data, thermo_readings = fetched
@@ -3040,6 +3256,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """Schedule the next BFF poll in 5 minutes."""
         if self._bff_poll_unsub:
             self._bff_poll_unsub()
+            self._bff_poll_unsub = None
+        if self._shut_down:
+            return
         self._bff_poll_unsub = async_call_later(self.hass, BFF_POLL_INTERVAL, self._bff_poll_callback)
 
     async def _bff_poll_callback(self, _now: Any = None) -> None:
@@ -3197,6 +3416,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """Schedule the next standalone water-detector leak poll."""
         if self._wd_poll_unsub:
             self._wd_poll_unsub()
+            self._wd_poll_unsub = None
+        if self._shut_down:
+            return
         self._wd_poll_unsub = async_call_later(
             self.hass,
             self._water_detector_poll_interval,
@@ -3221,59 +3443,63 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if not detectors or not self._iot_credentials:
             return
 
-        token = self._iot_credentials.token
         device_ids = {d.device_id for d in detectors}
         sku_by_id = {d.device_id: d.sku for d in detectors}
 
+        # Through _async_bff_call so an expired account token is replaced by a
+        # re-login (#132) instead of failing every tick in silence.
+        async def _op(auth_client: GoveeAuthClient, token: str) -> bool:
+            states = await auth_client.fetch_water_detector_states(token, device_ids)
+            changed = False
+            for device_id, info in states.items():
+                state = self._states.get(device_id)
+                if state is None:
+                    continue
+
+                clear_gen = self._water_leak_clear_gen.get(device_id, 0)
+                online = bool(info.get("online", True)) and bool(info.get("gateway_online", True))
+                last_time = info.get("last_time") or 0
+                prev_time = self._water_leak_last_time.get(device_id, 0)
+
+                # Only hit warnMessage when there's something new to learn:
+                # a fresh report, or a currently-wet sensor that may have
+                # been cleared in the app.
+                if last_time > prev_time or state.water_leak:
+                    try:
+                        is_wet = await auth_client.fetch_leak_warning(token, device_id, sku_by_id[device_id])
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.debug("warnMessage poll failed for %s: %s", device_id, err)
+                        is_wet = bool(state.water_leak)
+                    # A clear that landed while warnMessage was in flight
+                    # wins; the next tick reads the alert again.
+                    if self._water_leak_clear_gen.get(device_id, 0) == clear_gen and state.water_leak != is_wet:
+                        state.water_leak = is_wet
+                        changed = True
+                if last_time and self._water_leak_clear_gen.get(device_id, 0) == clear_gen:
+                    self._water_leak_last_time[device_id] = last_time
+
+                if state.online != online:
+                    state.online = online
+                    changed = True
+                # Battery (%) rides along in the same BFF device/list poll —
+                # surface it so the H5054 gets a battery sensor (issue #145).
+                battery = info.get("battery")
+                if battery is not None and state.battery != battery:
+                    state.battery = battery
+                    changed = True
+                state.source = "api"
+                _LOGGER.debug(
+                    "Water-detector %s: online=%s water_leak=%s battery=%s " "last_time=%s",
+                    device_id,
+                    online,
+                    state.water_leak,
+                    state.battery,
+                    last_time,
+                )
+            return changed
+
         try:
-            async with GoveeAuthClient(hass=self.hass) as auth_client:
-                states = await auth_client.fetch_water_detector_states(token, device_ids)
-                changed = False
-                for device_id, info in states.items():
-                    state = self._states.get(device_id)
-                    if state is None:
-                        continue
-
-                    clear_gen = self._water_leak_clear_gen.get(device_id, 0)
-                    online = bool(info.get("online", True)) and bool(info.get("gateway_online", True))
-                    last_time = info.get("last_time") or 0
-                    prev_time = self._water_leak_last_time.get(device_id, 0)
-
-                    # Only hit warnMessage when there's something new to learn:
-                    # a fresh report, or a currently-wet sensor that may have
-                    # been cleared in the app.
-                    if last_time > prev_time or state.water_leak:
-                        try:
-                            is_wet = await auth_client.fetch_leak_warning(token, device_id, sku_by_id[device_id])
-                        except Exception as err:  # noqa: BLE001
-                            _LOGGER.debug("warnMessage poll failed for %s: %s", device_id, err)
-                            is_wet = bool(state.water_leak)
-                        # A clear that landed while warnMessage was in flight
-                        # wins; the next tick reads the alert again.
-                        if self._water_leak_clear_gen.get(device_id, 0) == clear_gen and state.water_leak != is_wet:
-                            state.water_leak = is_wet
-                            changed = True
-                    if last_time and self._water_leak_clear_gen.get(device_id, 0) == clear_gen:
-                        self._water_leak_last_time[device_id] = last_time
-
-                    if state.online != online:
-                        state.online = online
-                        changed = True
-                    # Battery (%) rides along in the same BFF device/list poll —
-                    # surface it so the H5054 gets a battery sensor (issue #145).
-                    battery = info.get("battery")
-                    if battery is not None and state.battery != battery:
-                        state.battery = battery
-                        changed = True
-                    state.source = "api"
-                    _LOGGER.debug(
-                        "Water-detector %s: online=%s water_leak=%s battery=%s " "last_time=%s",
-                        device_id,
-                        online,
-                        state.water_leak,
-                        state.battery,
-                        last_time,
-                    )
+            changed = bool(await self._async_bff_call(_op, "water-detector poll"))
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Water-detector poll failed: %s", err)
             return
@@ -3465,6 +3691,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         """
         if self._probe_poll_unsub:
             self._probe_poll_unsub()
+            self._probe_poll_unsub = None
+        if self._shut_down:
+            return
         self._probe_poll_unsub = async_call_later(
             self.hass, self._probe_poll_interval if delay is None else delay, self._probe_poll_callback
         )
@@ -3639,7 +3868,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if self._status_poll_unsub:
             self._status_poll_unsub()
             self._status_poll_unsub = None
-        if not self._mqtt_status_poll_enabled:
+        if not self._mqtt_status_poll_enabled or self._shut_down:
             return
         self._status_poll_unsub = async_call_later(self.hass, self._status_poll_tick, self._status_poll_callback)
 
@@ -4005,10 +4234,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             frames = self._op_frames_from(state_data)
             state.update_pump_state_from_frames(frames)
             state.update_dehumidifier_mode_from_frames(frames)
-        # Pump-model dehumidifiers (H7152) carry live temperature/humidity
+        # Frame-climate dehumidifiers (H7152, H7151 #283) carry live temperature/humidity
         # only in these BLE-format status frames — no capability exists for
         # either (issue #114 follow-up).
-        if device is not None and device.sku.upper() in PUMP_DEHUMIDIFIER_SKUS:
+        if device is not None and device.sku.upper() in FRAME_CLIMATE_DEHUMIDIFIER_SKUS:
             if state.update_temperature_from_frames(self._op_frames_from(state_data)):
                 self._store_frame_temperature_in_entity_unit(device_id, device.sku, state)
         # Smart outlets (H5086) carry live voltage/current/power/energy the
@@ -4034,6 +4263,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 "MQTT push restored online status for %s (was offline per cloud)",
                 device.name if device else device_id,
             )
+
+        if device is not None and device.sku == "H6104":
+            # Newer device pushes win for fields they actually changed; keep
+            # BLE-only mode fields absent from this MQTT report.
+            fields = self._h6104_ble_fields.get(device_id, {})
+            for field in list(fields):
+                if getattr(state, field) != getattr(before, field):
+                    fields.pop(field)
 
         # Confirmed push — record transport health and end the optimistic
         # grace window for this device (state.update_from_mqtt also calls
@@ -4094,16 +4331,24 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         client = self._mqtt_client
         self._mqtt_queries_since_connect = 0
         self._mqtt_missed_pushes_since_connect = 0
+        self._mqtt_silent_cleared = False
         self._mqtt_inbound_at_connect = client.inbound_total if client is not None else 0
         if self._mqtt_silence_unsub is not None:
             self._mqtt_silence_unsub()
+            self._mqtt_silence_unsub = None
+        if self._shut_down:
+            return
         self._mqtt_silence_unsub = async_call_later(self.hass, MQTT_SILENT_CHECK_DELAY, self._async_check_mqtt_silence)
 
     def _note_mqtt_inbound(self) -> None:
         """A message arrived: the session is not silent, so clear the watchdog state."""
         self._mqtt_silent_reconnected = False
-        if self._mqtt_silent_reported:
-            self._mqtt_silent_reported = False
+        self._mqtt_silent_reported = False
+        # The repair outlives a reload (it is not persistent but the registry is
+        # per-run state of the old coordinator), so delete it idempotently, once
+        # per session rather than on every message (#282).
+        if not self._mqtt_silent_cleared:
+            self._mqtt_silent_cleared = True
             async_delete_mqtt_silent_issue(self.hass, self._config_entry)
 
     async def _async_check_mqtt_silence(self, _now: Any = None) -> None:
@@ -4151,10 +4396,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 )
                 # async_restart only reconnects for changed credentials.
                 await client.async_stop()
+                # An unload during the stop must not open a session on the dead coordinator.
+                if self._shut_down:
+                    return
                 await client.async_start()
                 return
             if not self._mqtt_silent_reported:
                 self._mqtt_silent_reported = True
+                self._mqtt_silent_cleared = False
                 async_create_mqtt_silent_issue(self.hass, self._config_entry, minutes)
         finally:
             self._mqtt_silence_handling = False
@@ -4434,6 +4683,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if skipped:
             _LOGGER.debug("Skipping %d device(s) with all entities disabled", skipped)
 
+        # Local readback must still run when REST is skipped for budget or
+        # MQTT freshness. Captured before the skips below; it runs after the
+        # cloud fetch so a slow UART read never delays the cloud state.
+        h6104_readback_ids = [did for did, dev in pollable.items() if dev.sku == "H6104"]
+
         # Devices a local transport has already reported on more recently than
         # one poll interval need no cloud read this cycle (see
         # _locally_fresh_devices).
@@ -4493,6 +4747,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._cycle_rate_limited = False
         results = await asyncio.gather(*tasks, return_exceptions=True)
         cached_ids = self._cycle_cached_ids
+
+        # The throttled helper skips duplicate UART queries.
+        await asyncio.gather(*(self._async_refresh_h6104_ble_status(did) for did in h6104_readback_ids))
 
         # Process results. Held state handed back without a fresh cloud read
         # (a 429, a group, ...) is kept but is not a successful update: it
@@ -4990,6 +5247,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._mark_cached_result(device_id)
             return self._states.get(device_id) or GoveeDeviceState.create_empty(device_id)
 
+        await self._async_refresh_h6104_ble_status(device_id)
         try:
             state = await self._api_client.get_device_state(device_id, device.sku)
             self._record_transport_success(device_id, "cloud_api")
@@ -5171,6 +5429,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                             device_id,
                         )
 
+            self._merge_h6104_ble_fields(device_id, state)
             return state
 
         except GoveeDeviceNotFoundError:
@@ -5210,6 +5469,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         except Exception as err:
             self._record_transport_failure(device_id, "cloud_api", str(err))
+            existing = self._states.get(device_id)
+            if device.sku == "H6104" and existing is not None:
+                refreshed = dataclasses.replace(existing)
+                if self._merge_h6104_ble_fields(device_id, refreshed):
+                    self._mark_cached_result(device_id)
+                    return refreshed
             return err
 
     def _raw_power_switch_value(self, device_id: str) -> Any:
@@ -5497,7 +5762,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # Before dispatch: a newer command makes a pending confirm stale, and
         # the confirm compares against the value from before this one (#245).
         pending = confirmer.prepare(device_id, command) if confirmer is not None else None
-        success = await self._async_control_device(device_id, command, defer_lan_confirm, confirm=pending)
+        success = await self._async_control_tracking_segments(
+            device_id, command, defer_lan_confirm, confirm=pending
+        )
         device = self._devices.get(device_id)
         if success and device is not None and device.decodes_kettle_frames:
             self.kettles.schedule_followup(device_id)
@@ -5523,6 +5790,55 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._apply_optimistic_update(device_id, command)
             self.async_set_updated_data(self._states)
         return bool(success)
+
+    async def _async_control_tracking_segments(
+        self,
+        device_id: str,
+        command: DeviceCommand,
+        defer_lan_confirm: bool = False,  # fork: passed through to the LAN tier
+        *,
+        confirm: PendingConfirm | None = None,
+    ) -> bool:
+        """Dispatch ``command``, rolling back segment colour tracking if it fails."""
+        if not isinstance(command, SegmentColorCommand) or device_id not in self._devices:
+            return await self._async_control_device(device_id, command, defer_lan_confirm, confirm=confirm)
+
+        # Remember what the segments were last set to, before the first await,
+        # so a later whole-device write can faithfully restore them. Recorded
+        # here rather than in the REST branch so it captures the command
+        # whichever transport tier ends up carrying it.
+        rgb = command.color.as_tuple
+        tracked = self._segment_colors.get(device_id, {})
+        previous = {index: tracked.get(index) for index in command.segment_indices}
+        for index in command.segment_indices:
+            self.record_segment_color(device_id, index, rgb)
+
+        success = False
+        try:
+            success = await self._async_control_device(device_id, command, defer_lan_confirm, confirm=confirm)
+            return success
+        finally:
+            if not success:
+                # The colour never reached the device: put the tracking back so
+                # a later whole-device write does not replay it (#131). Leave a
+                # segment alone if a newer write has replaced the value since.
+                self._restore_segment_colors(device_id, previous, rgb)
+
+    def _restore_segment_colors(
+        self,
+        device_id: str,
+        previous: dict[int, tuple[int, int, int] | None],
+        written: tuple[int, int, int],
+    ) -> None:
+        """Undo a failed segment write's colour tracking."""
+        tracked = self._segment_colors.get(device_id, {})
+        for index, old in previous.items():
+            if tracked.get(index) != written:
+                continue
+            if old is None:
+                tracked.pop(index, None)
+            else:
+                tracked[index] = old
 
     async def _async_control_device(
         self,
@@ -5555,15 +5871,6 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         generations = self._command_generations()
         generations[gen_key] = generations.get(gen_key, 0) + 1
 
-        # Remember what the segments were last set to, before the first await,
-        # so a later whole-device write can faithfully restore them. Recorded
-        # here rather than in the REST branch so it captures the command
-        # whichever transport tier ends up carrying it.
-        if isinstance(command, SegmentColorCommand):
-            rgb = command.color.as_tuple
-            for index in command.segment_indices:
-                self.record_segment_color(device_id, index, rgb)
-
         try:
             # H8057 exposes four segments, but REST RGB accepts only 0-2.
             # Only index 3 has been hardware-verified with masked ptReal;
@@ -5578,12 +5885,40 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             # BLE-first dispatch: if a BLE transport is available for this
             # device, try it before the cloud REST API. BLE is ~10x faster
             # (~50ms local vs ~500ms cloud) and works when internet is down.
-            if HAS_BLUETOOTH and device_id in self._ble_devices and self._ble_write_eligible(device_id):
+            if (
+                HAS_BLUETOOTH
+                and device_id in self._ble_devices
+                and self._ble_write_eligible(device_id)
+                and not self._lan_can_carry(device_id, device, command)
+            ):
                 if await self._try_ble_command(device_id, command):
+                    if device.sku == "H6104":
+                        self._h6104_last_write[device_id] = dt_util.utcnow()
                     self._apply_optimistic_update(device_id, command)
                     self.async_set_updated_data(self._states)
+                    if device.sku == "H6104":
+                        # The readback holds the BLE lock ~1.5 s; commands must not wait for it.
+                        self._config_entry.async_create_background_task(
+                            self.hass,
+                            self._async_refresh_h6104_ble_status(device_id, force=True),
+                            name=f"govee_h6104_readback_{device_id}",
+                        )
                     return True
                 # BLE failed — fall through to LAN/MQTT/REST
+
+            if (
+                device.sku == "H6104"
+                and self.h6104_ble_enabled
+                and isinstance(command, ToggleCommand)
+                and command.toggle_instance == INSTANCE_DREAMVIEW
+            ):
+                # H6104 exposes this mode only on the legacy BLE transport.
+                # Cloud returns HTTP 200 with an embedded unsupported-instance
+                # error, obscuring why BLE was skipped or failed.
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="h6104_bluetooth_required",
+                )
 
             # LAN (UDP) control tier — sits between BLE and MQTT so precedence
             # is BLE > LAN > MQTT > REST. Unlike the BLE/MQTT blocks above,
@@ -5604,6 +5939,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         except GoveeAuthError as err:
             self._record_transport_failure(device_id, "cloud_api", "auth_failed")
             raise ConfigEntryAuthFailed("Invalid API key") from err
+        except GoveeDeviceOfflineError as err:
+            self._mark_device_offline(device_id, err)
+            return False
         except GoveeApiError as err:
             _LOGGER.error("Control command failed: %s", err)
             self._record_transport_failure(device_id, "cloud_api", str(err))
@@ -5709,6 +6047,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 self.async_set_updated_data(self._states)
                 success = await self._dispatch_segment_command(device_id, device.sku, command)
                 return success
+            # Segment brightness has no device-state field to update, but goes
+            # through the same per-device queue so a burst is not dropped.
+            if isinstance(command, SegmentBrightnessCommand):
+                return await self._dispatch_segment_command(device_id, device.sku, command)
 
             success = await self._api_client.control_device(
                 device_id,
@@ -5859,7 +6201,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self,
         device_id: str,
         sku: str,
-        command: SegmentColorCommand,
+        command: SegmentColorCommand | SegmentBrightnessCommand,
     ) -> bool:
         """Send a single segment command under a per-device lock.
 
@@ -6289,6 +6631,116 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         self._record_local_command(device_id, sku, "mqtt", command, delivered=True)
         return True
 
+    def _apply_h6104_ble_report(self, device_id: str, report: H6104Report) -> None:
+        """Apply received fields, never values inferred from a sent command."""
+        device = self._devices.get(device_id)
+        existing = self._states.get(device_id)
+        if device is None or device.sku != "H6104" or existing is None:
+            return
+        updates: dict[str, Any] = {"online": True}
+        if report.power is not None:
+            updates["power_state"] = report.power
+        if report.brightness is not None:
+            maximum = device.brightness_range[1]
+            updates["brightness"] = max(0, min(maximum, round(report.brightness * maximum / 254)))
+        if report.mode is not None:
+            updates.update(
+                dreamview_enabled=report.mode == "tv",
+                music_mode_enabled=report.mode == "music",
+            )
+            if report.mode != "music":
+                updates.update(music_mode_value=None, music_mode_name=None)
+            if report.mode in ("tv", "music", "scene", "diy", "color_temp"):
+                updates.update(color=None, color_temp_kelvin=None)
+            if report.mode not in ("scene", "diy"):
+                updates.update(active_scene=None, active_scene_name=None, active_diy_scene=None)
+            if report.mode == "music":
+                api_mode = (
+                    {0: 5, 1: 6, 2: 4, 3: 3}.get(report.music_effect) if report.music_effect is not None else None
+                )
+                name = next(
+                    (opt.get("name") for opt in device.get_music_mode_options() if opt.get("value") == api_mode), None
+                )
+                updates.update(music_mode_value=api_mode, music_mode_name=name)
+                if report.sensitivity is not None:
+                    updates["music_sensitivity"] = report.sensitivity
+        if report.rgb is not None:
+            updates.update(color=RGBColor(*report.rgb), color_temp_kelvin=None)
+        now = dt_util.utcnow()
+        self._h6104_ble_fields.setdefault(device_id, {}).update({key: (value, now) for key, value in updates.items()})
+        refreshed = dataclasses.replace(existing, **updates)
+        if report.power is not None:
+            refreshed.source = "ble"
+            refreshed.clear_optimistic_window()
+        elif existing.source != "optimistic":
+            refreshed.source = "ble"
+        self._states[device_id] = refreshed
+        self._transport.record_read(device_id, "ble")
+        if self.data is not None:
+            self.async_update_listeners()
+
+    def _merge_h6104_ble_fields(self, device_id: str, state: GoveeDeviceState) -> bool:
+        """Keep fresh received fields over a lagging cloud read, field by field."""
+        device = self._devices.get(device_id)
+        if device is None or device.sku != "H6104":
+            return False
+        now = dt_util.utcnow()
+        last_write = self._h6104_last_write.get(device_id)
+        applied = False
+        for field, (value, received) in self._h6104_ble_fields.get(device_id, {}).items():
+            if (now - received).total_seconds() > 120 or (last_write is not None and received < last_write):
+                continue
+            setattr(state, field, value)
+            applied = True
+        if applied:
+            state.source = "ble"
+        return applied
+
+    @property
+    def h6104_ble_enabled(self) -> bool:
+        """Whether the user opted in to H6104 Bluetooth control and readback."""
+        return self._config_entry.options.get(CONF_ENABLE_H6104_BLE, DEFAULT_ENABLE_H6104_BLE) is True
+
+    async def _async_refresh_h6104_ble_status(self, device_id: str, *, force: bool = False) -> None:
+        """Best-effort status reads on commands and the existing poll cadence."""
+        device = self._devices.get(device_id)
+        if device is None or device.sku != "H6104":
+            return
+        client = self._ble_devices.get(device_id)
+        if client is None or client.supports_readback is not True or not self._ble_write_eligible(device_id):
+            return
+        now = time.monotonic()
+        previous = self._h6104_last_query.get(device_id)
+        if not force and previous is not None and now - previous < 2:
+            return
+        self._h6104_last_query[device_id] = now
+        try:
+            async with asyncio.timeout(5):
+                await client.async_read_status()
+        except Exception as err:
+            _LOGGER.debug("H6104 status read failed for %s: %s: %s", device_id, type(err).__name__, err)
+        finally:
+            self._h6104_last_query[device_id] = time.monotonic()
+
+    def _h6104_idle_reconnect_eligible(self, device_id: str) -> bool:
+        """Allow a connection attempt after our own idle release, not a failed link.
+
+        Some proxies do not deliver a fresh advert immediately on release.
+        Requiring one to attempt reconnect would deadlock this known device.
+        A failed attempt clears the idle flag and uses normal failure gating.
+        """
+        device = self._devices.get(device_id)
+        client = self._ble_devices.get(device_id)
+        health = self._transport.get(device_id, "ble")
+        return (
+            device is not None
+            and device.sku == "H6104"
+            and client is not None
+            and client.idle_disconnected is True
+            and health is not None
+            and health.last_failure_reason in (None, "stale_advertisement")
+        )
+
     def _ble_write_eligible(self, device_id: str) -> bool:
         """Return True if this device's BLE advertisements are fresh enough to write to.
 
@@ -6296,13 +6748,48 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         advertisement (device out of range / asleep) would otherwise be sent to
         blindly and never fall through to LAN/MQTT/REST (#198).
         """
+        until = self._ble_connect_backoff_until.get(device_id)
+        if until is not None and time.monotonic() < until:
+            return False
         health = self._transport.get(device_id, "ble")
+        if self._h6104_idle_reconnect_eligible(device_id):
+            return True
+        if health is not None and health.last_failure_reason == "stale_advertisement":
+            client = self._ble_devices.get(device_id)
+            if client is not None and client.supports_readback is True and client.is_connected is True:
+                return True
         return health is not None and health.is_available
+
+    def _lan_can_carry(self, device_id: str, device: GoveeDevice, command: DeviceCommand) -> bool:
+        """Return True when a healthy LAN transport can carry this command (#246).
+
+        BLE is then skipped: LAN is acknowledged by a readback and does not
+        compete for the lamp's few Bluetooth connection slots.
+        """
+        if self._lan_client is None or device.is_group or looks_like_group_id(device_id):
+            return False
+        if device_id not in self._lan_devices:
+            return False
+        if command_to_lan(command, device.sku, device.brightness_range) is None:
+            return False
+        health = self._transport.get(device_id, "lan")
+        if device_id not in self._lan_write_only and (health is None or not health.is_available):
+            return False
+        return not self._lan_writes_suppressed(device_id)
+
+    def _ble_backoff_start(self, device_id: str) -> None:
+        """Back off BLE after a failed write: 300 s, doubling per consecutive failure, cap 3600 s (#246)."""
+        failures = self._ble_connect_failures.get(device_id, 0) + 1
+        self._ble_connect_failures[device_id] = failures
+        delay = min(300.0 * 2 ** (failures - 1), 3600.0)
+        self._ble_connect_backoff_until[device_id] = time.monotonic() + delay
+        _LOGGER.debug("BLE backed off for %s for %.0f s after %d consecutive failures", device_id, delay, failures)
 
     async def _try_ble_command(self, device_id: str, command: DeviceCommand) -> bool:
         """Attempt to send a command via BLE. Returns True on success.
 
-        Only power, brightness, and RGB color commands are BLE-capable.
+        Power, brightness, and RGB are shared. The opted-in H6104 additionally
+        handles TV mode and automatic-color music modes over its UART.
         Scenes, color_temp, work modes, etc. fall through to REST.
         """
         ble_device = self._ble_devices.get(device_id)
@@ -6310,6 +6797,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             return False
         device = self._devices.get(device_id)
         ble_sku = device.sku if device is not None else "unknown"
+        detail = None
 
         try:
             if isinstance(command, PowerCommand):
@@ -6318,13 +6806,46 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 else:
                     await ble_device.turn_off()
             elif isinstance(command, BrightnessCommand):
-                await ble_device.set_brightness(command.brightness)
+                brightness = command.brightness
+                if ble_sku == "H6104" and device is not None:
+                    brightness = max(20, min(254, round(brightness * 254 / max(1, device.brightness_range[1]))))
+                await ble_device.set_brightness(brightness)
             elif isinstance(command, ColorCommand):
                 await ble_device.set_rgb(
                     command.color.r,
                     command.color.g,
                     command.color.b,
                 )
+            elif isinstance(command, MusicModeCommand) and ble_sku == "H6104":
+                if command.auto_color != 1 or command.music_mode not in (3, 4, 5, 6):
+                    return False
+                # H6104 API IDs from the field capability dump differ from
+                # legacy BLE effect codes: Energic 5->0, Spectrum 6->1,
+                # Rolling 4->2, Rhythm 3->3. Codes 1/2 also need RGB bytes.
+                # https://github.com/softgrass/govee-api-ble/blob/master/src/govee_api_ble/device.py
+                effect = {5: 0, 6: 1, 4: 2, 3: 3}[command.music_mode]
+                state = self._states.get(device_id)
+                color = (state.last_color or state.color) if state else None
+                color = color or RGBColor(255, 255, 255)
+                await ble_device.set_music_mode(effect, command.sensitivity, rgb=color.as_tuple)
+                detail = (
+                    f"H6104 music api_mode={command.music_mode} ble_effect={effect} "
+                    f"sensitivity={command.sensitivity} rgb={color.as_tuple}"
+                )
+            elif (
+                isinstance(command, ToggleCommand)
+                and command.toggle_instance == INSTANCE_DREAMVIEW
+                and ble_sku == "H6104"
+            ):
+                if command.enabled:
+                    area, sensitivity = self.h6104_tv_settings(device_id)
+                    await ble_device.set_tv_mode(area=area, sensitivity=sensitivity)
+                    detail = f"H6104 TV mode area={area} sensitivity={sensitivity}"
+                else:
+                    state = self._states.get(device_id)
+                    color = (state.last_color or state.color) if state else None
+                    color = color or RGBColor(255, 255, 255)
+                    await ble_device.set_rgb(color.r, color.g, color.b)
             else:
                 # Not BLE-capable (scenes, color_temp, work modes, etc.)
                 return False
@@ -6336,15 +6857,18 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             )
             self._record_transport_failure(device_id, "ble", str(err))
             self._record_local_command(device_id, ble_sku, "ble", command, delivered=False, detail=str(err))
+            self._ble_backoff_start(device_id)
             return False
         else:
+            self._ble_connect_failures.pop(device_id, None)
+            self._ble_connect_backoff_until.pop(device_id, None)
             _LOGGER.debug("BLE command succeeded for %s: %s", device_id, type(command).__name__)
             # BLE writes are unacked (response=False), so this is a send, not a
             # confirmed receive — `last_success_ts` is the advertisement clock
             # `refresh_ble_staleness` uses to decide the device stopped
             # advertising; a blind write must not move it (#198).
             self._record_transport_send(device_id, "ble")
-            self._record_local_command(device_id, ble_sku, "ble", command, delivered=True)
+            self._record_local_command(device_id, ble_sku, "ble", command, delivered=True, detail=detail)
             # A successful BLE write reaches the device directly — flip
             # `online` back True if a stale `online: false` from the cloud
             # is masking a recovered device (issue #68).
@@ -6409,6 +6933,20 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if not device:
             _LOGGER.error("Unknown device for music mode: %s", device_id)
             return False
+
+        if device.sku == "H6104" and device_id in self._ble_devices:
+            if enabled:
+                if music_mode == 1:
+                    modes = [
+                        opt["value"] for opt in device.get_music_mode_options() if opt.get("value") in (3, 4, 5, 6)
+                    ]
+                    music_mode = modes[0] if modes else 3
+                return await self.async_control_device(
+                    device_id, MusicModeCommand(music_mode=music_mode, sensitivity=sensitivity, auto_color=1)
+                )
+            state = self._states.get(device_id)
+            color = (state.last_color or state.color) if state else None
+            return await self.async_control_device(device_id, ColorCommand(color=color or RGBColor(255, 255, 255)))
 
         # Try REST API first for devices with STRUCT music mode capability
         if device.has_struct_music_mode:
@@ -6514,6 +7052,40 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         return success
 
+    def h6104_tv_settings(self, device_id: str) -> tuple[int, int]:
+        """Return desired area/sensitivity; entity restoration persists them."""
+        return self._h6104_tv_settings.get(device_id, (1, 50))
+
+    def restore_h6104_tv_settings(
+        self, device_id: str, *, area: int | None = None, sensitivity: int | None = None
+    ) -> None:
+        """Restore desired settings without sending a command or selecting TV mode."""
+        old_area, old_sensitivity = self.h6104_tv_settings(device_id)
+        area = old_area if area is None else area
+        sensitivity = old_sensitivity if sensitivity is None else sensitivity
+        if area not in (0, 1) or not 0 <= sensitivity <= 100:
+            raise ValueError("Invalid H6104 TV settings")
+        self._h6104_tv_settings[device_id] = (area, sensitivity)
+
+    async def async_update_h6104_tv_settings(
+        self, device_id: str, *, area: int | None = None, sensitivity: int | None = None
+    ) -> bool:
+        """Apply desired settings immediately only when TV mode is already active."""
+        lock = self._h6104_tv_settings_locks.setdefault(device_id, asyncio.Lock())
+        async with lock:
+            previous = self.h6104_tv_settings(device_id)
+            self.restore_h6104_tv_settings(device_id, area=area, sensitivity=sensitivity)
+            state = self._states.get(device_id)
+            try:
+                if state is not None and state.dreamview_enabled:
+                    if not await self.async_send_dreamview(device_id, True):
+                        self._h6104_tv_settings[device_id] = previous
+                        return False
+            except Exception:
+                self._h6104_tv_settings[device_id] = previous
+                raise
+            return True
+
     async def async_send_dreamview(self, device_id: str, enabled: bool) -> bool:
         """Send DreamView command via REST API, with BLE fallback.
 
@@ -6528,6 +7100,12 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if not device:
             _LOGGER.error("Unknown device for DreamView: %s", device_id)
             return False
+
+        if (
+            device.sku == "H6104"
+            and self._config_entry.options.get(CONF_ENABLE_H6104_BLE, DEFAULT_ENABLE_H6104_BLE) is True
+        ):
+            return await self.async_control_device(device_id, create_dreamview_command(enabled))
 
         # Try REST API first (works for HTTP-capable devices like H6097), except
         # on SKUs that accept the toggle and ignore it (issue #213), and except
@@ -6661,8 +7239,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         return success
 
-    async def async_send_raw_ptreal(self, device_id: str, frame: bytes) -> bool:
-        """Send a raw ptReal BLE frame to a device (developer/debug aid).
+    async def async_send_raw_ptreal(self, device_id: str, frame: bytes | list[bytes]) -> bool:
+        """Send raw ptReal BLE frame(s) to a device (developer/debug aid).
 
         This is a debug path for issue #208 (H7026 and similar RGBIC devices
         where the Platform API cannot address every segment): it lets a
@@ -6671,19 +7249,58 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         applies no optimistic state update. Sending a wrong frame can put the
         light into an unexpected mode.
 
+        A list of frames is delivered in ONE ptReal message, the way the Govee
+        app uploads a scene: an ``a3`` multi-packet carrying the scene data
+        followed by its ``33 05 04`` activation. Sent as separate messages the
+        device activates the scene without its data (a rainbow cycle).
+
+        A device with a healthy LAN transport gets the message over LAN
+        (``ptReal`` with the same ``command`` list), otherwise it goes over the
+        AWS IoT passthrough. A LAN ptReal write cannot be read back, so the
+        LAN read-health gate is what stands in for confirmation.
+
         Args:
             device_id: Device identifier.
-            frame: Raw command bytes. 1-19 bytes are padded and checksummed
-                via `build_packet`; exactly 20 bytes are sent as-is provided
-                the last byte is a valid XOR checksum of the first 19.
+            frame: Raw command bytes, or a list of them. 1-19 bytes are padded
+                and checksummed via `build_packet`; exactly 20 bytes are sent
+                as-is provided the last byte is a valid XOR checksum of the
+                first 19.
 
         Returns:
-            True if the frame was sent successfully.
+            True if the frame(s) were sent successfully.
         """
         device = self._devices.get(device_id)
         if not device or device.is_group:
             _LOGGER.debug("Unknown or group device for raw ptReal: %s", device_id)
             return False
+
+        frames = frame if isinstance(frame, list) else [frame]
+        if not frames:
+            _LOGGER.debug("No raw ptReal frames for %s", device_id)
+            return False
+
+        packets: list[bytes] = []
+        for raw in frames:
+            if not raw or len(raw) > 20:
+                _LOGGER.debug("Invalid raw ptReal frame length for %s: %d bytes", device_id, len(raw))
+                return False
+            if len(raw) == 20:
+                if calculate_checksum(list(raw[:19])) != raw[19]:
+                    _LOGGER.debug("Invalid raw ptReal checksum for %s", device_id)
+                    return False
+                packets.append(bytes(raw))
+            else:
+                packets.append(build_packet(list(raw)))
+
+        encoded = [encode_packet_base64(packet) for packet in packets]
+
+        lan_ip = self._lan_ptreal_ip(device_id, device)
+        if lan_ip is not None and self._lan_client is not None:
+            if await self._lan_client.async_send_command(lan_ip, "ptReal", {"command": encoded}):
+                self._record_transport_send(device_id, "lan")
+                _LOGGER.debug("Sent %d raw ptReal frame(s) to %s over LAN", len(packets), device_id)
+                return True
+            self._record_transport_failure(device_id, "lan", "send_failed")
 
         if not self._ble_manager.available:
             _LOGGER.debug(
@@ -6692,28 +7309,37 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             )
             return False
 
-        if not frame or len(frame) > 20:
-            _LOGGER.debug("Invalid raw ptReal frame length for %s: %d bytes", device_id, len(frame))
-            return False
-
-        if len(frame) == 20:
-            if calculate_checksum(list(frame[:19])) != frame[19]:
-                _LOGGER.debug("Invalid raw ptReal checksum for %s", device_id)
-                return False
-            packet = bytes(frame)
-        else:
-            packet = build_packet(list(frame))
-
-        result = await self._ble_manager.async_send_ble_packet(device_id, device.sku, encode_packet_base64(packet))
+        payload: str | list[str] = encoded if isinstance(frame, list) else encoded[0]
+        result: bool = await self._ble_manager.async_send_ble_packet(device_id, device.sku, payload)
 
         _LOGGER.debug(
             "Sent raw ptReal %s to %s: %s",
-            packet.hex(),
+            ",".join(packet.hex() for packet in packets),
             device_id,
             "ok" if result else "failed",
         )
 
         return result
+
+    def _lan_ptreal_ip(self, device_id: str, device: GoveeDevice) -> str | None:
+        """Return the LAN IP to carry a raw ptReal write, or None to use AWS IoT.
+
+        Same gates as a LAN control write: LAN client up, a correlated
+        non-group device, read-proven LAN health (or a write-only override)
+        and no active write suppression.
+        """
+        if self._lan_client is None or device.is_group or looks_like_group_id(device_id):
+            return None
+        info = self._lan_devices.get(device_id)
+        if info is None:
+            return None
+        if device_id not in self._lan_write_only:
+            health = self._transport.get(device_id, "lan")
+            if health is None or not health.is_available:
+                return None
+        if self._lan_writes_suppressed(device_id):
+            return None
+        return info.ip
 
     @staticmethod
     def _preserve_optimistic_field(
@@ -6748,6 +7374,16 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         state = self._states.get(device_id)
         if not state:
             return
+        device = self._devices.get(device_id)
+        if (
+            device is not None
+            and device.sku == "H6104"
+            and self._config_entry.options.get(CONF_ENABLE_H6104_BLE, DEFAULT_ENABLE_H6104_BLE) is True
+        ):
+            self._h6104_last_write[device_id] = dt_util.utcnow()
+            if isinstance(command, (ColorCommand, ColorTempCommand)):
+                state.dreamview_enabled = False
+                state.music_mode_enabled = False
         # H7175: kettle power, targets and modes (the heater's targetTemperature
         # too is a TemperatureSettingCommand, but heaters are not kettles).
         if isinstance(command, (PowerCommand, TemperatureSettingCommand, WorkModeCommand)):
@@ -6850,6 +7486,19 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device = self._devices.get(device_id)
         return await self._scene_cache.async_get_scenes(device_id, device, refresh)
 
+    async def async_refresh_scenes(self, device_id: str) -> None:
+        """Force-refresh a device's scene and DIY scene catalogs and tell the entities.
+
+        Backs the "Refresh scenes" button and ``govee.refresh_scenes``; the
+        selects and the light's effect list rebuild from the signal.
+        """
+        device = self._devices.get(device_id)
+        if device is None:
+            return
+        scenes = await self.async_get_scenes(device_id, refresh=True) if device.supports_scenes else []
+        diy_scenes = await self.async_get_diy_scenes(device_id, refresh=True) if device.supports_diy_scenes else []
+        async_dispatcher_send(self.hass, scenes_refreshed_signal(device_id), scenes, diy_scenes)
+
     async def async_get_diy_scenes(
         self,
         device_id: str,
@@ -6867,22 +7516,26 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device = self._devices.get(device_id)
         return await self._scene_cache.async_get_diy_scenes(device_id, device, refresh)
 
-    async def async_clear_scene(self, device_id: str) -> None:
+    async def async_clear_scene(self, device_id: str) -> bool:
         """Clear active scene by sending a color/color_temp command to exit it on the device.
 
         Brightness commands don't exit scenes, so we must send a color or color_temp
         command. Restores the last known color/color_temp when available.
+
+        Returns:
+            False when Govee rejected the command that exits the scene; True
+            otherwise, including when there was nothing to clear.
         """
         state = self._states.get(device_id)
         device = self._devices.get(device_id)
         if not state or not device:
-            return
+            return True
 
         # Nothing to clear if no scene is active
         if not state.active_scene and not state.active_diy_scene:
             self.clear_scene(device_id)
             self.clear_diy_scene(device_id)
-            return
+            return True
 
         # HDMI sync boxes (e.g., H6604 AI Sync Box) have no meaningful "static
         # color" to restore — their default mode is video sync of the live HDMI
@@ -6902,7 +7555,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             if success:
                 self.clear_scene(device_id)
                 self.clear_diy_scene(device_id)
-            return
+            return success
 
         # Resolve the color to restore. Skip RGBColor(0,0,0) — the API returns
         # colorRgb=0 when a scene is running, which is not a meaningful restore target.
@@ -6914,15 +7567,17 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             color = None
         color_temp = state.color_temp_kelvin or state.last_color_temp_kelvin
 
-        success = False
+        # None means no command applies to this device (neither RGB nor colour
+        # temperature), which is not a rejection.
+        result: bool | None = None
         if color and device.supports_rgb:
-            success = await self.async_control_device(device_id, ColorCommand(color=color))
+            result = await self.async_control_device(device_id, ColorCommand(color=color))
         elif color_temp and device.supports_color_temp:
-            success = await self.async_control_device(device_id, ColorTempCommand(kelvin=color_temp))
+            result = await self.async_control_device(device_id, ColorTempCommand(kelvin=color_temp))
         elif device.supports_rgb:
             # Prefer RGB white — Govee API reflects this value reliably
             # (colorRgb=16777215), unlike color_temp which may return 0.
-            success = await self.async_control_device(device_id, ColorCommand(color=RGBColor(255, 255, 255)))
+            result = await self.async_control_device(device_id, ColorCommand(color=RGBColor(255, 255, 255)))
         elif device.supports_color_temp:
             # Fallback for color-temp-only devices
             ct_range = device.color_temp_range
@@ -6930,13 +7585,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 midpoint = (ct_range.min_kelvin + ct_range.max_kelvin) // 2
             else:
                 midpoint = 4000
-            success = await self.async_control_device(device_id, ColorTempCommand(kelvin=midpoint))
+            result = await self.async_control_device(device_id, ColorTempCommand(kelvin=midpoint))
 
-        if success:
+        if result:
             # ColorCommand/ColorTempCommand already clear active_scene via optimistic handlers,
             # but we also need to clear active_diy_scene explicitly.
             self.clear_scene(device_id)
             self.clear_diy_scene(device_id)
+        return result is not False
 
     def clear_scene(self, device_id: str) -> None:
         """Clear active scene for a device."""
@@ -6971,6 +7627,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
     async def async_shutdown(self) -> None:
         """Shutdown coordinator and cleanup resources."""
+        self._shut_down = True
         if self._mqtt_silence_unsub is not None:
             self._mqtt_silence_unsub()
             self._mqtt_silence_unsub = None
@@ -6987,6 +7644,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             self._bff_poll_task = None
         # Cancel any scheduled cloud-push LAN nudges (fork feature)
         async_cancel_nudges(self)
+        if self._login_retry_unsub:
+            self._login_retry_unsub()
+            self._login_retry_unsub = None
         # Cancel standalone water-detector polling (issue #62)
         if self._wd_poll_unsub:
             self._wd_poll_unsub()
@@ -7018,6 +7678,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # Drop the multicast group and release the :4002 bind so a reload /
         # unload never leaks the LAN socket (issue #57, blocking #5).
+        self._lan_closed = True
         if self._lan_client is not None:
             await self._lan_client.async_stop()
             self._lan_client = None
