@@ -106,8 +106,7 @@ class GoveeCodec:
         return self._encode(Capability.BRIGHTNESS, percent=percent)
 
     def query(self, command_type: int) -> bytes:
-        """Build an ``aa <commandType>`` frame. Nothing will answer it — see
-        :mod:`.client`. Present for completeness and golden-frame coverage."""
+        """Build an ``aa <commandType>`` frame. Only MQTT ``ptReal`` carries an answer back."""
         return self._encode(Capability.QUERY, command_type=command_type)
 
     def mode(self, name: str, *, index: int = 0, marker: int | None = None) -> bytes:

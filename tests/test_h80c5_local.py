@@ -6,6 +6,8 @@
    switch that takes it before the cloud toggle.
 3. Power-off memory: the frame, the select, its option gate and cleanup.
 4. Power push: the decoder, the state update and the MQTT raw-frame hook.
+5. Settings readback: the gradient and power-off memory replies, the store
+   the entities read, and the queries that ride every status request.
 
 Device ids are the suite's synthetic ones.
 """
@@ -508,3 +510,167 @@ class TestRawFrameHook:
         coord = _coordinator()
         coord._on_mqtt_raw_frames("AA:BB:CC:DD:EE:FF:60:B1", _payload(POWER_ON))
         coord.async_set_updated_data.assert_not_called()
+
+
+# ==============================================================================
+# 5. Settings readback
+# ==============================================================================
+
+GRADIENT_ON = _frame(0xAA, 0xA3, 0x01)
+MEMORY_LAST_STATE = _frame(0xAA, 0x41, 0x02, 0x00)
+
+
+class TestSettingsDecode:
+    def test_the_known_replies_carry_their_checksum(self) -> None:
+        assert GRADIENT_ON[19] == 0x08 and MEMORY_LAST_STATE[19] == 0xE9
+
+    def test_replies(self) -> None:
+        report = decode_status([GRADIENT_ON, MEMORY_LAST_STATE, _frame(0xAA, 0x41, 0x02, 0x02)])
+        assert report == StatusReport(gradient=True, power_off_memory=2)
+
+    def test_gradient_off(self) -> None:
+        assert decode_status([_frame(0xAA, 0xA3, 0x00)]).gradient is False
+
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            _frame(0x33, 0xA3, 0x01),
+            _frame(0x33, 0x41, 0x00),
+            _frame(0xAA, 0xA3, 0x02),
+            _frame(0xAA, 0x41, 0x01, 0x00),
+            _frame(0xAA, 0x41, 0x02, 0x03),
+            _corrupt(GRADIENT_ON),
+            _frame(0xAA, 0x05, 0x04, 0x0C, 0x47),
+        ],
+    )
+    def test_acks_and_other_frames_are_skipped(self, frame: bytes) -> None:
+        assert decode_status([frame]) == StatusReport()
+
+
+class TestSettingsStore:
+    def test_a_reply_is_stored_once(self) -> None:
+        coordinator = _state_coordinator(False)
+        assert raw_status.apply_raw_status(coordinator, _light(), [GRADIENT_ON, MEMORY_LAST_STATE]) is True
+        assert raw_status.device_settings(coordinator, DEVICE_ID) == raw_status.DeviceSettings(True, 0)
+        assert raw_status.apply_raw_status(coordinator, _light(), [GRADIENT_ON]) is False
+
+    def test_a_sku_without_the_setting_ignores_the_reply(self) -> None:
+        coordinator = _state_coordinator(False)
+        assert raw_status.apply_raw_status(coordinator, _light("H6076"), [GRADIENT_ON, MEMORY_LAST_STATE]) is False
+        assert raw_status.device_settings(coordinator, DEVICE_ID) == raw_status.DeviceSettings()
+
+    def test_a_write_is_recorded(self) -> None:
+        coordinator = _state_coordinator(False)
+        raw_status.record_settings(coordinator, DEVICE_ID, gradient=False)
+        raw_status.record_settings(coordinator, DEVICE_ID, power_off_memory=1)
+        assert raw_status.device_settings(coordinator, DEVICE_ID) == raw_status.DeviceSettings(False, 1)
+
+
+class TestEntitiesFollowReports:
+    def test_the_switch_shows_the_reported_gradient(self) -> None:
+        entity, coordinator = _blending_switch()
+        assert entity.is_on is False
+        raw_status.apply_raw_status(_with_state(coordinator), _light(), [GRADIENT_ON])
+        assert entity.is_on is True
+
+    async def test_a_switch_write_replaces_the_report(self) -> None:
+        entity, coordinator = _blending_switch()
+        raw_status.apply_raw_status(_with_state(coordinator), _light(), [GRADIENT_ON])
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)):
+            await entity.async_turn_off()
+        assert entity.is_on is False
+
+    def test_the_select_shows_the_reported_option(self) -> None:
+        coordinator = _settings_coordinator()
+        entity = _memory_select(coordinator)
+        entity._option = "on"
+        raw_status.apply_raw_status(_with_state(coordinator), _light(), [_frame(0xAA, 0x41, 0x02, 0x02)])
+        assert entity.current_option == "off"
+
+    async def test_a_select_write_replaces_the_report(self) -> None:
+        coordinator = _settings_coordinator()
+        entity = _memory_select(coordinator)
+        raw_status.apply_raw_status(_with_state(coordinator), _light(), [MEMORY_LAST_STATE])
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)):
+            await entity.async_select_option("on")
+        assert entity.current_option == "on"
+
+
+def _with_state(coordinator: Any) -> Any:
+    coordinator.get_state = MagicMock(return_value=GoveeDeviceState.create_empty(DEVICE_ID))
+    return coordinator
+
+
+class TestSettingsQuery:
+    async def test_one_query_per_setting(self) -> None:
+        coordinator = _settings_coordinator()
+        with patch.object(raw_status.mqtt_raw_write, "async_send_frames", AsyncMock(return_value=True)) as send:
+            assert await raw_status.async_query_settings(coordinator, DEVICE_ID) == 2
+
+        sent = [list(c.args[4]) for c in send.await_args_list]
+        assert sent == [[_frame(0xAA, 0xA3)], [_frame(0xAA, 0x41)]]
+        assert [frame[19] for (frame,) in sent] == [0x09, 0xEB]
+        assert send.await_args_list[0].args[:4] == (coordinator, DEVICE_ID, SKU, get_profile(SKU))
+
+    async def test_only_sent_queries_count(self) -> None:
+        with patch.object(raw_status.mqtt_raw_write, "async_send_frames", AsyncMock(return_value=False)):
+            assert await raw_status.async_query_settings(_settings_coordinator(), DEVICE_ID) == 0
+
+    @pytest.mark.parametrize(
+        ("device", "device_id"),
+        [
+            (_light("H6076"), DEVICE_ID),
+            (_light("H0000"), DEVICE_ID),
+            (_light(is_group=True), DEVICE_ID),
+            (_light(), "AA:BB:CC:DD:EE:FF:60:B1"),
+        ],
+    )
+    async def test_nothing_to_ask(self, device: GoveeDevice, device_id: str) -> None:
+        coordinator = _settings_coordinator(device)
+        with patch.object(raw_status.mqtt_raw_write, "async_send_frames", AsyncMock(return_value=True)) as send:
+            assert await raw_status.async_query_settings(coordinator, device_id) == 0
+        send.assert_not_awaited()
+
+
+def _mqtt_coordinator() -> tuple[Any, Any]:
+    coord = _coordinator()
+    coord._device_topics = {DEVICE_ID: "GD/synthetic"}
+    client = MagicMock()
+    client.connected = True
+    client.async_publish_status_query = AsyncMock(return_value=True)
+    coord._mqtt_client = client
+    return coord, client
+
+
+@pytest.fixture
+def no_spacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import custom_components.govee.coordinator as coord_mod
+
+    async def _sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(coord_mod.asyncio, "sleep", _sleep)
+
+
+class TestQueriesRideStatusRequests:
+    async def test_a_status_request_also_reads_the_settings(self, no_spacing: None) -> None:
+        coord, client = _mqtt_coordinator()
+        coord.status_query_possible = MagicMock(return_value=True)
+        with patch("custom_components.govee.coordinator.async_query_raw_settings", AsyncMock()) as query:
+            assert await coord.async_request_status(DEVICE_ID, user=True) is True
+        client.async_publish_status_query.assert_awaited_once()
+        query.assert_awaited_once_with(coord, DEVICE_ID)
+
+    async def test_a_refused_status_request_reads_nothing(self, no_spacing: None) -> None:
+        coord, _ = _mqtt_coordinator()
+        coord.status_query_possible = MagicMock(return_value=False)
+        with patch("custom_components.govee.coordinator.async_query_raw_settings", AsyncMock()) as query:
+            assert await coord.async_request_status(DEVICE_ID, user=True) is False
+        query.assert_not_awaited()
+
+    async def test_the_sweep_reads_the_settings_per_device(self, no_spacing: None) -> None:
+        coord, client = _mqtt_coordinator()
+        with patch("custom_components.govee.coordinator.async_query_raw_settings", AsyncMock()) as query:
+            await coord._poll_mqtt_status()
+        client.async_publish_status_query.assert_awaited_once_with("GD/synthetic")
+        query.assert_awaited_once_with(coord, DEVICE_ID)

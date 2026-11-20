@@ -92,8 +92,8 @@ def power_off_memory(constants: Mapping[str, Any], *, behaviour: int) -> bytes:
 def query(constants: Mapping[str, Any], *, command_type: int) -> bytes:
     """``aa <commandType>``.
 
-    Kept for completeness and golden-frame coverage only: raw ``ptReal``
-    queries get NO reply over LAN (see :mod:`.client`).
+    Raw ``ptReal`` queries get NO reply over LAN (see :mod:`.client`). Over
+    MQTT ``ptReal`` the device answers on its cloud topic.
     """
     del constants
     return build_frame([PRO_TYPE_QUERY, command_type & 0xFF])

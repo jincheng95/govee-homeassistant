@@ -168,7 +168,7 @@ from .request_budget import (
 # Fork: §6.2 per-segment readback riding the MQTT status push.
 from .api.segment_readback import decode_payload as decode_segment_payload
 from .api.segment_readback import payload_frames
-from .raw_status import apply_raw_status
+from .raw_status import apply_raw_status, async_query_settings as async_query_raw_settings
 from .api.raw_router import async_color_temp as async_raw_color_temp
 from .segment_limit import pushes_segment_readback, verified_segment_count
 
@@ -3947,6 +3947,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                             self._status_query_unanswered_skus.clear()
                     finally:
                         self._status_query_in_flight = None
+                    # Fork: raw settings reads ride the same sweep.
+                    await async_query_raw_settings(self, device_id)
         finally:
             self._status_sweep_running = False
 
@@ -4653,6 +4655,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             finally:
                 if self._status_query_in_flight == device_id:
                     self._status_query_in_flight = None
+            # Fork: raw settings reads ride the same request.
+            await async_query_raw_settings(self, device_id)
             return True
 
     async def _async_update_data(self) -> dict[str, GoveeDeviceState]:

@@ -22,6 +22,7 @@ from ..const import DOMAIN, SUFFIX_POWER_OFF_MEMORY
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice
+from ..raw_status import device_settings, record_settings
 from ..zone_state import raw_settings_enabled
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,8 +48,8 @@ def async_device_setting_select_entities(coordinator: GoveeCoordinator, entry: C
 class GoveePowerOffMemorySelect(GoveeEntity, SelectEntity, RestoreEntity):
     """What the device does when power returns.
 
-    Optimistic until the device reports the setting, and restored across
-    restarts.
+    Shows the setting the device last reported (:mod:`..raw_status`), else the
+    last option written or restored.
     """
 
     _attr_entity_category = EntityCategory.CONFIG
@@ -69,7 +70,8 @@ class GoveePowerOffMemorySelect(GoveeEntity, SelectEntity, RestoreEntity):
 
     @property
     def current_option(self) -> str | None:
-        return self._option
+        reported = device_settings(self.coordinator, self._device_id).power_off_memory
+        return self._option if reported is None else POWER_OFF_MEMORY_OPTIONS[reported]
 
     async def async_select_option(self, option: str) -> None:
         if option not in POWER_OFF_MEMORY_OPTIONS:
@@ -87,4 +89,5 @@ class GoveePowerOffMemorySelect(GoveeEntity, SelectEntity, RestoreEntity):
         ):
             raise self._command_failed()
         self._option = option
+        record_settings(self.coordinator, self._device_id, power_off_memory=behaviour)
         self.async_write_ha_state()
