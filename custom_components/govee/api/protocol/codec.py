@@ -121,6 +121,10 @@ class GoveeCodec:
             raise UnknownEncodingError(f"{self.profile.sku} mode {name!r} sub-mode byte is UNKNOWN")
         return self._encode(Capability.MODE_SELECT, sub_mode=sub_mode, index=index, marker=marker)
 
+    def gradient(self, on: bool) -> bytes:
+        """Blend segment paints across segment boundaries, or keep them hard-edged."""
+        return self._encode(Capability.GRADIENT, on=on)
+
     def bar_power_mask(self, mask: int) -> bytes:
         """H6046 two-bar power mask (0x01 = bar A, 0x10 = bar B, 0x11 = both)."""
         return self._encode(Capability.BAR_POWER_MASK, mask=mask)

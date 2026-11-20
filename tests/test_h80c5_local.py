@@ -2,6 +2,8 @@
 
 1. Colour temperature: the frame, the clamp, the raw route and the
    coordinator tier that tries it before the cloud.
+2. Segment gradient: the frame, the raw setting route and the blending
+   switch that takes it before the cloud toggle.
 
 Device ids are the suite's synthetic ones.
 """
@@ -18,8 +20,10 @@ from homeassistant.util import color as color_util
 from custom_components.govee.api import raw_router
 from custom_components.govee.api.protocol import GoveeCodec, UnsupportedCapabilityError, get_profile
 from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE
-from custom_components.govee.models import ColorTempCommand, GoveeDevice, GoveeDeviceState
-from custom_components.govee.models.device import DEVICE_TYPE_LIGHT
+from custom_components.govee.api.protocol import Capability
+from custom_components.govee.models import ColorTempCommand, GoveeDevice, GoveeDeviceState, ToggleCommand
+from custom_components.govee.models.device import DEVICE_TYPE_LIGHT, INSTANCE_GRADUAL_ON
+from custom_components.govee.switch import GoveeSegmentBlendingSwitchEntity
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
 SKU = "H80C5"
@@ -165,3 +169,90 @@ class TestColorTempTier:
             assert await coord.async_control_device(DEVICE_ID, ColorTempCommand(kelvin=4000)) is True
 
         coord._api_client.control_device.assert_awaited_once()
+
+
+# ==============================================================================
+# 2. Segment gradient
+# ==============================================================================
+
+
+class TestGradientFrame:
+    @pytest.mark.parametrize(("on", "expected"), [(False, _frame(0x33, 0xA3, 0x00)), (True, _frame(0x33, 0xA3, 0x01))])
+    def test_frame_is_byte_exact(self, on: bool, expected: bytes) -> None:
+        assert GoveeCodec(get_profile(SKU)).gradient(on) == expected
+
+    def test_checksum_matches_the_known_frame(self) -> None:
+        assert GoveeCodec(get_profile(SKU)).gradient(False)[19] == 0x90
+
+    @pytest.mark.parametrize("sku", ["H6046", "H6076", "H60B0"])
+    def test_other_skus_do_not_encode_it(self, sku: str) -> None:
+        with pytest.raises(UnsupportedCapabilityError):
+            GoveeCodec(get_profile(sku)).gradient(True)
+
+
+class TestSettingRoute:
+    async def test_routes_the_built_frame(self) -> None:
+        coordinator = _raw_coordinator()
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)) as route:
+            assert await raw_router.async_device_setting(
+                coordinator, _device(), Capability.GRADIENT, lambda codec: codec.gradient(True)
+            )
+        args = route.await_args.args
+        assert args[:4] == (coordinator, DEVICE_ID, SKU, get_profile(SKU))
+        assert list(args[4]) == [_frame(0x33, 0xA3, 0x01)]
+
+    @pytest.mark.parametrize(
+        ("device", "raw"),
+        [
+            (_device(sku="H6076", segments=7), True),
+            (_device(sku="H0000"), True),
+            (_device(is_group=True), True),
+            (_device(), False),
+        ],
+    )
+    async def test_declines_without_sending(self, device: Any, raw: bool) -> None:
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)) as route:
+            assert not await raw_router.async_device_setting(
+                _raw_coordinator(raw=raw), device, Capability.GRADIENT, lambda codec: codec.gradient(True)
+            )
+        route.assert_not_awaited()
+
+    def test_supports_setting(self) -> None:
+        assert raw_router.supports_setting(SKU, Capability.GRADIENT) is True
+        assert raw_router.supports_setting("H6076", Capability.GRADIENT) is False
+        assert raw_router.supports_setting("H0000", Capability.GRADIENT) is False
+
+
+def _blending_switch() -> tuple[GoveeSegmentBlendingSwitchEntity, Any]:
+    coordinator = _raw_coordinator()
+    coordinator.async_control_device = AsyncMock(return_value=True)
+    device = GoveeDevice(
+        device_id=DEVICE_ID, sku=SKU, name="String lights", device_type=DEVICE_TYPE_LIGHT, capabilities=()
+    )
+    entity = GoveeSegmentBlendingSwitchEntity(coordinator, device)
+    entity.async_write_ha_state = MagicMock()
+    return entity, coordinator
+
+
+class TestBlendingSwitch:
+    @pytest.mark.parametrize("on", [True, False])
+    async def test_a_raw_write_skips_the_cloud_toggle(self, on: bool) -> None:
+        entity, coordinator = _blending_switch()
+        entity._is_on = not on
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)) as route:
+            await (entity.async_turn_on() if on else entity.async_turn_off())
+
+        assert list(route.await_args.args[4]) == [_frame(0x33, 0xA3, int(on))]
+        coordinator.async_control_device.assert_not_awaited()
+        assert entity.is_on is on
+        entity.async_write_ha_state.assert_called_once()
+
+    async def test_no_raw_tier_falls_back_to_the_cloud_toggle(self) -> None:
+        entity, coordinator = _blending_switch()
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=False)):
+            await entity.async_turn_on()
+
+        coordinator.async_control_device.assert_awaited_once_with(
+            DEVICE_ID, ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=True)
+        )
+        assert entity.is_on is True

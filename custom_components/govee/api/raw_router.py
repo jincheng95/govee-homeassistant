@@ -6,14 +6,14 @@ the cloud MQTT ``ptReal`` passthrough, and reports False when no tier accepted
 ("not handled, use the cloud command you had"). No tier raises at the entity and
 no tier confirms, so callers keep optimistic state. Also home to the per-segment
 paint (:func:`async_segment_color`), which picks its wire form from the profile,
-to whole-device colour temperature (:func:`async_color_temp`) and to zone power
-(:func:`async_zone_power`).
+to whole-device colour temperature (:func:`async_color_temp`), to device
+settings (:func:`async_device_setting`) and to zone power (:func:`async_zone_power`).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.util import color as color_util
@@ -275,6 +275,43 @@ async def async_color_temp(coordinator: GoveeCoordinator, device: GoveeDevice, k
     ):
         return None
     return sent
+
+
+# Device settings (the gradient switch and the settings selects)
+
+
+async def async_device_setting(
+    coordinator: GoveeCoordinator,
+    device: GoveeDevice,
+    capability: Capability,
+    build: Callable[[GoveeCodec], bytes],
+) -> bool:
+    """Try to write one device setting over a raw pipe.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device: The device to write.
+        capability: The setting's capability, e.g. ``Capability.GRADIENT``.
+        build: Builds the frame from the device's codec.
+
+    Returns:
+        True when a tier took the frame. False when the profile does not
+        encode the setting, the raw option is off, or no tier took it.
+    """
+    profile = profile_for(device.sku)
+    if device.is_group or profile is None or not profile.supports(capability):
+        return False
+    if not raw_write_enabled(coordinator):
+        return False
+    return await async_route_frames(
+        coordinator, device.device_id, device.sku, profile, [build(GoveeCodec(profile))], what=capability.value
+    )
+
+
+def supports_setting(sku: str, capability: Capability) -> bool:
+    """Whether the SKU's profile encodes ``capability``."""
+    profile = profile_for(sku)
+    return profile is not None and profile.supports(capability)
 
 
 # Per-segment colour (the segment light entities)

@@ -30,6 +30,7 @@ ZONE_POWER_COMMAND_TYPE = 0x30
 WHOLE_POWER_COMMAND_TYPE = 0x01
 WHOLE_BRIGHTNESS_COMMAND_TYPE = 0x04
 BAR_POWER_MASK_COMMAND_TYPE = 0x33
+GRADIENT_COMMAND_TYPE = 0xA3
 
 Encoder = Callable[..., bytes]
 
@@ -70,6 +71,12 @@ def bar_power_mask(constants: Mapping[str, Any], *, mask: int) -> bytes:
     """``33 33 <mask>`` — H6046's two-bar power mask (01 = A, 10 = B, 11 = both)."""
     del constants
     return build_frame([PRO_TYPE_WRITE, BAR_POWER_MASK_COMMAND_TYPE, mask & 0xFF])
+
+
+def gradient(constants: Mapping[str, Any], *, on: bool) -> bytes:
+    """``33 a3 <00|01>`` — blend segment paints across segment boundaries."""
+    del constants
+    return build_frame([PRO_TYPE_WRITE, GRADIENT_COMMAND_TYPE, 1 if on else 0])
 
 
 def query(constants: Mapping[str, Any], *, command_type: int) -> bytes:
@@ -229,6 +236,7 @@ ENCODERS: Mapping[str, Encoder] = {
     "whole_brightness": whole_brightness,
     "zone_power": zone_power,
     "bar_power_mask": bar_power_mask,
+    "gradient": gradient,
     "query": query,
     "mode_select": mode_select,
     "zone_color": zone_color,

@@ -102,6 +102,7 @@ class Capability(str, Enum):
     BAR_POWER_MASK = "bar_power_mask"
     MODE_SELECT = "mode_select"
     QUERY = "query"
+    GRADIENT = "gradient"
 
 
 @dataclass(frozen=True)
@@ -640,6 +641,7 @@ H80C5: Final = DeviceProfile(
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
+        Capability.GRADIENT: CapabilitySpec("gradient"),
     },
     modes={"scene": 0x04},
     # `aa a5` answers a query on this SKU; it is not pushed unsolicited.
