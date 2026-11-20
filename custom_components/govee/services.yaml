@@ -105,7 +105,7 @@ apply_diy_effect:
           example: 30
           selector:
             number:
-              min: 1
+              min: 0
               max: 100
               mode: slider
     ring_section:

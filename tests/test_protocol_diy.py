@@ -158,6 +158,22 @@ class TestDiyValidation:
                 spec, DiyZoneEffect(mode=1, speed=speed, colors=((1, 1, 1),))
             )
 
+    def test_flow_rate_zero_encodes(self) -> None:
+        """Flow rate 0 is the slider's minimum, not an error."""
+        spec = H60B0.diy.zone("ripple")
+        record = diy_mod.encode_record(
+            spec, DiyZoneEffect(mode=1, speed=0x33, colors=RAINBOW, flow_rate=0)
+        )
+        assert record == bytes([0x01, 0x1A, 0x00, 0x33, 0x07]) + RAINBOW_RGB + bytes([0x01, 0x00])
+
+    @pytest.mark.parametrize("flow_rate", [-1, 101])
+    def test_flow_rate_range(self, flow_rate: int) -> None:
+        spec = H60B0.diy.zone("ripple")
+        with pytest.raises(DiyEffectError):
+            diy_mod.encode_record(
+                spec, DiyZoneEffect(mode=1, colors=((1, 1, 1),), flow_rate=flow_rate)
+            )
+
     def test_empty_palette_refused(self) -> None:
         spec = H60B0.diy.zone("ring")
         with pytest.raises(DiyEffectError):

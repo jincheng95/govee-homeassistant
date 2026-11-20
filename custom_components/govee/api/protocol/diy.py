@@ -46,6 +46,7 @@ sample exceeds 7 colours and the app's own ceiling is unknown — refuse rather
 than send an unproven count."""
 
 _SPEED_RANGE = range(1, 101)
+_FLOW_RATE_RANGE = range(0, 101)
 
 
 @dataclass(frozen=True)
@@ -131,9 +132,9 @@ def encode_record(spec: DiyZoneSpec, effect: DiyZoneEffect | None) -> bytes:
 
     if spec.has_flow_rate:
         flow = 50 if effect.flow_rate is None else effect.flow_rate
-        if flow not in _SPEED_RANGE:
+        if flow not in _FLOW_RATE_RANGE:
             raise DiyEffectError(
-                f"zone {spec.zone_key!r}: flow rate {flow} outside 1-100"
+                f"zone {spec.zone_key!r}: flow rate {flow} outside 0-100"
             )
         body.append(flow)
     elif effect.flow_rate is not None:
