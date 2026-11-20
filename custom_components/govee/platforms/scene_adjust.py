@@ -79,6 +79,40 @@ def async_scene_adjust_select_entities(coordinator: GoveeCoordinator, entry: Con
     return entities
 
 
+async def async_start_scene_locally(
+    coordinator: GoveeCoordinator, device: GoveeDevice, scene_id: int, scene_name: str
+) -> bool:
+    """Upload a catalogue scene as raw frames instead of asking the cloud.
+
+    Declined, so the caller falls back to the cloud command, when the SKU
+    takes no scene uploads, the light is not known to be on, the catalogue has
+    no blob for the scene, or no raw pipe accepts the frames.
+
+    Returns:
+        True when the scene was uploaded and the state updated.
+    """
+    profile = profile_for(device.sku)
+    if profile is None or not profile.scene_upload:
+        return False
+    state = coordinator.get_state(device.device_id)
+    if state is None or state.power_state is not True:
+        return False
+    scene = catalogue(coordinator).scene(device.sku, scene_name)
+    if scene is None:
+        return False
+    try:
+        frames = scenes.scene_frames(scene.blob, scene.code)
+    except GoveeProtocolError:
+        return False
+    if not await raw_router.async_route_frames(
+        coordinator, device.device_id, device.sku, profile, frames, what="scene start"
+    ):
+        return False
+    state.apply_optimistic_scene(str(scene_id), scene_name)
+    coordinator.async_update_listeners()
+    return True
+
+
 class _GoveeSceneAdjustSelect(GoveeEntity, SelectEntity):
     """Shared scene lookup, choice store and upload."""
 

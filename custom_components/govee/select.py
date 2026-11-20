@@ -35,7 +35,7 @@ from .const import (
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .platforms.diy_effect import async_diy_select_entities
-from .platforms.scene_adjust import async_scene_adjust_select_entities
+from .platforms.scene_adjust import async_scene_adjust_select_entities, async_start_scene_locally
 from .entity import GoveeEntity
 from .h6104 import GoveeTVAreaSelect
 from .kettle.entities import kettle_selects
@@ -427,7 +427,11 @@ class GoveeSceneSelectEntity(_GoveeSceneListSelectBase):
             raise self._unknown_option(option)
 
         scene_id, scene_name = scene_info
-        await self._async_send_command(SceneCommand(scene_id=scene_id, scene_name=scene_name))
+        # Fork: a name the catalogue can only mean one way goes out as a raw
+        # upload where the SKU takes one; anything else uses the cloud.
+        unambiguous = sum(1 for _, name in self._scene_map.values() if name == scene_name) == 1
+        if not (unambiguous and await async_start_scene_locally(self.coordinator, self._device, scene_id, scene_name)):
+            await self._async_send_command(SceneCommand(scene_id=scene_id, scene_name=scene_name))
         # State update with mutual exclusion is handled in coordinator
         self.async_write_ha_state()
         _LOGGER.debug("Activated scene '%s' on %s", scene_name, self._device.name)
