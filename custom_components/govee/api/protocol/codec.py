@@ -14,10 +14,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .diy import DiyZoneEffect, all_off, encode_payload
-from .encoders import ENCODERS
+from .encoders import ENCODERS, music_select
 from .errors import DiyEffectError, GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
-from .frames import ptreal_message, segment_mask
-from .packets import upload_effect
+from .frames import ptreal_message, rgb_bytes, segment_mask
+from .packets import chunk_effect, upload_effect
 from .profiles import (
     Capability,
     CapabilitySpec,
@@ -119,6 +119,60 @@ class GoveeCodec:
         if isinstance(sub_mode, Unknown):
             raise UnknownEncodingError(f"{self.profile.sku} mode {name!r} sub-mode byte is UNKNOWN")
         return self._encode(Capability.MODE_SELECT, sub_mode=sub_mode, index=index, marker=marker)
+
+    def music_effect(
+        self,
+        effect: int | str,
+        *,
+        sensitivity: int,
+        colors: Sequence[tuple[int, int, int]] | None = None,
+        soft: bool = False,
+    ) -> list[bytes]:
+        """Build a music-effect selection: an optional palette upload, then the commit.
+
+        Args:
+            effect: An effect name from the profile's music table, or a raw id.
+            sensitivity: Microphone sensitivity, 0 to the profile's maximum.
+            colors: The palette to upload first. None sends the commit alone.
+            soft: The palette's soft style instead of the dynamic one.
+
+        Returns:
+            Frames to send in order, in one envelope.
+
+        Raises:
+            UnsupportedCapabilityError: The SKU has no music table, or the
+                effect takes no plain palette.
+            GoveeProtocolError: A name, sensitivity or palette is out of range.
+        """
+        spec = self.profile.music
+        sub_mode = self.profile.modes.get("music")
+        if spec is None or not isinstance(sub_mode, int):
+            raise UnsupportedCapabilityError(f"{self.profile.sku} has no music effect table")
+        if isinstance(effect, str):
+            try:
+                effect = spec.effects[effect.strip().lower()]
+            except KeyError:
+                raise GoveeProtocolError(
+                    f"{self.profile.sku} has no music effect {effect!r} (have: {sorted(spec.effects)})"
+                ) from None
+        if not 0 <= effect <= 0xFF:
+            raise GoveeProtocolError(f"music effect id {effect} out of byte range")
+        if not 0 <= sensitivity <= spec.max_sensitivity:
+            raise GoveeProtocolError(f"music sensitivity {sensitivity} outside 0-{spec.max_sensitivity}")
+
+        frames: list[bytes] = []
+        if colors is not None:
+            if effect not in spec.palette_effects:
+                raise UnsupportedCapabilityError(f"music effect {effect:#04x} takes no plain palette")
+            if not 1 <= len(colors) <= spec.max_colors:
+                raise GoveeProtocolError(f"{len(colors)} music palette colours, allowed 1-{spec.max_colors}")
+            payload = bytearray([effect, len(colors)])
+            for rgb in colors:
+                payload += rgb_bytes(rgb)
+            payload.append(1 if soft else 0)
+            frames += chunk_effect(payload, marker=spec.marker)
+        frames.append(music_select(sub_mode=sub_mode, effect=effect, sensitivity=sensitivity))
+        return frames
 
     def bar_power_mask(self, mask: int) -> bytes:
         """H6046 two-bar power mask (0x01 = bar A, 0x10 = bar B, 0x11 = both)."""

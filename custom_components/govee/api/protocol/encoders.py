@@ -101,6 +101,15 @@ def mode_select(
     return build_frame(body)
 
 
+def music_select(*, sub_mode: int, effect: int, sensitivity: int) -> bytes:
+    """``33 05 <submode> <effect> <sensitivity>``.
+
+    Same opening bytes as :func:`mode_select`, but byte 4 is the sensitivity
+    rather than a high index byte.
+    """
+    return build_frame([PRO_TYPE_WRITE, SUB_MODE_COMMAND_TYPE, sub_mode, effect, sensitivity])
+
+
 # sub-mode operate, zone-addressed (H60B0 family, sub_mode 0x2c)
 
 

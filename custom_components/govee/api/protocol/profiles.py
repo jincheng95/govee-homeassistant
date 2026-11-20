@@ -249,6 +249,31 @@ class DiyEffectSpec:
 
 
 @dataclass(frozen=True)
+class MusicEffectSpec:
+    """How this SKU takes a music effect.
+
+    The commit is ``33 05 <music sub-mode> <effect> <sensitivity>``. A palette
+    effect may first upload ``<effect> <count> <RGB>xN <style>`` as an ``0xA3``
+    multipacket under ``marker``; ``<style>`` is 0 for dynamic, 1 for soft.
+    """
+
+    marker: int
+    effects: Mapping[str, int]
+    """Effect name to effect id."""
+
+    palette_effects: frozenset[int]
+    """Effect ids whose palette upload has the plain layout above."""
+
+    max_sensitivity: int
+    """Highest sensitivity the commit takes; the lowest is 0."""
+
+    max_colors: int
+    """Largest palette the upload takes."""
+
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class DeviceProfile:
     """Everything the codec needs to talk to one SKU."""
 
@@ -268,6 +293,7 @@ class DeviceProfile:
     modes: Mapping[str, ConstantValue] = field(default_factory=dict)
     constraints: tuple[MaxSimultaneousZones, ...] = ()
     diy: DiyEffectSpec | None = None
+    music: MusicEffectSpec | None = None
     segment_zone: SegmentZoneSpec | None = None
     """Set when this SKU's segments are painted with the ZONE frame + a mask."""
     segment_readback: bool = False
@@ -510,6 +536,25 @@ H60B0: Final = DeviceProfile(
         ),
         note="0x50-form payload: 0d + ripple record + ring record; commit 33 05 0a <idx> 00 58",
     ),
+    music=MusicEffectSpec(
+        marker=0x41,
+        effects={
+            "custom": 0x82,
+            "stippling": 0x83,
+            "hopping": 0x33,
+            "flowing_light": 0x53,
+            "luminous": 0x51,
+            "bloom": 0x30,
+            "rhythm": 0x72,
+            "shiny": 0x31,
+        },
+        # Hopping appends undecoded option bytes and Custom nests two
+        # sub-effects, so neither takes the plain palette layout.
+        palette_effects=frozenset({0x83, 0x53, 0x51, 0x30, 0x72, 0x31}),
+        max_sensitivity=99,
+        max_colors=8,
+        note="palette upload marker 0x41, then commit 33 05 13 <effect> <sensitivity>",
+    ),
     # No SEGMENT_COLOR capability at all: the addressable LEDs are the ring
     # zone's, and a segment paint is the zone-colour frame with the mask filled
     # in. Both mask offsets are already table data on the two capabilities.
@@ -718,6 +763,14 @@ def validate_table() -> None:
                     f"{profile.sku} points its segments at zone {segment_zone.key!r}, "
                     "which does not encode zone_color"
                 )
+        if profile.music is not None:
+            if not isinstance(profile.modes.get("music"), int):
+                raise GoveeProtocolError(f"{profile.sku} declares music effects but no 'music' sub-mode")
+            ids = set(profile.music.effects.values())
+            if not all(0 <= effect <= 0xFF for effect in ids):
+                raise GoveeProtocolError(f"{profile.sku} music effect id out of byte range")
+            if not profile.music.palette_effects <= ids:
+                raise GoveeProtocolError(f"{profile.sku} names a palette music effect it does not list")
         if profile.diy is not None:
             if not profile.diy.zones:
                 raise GoveeProtocolError(
