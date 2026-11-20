@@ -281,6 +281,8 @@ class DeviceProfile:
     True only for a SKU where an uploaded scene has been read back by its
     catalogue code.
     """
+    power_push: bool = False
+    """Whether this SKU pushes ``ee 30 01 <on>`` when its power changes (:mod:`.status`)."""
     echo_lag_seconds: float = 0.0
     """How long this SKU keeps reporting its PRE-command state after a write.
 
@@ -650,6 +652,7 @@ H80C5: Final = DeviceProfile(
     segment_readback=False,
     # One scene of each uploaded blob kind read back by its catalogue code.
     scene_upload=True,
+    power_push=True,
 )
 
 PROFILES: Final[Mapping[str, DeviceProfile]] = {profile.sku: profile for profile in (H60B0, H6046, H6076, H80C5)}

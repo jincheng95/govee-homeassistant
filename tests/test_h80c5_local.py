@@ -5,12 +5,14 @@
 2. Segment gradient: the frame, the raw setting route and the blending
    switch that takes it before the cloud toggle.
 3. Power-off memory: the frame, the select, its option gate and cleanup.
+4. Power push: the decoder, the state update and the MQTT raw-frame hook.
 
 Device ids are the suite's synthetic ones.
 """
 
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,10 +23,17 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import color as color_util
 
-from custom_components.govee import _async_cleanup_orphaned_entities
+from custom_components.govee import _async_cleanup_orphaned_entities, raw_status
 
 from custom_components.govee.api import raw_router
-from custom_components.govee.api.protocol import FrameError, GoveeCodec, UnsupportedCapabilityError, get_profile
+from custom_components.govee.api.protocol import (
+    FrameError,
+    GoveeCodec,
+    StatusReport,
+    UnsupportedCapabilityError,
+    decode_status,
+    get_profile,
+)
 from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE, SUFFIX_POWER_OFF_MEMORY
 from custom_components.govee.api.protocol import Capability
 from custom_components.govee.models import ColorTempCommand, GoveeDevice, GoveeDeviceState, ToggleCommand
@@ -412,3 +421,90 @@ async def test_cleanup_follows_the_raw_option(hass, mock_light_device, raw: bool
 
     assert registry.async_get(ids[device_id]) is not None
     assert (registry.async_get(ids[f"{device_id}{SUFFIX_POWER_OFF_MEMORY}"]) is not None) is kept
+
+
+# ==============================================================================
+# 4. Power push
+# ==============================================================================
+
+POWER_OFF = _frame(0xEE, 0x30, 0x01, 0x00)
+POWER_ON = _frame(0xEE, 0x30, 0x01, 0x01, 0x01)
+
+
+def _corrupt(frame: bytes) -> bytes:
+    return frame[:-1] + bytes([frame[-1] ^ 0xFF])
+
+
+class TestPowerDecode:
+    def test_the_known_frames_carry_their_checksum(self) -> None:
+        assert POWER_OFF[19] == 0xDF and POWER_ON[19] == 0xDF
+
+    @pytest.mark.parametrize(("frames", "power"), [([POWER_OFF], False), ([POWER_ON], True), ([], None)])
+    def test_power(self, frames: list[bytes], power: bool | None) -> None:
+        assert decode_status(frames) == StatusReport(power=power)
+
+    def test_the_last_report_wins(self) -> None:
+        assert decode_status([POWER_OFF, POWER_ON]).power is True
+
+    @pytest.mark.parametrize(
+        "frame",
+        [_corrupt(POWER_ON), POWER_ON[:19], _frame(0xEE, 0x30, 0x01, 0x02), _frame(0xEE, 0x30, 0x02, 0x01)],
+    )
+    def test_malformed_or_other_frames_are_skipped(self, frame: bytes) -> None:
+        assert decode_status([frame]).power is None
+
+
+def _state_coordinator(power: bool) -> Any:
+    coordinator = MagicMock()
+    state = GoveeDeviceState.create_empty(DEVICE_ID)
+    state.power_state = power
+    coordinator.get_state = MagicMock(return_value=state)
+    coordinator.state = state
+    return coordinator
+
+
+class TestApplyPower:
+    def test_a_change_is_applied(self) -> None:
+        coordinator = _state_coordinator(False)
+        assert raw_status.apply_raw_status(coordinator, _light(), [POWER_ON]) is True
+        assert coordinator.state.power_state is True
+
+    def test_the_same_power_is_no_change(self) -> None:
+        coordinator = _state_coordinator(True)
+        assert raw_status.apply_raw_status(coordinator, _light(), [POWER_ON]) is False
+
+    @pytest.mark.parametrize(
+        "device",
+        [_light("H6076"), _light("H60B0"), _light("H0000"), _light(is_group=True)],
+    )
+    def test_skus_without_the_push_are_left_alone(self, device: GoveeDevice) -> None:
+        coordinator = _state_coordinator(False)
+        assert raw_status.apply_raw_status(coordinator, device, [POWER_ON]) is False
+        assert coordinator.state.power_state is False
+
+    def test_no_state_is_no_change(self) -> None:
+        coordinator = MagicMock()
+        coordinator.get_state = MagicMock(return_value=None)
+        assert raw_status.apply_raw_status(coordinator, _light(), [POWER_ON]) is False
+
+
+def _payload(*frames: bytes) -> dict[str, Any]:
+    return {"op": {"command": [base64.b64encode(frame).decode() for frame in frames]}}
+
+
+class TestRawFrameHook:
+    def test_a_push_updates_power_and_notifies(self) -> None:
+        coord = _coordinator()
+        coord._on_mqtt_raw_frames(DEVICE_ID, _payload(POWER_ON))
+        assert coord._states[DEVICE_ID].power_state is True
+        coord.async_set_updated_data.assert_called_once_with(coord._states)
+
+    def test_an_unchanged_power_does_not_notify(self) -> None:
+        coord = _coordinator()
+        coord._on_mqtt_raw_frames(DEVICE_ID, _payload(POWER_OFF))
+        coord.async_set_updated_data.assert_not_called()
+
+    def test_an_unknown_device_is_ignored(self) -> None:
+        coord = _coordinator()
+        coord._on_mqtt_raw_frames("AA:BB:CC:DD:EE:FF:60:B1", _payload(POWER_ON))
+        coord.async_set_updated_data.assert_not_called()

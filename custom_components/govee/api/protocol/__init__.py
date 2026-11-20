@@ -59,6 +59,7 @@ from .profiles import (
     get_profile,
     validate_table,
 )
+from .status import StatusReport, decode_status
 
 __all__ = [
     "BLE_MANUFACTURER_LEGACY",
@@ -89,6 +90,7 @@ __all__ = [
     "MaxSimultaneousZones",
     "SegmentMaskError",
     "SegmentZoneSpec",
+    "StatusReport",
     "Transport",
     "UnknownEncodingError",
     "UnsupportedCapabilityError",
@@ -96,6 +98,7 @@ __all__ = [
     "build_frame",
     "chunk_effect",
     "commit_frame",
+    "decode_status",
     "frame_to_base64",
     "get_profile",
     "ha_to_percent",
