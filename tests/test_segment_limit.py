@@ -107,7 +107,7 @@ class TestVerifiedCount:
 
     @pytest.mark.parametrize(
         ("sku", "expected"),
-        [("H6076", H6076_SEGMENTS), ("H6046", H6046_SEGMENTS), ("H60B0", H60B0_SEGMENTS)],
+        [("H6076", H6076_SEGMENTS), ("H6046", H6046_SEGMENTS), ("H60B0", H60B0_SEGMENTS), ("H80C5", 10)],
     )
     def test_every_profiled_sku_states_its_real_count(self, sku: str, expected: int):
         assert segment_limit.verified_segment_count(sku) == expected

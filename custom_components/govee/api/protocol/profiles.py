@@ -591,7 +591,47 @@ H6076: Final = DeviceProfile(
     modes={"scene": 0x04},
 )
 
-PROFILES: Final[Mapping[str, DeviceProfile]] = {profile.sku: profile for profile in (H60B0, H6046, H6076)}
+H80C5: Final = DeviceProfile(
+    sku="H80C5",
+    goods_type=260,
+    name="Christmas string lights",
+    kelvin=KelvinRange(2000, 9000, verified=False, note="cloud-declared range; not swept on hardware"),
+    # Both pipes are hardware-verified with `aa a5` readback after the write.
+    transports=(Transport.LAN_RAW, Transport.MQTT_PTREAL),
+    # Not read off an advertisement. The device declares encryption support,
+    # which is the modern stack's marker.
+    ble_manufacturer_id=BLE_MANUFACTURER_MODERN,
+    zones=(
+        ZoneSpec(
+            key="segments",
+            name="Segments",
+            zone_byte=None,
+            segments=10,
+            capabilities=frozenset({Capability.SEGMENT_COLOR, Capability.SEGMENT_BRIGHTNESS}),
+            note="300 LEDs in 10 segments; `aa a5 03` returns segments 9 and 10 only",
+        ),
+    ),
+    capabilities={
+        Capability.POWER: CapabilitySpec("whole_power"),
+        Capability.BRIGHTNESS: CapabilitySpec("whole_brightness"),
+        # Same 0x15 SubModeColorV2 body as the H6046 and H6076.
+        Capability.SEGMENT_COLOR: CapabilitySpec(
+            "segment_color_v2",
+            {"sub_mode": 0x15, "attribute": 0x01, "mask_offset": 12},
+        ),
+        Capability.SEGMENT_BRIGHTNESS: CapabilitySpec(
+            "segment_level_v2",
+            {"sub_mode": 0x15, "attribute": 0x02, "mask_offset": 5},
+        ),
+        Capability.MODE_SELECT: CapabilitySpec("mode_select"),
+        Capability.QUERY: CapabilitySpec("query"),
+    },
+    modes={"scene": 0x04},
+    # `aa a5` answers a query on this SKU; it is not pushed unsolicited.
+    segment_readback=False,
+)
+
+PROFILES: Final[Mapping[str, DeviceProfile]] = {profile.sku: profile for profile in (H60B0, H6046, H6076, H80C5)}
 
 
 def get_profile(sku: str) -> DeviceProfile:

@@ -350,7 +350,7 @@ class TestGates:
         assert sent is False
 
     def test_the_table_says_which_skus_may_use_the_pipe(self):
-        for sku in ("H60B0", "H6046", "H6076"):
+        for sku in ("H60B0", "H6046", "H6076", "H80C5"):
             assert get_profile(sku).carries(Transport.MQTT_PTREAL) is True
         # ...and every one of them also has a local pipe the router tries
         # first. That ordering is the router's, not the table's.

@@ -46,6 +46,7 @@ from custom_components.govee.api.protocol.errors import FrameError, GoveeProtoco
 H60B0 = GoveeCodec.for_sku("H60B0")
 H6046 = GoveeCodec.for_sku("H6046")
 H6076 = GoveeCodec.for_sku("H6076")
+H80C5 = GoveeCodec.for_sku("H80C5")
 
 
 def _hex(frame: bytes) -> str:
@@ -196,6 +197,19 @@ GOLDEN_FRAMES: list[tuple[str, Callable[[], bytes], str, str]] = [
         lambda: H6046.segment_color((255, 0, 0), segments=[0]),
         "33 05 15 01 ff 00 00 00 00 00 00 00 01 00 00 00 00 00 00 dc",
         "MwUVAf8AAAAAAAAAAQAAAAAAANw=",
+    ),
+    # H80C5: both frames confirmed by `aa a5` readback after the write
+    (
+        "H80C5 segment 1 red",
+        lambda: H80C5.segment_color((255, 0, 0), segments=[0]),
+        "33 05 15 01 ff 00 00 00 00 00 00 00 01 00 00 00 00 00 00 dc",
+        "MwUVAf8AAAAAAAAAAQAAAAAAANw=",
+    ),
+    (
+        "H80C5 segments 2 and 3 to level 50",
+        lambda: H80C5.segment_brightness(50, segments=[1, 2]),
+        "33 05 15 02 32 06 00 00 00 00 00 00 00 00 00 00 00 00 00 15",
+        "MwUVAjIGAAAAAAAAAAAAAAAAABU=",
     ),
 ]
 
@@ -541,10 +555,19 @@ class TestProfiles:
         assert h6046.carries(profiles.Transport.BLE_PLAINTEXT) is True
         assert h6046.carries(profiles.Transport.BLE_ENCRYPTED) is False
 
-        for sku in ("H60B0", "H6076"):
+        for sku in ("H60B0", "H6076", "H80C5"):
             profile = get_profile(sku)
             assert profile.carries(profiles.Transport.LAN_RAW) is True
             assert profile.carries(profiles.Transport.BLE_PLAINTEXT) is False
+
+        # No BLE pipe has been measured on the H80C5, so none is declared.
+        assert get_profile("H80C5").carries(profiles.Transport.BLE_ENCRYPTED) is False
+
+    def test_h80c5_reads_segments_on_request_only(self) -> None:
+        """`aa a5` answers a query on this SKU, so push dispatch stays off."""
+        profile = get_profile("H80C5")
+        assert profile.segment_readback is False
+        assert profile.verified_segment_count == 10
 
     def test_manufacturer_id_predicts_the_stack(self) -> None:
         """A scanner can pick the profile from the advertisement, pre-connect."""
@@ -605,7 +628,7 @@ class TestProfiles:
         assert profiles.describe(profile)["segment_zone"] == "ring"
 
     def test_describe_is_json_safe(self) -> None:
-        for sku in ("H60B0", "H6046", "H6076"):
+        for sku in ("H60B0", "H6046", "H6076", "H80C5"):
             dumped = json.dumps(profiles.describe(get_profile(sku)))
             assert sku in dumped
             assert "transports" in dumped
