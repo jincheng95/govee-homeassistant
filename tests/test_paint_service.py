@@ -107,6 +107,32 @@ class TestHandler:
         assert args[:4] == (coordinator, DEVICE_ID, "H80C5", get_profile("H80C5"))
         assert list(args[4]) == expected
 
+    async def test_a_long_paint_goes_out_as_spaced_messages(self) -> None:
+        colors = [{"rgb_color": [index, 0, 0], "bulbs": [index]} for index in range(30)]
+        sleeps: list[float] = []
+
+        async def _sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        with patch.object(services.asyncio, "sleep", _sleep):
+            route = await _run(_coordinator(), _call(colors=colors))
+
+        sent = [list(call.args[4]) for call in route.await_args_list]
+        expected = paint.paint_frames([((index, 0, 0), [index]) for index in range(30)], bulb_count=300)
+        assert len(sent) > 1
+        assert all(len(message) <= paint.MESSAGE_FRAMES for message in sent)
+        assert [frame for message in sent for frame in message] == expected
+        assert sleeps == [paint.MESSAGE_GAP_SECONDS] * (len(sent) - 1)
+
+    async def test_a_refused_later_message_stops_the_upload(self) -> None:
+        colors = [{"rgb_color": [index, 0, 0], "bulbs": [index]} for index in range(30)]
+        route = AsyncMock(side_effect=[True, False, True])
+        with patch(LOOKUP, return_value=(_coordinator(), DEVICE_ID)), patch.object(
+            services.raw_router, "async_route_frames", route
+        ), patch.object(services.asyncio, "sleep", AsyncMock()), pytest.raises(HomeAssistantError):
+            await async_paint_bulbs_handler(MagicMock(), _call(colors=colors))
+        assert route.await_count == 2
+
     async def test_a_paint_clears_the_running_scene(self) -> None:
         coordinator = _coordinator(scene="Rainbow B")
         await _run(coordinator, _call())

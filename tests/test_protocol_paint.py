@@ -1,7 +1,7 @@
 """Per-LED paint payload and frames (fork feature).
 
-The golden is the frame set sent to an H80C5, after which the lamp reported
-DIY mode with code 800.
+The golden is the frame set sent to an H80C5, which then showed the three
+colour blocks, holding still, and reported DIY mode with code 800.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ PROBE = [
 def test_probe_frames_match_what_the_lamp_accepted() -> None:
     frames = [frame.hex() for frame in paint.paint_frames(PROBE, bulb_count=300)]
     assert frames == [
-        "a30001050313646400000003000a00ff00000041",
+        "a30001050313006400000003000a00ff00000025",
         "a30100000102030405060708090a0000ff000056",
         "a302000a0b0c0d0e0f101112130a000000ff0a5f",
         "a3030022012301240125012601270128012901a0",
@@ -32,7 +32,7 @@ def test_probe_frames_match_what_the_lamp_accepted() -> None:
 
 def test_header_carries_the_base_colour_and_brightness() -> None:
     payload = paint.paint_payload([], bulb_count=300, base_color=(1, 2, 3), base_brightness=40)
-    assert payload == bytes([19, 100, 40, 1, 2, 3, 0, 0])
+    assert payload == bytes([19, 0, 40, 1, 2, 3, 0, 0])
 
 
 def test_an_empty_paint_still_uploads() -> None:
@@ -88,3 +88,11 @@ def test_bad_base(kwargs: dict) -> None:
 def test_h80c5_declares_its_led_count() -> None:
     assert get_profile("H80C5").paint_bulbs == 300
     assert get_profile("H6076").paint_bulbs == 0
+
+
+def test_an_upload_is_split_into_messages_of_twelve_frames() -> None:
+    frames = [bytes([index]) for index in range(30)]
+    split = paint.messages(frames)
+    assert [len(message) for message in split] == [12, 12, 6]
+    assert [frame for message in split for frame in message] == frames
+    assert paint.messages([]) == []

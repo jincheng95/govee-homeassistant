@@ -20,6 +20,7 @@ automations written against the Govee ID keep working.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -478,7 +479,7 @@ async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> N
             base_brightness=call.data[ATTR_BASE_BRIGHTNESS],
         )
         if len(frames) > MAX_PTREAL_FRAMES:
-            raise ValueError(f"the paint needs {len(frames)} frames, at most {MAX_PTREAL_FRAMES} fit one message")
+            raise ValueError(f"the paint needs {len(frames)} frames, the limit is {MAX_PTREAL_FRAMES}")
     except (ValueError, GoveeProtocolError) as err:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
@@ -486,12 +487,17 @@ async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> N
             translation_placeholders={"device": device.name, "reason": str(err)},
         ) from err
 
-    if not await raw_router.async_route_frames(coordinator, device_id, device.sku, profile, frames, what="bulb paint"):
-        raise HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="command_failed",
-            translation_placeholders={"device": device.name},
-        )
+    for index, message in enumerate(paint.messages(frames)):
+        if index:
+            await asyncio.sleep(paint.MESSAGE_GAP_SECONDS)
+        if not await raw_router.async_route_frames(
+            coordinator, device_id, device.sku, profile, message, what="bulb paint"
+        ):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_failed",
+                translation_placeholders={"device": device.name},
+            )
 
     # The paint replaces any running scene.
     state = coordinator.get_state(device_id)

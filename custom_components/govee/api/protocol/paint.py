@@ -3,7 +3,7 @@
 The payload names colours and, for each, the LEDs that take it. Every other
 LED shows the base colour::
 
-    effect | speed | baseBrightness | baseR baseG baseB | groups16
+    effect | speed | baseBrightness | baseR baseG baseB | groups16      speed 0 = still
     per group:  count16 | R G B | wide16 | <narrow indexes, 1 byte each>
                                          | <wide indexes, 2 bytes each>
 
@@ -22,8 +22,13 @@ from .scenes import terminated_chunks
 
 PAINT_MARKER = 0x03
 PAINT_CODE = 800
-STATIC_EFFECT = 19
-DEFAULT_SPEED = 100
+EFFECT = 19
+STILL_SPEED = 0
+"""The effect animates at any other speed; at 0 the paint holds still."""
+
+MESSAGE_FRAMES = 12
+"""Frames per ``ptReal`` message. The lamp drops larger messages."""
+MESSAGE_GAP_SECONDS = 0.04
 
 _WIDE_FROM = 256
 
@@ -87,7 +92,7 @@ def paint_payload(
             _u16(len(members)) + bytes(rgb) + _u16(len(wide)) + bytes(narrow) + b"".join(_u16(i) for i in wide)
         )
 
-    head = bytes([STATIC_EFFECT, DEFAULT_SPEED, base_brightness, *base]) + _u16(len(groups))
+    head = bytes([EFFECT, STILL_SPEED, base_brightness, *base]) + _u16(len(groups))
     return head + b"".join(groups)
 
 
@@ -104,3 +109,8 @@ def paint_frames(
         *terminated_chunks(payload, PAINT_MARKER),
         commit_frame(sub_mode=DIY_COMMIT_SUB_MODE, index=PAINT_CODE),
     ]
+
+
+def messages(frames: Sequence[bytes]) -> list[list[bytes]]:
+    """Split an upload into messages the lamp accepts, in sending order."""
+    return [list(frames[start : start + MESSAGE_FRAMES]) for start in range(0, len(frames), MESSAGE_FRAMES)]
