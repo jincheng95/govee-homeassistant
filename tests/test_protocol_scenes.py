@@ -183,10 +183,10 @@ class TestAdjustBlob:
             b"",
             RGBIC,
             RAINBOW[:-1],
-            bytes.fromhex("4903000c02"),
-            bytes.fromhex("4904000c020300"),
-            bytes.fromhex("4906000c0203000000"),
-            bytes.fromhex("4907000c020300ff0001"),
+            bytes([0x49, 3, 0, 12, 2]),
+            bytes([0x49, 4, 0, 12, 2, 3, 0]),
+            bytes([0x49, 6, 0, 12, 2, 3, 0, 0, 0]),
+            bytes([0x49, 7, 0, 12, 2, 3, 0, 0xFF, 0, 1]),
         ],
     )
     def test_malformed_blob(self, blob: bytes) -> None:

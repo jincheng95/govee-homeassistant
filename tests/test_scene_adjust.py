@@ -42,7 +42,7 @@ from tests.test_cov_init import _coordinator as _cleanup_coordinator
 from tests.test_cov_init import _entry as _cleanup_entry
 from tests.test_cov_init import _seed
 
-DEVICE_ID = "AA:BB:CC:DD:EE:FF:80:C5"
+DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
 SKU = "H80C5"
 
 RAINBOW = bytes.fromhex("491a000304055c07ff0000ff7f00ffff0000ff000000ff00ffff8b00ff")
@@ -296,7 +296,7 @@ class TestWiring:
     def test_other_skus_and_groups_get_none(self) -> None:
         coordinator = _coordinator(
             _device("H6076", "AA:BB:CC:DD:EE:FF:60:76"),
-            _device("H0000", "AA:BB:CC:DD:EE:FF:00:00"),
+            _device("H0000", "AA:BB:CC:DD:EE:FF:60:B1"),
             _device(SKU, "12345", is_group=True),
         )
         assert async_scene_adjust_select_entities(coordinator, _entry()) == []
