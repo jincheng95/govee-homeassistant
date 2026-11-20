@@ -28,6 +28,17 @@ CODEC = GoveeCodec.for_sku("H60B0")
 SEVEN_COLORS = tuple((index, 2 * index, 3 * index) for index in range(1, 8))
 SEVEN_RGB_HEX = " ".join(f"{r:02x} {g:02x} {b:02x}" for r, g, b in SEVEN_COLORS)
 
+RAINBOW = (
+    (0xFF, 0x00, 0x00),
+    (0xFF, 0x7F, 0x00),
+    (0xFF, 0xFF, 0x00),
+    (0x00, 0xFF, 0x00),
+    (0x00, 0x00, 0xFF),
+    (0x00, 0xFF, 0xFF),
+    (0x8B, 0x00, 0xFF),
+)
+RAINBOW_RGB = bytes(channel for rgb in RAINBOW for channel in rgb)
+
 
 def _hex(data: bytes) -> str:
     return data.hex(" ")
@@ -83,6 +94,40 @@ class TestDiyPayload:
             spec, DiyZoneEffect(mode=9, colors=((1, 2, 3),), mode_param=1)
         )
         assert record[2] == 0x01
+
+    def test_gleam_record_carries_mode_fields(self) -> None:
+        """Gleam puts four fixed bytes between the speed and the colour count."""
+        spec = H60B0.diy.zone("ring")
+        record = diy_mod.encode_record(
+            spec, DiyZoneEffect(mode=8, speed=0x32, colors=RAINBOW)
+        )
+        assert record == bytes([0x08, 0x1C, 0x00, 0x32, 0x01, 0x01, 0x01, 0x01, 0x07]) + RAINBOW_RGB
+        assert record[1] == len(record) - 2
+
+    def test_gleam_payload_matches_the_app(self) -> None:
+        """Ripple gradient + ring gleam, byte for byte."""
+        payload = diy_mod.encode_payload(
+            H60B0.diy,
+            {
+                "ripple": DiyZoneEffect(
+                    mode=1, speed=0x33, colors=RAINBOW, direction=DIRECTION_CW, flow_rate=0x64
+                ),
+                "ring": DiyZoneEffect(mode=8, speed=0x32, colors=RAINBOW),
+            },
+        )
+        expected = (
+            bytes([0x0D, 0x01, 0x1A, 0x00, 0x33, 0x07])
+            + RAINBOW_RGB
+            + bytes([0x01, 0x64, 0x08, 0x1C, 0x00, 0x32, 0x01, 0x01, 0x01, 0x01, 0x07])
+            + RAINBOW_RGB
+        )
+        assert payload == expected
+
+    def test_other_ring_modes_have_no_mode_fields(self) -> None:
+        spec = H60B0.diy.zone("ring")
+        for mode in (1, 2, 3, 4, 5, 6, 7, 9, 10):
+            record = diy_mod.encode_record(spec, DiyZoneEffect(mode=mode, colors=RAINBOW))
+            assert record[1] == 0x18
 
     def test_zone_off_is_two_byte_empty_record(self) -> None:
         spec = H60B0.diy.zone("ring")
@@ -205,6 +250,25 @@ class TestCodecDiyEffect:
         assert data[: len(expected)] == expected
         assert chunks[0][3] == len(chunks)  # packet count in header
         assert chunks[0][4] == 0x58  # DIY marker
+
+    def test_gleam_upload_chunks_byte_exact(self) -> None:
+        """The four 0xA3 chunks of a ripple gradient + ring gleam upload."""
+        frames = CODEC.diy_effect(
+            {
+                "ripple": DiyZoneEffect(mode=1, speed=0x33, colors=RAINBOW, flow_rate=0x64),
+                "ring": DiyZoneEffect(mode=8, speed=0x32, colors=RAINBOW),
+            }
+        )
+        assert frames[:-1] == [
+            bytes([0xA3, 0x00, 0x01, 0x04, 0x58, 0x0D, 0x01, 0x1A, 0x00, 0x33,
+                   0x07, 0xFF, 0x00, 0x00, 0xFF, 0x7F, 0x00, 0xFF, 0xFF, 0xA3]),
+            bytes([0xA3, 0x01, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00,
+                   0xFF, 0xFF, 0x8B, 0x00, 0xFF, 0x01, 0x64, 0x08, 0x1C, 0xA7]),
+            bytes([0xA3, 0x02, 0x00, 0x32, 0x01, 0x01, 0x01, 0x01, 0x07, 0xFF,
+                   0x00, 0x00, 0xFF, 0x7F, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xEB]),
+            bytes([0xA3, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0xFF,
+                   0x8B, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28]),
+        ]
 
     def test_all_off_refused(self) -> None:
         with pytest.raises(DiyEffectError):

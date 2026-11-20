@@ -214,6 +214,11 @@ class DiyZoneSpec:
     modes: Mapping[str, int]
     has_direction: bool = False
     has_flow_rate: bool = False
+    mode_fields: Mapping[int, bytes] = field(default_factory=dict)
+    """Fixed bytes a mode carries between its speed and its colour count.
+
+    Keyed by mode int. A mode absent here has no such field.
+    """
     note: str = ""
 
 
@@ -485,6 +490,9 @@ H60B0: Final = DeviceProfile(
                     "cover": 9,
                     "colorful": 10,
                 },
+                # Gleam's four bytes are constant in every sample; their
+                # meaning is not decoded.
+                mode_fields={8: bytes([0x01, 0x01, 0x01, 0x01])},
                 note="no direction/flow tail; mode 9 'cover' sets mode_param=0x01 in the one sample",
             ),
         ),

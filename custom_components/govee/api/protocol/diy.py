@@ -1,8 +1,10 @@
 """DIY effect payload encoder — the ``0x50``-form blob the H60B0 takes.
 
 A DIY effect is per-zone: each zone gets a record of ``<mode> <recLen> <body>``,
-where the body is ``<modeParam> <speed> <colorCount> <RGB>xN`` plus, on zones
-whose :class:`~.profiles.DiyZoneSpec` declares them, a direction and flow rate.
+where the body is ``<modeParam> <speed> [modeFields] <colorCount> <RGB>xN``
+plus, on zones whose :class:`~.profiles.DiyZoneSpec` declares them, a direction
+and flow rate. ``modeFields`` are the fixed bytes the zone spec lists for that
+mode, and nothing for any other mode.
 ``recLen`` counts the bytes after it; ``recLen = 0`` is a zone switched off. Both
 records are always present, in the profile's declared order, behind a constant
 lead byte; the payload rides an ``0xA3`` multipacket upload and a commit frame
@@ -110,7 +112,9 @@ def encode_record(spec: DiyZoneSpec, effect: DiyZoneEffect | None) -> bytes:
             f"zone {spec.zone_key!r}: mode_param {effect.mode_param} out of byte range"
         )
 
-    body = bytearray([effect.mode_param, effect.speed, len(effect.colors)])
+    body = bytearray([effect.mode_param, effect.speed])
+    body += spec.mode_fields.get(effect.mode, b"")
+    body.append(len(effect.colors))
     for rgb in effect.colors:
         body += rgb_bytes(rgb)
 
