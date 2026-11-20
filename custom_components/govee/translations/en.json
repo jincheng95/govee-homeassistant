@@ -714,19 +714,23 @@
         },
         "effect": {
           "name": "Effect",
-          "description": "Whole-light effect type, for string lights."
+          "description": "Whole-light effect type, for string lights. \"combo\" plays the effects named in Combine."
         },
         "colors": {
           "name": "Colours",
-          "description": "The palette: a list of up to 8 colours, each [red, green, blue]. Most effects need at least two."
+          "description": "The palette: a list of up to 8 colours, each [red, green, blue]. Most effects need at least two; fade, breathe and combo take one."
         },
         "speed": {
           "name": "Speed",
-          "description": "0 to 100. Leave empty for the effect's stock speed."
+          "description": "0 to 100 (1 to 100 for combo). Leave empty for the effect's stock speed."
         },
         "direction": {
           "name": "Direction",
-          "description": "Leave empty for the effect's stock direction. Flame, diffuse, concentric, starlight, wave and blend take none."
+          "description": "Leave empty for the effect's stock direction. Flame, diffuse, concentric, starlight, wave and blend take none. Flow 1 and rainbow 1 take clockwise or anticlockwise; the other numbered effects and combo take none."
+        },
+        "combine": {
+          "name": "Combine",
+          "description": "For the combo effect only: 1 to 4 of flow_1, rainbow_1, fade_1, marquee_3 and breathe, each once. They share the colours and speed."
         }
       },
       "sections": {

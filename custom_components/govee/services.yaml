@@ -168,12 +168,22 @@ apply_diy_effect:
               mode: dropdown
               options:
                 - blend
+                - breathe
+                - combo
                 - concentric
                 - diffuse
+                - fade_1
+                - fade_2
+                - fade_3
                 - flame
                 - flow
+                - flow_1
                 - layered
+                - marquee_1
+                - marquee_2
+                - marquee_3
                 - rainbow
+                - rainbow_1
                 - rotate
                 - spiral
                 - starlight
@@ -213,6 +223,19 @@ apply_diy_effect:
                 - anticlockwise downward
                 - clockwise upward
                 - clockwise downward
+        combine:
+          required: false
+          example: "[flow_1, breathe]"
+          selector:
+            select:
+              multiple: true
+              mode: list
+              options:
+                - flow_1
+                - rainbow_1
+                - fade_1
+                - marquee_3
+                - breathe
 
 send_raw_ptreal:
   fields:

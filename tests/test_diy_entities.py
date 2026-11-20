@@ -35,7 +35,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.govee import diy_state, services
-from custom_components.govee.api.protocol import h70cx
+from custom_components.govee.api.protocol import h70cx, h70cx_basic
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import (
     DiyZoneEffect,
@@ -1145,6 +1145,7 @@ class TestService:
 
         assert sorted(fields) == [
             "colors",
+            "combine",
             "direction",
             "effect",
             "ring_colors",
@@ -1158,7 +1159,10 @@ class TestService:
             "speed",
         ]
         # The whole-light dropdowns follow the composer's tables the same way.
-        assert sorted(fields["effect"]["selector"]["select"]["options"]) == sorted(h70cx.TEMPLATES)
+        assert sorted(fields["effect"]["selector"]["select"]["options"]) == sorted(
+            {*h70cx.TEMPLATES, *h70cx_basic.NAMES}
+        )
+        assert fields["combine"]["selector"]["select"]["options"] == list(h70cx_basic.COMBINABLE)
         assert sorted(fields["direction"]["selector"]["select"]["options"]) == sorted(h70cx.DIRECTION_IDS)
 
     @pytest.mark.asyncio

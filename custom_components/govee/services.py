@@ -48,7 +48,7 @@ from .api.protocol import (
     GoveeProtocolError,
     resolve_mode,
 )
-from .api.protocol import h70cx, paint
+from .api.protocol import h70cx, h70cx_basic, paint
 from .const import DOMAIN, REQUEST_STATUS_MIN_INTERVAL
 from .coordinator import GoveeCoordinator
 from .diy_state import (
@@ -89,6 +89,7 @@ ATTR_BASE_BRIGHTNESS = "base_brightness"
 ATTR_EFFECT = "effect"
 ATTR_SPEED = "speed"
 ATTR_DIRECTION = "direction"
+ATTR_COMBINE = "combine"
 
 _RGB_SCHEMA = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple))
 
@@ -212,10 +213,17 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
             vol.Optional("ring_speed"): _DIY_PERCENT,
             vol.Optional("ring_colors"): _DIY_COLORS,
             # Whole-light effect, for lamps with no zones (H70CX family).
-            vol.Optional(ATTR_EFFECT): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.TEMPLATES))),
+            vol.Optional(ATTR_EFFECT): vol.All(
+                cv.string, vol.Lower, vol.In(sorted({*h70cx.TEMPLATES, *h70cx_basic.NAMES}))
+            ),
             vol.Optional(ATTR_COLORS): vol.All(cv.ensure_list, vol.Length(min=1, max=h70cx.MAX_COLORS), [_RGB_SCHEMA]),
             vol.Optional(ATTR_SPEED): vol.All(vol.Coerce(int), vol.Range(min=0, max=h70cx.MAX_SPEED)),
             vol.Optional(ATTR_DIRECTION): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.DIRECTION_IDS))),
+            vol.Optional(ATTR_COMBINE): vol.All(
+                cv.ensure_list,
+                vol.Length(min=1, max=h70cx_basic.MAX_COMBINED),
+                [vol.All(cv.string, vol.Lower, vol.In(h70cx_basic.COMBINABLE))],
+            ),
         },
         _require_mode_with_zone_fields,
     )
@@ -528,16 +536,28 @@ def _clear_optimistic_scene(coordinator: GoveeCoordinator, device_id: str) -> No
 async def _async_apply_string_effect(
     coordinator: GoveeCoordinator, device: GoveeDevice, profile: DeviceProfile, data: Mapping[str, Any]
 ) -> None:
-    """Upload one composed whole-light effect (H70CX family)."""
+    """Upload one composed, basic or combo whole-light effect (H70CX family)."""
     try:
         if ATTR_EFFECT not in data or ATTR_COLORS not in data:
             raise GoveeProtocolError("this light takes the whole-light fields: effect and colors are required")
-        frames = h70cx.effect_frames(
-            data[ATTR_EFFECT],
-            data[ATTR_COLORS],
-            speed=data.get(ATTR_SPEED),
-            direction=data.get(ATTR_DIRECTION),
-        )
+        effect = data[ATTR_EFFECT]
+        if effect in h70cx_basic.NAMES:
+            frames = h70cx_basic.effect_frames(
+                effect,
+                data[ATTR_COLORS],
+                speed=data.get(ATTR_SPEED),
+                direction=data.get(ATTR_DIRECTION),
+                combine=data.get(ATTR_COMBINE),
+            )
+        else:
+            if ATTR_COMBINE in data:
+                raise GoveeProtocolError(f"only {h70cx_basic.COMBO} takes effects to combine")
+            frames = h70cx.effect_frames(
+                effect,
+                data[ATTR_COLORS],
+                speed=data.get(ATTR_SPEED),
+                direction=data.get(ATTR_DIRECTION),
+            )
     except GoveeProtocolError as err:
         raise ServiceValidationError(
             translation_domain=DOMAIN,

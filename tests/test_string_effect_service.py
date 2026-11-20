@@ -15,7 +15,7 @@ import voluptuous as vol
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.govee import services
-from custom_components.govee.api.protocol import get_profile, h70cx
+from custom_components.govee.api.protocol import get_profile, h70cx, h70cx_basic
 from custom_components.govee.models import GoveeDeviceState
 from custom_components.govee.services import (
     SERVICE_APPLY_DIY_EFFECT_SCHEMA,
@@ -78,11 +78,55 @@ class TestSchema:
             {"effect": "rainbow", "colors": [[1, 1]]},
             {"effect": "rainbow", "colors": COLORS, "speed": 101},
             {"effect": "rainbow", "colors": COLORS, "direction": "sideways"},
+            {"effect": "combo", "colors": COLORS, "combine": ["marquee_1"]},
+            {"effect": "combo", "colors": COLORS, "combine": []},
+            {"effect": "combo", "colors": COLORS, "combine": ["breathe"] * 5},
         ],
     )
     def test_rejects_malformed_input(self, extra: dict[str, Any]) -> None:
         with pytest.raises(vol.Invalid):
             SERVICE_APPLY_DIY_EFFECT_SCHEMA(extra)
+
+    def test_basic_names_and_combine_are_lowered(self) -> None:
+        data = SERVICE_APPLY_DIY_EFFECT_SCHEMA({"effect": "Combo", "colors": COLORS, "combine": "Breathe"})
+        assert (data["effect"], data["combine"]) == ("combo", ["breathe"])
+
+
+class TestBasicEffect:
+    async def test_routes_a_basic_effect(self) -> None:
+        coordinator = _coordinator(scene="Rainbow B")
+        route = await _run(coordinator, _call(effect="flow_1", colors=COLORS, speed=20, direction="anticlockwise"))
+
+        expected = h70cx_basic.effect_frames("flow_1", COLORS, speed=20, direction="anticlockwise")
+        assert list(route.await_args.args[4]) == expected
+        assert coordinator.state.active_scene_name is None
+
+    async def test_routes_a_combo(self) -> None:
+        coordinator = _coordinator()
+        route = await _run(coordinator, _call(effect="combo", colors=COLORS, combine=["flow_1", "breathe"]))
+
+        expected = h70cx_basic.effect_frames("combo", COLORS, combine=["flow_1", "breathe"])
+        assert list(route.await_args.args[4]) == expected
+
+    @pytest.mark.parametrize(
+        ("data", "reason"),
+        [
+            ({"effect": "marquee_1", "colors": [[1, 1, 1]]}, "marquee_1 takes 2 to 8 colours"),
+            ({"effect": "fade_1", "colors": COLORS, "direction": "clockwise"}, "fade_1 has no direction"),
+            ({"effect": "flow_1", "colors": COLORS, "direction": "up"}, "flow_1 turns clockwise or anticlockwise, not 'up'"),
+            ({"effect": "combo", "colors": COLORS}, "combo needs 1 to 4 effects to combine"),
+            ({"effect": "combo", "colors": COLORS, "combine": ["fade_1"], "speed": 0}, "speed must be from 1 to 100"),
+            ({"effect": "combo", "colors": COLORS, "combine": ["fade_1", "fade_1"]}, "combo takes each effect once"),
+            ({"effect": "breathe", "colors": COLORS, "combine": ["fade_1"]}, "only combo takes effects to combine"),
+            ({"effect": "rainbow", "colors": COLORS, "combine": ["fade_1"]}, "only combo takes effects to combine"),
+        ],
+    )
+    async def test_invalid_input_is_a_translated_validation_error(self, data: dict[str, Any], reason: str) -> None:
+        coordinator = _coordinator()
+        with pytest.raises(ServiceValidationError) as err:
+            await _run(coordinator, _call(**data))
+        assert err.value.translation_key == "invalid_string_effect"
+        assert err.value.translation_placeholders == {"device": "Light H80C5", "reason": reason}
 
 
 class TestWholeLightEffect:
