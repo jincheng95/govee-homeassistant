@@ -1,19 +1,21 @@
 """Transport-independent zone state for multi-zone lamps (fork feature).
 
-No channel reports per-zone state, and one lamp's zones are driven from two
-entity platforms (``switch.py`` and ``platforms/zone_light.py``) that cannot see
-each other, so the optimistic truth lives in one registry per coordinator, keyed
-``(device_id, zone_key)``, with entities subscribing to the zones they show.
-:meth:`ZoneStateRegistry.apply` also enforces the profile's
+One lamp's zones are driven from two entity platforms (``switch.py`` and
+``platforms/zone_light.py``) that cannot see each other, so zone state lives in
+one registry per coordinator, keyed ``(device_id, zone_key)``, with entities
+subscribing to the zones they show. :meth:`ZoneStateRegistry.apply` records a
+command and enforces the profile's
 :class:`~.api.protocol.profiles.MaxSimultaneousZones` — a fixed weakest-first
 displacement ranking, applied below the choice of transport so a zone the lamp
 drops is corrected whether the write went out over LAN or over the cloud.
+:meth:`ZoneStateRegistry.reconcile` applies the lamp's own zone power report
+where the profile declares one.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from .api.protocol import (
@@ -23,6 +25,7 @@ from .api.protocol import (
     MaxSimultaneousZones,
     get_profile,
 )
+from .api.zone_power_report import decode_payload as decode_zone_power_payload
 from .const import CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
 
 if TYPE_CHECKING:
@@ -185,6 +188,27 @@ class ZoneStateRegistry:
             self._notify(device_id, key, False)
         return displaced
 
+    def reconcile(self, device_id: str, states: Mapping[str, bool]) -> list[str]:
+        """Apply reported zone states, notifying only the zones that changed.
+
+        A report is the lamp's whole picture, so no displacement rule runs.
+
+        Args:
+            device_id: The Govee device the zones belong to.
+            states: Zone key to reported lit state.
+
+        Returns:
+            The zone keys whose state changed.
+        """
+        changed: list[str] = []
+        for zone_key, on in states.items():
+            if self.is_on(device_id, zone_key) == on:
+                continue
+            self._state[(device_id, zone_key)] = on
+            self._notify(device_id, zone_key, on)
+            changed.append(zone_key)
+        return changed
+
     def _notify(self, device_id: str, zone_key: str, on: bool) -> None:
         for setter in list(self._listeners.get((device_id, zone_key), ())):
             setter(on)
@@ -231,6 +255,36 @@ def registry(coordinator: GoveeCoordinator) -> ZoneStateRegistry:
         existing = ZoneStateRegistry(coordinator)
         setattr(coordinator, _REGISTRY_ATTR, existing)
     return existing
+
+
+def apply_power_report(coordinator: GoveeCoordinator, device_id: str, sku: str, payload: Mapping[str, Any]) -> list[str]:
+    """Reconcile a device's zones from the zone power report in ``payload``.
+
+    The zone bits are applied only while the report's lamp bit is set: the
+    lamp clears them when it powers off, so an off report says nothing about
+    which zones come back.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device_id: The device the payload was attributed to.
+        sku: Its model, used to look the profile up.
+        payload: The parsed inbound MQTT message, ``op`` object included.
+
+    Returns:
+        The zone keys whose state changed.
+    """
+    profile = profile_for(sku)
+    if profile is None:
+        return []
+    report = decode_zone_power_payload(payload, profile)
+    if report is None or not report.lamp_on:
+        return []
+    modelled = modelled_zone_keys(sku)
+    states = {key: on for key, on in report.zones.items() if key in modelled}
+    changed = registry(coordinator).reconcile(device_id, states)
+    if changed:
+        _LOGGER.debug("Govee zone state: %s zone power report changed %s", device_id, changed)
+    return changed
 
 
 def note_zone_power(entity: Any, on: bool) -> list[str]:

@@ -160,28 +160,22 @@ def decode_frames(
     return readings
 
 
-def decode_payload(
-    data: Mapping[str, Any],
-    *,
-    segment_count: int,
-) -> dict[int, SegmentReading]:
-    """Decode the segment readback carried by one inbound MQTT payload.
+def payload_frames(data: Mapping[str, Any]) -> list[bytes]:
+    """The raw frames carried base64-encoded in one payload's ``op.command``.
 
     Args:
-        data: The parsed AWS IoT message. ``op.command`` is read when present;
-            any other shape yields nothing.
-        segment_count: The profile's verified segment count.
+        data: The parsed AWS IoT message. Any other shape yields nothing.
 
     Returns:
-        Zero-based segment index → reading, empty when this payload carried no
-        readback frames.
+        The decoded frames, in payload order. Entries that are not strings,
+        are oversized or are not valid base64 are skipped.
     """
     op = data.get("op")
     if not isinstance(op, Mapping):
-        return {}
+        return []
     commands = op.get("command")
     if not isinstance(commands, (list, tuple)):
-        return {}
+        return []
 
     frames: list[bytes] = []
     # Bounded before decoding: `op.command` is remote input, and a base64
@@ -199,5 +193,23 @@ def decode_payload(
         except (binascii.Error, ValueError):
             _LOGGER.debug("Failed to base64-decode an op.command entry")
             continue
+    return frames
 
-    return decode_frames(frames, segment_count=segment_count)
+
+def decode_payload(
+    data: Mapping[str, Any],
+    *,
+    segment_count: int,
+) -> dict[int, SegmentReading]:
+    """Decode the segment readback carried by one inbound MQTT payload.
+
+    Args:
+        data: The parsed AWS IoT message. ``op.command`` is read when present;
+            any other shape yields nothing.
+        segment_count: The profile's verified segment count.
+
+    Returns:
+        Zero-based segment index → reading, empty when this payload carried no
+        readback frames.
+    """
+    return decode_frames(payload_frames(data), segment_count=segment_count)

@@ -133,6 +133,8 @@ class ZoneSpec:
     zone_byte: int | None
     segments: int = 0
     capabilities: frozenset[Capability] = frozenset()
+    power_bit: int | None = None
+    """Bit of the zone power report that is set while this zone is lit."""
     note: str = ""
 
     @property
@@ -277,6 +279,12 @@ class DeviceProfile:
     means "not observed on this SKU", which keeps an unmarked profile
     dispatching nothing rather than applying a guess to live entities.
     """
+    zone_power_report: bool = False
+    """Whether this SKU reports zone power in an ``ee 30 01 <bits>`` frame.
+
+    Each zone's :attr:`ZoneSpec.power_bit` locates it in ``<bits>``. Default
+    False means not observed on this SKU, so nothing is decoded for it.
+    """
     scene_upload: bool = False
     """Whether catalogue scenes upload as raw frames in the :mod:`.scenes` layout.
 
@@ -384,6 +392,7 @@ H60B0: Final = DeviceProfile(
                     Capability.ZONE_FLOW_RATE,
                 }
             ),
+            power_bit=0x40,
             note="ripple uplight; app name TOP",
         ),
         ZoneSpec(
@@ -398,6 +407,7 @@ H60B0: Final = DeviceProfile(
                     Capability.ZONE_BRIGHTNESS,
                 }
             ),
+            power_bit=0x20,
             note="ring uplight, 8 addressable segments; app name SIDE",
         ),
         ZoneSpec(
@@ -412,6 +422,7 @@ H60B0: Final = DeviceProfile(
                     Capability.ZONE_COLOR_TEMP,
                 }
             ),
+            power_bit=0x10,
             note="white-only downlight; app name BOTTOM",
         ),
         ZoneSpec(
@@ -515,6 +526,7 @@ H60B0: Final = DeviceProfile(
             note="at most 2 zones lit; yield order downlight -> ripple -> ring",
         ),
     ),
+    zone_power_report=True,
     # This SKU repeats its PRE-command state for well over a second after a
     # write, so a confirm read taken sooner than this can only fail.
     echo_lag_seconds=1.5,
@@ -686,6 +698,13 @@ def validate_table() -> None:
         for constraint in profile.constraints:
             for key in constraint.displacement_order:
                 profile.zone(key)
+        power_bits = [zone.power_bit for zone in profile.zones if zone.power_bit is not None]
+        for bit in power_bits:
+            # Bit 7 is the whole lamp's.
+            if bit not in (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40):
+                raise GoveeProtocolError(f"{profile.sku} zone power bit {bit:#04x} is not one of bits 0-6")
+        if len(set(power_bits)) != len(power_bits):
+            raise GoveeProtocolError(f"{profile.sku} gives two zones the same power bit")
         if profile.segment_zone is not None:
             # "Segments live on zone X" is only meaningful if X exists, has
             # segments to mask, and can be painted by the zone-colour frame.

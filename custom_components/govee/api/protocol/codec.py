@@ -2,9 +2,8 @@
 
 :class:`GoveeCodec` binds one :class:`~.profiles.DeviceProfile` and turns
 *intents* ("paint ring segments 0-3 blue") into 20-byte frames. It never reads
-device state: zone and segment state is readable by nothing — not LAN, not
-cloud — so every consumer is necessarily optimistic and must be able to build a
-frame from nothing but the intent.
+device state. Most zone and segment state has no readback, so a consumer must
+be able to build a frame from nothing but the intent.
 
 Segment indices are always 0-based, matching the mask bit positions.
 """
