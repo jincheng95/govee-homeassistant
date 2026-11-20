@@ -6,11 +6,9 @@ Provides:
 - ``govee.send_raw_ptreal``: send a raw BLE ptReal frame (developer/debug aid).
 - ``govee.request_status``: ask a device for its status over AWS IoT, once or
   repeatedly for a while (a status burst).
-- ``govee.apply_diy_effect``: compose and upload a DIY effect to a multi-zone
-  lamp (fork).
+- ``govee.apply_diy_effect``: compose and upload a DIY effect: per zone on a
+  multi-zone lamp, or one whole-light effect on a string light (fork).
 - ``govee.paint_bulbs``: colour individual LEDs of a string light (fork).
-- ``govee.apply_string_effect``: compose an animated effect on a string light
-  (fork).
 
 Actions are registered once from ``async_setup`` so automations that reference
 them validate even while no config entry is loaded (quality-scale rule
@@ -88,6 +86,9 @@ ATTR_COLORS = "colors"
 ATTR_BULBS = "bulbs"
 ATTR_BASE_COLOR = "base_color"
 ATTR_BASE_BRIGHTNESS = "base_brightness"
+ATTR_EFFECT = "effect"
+ATTR_SPEED = "speed"
+ATTR_DIRECTION = "direction"
 
 _RGB_SCHEMA = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple))
 
@@ -210,6 +211,11 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
             vol.Optional("ring_mode"): _DIY_MODE,
             vol.Optional("ring_speed"): _DIY_PERCENT,
             vol.Optional("ring_colors"): _DIY_COLORS,
+            # Whole-light effect, for lamps with no zones (H70CX family).
+            vol.Optional(ATTR_EFFECT): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.TEMPLATES))),
+            vol.Optional(ATTR_COLORS): vol.All(cv.ensure_list, vol.Length(min=1, max=h70cx.MAX_COLORS), [_RGB_SCHEMA]),
+            vol.Optional(ATTR_SPEED): vol.All(vol.Coerce(int), vol.Range(min=0, max=h70cx.MAX_SPEED)),
+            vol.Optional(ATTR_DIRECTION): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.DIRECTION_IDS))),
         },
         _require_mode_with_zone_fields,
     )
@@ -414,6 +420,12 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
             table, the effect cannot be encoded (no zone on, or a zone with
             a mode and no colours), or the upload could not be sent.
     """
+    string_target = _string_effect_target(hass, call)
+    if string_target is not None:
+        await _async_apply_string_effect(*string_target, call.data)
+        _LOGGER.info("Applied DIY effect to %s", string_target[1].name)
+        return
+
     coordinator, device, profile, diy = _resolve_diy_target(hass, call)
     device_id = device.device_id
 
@@ -504,23 +516,6 @@ async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> N
     _clear_optimistic_scene(coordinator, device_id)
 
 
-SERVICE_APPLY_STRING_EFFECT = "apply_string_effect"
-
-ATTR_EFFECT = "effect"
-ATTR_SPEED = "speed"
-ATTR_DIRECTION = "direction"
-
-SERVICE_APPLY_STRING_EFFECT_SCHEMA = vol.Schema(
-    {
-        vol.Required(ATTR_DEVICE_ID): cv.string,
-        vol.Required(ATTR_EFFECT): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.TEMPLATES))),
-        vol.Required(ATTR_COLORS): vol.All(cv.ensure_list, vol.Length(min=1, max=h70cx.MAX_COLORS), [_RGB_SCHEMA]),
-        vol.Optional(ATTR_SPEED): vol.All(vol.Coerce(int), vol.Range(min=0, max=h70cx.MAX_SPEED)),
-        vol.Optional(ATTR_DIRECTION): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.DIRECTION_IDS))),
-    }
-)
-
-
 def _clear_optimistic_scene(coordinator: GoveeCoordinator, device_id: str) -> None:
     """Drop the scene shown for a light that was just given something else."""
     state = coordinator.get_state(device_id)
@@ -530,32 +525,18 @@ def _clear_optimistic_scene(coordinator: GoveeCoordinator, device_id: str) -> No
         coordinator.async_update_listeners()
 
 
-async def async_apply_string_effect_handler(hass: HomeAssistant, call: ServiceCall) -> None:
-    """Handle ``govee.apply_string_effect`` (fork).
-
-    Uploads one composed effect. It replaces whatever the light was showing.
-    """
-    raw_id = call.data[ATTR_DEVICE_ID]
-    found = _get_coordinator_for_device(hass, raw_id)
-    if found is None:
-        raise _device_not_found(raw_id)
-    coordinator, device_id = found
-    device = coordinator.devices[device_id]
-
-    profile = profile_for(device.sku)
-    if profile is None or not profile.scene_upload:
-        raise ServiceValidationError(
-            translation_domain=DOMAIN,
-            translation_key="string_effect_unsupported",
-            translation_placeholders={"device": device.name},
-        )
-
+async def _async_apply_string_effect(
+    coordinator: GoveeCoordinator, device: GoveeDevice, profile: DeviceProfile, data: Mapping[str, Any]
+) -> None:
+    """Upload one composed whole-light effect (H70CX family)."""
     try:
+        if ATTR_EFFECT not in data or ATTR_COLORS not in data:
+            raise GoveeProtocolError("this light takes the whole-light fields: effect and colors are required")
         frames = h70cx.effect_frames(
-            call.data[ATTR_EFFECT],
-            call.data[ATTR_COLORS],
-            speed=call.data.get(ATTR_SPEED),
-            direction=call.data.get(ATTR_DIRECTION),
+            data[ATTR_EFFECT],
+            data[ATTR_COLORS],
+            speed=data.get(ATTR_SPEED),
+            direction=data.get(ATTR_DIRECTION),
         )
     except GoveeProtocolError as err:
         raise ServiceValidationError(
@@ -565,14 +546,50 @@ async def async_apply_string_effect_handler(hass: HomeAssistant, call: ServiceCa
         ) from err
 
     if not await raw_router.async_route_frames(
-        coordinator, device_id, device.sku, profile, frames, what="string effect"
+        coordinator, device.device_id, device.sku, profile, frames, what="string effect"
     ):
         raise HomeAssistantError(
             translation_domain=DOMAIN,
             translation_key="command_failed",
             translation_placeholders={"device": device.name},
         )
-    _clear_optimistic_scene(coordinator, device_id)
+    _clear_optimistic_scene(coordinator, device.device_id)
+
+
+def _string_effect_target(
+    hass: HomeAssistant, call: ServiceCall
+) -> tuple[GoveeCoordinator, GoveeDevice, DeviceProfile] | None:
+    """The one whole-light-effect device a DIY call targets, or None.
+
+    None hands the call to the zone path, which also words every error for a
+    target that names no such device.
+
+    Raises:
+        HomeAssistantError: The target mixes such a device with another
+            DIY-capable one.
+    """
+    capable = 0
+    found_string: tuple[GoveeCoordinator, GoveeDevice, DeviceProfile] | None = None
+    for raw_id in _targeted_govee_device_ids(hass, call):
+        found = _get_coordinator_for_device(hass, raw_id)
+        if found is None:
+            continue
+        coordinator, device_id = found
+        device = coordinator.devices[device_id]
+        if diy_spec_for(device.sku) is not None:
+            capable += 1
+            continue
+        profile = profile_for(device.sku)
+        if profile is not None and profile.scene_upload:
+            capable += 1
+            found_string = (coordinator, device, profile)
+    if found_string is None:
+        return None
+    if capable > 1:
+        raise HomeAssistantError(
+            f"This action uploads one authored effect and takes exactly one device, but the target resolved to {capable}"
+        )
+    return found_string
 
 
 async def async_request_status_handler(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -633,13 +650,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
         await async_paint_bulbs_handler(hass, call)
 
     hass.services.async_register(DOMAIN, SERVICE_PAINT_BULBS, _paint_bulbs, schema=SERVICE_PAINT_BULBS_SCHEMA)
-
-    async def _apply_string_effect(call: ServiceCall) -> None:
-        await async_apply_string_effect_handler(hass, call)
-
-    hass.services.async_register(
-        DOMAIN, SERVICE_APPLY_STRING_EFFECT, _apply_string_effect, schema=SERVICE_APPLY_STRING_EFFECT_SCHEMA
-    )
 
     hass.services.async_register(
         DOMAIN,

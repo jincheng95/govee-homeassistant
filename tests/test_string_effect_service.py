@@ -1,4 +1,8 @@
-"""``govee.apply_string_effect`` (fork feature)."""
+"""``govee.apply_diy_effect`` on a whole-light-effect device (fork feature).
+
+One action serves both shapes of DIY: per-zone fields on a multi-zone lamp,
+and ``effect`` / ``colors`` / ``speed`` / ``direction`` on a string light.
+"""
 
 from __future__ import annotations
 
@@ -14,21 +18,26 @@ from custom_components.govee import services
 from custom_components.govee.api.protocol import get_profile, h70cx
 from custom_components.govee.models import GoveeDeviceState
 from custom_components.govee.services import (
-    SERVICE_APPLY_STRING_EFFECT_SCHEMA,
-    async_apply_string_effect_handler,
+    SERVICE_APPLY_DIY_EFFECT_SCHEMA,
+    async_apply_diy_effect_handler,
 )
 
 LOOKUP = "custom_components.govee.services._get_coordinator_for_device"
+TARGETS = "custom_components.govee.services._targeted_govee_device_ids"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
+OTHER_ID = "AA:BB:CC:DD:EE:FF:60:B1"
 COLORS = [[255, 0, 0], [0, 255, 0]]
 
 
-def _coordinator(sku: str = "H80C5", *, scene: str | None = None) -> MagicMock:
-    device = MagicMock()
-    device.sku = sku
-    device.name = "String lights"
+def _coordinator(skus: dict[str, str] | None = None, *, scene: str | None = None) -> MagicMock:
     coordinator = MagicMock()
-    coordinator.devices = {DEVICE_ID: device}
+    coordinator.devices = {}
+    for device_id, sku in (skus or {DEVICE_ID: "H80C5"}).items():
+        device = MagicMock()
+        device.sku = sku
+        device.name = f"Light {sku}"
+        device.device_id = device_id
+        coordinator.devices[device_id] = device
     state = GoveeDeviceState.create_empty(DEVICE_ID)
     state.active_scene = "7" if scene else None
     state.active_scene_name = scene
@@ -38,23 +47,25 @@ def _coordinator(sku: str = "H80C5", *, scene: str | None = None) -> MagicMock:
 
 
 def _call(**data: Any) -> SimpleNamespace:
-    return SimpleNamespace(data=SERVICE_APPLY_STRING_EFFECT_SCHEMA({"device_id": DEVICE_ID, **data}))
+    return SimpleNamespace(data=SERVICE_APPLY_DIY_EFFECT_SCHEMA({"device_id": [DEVICE_ID], **data}))
 
 
 async def _run(coordinator: MagicMock, call: SimpleNamespace, *, routed: bool = True) -> AsyncMock:
     route = AsyncMock(return_value=routed)
-    with patch(LOOKUP, return_value=(coordinator, DEVICE_ID)), patch.object(
+
+    def _lookup(hass: Any, raw_id: str) -> Any:
+        return (coordinator, raw_id) if raw_id in coordinator.devices else None
+
+    with patch(TARGETS, return_value=list(coordinator.devices) + ["unknown"]), patch(LOOKUP, side_effect=_lookup), patch.object(
         services.raw_router, "async_route_frames", route
     ):
-        await async_apply_string_effect_handler(MagicMock(), call)
+        await async_apply_diy_effect_handler(MagicMock(), call)
     return route
 
 
 class TestSchema:
     def test_names_are_case_insensitive(self) -> None:
-        data = SERVICE_APPLY_STRING_EFFECT_SCHEMA(
-            {"device_id": DEVICE_ID, "effect": "Rainbow", "colors": COLORS, "direction": "Clockwise"}
-        )
+        data = SERVICE_APPLY_DIY_EFFECT_SCHEMA({"effect": "Rainbow", "colors": COLORS, "direction": "Clockwise"})
         assert (data["effect"], data["direction"]) == ("rainbow", "clockwise")
         assert "speed" not in data
 
@@ -62,7 +73,6 @@ class TestSchema:
         "extra",
         [
             {"effect": "sparkle", "colors": COLORS},
-            {"effect": "rainbow"},
             {"effect": "rainbow", "colors": []},
             {"effect": "rainbow", "colors": [[1, 1, 1]] * 9},
             {"effect": "rainbow", "colors": [[1, 1]]},
@@ -72,10 +82,10 @@ class TestSchema:
     )
     def test_rejects_malformed_input(self, extra: dict[str, Any]) -> None:
         with pytest.raises(vol.Invalid):
-            SERVICE_APPLY_STRING_EFFECT_SCHEMA({"device_id": DEVICE_ID, **extra})
+            SERVICE_APPLY_DIY_EFFECT_SCHEMA(extra)
 
 
-class TestHandler:
+class TestWholeLightEffect:
     async def test_routes_the_codecs_frames(self) -> None:
         coordinator = _coordinator()
         route = await _run(coordinator, _call(effect="rotate", colors=COLORS, speed=40, direction="anticlockwise"))
@@ -97,25 +107,17 @@ class TestHandler:
         await _run(coordinator, _call(effect="flame", colors=COLORS))
         coordinator.async_update_listeners.assert_not_called()
 
-    async def test_unknown_device(self) -> None:
-        with patch(LOOKUP, return_value=None), pytest.raises(ServiceValidationError) as err:
-            await async_apply_string_effect_handler(MagicMock(), _call(effect="flame", colors=COLORS))
-        assert err.value.translation_key == "device_not_found"
-
-    @pytest.mark.parametrize("sku", ["H6076", "H0000"])
-    async def test_a_sku_without_scene_upload_is_refused(self, sku: str) -> None:
-        with pytest.raises(ServiceValidationError) as err:
-            await _run(_coordinator(sku), _call(effect="flame", colors=COLORS))
-        assert err.value.translation_key == "string_effect_unsupported"
-
     @pytest.mark.parametrize(
         "data",
         [
             {"effect": "flame", "colors": COLORS, "direction": "up"},
             {"effect": "rainbow", "colors": [[1, 1, 1]]},
+            {"effect": "rainbow"},
+            {"colors": COLORS},
+            {"ring_mode": "gradient", "ring_colors": [[1, 2, 3]]},
         ],
     )
-    async def test_what_the_codec_refuses_is_a_validation_error(self, data: dict[str, Any]) -> None:
+    async def test_what_cannot_be_composed_is_a_validation_error(self, data: dict[str, Any]) -> None:
         coordinator = _coordinator(scene="Rainbow B")
         with pytest.raises(ServiceValidationError) as err:
             await _run(coordinator, _call(**data))
@@ -130,11 +132,25 @@ class TestHandler:
         assert coordinator.state.active_scene_name == "Rainbow B"
 
 
-async def test_the_service_is_registered(hass) -> None:
-    services.async_setup_services(hass)
-    assert hass.services.has_service("govee", "apply_string_effect")
-    with patch.object(services, "async_apply_string_effect_handler", AsyncMock()) as handler:
-        await hass.services.async_call(
-            "govee", "apply_string_effect", {"device_id": DEVICE_ID, "effect": "flame", "colors": COLORS}, blocking=True
-        )
-    handler.assert_awaited_once()
+class TestTargeting:
+    async def test_two_diy_capable_devices_are_refused(self) -> None:
+        coordinator = _coordinator({DEVICE_ID: "H80C5", OTHER_ID: "H60B0"})
+        with pytest.raises(HomeAssistantError, match="exactly one device"):
+            await _run(coordinator, _call(effect="flame", colors=COLORS))
+
+    async def test_a_plain_light_beside_the_string_light_is_ignored(self) -> None:
+        coordinator = _coordinator({DEVICE_ID: "H80C5", OTHER_ID: "H0000"})
+        route = await _run(coordinator, _call(effect="flame", colors=COLORS))
+        assert route.await_args.args[1] == DEVICE_ID
+
+    async def test_a_zone_lamp_still_takes_the_zone_path(self) -> None:
+        coordinator = _coordinator({DEVICE_ID: "H60B0"})
+        sender = AsyncMock()
+        with patch.object(services, "async_send_diy_effect", sender), patch.object(services, "diy_store", MagicMock()):
+            await _run(coordinator, _call(ring_mode="gradient", ring_colors=[[1, 2, 3]]))
+        sender.assert_awaited_once()
+
+    async def test_a_light_with_no_diy_at_all_keeps_the_old_error(self) -> None:
+        coordinator = _coordinator({DEVICE_ID: "H0000"})
+        with pytest.raises(HomeAssistantError, match="does not support DIY effects"):
+            await _run(coordinator, _call(effect="flame", colors=COLORS))
