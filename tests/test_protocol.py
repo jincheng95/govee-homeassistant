@@ -396,11 +396,19 @@ class TestKelvin:
     def test_h60b0_clamps_to_the_verified_ceiling(self) -> None:
         """Above ~6500 K the firmware drops the zone entirely."""
         assert H60B0.clamp_kelvin(9000) == 6500
-        assert H60B0.clamp_kelvin(1200) == 2000
+        assert H60B0.clamp_kelvin(1200) == 2700
+        assert H60B0.clamp_kelvin(2000) == 2700
+        assert H60B0.clamp_kelvin(2700) == 2700
         assert H60B0.clamp_kelvin(4000) == 4000
 
     def test_color_temp_frame_is_clamped(self) -> None:
         assert H60B0.color_temp("downlight", 9000) == H60B0.color_temp("downlight", 6500)
+
+    def test_downlight_warm_end_frame(self) -> None:
+        """Anything warmer than 2700 K lands on 2700 K (0x0a8c)."""
+        expected = bytes([0x33, 0x05, 0x2C, 0x03, 0x03, 0x0A, 0x8C] + [0x00] * 12 + [0x9C])
+        assert H60B0.color_temp("downlight", 2700) == expected
+        assert H60B0.color_temp("downlight", 2000) == expected
 
     def test_h6046_really_does_reach_9000k(self) -> None:
         """The H60B0's 6500 K ceiling does NOT generalise across SKUs.

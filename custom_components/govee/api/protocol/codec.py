@@ -94,7 +94,7 @@ class GoveeCodec:
         return mask
 
     def clamp_kelvin(self, kelvin: int) -> int:
-        """Clamp to the profile's usable range (2000-6500 K on the H60B0)."""
+        """Clamp to the profile's usable range (2700-6500 K on the H60B0)."""
         return self.profile.kelvin.clamp(kelvin)
 
     # -- whole device -----------------------------------------------------

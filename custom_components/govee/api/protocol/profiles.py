@@ -365,8 +365,9 @@ H60B0: Final = DeviceProfile(
     goods_type=301,
     name="Uplighter",
     # Manufacturer claims 9000 K; above ~6500 K the firmware drops the zone
-    # entirely, so 6500 K is a hard cap.
-    kelvin=KelvinRange(2000, 6500, verified=True, note="above ~6500 K the zone drops out"),
+    # entirely, so 6500 K is a hard cap. 2700 K is the warmest value the
+    # vendor's controls write to any zone.
+    kelvin=KelvinRange(2700, 6500, verified=True, note="2700 K floor; above ~6500 K the zone drops out"),
     transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED, Transport.MQTT_PTREAL),
     ble_manufacturer_id=BLE_MANUFACTURER_MODERN,
     zones=(
