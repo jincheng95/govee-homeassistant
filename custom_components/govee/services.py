@@ -8,6 +8,7 @@ Provides:
   repeatedly for a while (a status burst).
 - ``govee.apply_diy_effect``: compose and upload a DIY effect to a multi-zone
   lamp (fork).
+- ``govee.paint_bulbs``: colour individual LEDs of a string light (fork).
 
 Actions are registered once from ``async_setup`` so automations that reference
 them validate even while no config entry is loaded (quality-scale rule
@@ -35,6 +36,7 @@ from homeassistant.helpers.target import (
     async_extract_referenced_entity_ids,
 )
 
+from .api import raw_router
 from .api.ble_packet import calculate_checksum
 from .api.protocol import (
     DIRECTIONS,
@@ -45,6 +47,7 @@ from .api.protocol import (
     GoveeProtocolError,
     resolve_mode,
 )
+from .api.protocol import paint
 from .const import DOMAIN, REQUEST_STATUS_MIN_INTERVAL
 from .coordinator import GoveeCoordinator
 from .diy_state import (
@@ -56,6 +59,7 @@ from .diy_state import (
 from .diy_state import store as diy_store
 from .models import GoveeDevice, RGBColor, SegmentColorCommand
 from .segment_limit import manual_segment_count, segment_count
+from .zone_state import profile_for
 from .status_burst import STATUS_BURST_MAX_DURATION, STATUS_BURST_MIN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,6 +79,33 @@ SERVICE_SET_SEGMENT_COLOR = "set_segment_color"
 SERVICE_SEND_RAW_PTREAL = "send_raw_ptreal"
 SERVICE_APPLY_DIY_EFFECT = "apply_diy_effect"
 SERVICE_REQUEST_STATUS = "request_status"
+SERVICE_PAINT_BULBS = "paint_bulbs"
+
+ATTR_COLORS = "colors"
+ATTR_BULBS = "bulbs"
+ATTR_BASE_COLOR = "base_color"
+ATTR_BASE_BRIGHTNESS = "base_brightness"
+
+_RGB_SCHEMA = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple))
+
+SERVICE_PAINT_BULBS_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_DEVICE_ID): cv.string,
+        vol.Optional(ATTR_COLORS, default=list): vol.All(
+            cv.ensure_list,
+            [
+                vol.Schema(
+                    {
+                        vol.Required(ATTR_RGB_COLOR): _RGB_SCHEMA,
+                        vol.Required(ATTR_BULBS): vol.All(cv.ensure_list, [vol.Any(cv.positive_int, cv.string)]),
+                    }
+                )
+            ],
+        ),
+        vol.Optional(ATTR_BASE_COLOR, default=(0, 0, 0)): _RGB_SCHEMA,
+        vol.Optional(ATTR_BASE_BRIGHTNESS, default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+    }
+)
 
 SERVICE_REFRESH_SCENES_SCHEMA = vol.Schema(
     {
@@ -395,6 +426,81 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
     _LOGGER.info("Applied DIY effect to %s", device.name)
 
 
+def _expand_bulbs(entries: list[Any]) -> list[int]:
+    """Indexes from a mix of numbers and ``"first-last"`` ranges.
+
+    Raises:
+        ValueError: An entry is neither a number nor an ascending range.
+    """
+    indexes: list[int] = []
+    for entry in entries:
+        if isinstance(entry, int):
+            indexes.append(entry)
+            continue
+        first, dash, last = str(entry).partition("-")
+        if not dash:
+            indexes.append(int(first))
+            continue
+        low, high = int(first), int(last)
+        if high < low:
+            raise ValueError(f"range {entry!r} runs backwards")
+        indexes.extend(range(low, high + 1))
+    return indexes
+
+
+async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.paint_bulbs`` (fork).
+
+    Colours the named LEDs and shows the base colour on every other one. The
+    paint replaces whatever the light was showing, including an earlier paint.
+    """
+    raw_id = call.data[ATTR_DEVICE_ID]
+    found = _get_coordinator_for_device(hass, raw_id)
+    if found is None:
+        raise _device_not_found(raw_id)
+    coordinator, device_id = found
+    device = coordinator.devices[device_id]
+
+    profile = profile_for(device.sku)
+    if profile is None or not profile.paint_bulbs:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="bulb_paint_unsupported",
+            translation_placeholders={"device": device.name},
+        )
+
+    try:
+        colors = [(entry[ATTR_RGB_COLOR], _expand_bulbs(entry[ATTR_BULBS])) for entry in call.data[ATTR_COLORS]]
+        frames = paint.paint_frames(
+            colors,
+            bulb_count=profile.paint_bulbs,
+            base_color=call.data[ATTR_BASE_COLOR],
+            base_brightness=call.data[ATTR_BASE_BRIGHTNESS],
+        )
+        if len(frames) > MAX_PTREAL_FRAMES:
+            raise ValueError(f"the paint needs {len(frames)} frames, at most {MAX_PTREAL_FRAMES} fit one message")
+    except (ValueError, GoveeProtocolError) as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_bulb_paint",
+            translation_placeholders={"device": device.name, "reason": str(err)},
+        ) from err
+
+    if not await raw_router.async_route_frames(coordinator, device_id, device.sku, profile, frames, what="bulb paint"):
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="command_failed",
+            translation_placeholders={"device": device.name},
+        )
+
+    # The paint replaces any running scene.
+    state = coordinator.get_state(device_id)
+    if state is not None and (state.active_scene or state.active_scene_name):
+        state.active_scene = None
+        state.active_scene_name = None
+        coordinator.async_update_listeners()
+
+
 async def async_request_status_handler(hass: HomeAssistant, call: ServiceCall) -> None:
     """Handle ``govee.request_status``.
 
@@ -448,6 +554,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def _request_status(call: ServiceCall) -> None:
         await async_request_status_handler(hass, call)
+
+    async def _paint_bulbs(call: ServiceCall) -> None:
+        await async_paint_bulbs_handler(hass, call)
+
+    hass.services.async_register(DOMAIN, SERVICE_PAINT_BULBS, _paint_bulbs, schema=SERVICE_PAINT_BULBS_SCHEMA)
 
     hass.services.async_register(
         DOMAIN,

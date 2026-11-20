@@ -130,9 +130,9 @@
           "confirm_commands": "After a power-off, brightness, colour or colour-temperature command to a light, waits a few seconds for the light's own real-time (AWS IoT) report and asks for one status if none comes. If the light still shows the old value, the command is sent once more over the cloud API. Lights only: appliances such as kettles, heaters and fans are never resent, and a power-on is never resent. A resend uses one cloud request, only when the daily budget and rate limit allow it. Requires email and password login; lights that have not reported over AWS IoT are left as they are. Off by default.",
           "lan_targets": "Only needed when LAN-enabled Govee devices are on a different subnet or VLAN than Home Assistant, so the local discovery scan cannot reach them. Enter a comma-separated list of device IPs (10.20.0.51), broadcast addresses (10.20.0.255), and subnets in CIDR notation (10.20.0.0/24, /24 or smaller). Subnets are scanned device by device, since most routers drop cross-VLAN broadcasts. Leave blank if all devices share Home Assistant's network. Advanced: if a device still is not found because its scan reply cannot cross the VLAN, pin it with device_id=ip (AA:BB:CC:DD:EE:FF:00:11=10.20.0.51) to skip discovery for that device. Add a trailing ! (=10.20.0.51!) only for firmware that accepts LAN commands but never answers a status read. That turns off every LAN health check for the device, so a wrong IP will look like it is working while the device never responds. Enter off to turn LAN discovery and local control off entirely.",
           "enable_lan_nudge": "When the cloud reports a change made outside Home Assistant, the device's real state is read over the local network instead of trusting the push. Locally discovered devices only.",
-          "enable_lan_raw_write": "Segment colour and brightness act immediately instead of taking Govee's cloud round trip. Works on locally discovered lamps with a supported model; others keep using the cloud. Segment state can't be read back, so entities show the last command sent. Zone lights do not need this option \u2014 they always use the local network.",
+          "enable_lan_raw_write": "Segment colour and brightness act immediately instead of taking Govee's cloud round trip. Works on locally discovered lamps with a supported model; others keep using the cloud. Segment state can't be read back, so entities show the last command sent. Zone lights do not need this option — they always use the local network.",
           "enable_ble_raw_write": "For lamps with no local Wi-Fi control. Needs a Bluetooth adapter or an active Bluetooth proxy in range. While a command is being sent, the Govee phone app may briefly be unable to connect.",
-          "enable_zone_lights": "Each zone becomes its own light and the lamp's own entity becomes a dimmable master. Automations that set an effect on the lamp entity must target a zone or the scene selector instead. Zone state shows the last command sent \u2014 the device cannot report it back.",
+          "enable_zone_lights": "Each zone becomes its own light and the lamp's own entity becomes a dimmable master. Automations that set an effect on the lamp entity must target a zone or the scene selector instead. Zone state shows the last command sent — the device cannot report it back.",
           "enable_h6104_ble": "Use experimental Bluetooth control and status readback for H6104 TV lights. Requires a connectable Bluetooth adapter or proxy."
         }
       },
@@ -739,6 +739,28 @@
           "description": "Seconds between queries while repeating (at least 3)."
         }
       }
+    },
+    "paint_bulbs": {
+      "name": "Paint bulbs",
+      "description": "Colours individual LEDs of a string light. Named LEDs take their colour and every other LED shows the base colour. The paint replaces whatever the light was showing.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The string light to paint. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "colors": {
+          "name": "Colours",
+          "description": "A list of entries, each with rgb_color ([red, green, blue]) and bulbs. Bulbs are 0-based numbers or ranges written as \"first-last\". A bulb named twice takes the later colour."
+        },
+        "base_color": {
+          "name": "Base colour",
+          "description": "Colour of every LED not named. Black leaves them dark."
+        },
+        "base_brightness": {
+          "name": "Base brightness",
+          "description": "Brightness of the base colour."
+        }
+      }
     }
   },
   "exceptions": {
@@ -798,6 +820,12 @@
     },
     "invalid_tv_sensitivity": {
       "message": "TV sensitivity must be a whole number from 0 to 100."
+    },
+    "bulb_paint_unsupported": {
+      "message": "{device} does not support painting individual bulbs"
+    },
+    "invalid_bulb_paint": {
+      "message": "Cannot paint {device}: {reason}"
     }
   },
   "issues": {

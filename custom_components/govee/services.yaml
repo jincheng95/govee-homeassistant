@@ -195,3 +195,30 @@ request_status:
           min: 3
           max: 60
           unit_of_measurement: s
+
+paint_bulbs:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    colors:
+      required: false
+      example: '[{"rgb_color": [255, 0, 0], "bulbs": ["0-9", 20]}, {"rgb_color": [0, 255, 0], "bulbs": ["10-19"]}]'
+      selector:
+        object:
+    base_color:
+      required: false
+      example: "[0, 0, 0]"
+      selector:
+        color_rgb:
+    base_brightness:
+      required: false
+      default: 100
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
