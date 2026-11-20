@@ -17,6 +17,7 @@ from custom_components.govee.api.protocol import (
     DiyZoneEffect,
     GoveeCodec,
     UnsupportedCapabilityError,
+    commit_frame,
     resolve_mode,
     xor_checksum,
 )
@@ -249,6 +250,17 @@ class TestCodecDiyEffect:
         for frame in frames:
             assert len(frame) == 20
             assert xor_checksum(frame[:19]) == frame[19]
+
+    @pytest.mark.parametrize(
+        ("marker", "expected"),
+        [
+            (None, bytes([0x33, 0x05, 0x0A, 0xBD, 0x00] + [0x00] * 14 + [0x81])),
+            (0x58, bytes([0x33, 0x05, 0x0A, 0xBD, 0x00, 0x58] + [0x00] * 13 + [0xD9])),
+        ],
+    )
+    def test_both_commit_forms(self, marker: int | None, expected: bytes) -> None:
+        """The DIY code is 16-bit, low byte first; the marker byte is optional."""
+        assert commit_frame(index=0xBD, marker=marker) == expected
 
     def test_payload_reassembles_across_chunks(self) -> None:
         effects = {

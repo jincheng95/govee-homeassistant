@@ -239,9 +239,8 @@ class GoveeCodec:
         record. At least one zone must be on — an all-off DIY would just
         blank the lamp, which is a power intent, not an effect.
 
-        ``index`` is the commit frame's effect slot. The verified capture
-        used a cloud-saved DIY's slot (3); 0 — a locally composed, unsaved
-        effect — is the untested-but-expected default.
+        ``index`` is the 16-bit DIY code the commit names, low byte first.
+        0 is the default for a locally composed effect.
 
         Send the returned frames in order, in one envelope
         (:meth:`message` / ``LanUdpClient.async_send_frames``).

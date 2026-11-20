@@ -10,6 +10,9 @@ records are always present, in the profile's declared order, behind a constant
 lead byte; the payload rides an ``0xA3`` multipacket upload and a commit frame
 (:mod:`.packets`). Effect modes are per-zone ints with no shared enum — the
 name-to-int tables live in the profile, and raw ints are accepted everywhere.
+
+The H60B0 also takes a single-record upload with no lead byte and no
+``recLen``. This module does not build that form.
 """
 
 from __future__ import annotations
