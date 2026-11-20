@@ -67,6 +67,8 @@ from .const import (
     SUFFIX_DIY_SCENE_SELECT,
     SUFFIX_DIY_SPEED,
     SUFFIX_DIY_STYLE_SELECT,
+    SUFFIX_SCENE_DIRECTION_SELECT,
+    SUFFIX_SCENE_SPEED_SELECT,
     SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SCENE_SELECT,
     SUFFIX_SEGMENT,
@@ -679,6 +681,10 @@ async def _async_cleanup_orphaned_entities(
                     should_remove = True
                     removal_reason = "segment beyond device segment count"
             elif suffix == SUFFIX_SCENE_SELECT and not enable_scenes:
+                should_remove = True
+                removal_reason = "scenes disabled"
+            elif suffix in (SUFFIX_SCENE_SPEED_SELECT, SUFFIX_SCENE_DIRECTION_SELECT) and not enable_scenes:
+                # Fork: the scene adjustment selects follow the scenes option.
                 should_remove = True
                 removal_reason = "scenes disabled"
             elif suffix == SUFFIX_DIY_SCENE_SELECT and not enable_diy_scenes:

@@ -272,6 +272,12 @@ class DeviceProfile:
     means "not observed on this SKU", which keeps an unmarked profile
     dispatching nothing rather than applying a guess to live entities.
     """
+    scene_upload: bool = False
+    """Whether catalogue scenes upload as raw frames in the :mod:`.scenes` layout.
+
+    True only for a SKU where an uploaded scene has been read back by its
+    catalogue code.
+    """
     echo_lag_seconds: float = 0.0
     """How long this SKU keeps reporting its PRE-command state after a write.
 
@@ -629,6 +635,8 @@ H80C5: Final = DeviceProfile(
     modes={"scene": 0x04},
     # `aa a5` answers a query on this SKU; it is not pushed unsolicited.
     segment_readback=False,
+    # One scene of each uploaded blob kind read back by its catalogue code.
+    scene_upload=True,
 )
 
 PROFILES: Final[Mapping[str, DeviceProfile]] = {profile.sku: profile for profile in (H60B0, H6046, H6076, H80C5)}
