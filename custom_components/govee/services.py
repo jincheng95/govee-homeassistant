@@ -9,6 +9,8 @@ Provides:
 - ``govee.apply_diy_effect``: compose and upload a DIY effect to a multi-zone
   lamp (fork).
 - ``govee.paint_bulbs``: colour individual LEDs of a string light (fork).
+- ``govee.apply_string_effect``: compose an animated effect on a string light
+  (fork).
 
 Actions are registered once from ``async_setup`` so automations that reference
 them validate even while no config entry is loaded (quality-scale rule
@@ -48,7 +50,7 @@ from .api.protocol import (
     GoveeProtocolError,
     resolve_mode,
 )
-from .api.protocol import paint
+from .api.protocol import h70cx, paint
 from .const import DOMAIN, REQUEST_STATUS_MIN_INTERVAL
 from .coordinator import GoveeCoordinator
 from .diy_state import (
@@ -499,12 +501,78 @@ async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> N
                 translation_placeholders={"device": device.name},
             )
 
-    # The paint replaces any running scene.
+    _clear_optimistic_scene(coordinator, device_id)
+
+
+SERVICE_APPLY_STRING_EFFECT = "apply_string_effect"
+
+ATTR_EFFECT = "effect"
+ATTR_SPEED = "speed"
+ATTR_DIRECTION = "direction"
+
+SERVICE_APPLY_STRING_EFFECT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_EFFECT): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.TEMPLATES))),
+        vol.Required(ATTR_COLORS): vol.All(cv.ensure_list, vol.Length(min=1, max=h70cx.MAX_COLORS), [_RGB_SCHEMA]),
+        vol.Optional(ATTR_SPEED): vol.All(vol.Coerce(int), vol.Range(min=0, max=h70cx.MAX_SPEED)),
+        vol.Optional(ATTR_DIRECTION): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.DIRECTION_IDS))),
+    }
+)
+
+
+def _clear_optimistic_scene(coordinator: GoveeCoordinator, device_id: str) -> None:
+    """Drop the scene shown for a light that was just given something else."""
     state = coordinator.get_state(device_id)
     if state is not None and (state.active_scene or state.active_scene_name):
         state.active_scene = None
         state.active_scene_name = None
         coordinator.async_update_listeners()
+
+
+async def async_apply_string_effect_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.apply_string_effect`` (fork).
+
+    Uploads one composed effect. It replaces whatever the light was showing.
+    """
+    raw_id = call.data[ATTR_DEVICE_ID]
+    found = _get_coordinator_for_device(hass, raw_id)
+    if found is None:
+        raise _device_not_found(raw_id)
+    coordinator, device_id = found
+    device = coordinator.devices[device_id]
+
+    profile = profile_for(device.sku)
+    if profile is None or not profile.scene_upload:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="string_effect_unsupported",
+            translation_placeholders={"device": device.name},
+        )
+
+    try:
+        frames = h70cx.effect_frames(
+            call.data[ATTR_EFFECT],
+            call.data[ATTR_COLORS],
+            speed=call.data.get(ATTR_SPEED),
+            direction=call.data.get(ATTR_DIRECTION),
+        )
+    except GoveeProtocolError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_string_effect",
+            translation_placeholders={"device": device.name, "reason": str(err)},
+        ) from err
+
+    if not await raw_router.async_route_frames(
+        coordinator, device_id, device.sku, profile, frames, what="string effect"
+    ):
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="command_failed",
+            translation_placeholders={"device": device.name},
+        )
+    _clear_optimistic_scene(coordinator, device_id)
 
 
 async def async_request_status_handler(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -565,6 +633,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
         await async_paint_bulbs_handler(hass, call)
 
     hass.services.async_register(DOMAIN, SERVICE_PAINT_BULBS, _paint_bulbs, schema=SERVICE_PAINT_BULBS_SCHEMA)
+
+    async def _apply_string_effect(call: ServiceCall) -> None:
+        await async_apply_string_effect_handler(hass, call)
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_APPLY_STRING_EFFECT, _apply_string_effect, schema=SERVICE_APPLY_STRING_EFFECT_SCHEMA
+    )
 
     hass.services.async_register(
         DOMAIN,

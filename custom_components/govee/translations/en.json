@@ -761,6 +761,32 @@
           "description": "Brightness of the base colour."
         }
       }
+    },
+    "apply_string_effect": {
+      "name": "Apply string effect",
+      "description": "Composes one animated effect on a string light from an effect type, a palette, a speed and a direction. It replaces whatever the light was showing.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The string light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "effect": {
+          "name": "Effect",
+          "description": "The effect type."
+        },
+        "colors": {
+          "name": "Colours",
+          "description": "The palette: a list of up to 8 colours, each [red, green, blue]. Most effects need at least two."
+        },
+        "speed": {
+          "name": "Speed",
+          "description": "0 to 100. Leave empty for the effect's stock speed."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Leave empty for the effect's stock direction. Flame, diffuse, concentric, starlight, wave and blend take none."
+        }
+      }
     }
   },
   "exceptions": {
@@ -826,6 +852,12 @@
     },
     "invalid_bulb_paint": {
       "message": "Cannot paint {device}: {reason}"
+    },
+    "string_effect_unsupported": {
+      "message": "{device} does not support composed string effects"
+    },
+    "invalid_string_effect": {
+      "message": "Cannot apply the effect to {device}: {reason}"
     }
   },
   "issues": {

@@ -222,3 +222,65 @@ paint_bulbs:
           min: 0
           max: 100
           unit_of_measurement: "%"
+
+apply_string_effect:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    effect:
+      required: true
+      example: rainbow
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - blend
+            - concentric
+            - diffuse
+            - flame
+            - flow
+            - layered
+            - rainbow
+            - rotate
+            - spiral
+            - starlight
+            - vortex
+            - wave
+    colors:
+      required: true
+      example: "[[255, 0, 0], [0, 255, 0]]"
+      selector:
+        object:
+    speed:
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 100
+    direction:
+      required: false
+      example: clockwise
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - up
+            - down
+            - clockwise
+            - anticlockwise
+            - upper left
+            - lower left
+            - upper right
+            - lower right
+            - expand vertically
+            - gather vertically
+            - gather horizontally
+            - expand horizontally
+            - anticlockwise upward
+            - anticlockwise downward
+            - clockwise upward
+            - clockwise downward
