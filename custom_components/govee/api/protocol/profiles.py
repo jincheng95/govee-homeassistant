@@ -98,6 +98,7 @@ class Capability(str, Enum):
     ZONE_FLOW_RATE = "zone_flow_rate"
     SEGMENT_COLOR = "segment_color"
     SEGMENT_BRIGHTNESS = "segment_brightness"
+    SEGMENT_COLOR_TEMP = "segment_color_temp"
     BAR_POWER_MASK = "bar_power_mask"
     MODE_SELECT = "mode_select"
     QUERY = "query"
@@ -601,7 +602,7 @@ H80C5: Final = DeviceProfile(
     sku="H80C5",
     goods_type=260,
     name="Christmas string lights",
-    kelvin=KelvinRange(2000, 9000, verified=False, note="cloud-declared range; not swept on hardware"),
+    kelvin=KelvinRange(2700, 9000, verified=True, note="range of the raw colour-temperature frame"),
     # Both pipes are hardware-verified with `aa a5` readback after the write.
     transports=(Transport.LAN_RAW, Transport.MQTT_PTREAL),
     # Not read off an advertisement. The device declares encryption support,
@@ -613,7 +614,9 @@ H80C5: Final = DeviceProfile(
             name="Segments",
             zone_byte=None,
             segments=10,
-            capabilities=frozenset({Capability.SEGMENT_COLOR, Capability.SEGMENT_BRIGHTNESS}),
+            capabilities=frozenset(
+                {Capability.SEGMENT_COLOR, Capability.SEGMENT_BRIGHTNESS, Capability.SEGMENT_COLOR_TEMP}
+            ),
             note="300 LEDs in 10 segments; `aa a5 03` returns segments 9 and 10 only",
         ),
     ),
@@ -628,6 +631,12 @@ H80C5: Final = DeviceProfile(
         Capability.SEGMENT_BRIGHTNESS: CapabilitySpec(
             "segment_level_v2",
             {"sub_mode": 0x15, "attribute": 0x02, "mask_offset": 5},
+        ),
+        # The colour frame again: full-white RGB, then the Kelvin and its RGB
+        # white point.
+        Capability.SEGMENT_COLOR_TEMP: CapabilitySpec(
+            "segment_color_v2",
+            {"sub_mode": 0x15, "attribute": 0x01, "mask_offset": 12},
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),

@@ -167,6 +167,7 @@ from .request_budget import (
 
 # Fork: §6.2 per-segment readback riding the MQTT status push.
 from .api.segment_readback import decode_payload as decode_segment_payload
+from .api.raw_router import async_color_temp as async_raw_color_temp
 from .segment_limit import pushes_segment_readback, verified_segment_count
 
 from .models import (
@@ -5976,6 +5977,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         try:
             if isinstance(command, MusicModeCommand) and await self._try_mqtt_music_mode(device_id, device, command):
                 return True
+
+            # Fork: a raw colour-temperature frame, for profiles that encode one.
+            if isinstance(command, ColorTempCommand):
+                kelvin = await async_raw_color_temp(self, device, command.kelvin)
+                if kelvin is not None:
+                    self._apply_optimistic_update(device_id, ColorTempCommand(kelvin=kelvin))
+                    self.async_set_updated_data(self._states)
+                    return True
 
             if isinstance(command, ToggleCommand) and await self._try_ptreal_light_zone(device_id, device, command):
                 return True

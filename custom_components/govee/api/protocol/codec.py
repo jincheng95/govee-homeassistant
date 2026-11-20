@@ -219,6 +219,33 @@ class GoveeCodec:
         mask = self._require_mask(spec, segments)
         return self._encode(Capability.SEGMENT_COLOR, spec, rgb=rgb, mask=mask, kelvin=kelvin, white_rgb=white_rgb)
 
+    def segment_color_temp(
+        self,
+        kelvin: int,
+        white_rgb: tuple[int, int, int],
+        *,
+        segments: Iterable[int] | None = None,
+        zone: str = "segments",
+    ) -> bytes:
+        """Set segments to a colour temperature.
+
+        Args:
+            kelvin: Colour temperature, clamped to the profile range.
+            white_rgb: RGB approximation of ``kelvin``, carried beside it.
+            segments: 0-based segments; None means every segment.
+            zone: The segmented zone.
+        """
+        spec = self._zone(zone)
+        mask = self._require_mask(spec, segments)
+        return self._encode(
+            Capability.SEGMENT_COLOR_TEMP,
+            spec,
+            rgb=(0xFF, 0xFF, 0xFF),
+            mask=mask,
+            kelvin=self.clamp_kelvin(kelvin),
+            white_rgb=white_rgb,
+        )
+
     def segment_brightness(
         self, percent: int, *, segments: Iterable[int] | None = None, zone: str = "segments"
     ) -> bytes:
