@@ -50,6 +50,14 @@ RAINBOW_CONFIG = {"defDirIndex": 0, "defSpeed": 1, "directions": [5, 6, 7, 8], "
 FLAME = bytes.fromhex("490a0004045a010002ff0000ff7f00")
 FLAME_CONFIG = {"defDirIndex": -1, "defSpeed": -1, "directions": [], "speedRange": [60, 70, 80, 90]}
 RGBIC = bytes([0x02]) + bytes(range(1, 40))
+TWO_EFFECT = bytes.fromhex(
+    "02290000000f0001ffff0000141402fc0506000000ff000000000000000000ff000000000000fc1000e500"
+    "290000000f0001ffff0000141402fc0506ff000000000000000000ff000000000000000200fc1200e500"
+)
+TWO_EFFECT_CONFIG = [
+    {"defaultIndex": 1, "color": [247, 252, 252], "page": 0, "moveAll": [229, 229, 252]},
+    {"moveAll": [229, 229, 252], "color": [247, 252, 252], "page": 1, "defaultIndex": 1},
+]
 
 
 def _effect(blob: bytes, code: int, config: Any = None) -> dict[str, Any]:
@@ -71,6 +79,7 @@ def _payload() -> dict[str, Any]:
                         {"sceneName": "Rainbow B", "lightEffects": [_effect(RAINBOW, 18188, RAINBOW_CONFIG)]},
                         {"sceneName": "Flame B", "lightEffects": [_effect(FLAME, 20001, FLAME_CONFIG)]},
                         {"sceneName": "Candy Cane", "lightEffects": [_effect(RGBIC, 12337, [{"page": 1}])]},
+                        {"sceneName": "Christmas", "lightEffects": [_effect(TWO_EFFECT, 12333, TWO_EFFECT_CONFIG)]},
                         {"sceneName": "Sunrise", "lightEffects": [_effect(b"", 0)]},
                         {"sceneName": "Rainbow B", "lightEffects": [_effect(FLAME, 3)]},
                     ],
@@ -89,7 +98,7 @@ def _payload() -> dict[str, Any]:
 class TestParseCatalogue:
     def test_scenes_by_name(self) -> None:
         found = scene_catalogue.parse_catalogue(_payload())
-        assert set(found) == {"Rainbow B", "Flame B", "Candy Cane"}
+        assert set(found) == {"Rainbow B", "Flame B", "Candy Cane", "Christmas"}
         rainbow = found["Rainbow B"]
         assert (rainbow.code, rainbow.blob) == (18188, RAINBOW)
         assert rainbow.adjust is not None and rainbow.adjust.directions == (5, 6, 7, 8)
@@ -728,3 +737,20 @@ class TestSceneSelectRouting:
         route.assert_not_awaited()
         command = coordinator.async_control_device.await_args.args[1]
         assert command.scene_id == 4999
+
+
+class TestRgbicSceneSpeed:
+    async def test_an_rgbic_scene_offers_speed_but_no_direction(self) -> None:
+        coordinator = _coordinator(scene="Christmas")
+        speed, direction = _selects(coordinator)
+        assert speed.options == ["Slow", "Medium", "Fast"]
+        assert speed.current_option == "Medium"
+        assert direction.options == [] and direction.available is False
+
+        adjust = scene_catalogue.catalogue(coordinator).scene(SKU, "Christmas").adjust
+        with _routed() as route:
+            await speed.async_select_option("Slow")
+
+        expected = scenes.scene_frames(scenes.adjust_blob(TWO_EFFECT, adjust, speed=0), 12333)
+        assert list(route.await_args.args[4]) == expected
+        assert speed.current_option == "Slow"

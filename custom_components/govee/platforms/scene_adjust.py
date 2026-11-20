@@ -193,7 +193,7 @@ class GoveeSceneSpeedSelect(_GoveeSceneAdjustSelect):
         scene = self._scene()
         if scene is None or scene.adjust is None:
             return []
-        return speed_labels(len(scene.adjust.speeds))
+        return speed_labels(scene.adjust.speed_levels)
 
     @property
     def current_option(self) -> str | None:
@@ -203,7 +203,7 @@ class GoveeSceneSpeedSelect(_GoveeSceneAdjustSelect):
         index = self._choice(scene).speed
         if index is None:
             index = scene.adjust.default_speed
-        labels = speed_labels(len(scene.adjust.speeds))
+        labels = speed_labels(scene.adjust.speed_levels)
         return labels[index] if index is not None and index < len(labels) else None
 
     async def async_select_option(self, option: str) -> None:
