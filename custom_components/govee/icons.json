@@ -142,6 +142,9 @@
       },
       "govee_tv_area": {
         "default": "mdi:monitor-screenshot"
+      },
+      "power_off_memory": {
+        "default": "mdi:power-settings"
       }
     },
     "sensor": {

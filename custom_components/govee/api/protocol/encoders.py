@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
-from .errors import UnknownEncodingError
+from .errors import FrameError, UnknownEncodingError
 from .frames import (
     PRO_TYPE_QUERY,
     PRO_TYPE_WRITE,
@@ -31,6 +31,9 @@ WHOLE_POWER_COMMAND_TYPE = 0x01
 WHOLE_BRIGHTNESS_COMMAND_TYPE = 0x04
 BAR_POWER_MASK_COMMAND_TYPE = 0x33
 GRADIENT_COMMAND_TYPE = 0xA3
+POWER_OFF_MEMORY_COMMAND_TYPE = 0x41
+POWER_OFF_MEMORY_BEHAVIOURS = range(3)
+"""0 restores the last state, 1 comes back on, 2 stays off."""
 
 Encoder = Callable[..., bytes]
 
@@ -77,6 +80,13 @@ def gradient(constants: Mapping[str, Any], *, on: bool) -> bytes:
     """``33 a3 <00|01>`` — blend segment paints across segment boundaries."""
     del constants
     return build_frame([PRO_TYPE_WRITE, GRADIENT_COMMAND_TYPE, 1 if on else 0])
+
+
+def power_off_memory(constants: Mapping[str, Any], *, behaviour: int) -> bytes:
+    """``33 41 <sub_type> <behaviour>`` — what the device does when power returns."""
+    if behaviour not in POWER_OFF_MEMORY_BEHAVIOURS:
+        raise FrameError(f"power-off memory behaviour {behaviour!r} is not one of 0, 1, 2")
+    return build_frame([PRO_TYPE_WRITE, POWER_OFF_MEMORY_COMMAND_TYPE, constant(constants, "sub_type"), behaviour])
 
 
 def query(constants: Mapping[str, Any], *, command_type: int) -> bytes:
@@ -237,6 +247,7 @@ ENCODERS: Mapping[str, Encoder] = {
     "zone_power": zone_power,
     "bar_power_mask": bar_power_mask,
     "gradient": gradient,
+    "power_off_memory": power_off_memory,
     "query": query,
     "mode_select": mode_select,
     "zone_color": zone_color,

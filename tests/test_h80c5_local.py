@@ -4,6 +4,7 @@
    coordinator tier that tries it before the cloud.
 2. Segment gradient: the frame, the raw setting route and the blending
    switch that takes it before the cloud toggle.
+3. Power-off memory: the frame, the select, its option gate and cleanup.
 
 Device ids are the suite's synthetic ones.
 """
@@ -15,22 +16,34 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.core import State
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import color as color_util
 
+from custom_components.govee import _async_cleanup_orphaned_entities
+
 from custom_components.govee.api import raw_router
-from custom_components.govee.api.protocol import GoveeCodec, UnsupportedCapabilityError, get_profile
-from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE
+from custom_components.govee.api.protocol import FrameError, GoveeCodec, UnsupportedCapabilityError, get_profile
+from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE, SUFFIX_POWER_OFF_MEMORY
 from custom_components.govee.api.protocol import Capability
 from custom_components.govee.models import ColorTempCommand, GoveeDevice, GoveeDeviceState, ToggleCommand
 from custom_components.govee.models.device import DEVICE_TYPE_LIGHT, INSTANCE_GRADUAL_ON
+from custom_components.govee.platforms.device_settings import (
+    GoveePowerOffMemorySelect,
+    async_device_setting_select_entities,
+)
 from custom_components.govee.switch import GoveeSegmentBlendingSwitchEntity
+from tests.test_cov_init import _coordinator as _cleanup_coordinator
+from tests.test_cov_init import _entry as _cleanup_entry
+from tests.test_cov_init import _seed
 
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
 SKU = "H80C5"
 
 
 def _frame(*body: int) -> bytes:
-    """A 20-byte frame: ``body`` zero-padded to 19 bytes plus the XOR checksum."""
+    """Pad ``body`` to 19 bytes and append the XOR checksum."""
     padded = bytes(body) + bytes(19 - len(body))
     checksum = 0
     for byte in padded:
@@ -256,3 +269,146 @@ class TestBlendingSwitch:
             DEVICE_ID, ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=True)
         )
         assert entity.is_on is True
+
+
+# ==============================================================================
+# 3. Power-off memory
+# ==============================================================================
+
+
+class TestPowerOffMemoryFrame:
+    @pytest.mark.parametrize(
+        ("behaviour", "expected"),
+        [
+            (0, _frame(0x33, 0x41, 0x02, 0x00)),
+            (1, _frame(0x33, 0x41, 0x02, 0x01)),
+            (2, _frame(0x33, 0x41, 0x02, 0x02)),
+        ],
+    )
+    def test_frame_is_byte_exact(self, behaviour: int, expected: bytes) -> None:
+        assert GoveeCodec(get_profile(SKU)).power_off_memory(behaviour) == expected
+
+    def test_checksums_match_the_known_frames(self) -> None:
+        codec = GoveeCodec(get_profile(SKU))
+        assert [codec.power_off_memory(n)[19] for n in (0, 1, 2)] == [0x70, 0x71, 0x72]
+
+    @pytest.mark.parametrize("behaviour", [-1, 3, 255])
+    def test_an_unknown_behaviour_is_refused(self, behaviour: int) -> None:
+        with pytest.raises(FrameError):
+            GoveeCodec(get_profile(SKU)).power_off_memory(behaviour)
+
+    def test_other_skus_do_not_encode_it(self) -> None:
+        with pytest.raises(UnsupportedCapabilityError):
+            GoveeCodec(get_profile("H6076")).power_off_memory(0)
+
+
+def _light(sku: str = SKU, device_id: str = DEVICE_ID, *, is_group: bool = False) -> GoveeDevice:
+    return GoveeDevice(
+        device_id=device_id,
+        sku=sku,
+        name="String lights",
+        device_type=DEVICE_TYPE_LIGHT,
+        capabilities=(),
+        is_group=is_group,
+    )
+
+
+def _settings_coordinator(*devices: GoveeDevice) -> Any:
+    coordinator = _raw_coordinator()
+    devices = devices or (_light(),)
+    coordinator.devices = {device.device_id: device for device in devices}
+    coordinator.last_update_success = True
+    coordinator.get_state = MagicMock(return_value=None)
+    return coordinator
+
+
+def _options_entry(*, raw: Any = True) -> Any:
+    entry = MagicMock()
+    entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw}
+    return entry
+
+
+def _memory_select(coordinator: Any | None = None) -> GoveePowerOffMemorySelect:
+    coordinator = coordinator or _settings_coordinator()
+    (entity,) = async_device_setting_select_entities(coordinator, _options_entry())
+    assert isinstance(entity, GoveePowerOffMemorySelect)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+    return entity
+
+
+class TestPowerOffMemorySelect:
+    def test_shape(self) -> None:
+        entity = _memory_select()
+        assert entity.unique_id == f"{DEVICE_ID}{SUFFIX_POWER_OFF_MEMORY}"
+        assert entity.translation_key == "power_off_memory"
+        assert entity.entity_category == "config"
+        assert entity.options == ["last_state", "on", "off"]
+        assert entity.current_option is None
+
+    def test_only_profiles_that_encode_it_get_one(self) -> None:
+        coordinator = _settings_coordinator(
+            _light("H6076", "AA:BB:CC:DD:EE:FF:60:76"),
+            _light("H0000", "AA:BB:CC:DD:EE:FF:60:B1"),
+            _light(SKU, "12345", is_group=True),
+        )
+        assert async_device_setting_select_entities(coordinator, _options_entry()) == []
+
+    @pytest.mark.parametrize("raw", [False, None, "yes"])
+    def test_the_raw_option_gates_it(self, raw: Any) -> None:
+        assert async_device_setting_select_entities(_settings_coordinator(), _options_entry(raw=raw)) == []
+
+    @pytest.mark.parametrize(("option", "byte"), [("last_state", 0), ("on", 1), ("off", 2)])
+    async def test_an_option_writes_its_byte(self, option: str, byte: int) -> None:
+        entity = _memory_select()
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)) as route:
+            await entity.async_select_option(option)
+
+        assert list(route.await_args.args[4]) == [_frame(0x33, 0x41, 0x02, byte)]
+        assert entity.current_option == option
+        entity.async_write_ha_state.assert_called_once()
+
+    async def test_an_unknown_option_is_a_translated_error(self) -> None:
+        entity = _memory_select()
+        with pytest.raises(ServiceValidationError) as err:
+            await entity.async_select_option("sometimes")
+        assert err.value.translation_key == "unknown_option"
+        assert err.value.translation_placeholders == {"option": "sometimes", "device": "String lights"}
+
+    async def test_a_refused_write_keeps_the_option(self) -> None:
+        entity = _memory_select()
+        entity._option = "on"
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=False)):
+            with pytest.raises(HomeAssistantError) as err:
+                await entity.async_select_option("off")
+        assert err.value.translation_key == "command_failed"
+        assert entity.current_option == "on"
+        entity.async_write_ha_state.assert_not_called()
+
+    @pytest.mark.parametrize(("restored", "expected"), [("off", "off"), ("unknown", None)])
+    async def test_restores_the_last_option(self, restored: str, expected: str | None) -> None:
+        entity = _memory_select()
+        entity.async_get_last_state = AsyncMock(return_value=State("select.x", restored))
+        with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass", AsyncMock()):
+            await entity.async_added_to_hass()
+        assert entity.current_option == expected
+
+    async def test_nothing_to_restore(self) -> None:
+        entity = _memory_select()
+        entity.async_get_last_state = AsyncMock(return_value=None)
+        with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass", AsyncMock()):
+            await entity.async_added_to_hass()
+        assert entity.current_option is None
+
+
+@pytest.mark.parametrize(("raw", "kept"), [(False, False), (True, True)])
+async def test_cleanup_follows_the_raw_option(hass, mock_light_device, raw: bool, kept: bool) -> None:
+    device_id = mock_light_device.device_id
+    entry = _cleanup_entry(hass, **{CONF_ENABLE_LAN_RAW_WRITE: raw})
+    registry = er.async_get(hass)
+    ids = _seed(registry, entry, ("light", device_id), ("select", f"{device_id}{SUFFIX_POWER_OFF_MEMORY}"))
+
+    await _async_cleanup_orphaned_entities(hass, entry, _cleanup_coordinator([device_id]))
+
+    assert registry.async_get(ids[device_id]) is not None
+    assert (registry.async_get(ids[f"{device_id}{SUFFIX_POWER_OFF_MEMORY}"]) is not None) is kept

@@ -706,6 +706,8 @@ SUFFIX_SNAPSHOT_SELECT: Final = "_snapshot_select"
 # Fork: adjustments of the running scene, for SKUs that take scene uploads.
 SUFFIX_SCENE_SPEED_SELECT: Final = "_scene_speed_select"
 SUFFIX_SCENE_DIRECTION_SELECT: Final = "_scene_direction_select"
+# Fork: the raw power-off memory select, gated by CONF_ENABLE_LAN_RAW_WRITE.
+SUFFIX_POWER_OFF_MEMORY: Final = "_power_off_memory"
 SUFFIX_DIY_SCENE_SELECT: Final = "_diy_scene_select"
 SUFFIX_DIY_STYLE_SELECT: Final = "_diy_style_select"
 SUFFIX_HDMI_SOURCE_SELECT: Final = "_hdmi_source_select"

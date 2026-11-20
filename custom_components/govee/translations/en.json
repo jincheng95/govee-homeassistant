@@ -297,6 +297,14 @@
           "part": "Part of screen",
           "whole": "Whole screen"
         }
+      },
+      "power_off_memory": {
+        "name": "Power-off memory",
+        "state": {
+          "last_state": "Last state",
+          "on": "On",
+          "off": "Off"
+        }
       }
     },
     "switch": {
