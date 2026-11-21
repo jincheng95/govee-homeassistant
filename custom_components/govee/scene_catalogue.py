@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, TypeVar
 
 import aiohttp
 from homeassistant.core import HomeAssistant, callback
@@ -36,13 +36,28 @@ _LOGGER = logging.getLogger(__name__)
 
 CATALOGUE_URL: Final = "https://app2.govee.com/appsku/v2/scences"
 _APP_VERSION: Final = "7.4.10"
-_TIMEOUT: Final = aiohttp.ClientTimeout(total=20)
+APP_TIMEOUT: Final = aiohttp.ClientTimeout(total=20)
 
 CATALOGUE_TTL: Final = 24 * 3600.0
 RETRY_AFTER_FAILURE: Final = 600.0
 MIN_RELOAD_DELAY: Final = 1.0
 
 _STORE_ATTR: Final = "_govee_scene_catalogue"
+
+_T = TypeVar("_T")
+
+
+def app_headers() -> dict[str, str]:
+    """Headers the app sends on a request that needs no account."""
+    return {
+        "appVersion": _APP_VERSION,
+        "clientType": "1",
+        "clientId": "0" * 32,
+        "timestamp": str(int(time.time() * 1000)),
+        "country": "US",
+        "envId": "0",
+        "iotVersion": "0",
+    }
 
 
 @dataclass(frozen=True)
@@ -109,12 +124,18 @@ def parse_catalogue(payload: Any) -> dict[str, CatalogueScene]:
     return found
 
 
-class SceneCatalogue:
-    """Per-SKU catalogue cache."""
+class SkuCache(Generic[_T]):
+    """Per-SKU data fetched from the app in the background and held in memory.
+
+    A subclass names the data in :attr:`label` and implements
+    :meth:`_async_fetch`, which returns a falsy value for a failed fetch.
+    """
+
+    label: ClassVar[str]
 
     def __init__(self, coordinator: GoveeCoordinator) -> None:
         self._coordinator = coordinator
-        self._scenes: dict[str, dict[str, CatalogueScene]] = {}
+        self._held: dict[str, _T] = {}
         self._retry_at: dict[str, float] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._scheduled: set[str] = set()
@@ -123,47 +144,34 @@ class SceneCatalogue:
         self._warned: set[str] = set()
         self._stopped = False
 
-    def scene(self, sku: str, name: str | None) -> CatalogueScene | None:
-        """The cached scene called ``name``, or None."""
-        if not name:
-            return None
-        return self._scenes.get(sku, {}).get(name)
-
     def loaded(self, sku: str) -> bool:
-        return sku in self._scenes
-
-    def name_for_code(self, sku: str, code: int) -> str | None:
-        """The cached scene that uploads with ``code``, or None."""
-        for scene in self._scenes.get(sku, {}).values():
-            if scene.code == code:
-                return scene.name
-        return None
+        return sku in self._held
 
     async def async_load(self, sku: str) -> bool:
-        """Fetch the catalogue for ``sku`` unless a fresh copy is held.
+        """Fetch the data for ``sku`` unless a fresh copy is held.
 
         Returns:
-            True when a catalogue for the SKU is held afterwards.
+            True when data for the SKU is held afterwards.
         """
         lock = self._locks.setdefault(sku, asyncio.Lock())
         async with lock:
             now = time.monotonic()
             if now < self._retry_at.get(sku, 0.0):
-                return sku in self._scenes
+                return sku in self._held
             fetched = await self._async_fetch(sku)
             if fetched:
-                self._scenes[sku] = fetched
+                self._held[sku] = fetched
                 self._retry_at[sku] = now + CATALOGUE_TTL
             else:
                 self._retry_at[sku] = now + RETRY_AFTER_FAILURE
-            return sku in self._scenes
+            return sku in self._held
 
     def async_schedule(self, hass: HomeAssistant, sku: str) -> None:
-        """Load the SKU's catalogue in the background and keep it fresh.
+        """Load the SKU's data in the background and keep it fresh.
 
-        A failed fetch is retried after :data:`RETRY_AFTER_FAILURE`, and a held
-        catalogue is refetched after :data:`CATALOGUE_TTL`. A failed refresh
-        keeps the held copy. The coordinator's listeners are told when a fetch
+        A failed fetch is retried after :data:`RETRY_AFTER_FAILURE`, and held
+        data is refetched after :data:`CATALOGUE_TTL`. A failed refresh keeps
+        the held copy. The coordinator's listeners are told when a fetch
         brings a new copy. Later calls for a scheduled SKU do nothing, and
         unloading the config entry stops the schedule and cancels a fetch in
         flight. A fetch that raises anything is a failed fetch.
@@ -190,12 +198,12 @@ class SceneCatalogue:
     @callback
     def _start(self, hass: HomeAssistant, sku: str) -> None:
         self._tasks[sku] = hass.async_create_background_task(
-            self._async_refresh(hass, sku), name=f"govee scene catalogue {sku}"
+            self._async_refresh(hass, sku), name=f"govee {self.label.lower()} {sku}"
         )
 
     async def _async_refresh(self, hass: HomeAssistant, sku: str) -> None:
         self._timers.pop(sku, None)
-        before = self._scenes.get(sku)
+        before = self._held.get(sku)
         try:
             await self.async_load(sku)
         except Exception as err:  # noqa: BLE001 - the schedule must outlive any fetch error
@@ -205,10 +213,10 @@ class SceneCatalogue:
 
             # The exception's arguments can carry the request URL, so only its type is logged.
 
-            log("Scene catalogue load for %s failed with %s, retrying later", sku, type(err).__name__)
+            log("%s load for %s failed with %s, retrying later", self.label, sku, type(err).__name__)
         if self._stopped:
             return
-        if self._scenes.get(sku) is not before:
+        if self._held.get(sku) is not before:
             self._coordinator.async_update_listeners()
         delay = max(MIN_RELOAD_DELAY, self._retry_at.get(sku, 0.0) - time.monotonic())
 
@@ -218,19 +226,33 @@ class SceneCatalogue:
 
         self._timers[sku] = async_call_later(hass, delay, _reload)
 
+    async def _async_fetch(self, sku: str) -> _T | None:
+        raise NotImplementedError
+
+
+class SceneCatalogue(SkuCache[dict[str, CatalogueScene]]):
+    """Per-SKU catalogue cache."""
+
+    label = "Scene catalogue"
+
+    def scene(self, sku: str, name: str | None) -> CatalogueScene | None:
+        """The cached scene called ``name``, or None."""
+        if not name:
+            return None
+        return self._held.get(sku, {}).get(name)
+
+    def name_for_code(self, sku: str, code: int) -> str | None:
+        """The cached scene that uploads with ``code``, or None."""
+        for scene in self._held.get(sku, {}).values():
+            if scene.code == code:
+                return scene.name
+        return None
+
     async def _async_fetch(self, sku: str) -> dict[str, CatalogueScene]:
         session = async_get_clientsession(self._coordinator.hass)
-        headers = {
-            "appVersion": _APP_VERSION,
-            "clientType": "1",
-            "clientId": "0" * 32,
-            "timestamp": str(int(time.time() * 1000)),
-            "country": "US",
-            "envId": "0",
-            "iotVersion": "0",
-        }
+        headers = app_headers()
         try:
-            async with session.get(CATALOGUE_URL, params={"sku": sku}, headers=headers, timeout=_TIMEOUT) as response:
+            async with session.get(CATALOGUE_URL, params={"sku": sku}, headers=headers, timeout=APP_TIMEOUT) as response:
                 if response.status != 200:
                     _LOGGER.debug("Scene catalogue for %s answered HTTP %s", sku, response.status)
                     return {}

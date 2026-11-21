@@ -424,7 +424,7 @@ def _coordinator(*devices: GoveeDevice, scene: str | None = "Rainbow B") -> Any:
     coordinator.get_state = MagicMock(return_value=state)
     coordinator.state = state
     store = scene_catalogue.catalogue(coordinator)
-    store._scenes[SKU] = scene_catalogue.parse_catalogue(_payload())
+    store._held[SKU] = scene_catalogue.parse_catalogue(_payload())
     return follow_online_flag(coordinator)
 
 
@@ -602,7 +602,7 @@ class TestSelecting:
         speed, _ = _selects(coordinator)
         store = scene_catalogue.catalogue(coordinator)
         good = store.scene(SKU, "Rainbow B")
-        store._scenes[SKU]["Rainbow B"] = scene_catalogue.CatalogueScene(
+        store._held[SKU]["Rainbow B"] = scene_catalogue.CatalogueScene(
             name="Rainbow B", code=good.code, blob=RAINBOW[:-1], adjust=good.adjust
         )
 
@@ -833,7 +833,7 @@ class TestStartSceneLocally:
     async def test_only_a_scene_that_fits_one_message_starts_locally(self, frames: int, local: bool) -> None:
         coordinator = _coordinator(scene=None)
         blob = _rgbic_blob(frames)
-        scene_catalogue.catalogue(coordinator)._scenes[SKU]["Long"] = scene_catalogue.CatalogueScene(
+        scene_catalogue.catalogue(coordinator)._held[SKU]["Long"] = scene_catalogue.CatalogueScene(
             name="Long", code=7, blob=blob, adjust=None
         )
         device = coordinator.devices[DEVICE_ID]
@@ -848,7 +848,7 @@ class TestStartSceneLocally:
 
     async def test_declines_a_scene_that_cannot_be_framed(self) -> None:
         coordinator = _coordinator(scene=None)
-        scene_catalogue.catalogue(coordinator)._scenes[SKU]["Rainbow B"] = scene_catalogue.CatalogueScene(
+        scene_catalogue.catalogue(coordinator)._held[SKU]["Rainbow B"] = scene_catalogue.CatalogueScene(
             name="Rainbow B", code=0x10000, blob=RAINBOW, adjust=None
         )
         route = await self._declined(coordinator)

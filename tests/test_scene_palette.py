@@ -235,7 +235,7 @@ def _coordinator(scene: str | None = "Layers") -> Any:
     state.active_scene_name = scene
     coordinator.get_state = MagicMock(return_value=state)
     coordinator.state = state
-    scene_catalogue.catalogue(coordinator)._scenes[SKU] = scene_catalogue.parse_catalogue(_payload())
+    scene_catalogue.catalogue(coordinator)._held[SKU] = scene_catalogue.parse_catalogue(_payload())
     return follow_online_flag(coordinator)
 
 
@@ -439,7 +439,7 @@ class TestReset:
     async def test_a_malformed_blob_is_a_readable_error(self) -> None:
         coordinator = _coordinator("Single")
         entities = _entities(coordinator)
-        store = scene_catalogue.catalogue(coordinator)._scenes[SKU]
+        store = scene_catalogue.catalogue(coordinator)._held[SKU]
         store["Single"] = scene_catalogue.CatalogueScene(name="Single", code=0x10000, blob=SINGLE, adjust=None)
         with _routed() as route, pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "scene_adjust_failed"):
             await entities["reset"].async_press()
