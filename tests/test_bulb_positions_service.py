@@ -250,6 +250,41 @@ class TestSettingsSweep:
 
         coordinator.mqtt_send.assert_not_awaited()
 
+    async def test_an_upload_that_starts_mid_sweep_waits_for_both_queries(self, coordinator, sleep) -> None:
+        sends: list[str] = []
+        uploads: list[asyncio.Future[int]] = []
+
+        async def _query(*_args, **_kwargs) -> bool:
+            sends.append("query")
+            if not uploads:
+                uploads.append(
+                    asyncio.ensure_future(
+                        raw_router.async_route_upload(
+                            coordinator,
+                            DEVICE_ID,
+                            "H80C5",
+                            profile_for("H80C5"),
+                            [[FRAME], [FRAME]],
+                            gap_seconds=0.0,
+                            what="test upload",
+                        )
+                    )
+                )
+                for _ in range(5):
+                    await asyncio.sleep(0)
+            return True
+
+        async def _lan(*_args, **_kwargs) -> bool:
+            sends.append("upload")
+            return True
+
+        coordinator.mqtt_send.side_effect = _query
+        coordinator.lan_send.side_effect = _lan
+
+        assert await raw_status.async_query_settings(coordinator, DEVICE_ID) == 2
+        assert await uploads[0] == 2
+        assert sends == ["query", "query", "upload", "upload"]
+
 
 class TestValidation:
     async def test_wrong_count(self, coordinator, sleep) -> None:

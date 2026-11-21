@@ -169,11 +169,6 @@ def upload_lock(coordinator: GoveeCoordinator, device_id: str) -> asyncio.Lock:
     return lock
 
 
-def upload_in_progress(coordinator: GoveeCoordinator, device_id: str) -> bool:
-    """Whether a fork raw write to the device holds its upload lock now."""
-    return upload_lock(coordinator, device_id).locked()
-
-
 async def _async_pick_tier(
     coordinator: GoveeCoordinator,
     device_id: str,

@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final
 
 from .api import mqtt_raw_write
-from .api.raw_router import upload_in_progress
+from .api.raw_router import upload_lock
 from .api.protocol import SETTING_QUERIES, Capability, GoveeCodec, decode_status
 from .api.zone_power_report import decode_frames as decode_zone_power_frames
 from .zone_state import profile_for
@@ -105,20 +105,36 @@ async def async_query_settings(coordinator: GoveeCoordinator, device_id: str) ->
         How many queries went out. 0 when the profile encodes no setting, the
         MQTT ``ptReal`` tier is unavailable, or a fork upload to the device is
         in progress.
+
+    The device's upload lock is taken without waiting and held for this
+    device's queries only, so an upload that starts mid-sweep waits for them.
     """
     device = coordinator.devices.get(device_id)
-    if device is None or device.is_group or upload_in_progress(coordinator, device_id):
+    if device is None or device.is_group:
         return 0
     profile = profile_for(device.sku)
     if profile is None or not profile.supports(Capability.QUERY):
         return 0
+    lock = upload_lock(coordinator, device_id)
+    if lock.locked():
+        return 0
     codec = GoveeCodec(profile)
     sent = 0
-    for capability, command_type in SETTING_QUERIES.items():
-        if not profile.supports(capability):
-            continue
-        if await mqtt_raw_write.async_send_frames(
-            coordinator, device_id, device.sku, profile, [codec.query(command_type)], what=f"{capability.value} read"
-        ):
-            sent += 1
+
+    # An unheld lock with no waiters is taken without yielding, so the check
+    # above and this acquire cannot be split by an upload.
+
+    async with lock:
+        for capability, command_type in SETTING_QUERIES.items():
+            if not profile.supports(capability):
+                continue
+            if await mqtt_raw_write.async_send_frames(
+                coordinator,
+                device_id,
+                device.sku,
+                profile,
+                [codec.query(command_type)],
+                what=f"{capability.value} read",
+            ):
+                sent += 1
     return sent
