@@ -34,6 +34,13 @@ GRADIENT_COMMAND_TYPE = 0xA3
 POWER_OFF_MEMORY_COMMAND_TYPE = 0x41
 POWER_OFF_MEMORY_BEHAVIOURS = range(3)
 """0 restores the last state, 1 comes back on, 2 stays off."""
+LIGHT_TIMER_COMMAND_TYPE = 0x23
+
+TIMER_ENABLED = 0x80
+TIMER_TURN_ON = 0x01
+REPEAT_MARKER = 0x80
+"""Always set in a repeat byte. Bits 0-6 are Monday to Sunday."""
+WEEKDAY_COUNT = 7
 
 Encoder = Callable[..., bytes]
 
@@ -87,6 +94,58 @@ def power_off_memory(constants: Mapping[str, Any], *, behaviour: int) -> bytes:
     if behaviour not in POWER_OFF_MEMORY_BEHAVIOURS:
         raise FrameError(f"power-off memory behaviour {behaviour!r} is not one of 0, 1, 2")
     return build_frame([PRO_TYPE_WRITE, POWER_OFF_MEMORY_COMMAND_TYPE, constant(constants, "sub_type"), behaviour])
+
+
+# schedules
+
+
+def repeat_byte(weekdays: Iterable[int]) -> int:
+    """Encode weekdays (0 Monday to 6 Sunday) as a repeat byte. No days means run once."""
+    value = REPEAT_MARKER
+    for day in weekdays:
+        if not 0 <= day < WEEKDAY_COUNT:
+            raise FrameError(f"weekday {day!r} is not 0-6")
+        value |= 1 << day
+    return value
+
+
+def repeat_days(value: int) -> tuple[int, ...]:
+    """Decode a repeat byte into weekdays, 0 Monday to 6 Sunday."""
+    return tuple(day for day in range(WEEKDAY_COUNT) if value & (1 << day))
+
+
+def _time_bytes(hour: int, minute: int) -> list[int]:
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise FrameError(f"time {hour}:{minute} is not a time of day")
+    return [hour, minute]
+
+
+def _byte(name: str, value: int, low: int, high: int = 0xFF) -> int:
+    if not low <= value <= high:
+        raise FrameError(f"{name} {value!r} is not {low}-{high}")
+    return value
+
+
+def light_timer(
+    constants: Mapping[str, Any],
+    *,
+    slot: int,
+    enabled: bool,
+    turn_on: bool,
+    hour: int,
+    minute: int,
+    weekdays: Iterable[int] = (),
+) -> bytes:
+    """``33 23 <slot> <flags> <hour> <minute> <repeat>``.
+
+    Flags bit 7 enables the timer and bit 0 makes it turn the light on rather
+    than off. ``slot`` is 0-based and below the ``slots`` constant.
+    """
+    _byte("timer slot", slot, 0, constant(constants, "slots") - 1)
+    flags = (TIMER_ENABLED if enabled else 0) | (TIMER_TURN_ON if turn_on else 0)
+    return build_frame(
+        [PRO_TYPE_WRITE, LIGHT_TIMER_COMMAND_TYPE, slot, flags, *_time_bytes(hour, minute), repeat_byte(weekdays)]
+    )
 
 
 def query(constants: Mapping[str, Any], *, command_type: int) -> bytes:
@@ -248,6 +307,7 @@ ENCODERS: Mapping[str, Encoder] = {
     "bar_power_mask": bar_power_mask,
     "gradient": gradient,
     "power_off_memory": power_off_memory,
+    "light_timer": light_timer,
     "query": query,
     "mode_select": mode_select,
     "zone_color": zone_color,

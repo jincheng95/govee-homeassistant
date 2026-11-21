@@ -59,7 +59,7 @@ from .profiles import (
     get_profile,
     validate_table,
 )
-from .status import SETTING_QUERIES, StatusReport, decode_status
+from .status import SETTING_QUERIES, LightTimer, StatusReport, decode_status
 
 __all__ = [
     "BLE_MANUFACTURER_LEGACY",
@@ -86,6 +86,7 @@ __all__ = [
     "FrameError",
     "KelvinRange",
     "LanUdpClient",
+    "LightTimer",
     "GoveeCodec",
     "GoveeProtocolError",
     "MaxSimultaneousZones",

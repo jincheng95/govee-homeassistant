@@ -104,6 +104,7 @@ class Capability(str, Enum):
     QUERY = "query"
     GRADIENT = "gradient"
     POWER_OFF_MEMORY = "power_off_memory"
+    LIGHT_TIMER = "light_timer"
 
 
 @dataclass(frozen=True)
@@ -646,6 +647,7 @@ H80C5: Final = DeviceProfile(
         Capability.QUERY: CapabilitySpec("query"),
         Capability.GRADIENT: CapabilitySpec("gradient"),
         Capability.POWER_OFF_MEMORY: CapabilitySpec("power_off_memory", {"sub_type": 0x02}),
+        Capability.LIGHT_TIMER: CapabilitySpec("light_timer", {"slots": 4}),
     },
     modes={"scene": 0x04},
     # `aa a5` answers a query on this SKU; it is not pushed unsolicited.

@@ -206,6 +206,23 @@
         "both": "Both (grouped and individual entities)",
         "groups": "Custom groups (one entity per group you define)"
       }
+    },
+    "weekday": {
+      "options": {
+        "monday": "Monday",
+        "tuesday": "Tuesday",
+        "wednesday": "Wednesday",
+        "thursday": "Thursday",
+        "friday": "Friday",
+        "saturday": "Saturday",
+        "sunday": "Sunday"
+      }
+    },
+    "timer_action": {
+      "options": {
+        "turn_on": "Turn on",
+        "turn_off": "Turn off"
+      }
     }
   },
   "entity": {
@@ -747,6 +764,36 @@
           "description": "Seconds between queries while repeating (at least 3)."
         }
       }
+    },
+    "set_light_timer": {
+      "name": "Set light timer",
+      "description": "Sets one of the light's on-device on/off timers over the local raw-frame connection. The light keeps running the timer without Home Assistant.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "slot": {
+          "name": "Timer",
+          "description": "Which timer to set, counting from 1."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether the timer runs. An enabled timer needs a time and an action."
+        },
+        "action": {
+          "name": "Action",
+          "description": "What the timer does at its time."
+        },
+        "time": {
+          "name": "Time",
+          "description": "Time of day the timer fires."
+        },
+        "weekdays": {
+          "name": "Repeat on",
+          "description": "Days to repeat on. Leave empty to run once."
+        }
+      }
     }
   },
   "exceptions": {
@@ -806,6 +853,18 @@
     },
     "invalid_tv_sensitivity": {
       "message": "TV sensitivity must be a whole number from 0 to 100."
+    },
+    "raw_action_unsupported": {
+      "message": "{device} does not support {action}."
+    },
+    "raw_action_unavailable": {
+      "message": "Could not send {action} to {device}. This needs a raw-frame option (local raw writes, BLE raw writes or AWS IoT raw writes) and a reachable device."
+    },
+    "timer_slot_out_of_range": {
+      "message": "{device} has timers 1 to {slots}."
+    },
+    "timer_needs_time_and_action": {
+      "message": "An enabled timer needs a time and an action."
     }
   },
   "issues": {

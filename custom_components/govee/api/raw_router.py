@@ -7,7 +7,8 @@ the cloud MQTT ``ptReal`` passthrough, and reports False when no tier accepted
 no tier confirms, so callers keep optimistic state. Also home to the per-segment
 paint (:func:`async_segment_color`), which picks its wire form from the profile,
 to whole-device colour temperature (:func:`async_color_temp`), to device
-settings (:func:`async_device_setting`) and to zone power (:func:`async_zone_power`).
+settings and schedules (:func:`async_device_setting`, :func:`async_device_frames`) and to zone
+power (:func:`async_zone_power`).
 """
 
 from __future__ import annotations
@@ -298,13 +299,37 @@ async def async_device_setting(
         True when a tier took the frame. False when the profile does not
         encode the setting, the raw option is off, or no tier took it.
     """
-    profile = profile_for(device.sku)
-    if device.is_group or profile is None or not profile.supports(capability):
+    if not supports_setting(device.sku, capability):
         return False
-    if not raw_write_enabled(coordinator):
+    return await async_device_frames(coordinator, device, lambda codec: [build(codec)], what=capability.value)
+
+
+async def async_device_frames(
+    coordinator: GoveeCoordinator,
+    device: GoveeDevice,
+    build: Callable[[GoveeCodec], Sequence[bytes]],
+    *,
+    what: str,
+) -> bool:
+    """Try to write frames built from the device's codec over a raw pipe.
+
+    The caller checks that the profile encodes what ``build`` asks for.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device: The device to write.
+        build: Builds the frames, in send order, from the device's codec.
+        what: Human-readable intent, for the debug log.
+
+    Returns:
+        True when a tier took the frames. False for a group, a SKU with no
+        profile, the raw option off, or no tier taking them.
+    """
+    profile = profile_for(device.sku)
+    if device.is_group or profile is None or not raw_write_enabled(coordinator):
         return False
     return await async_route_frames(
-        coordinator, device.device_id, device.sku, profile, [build(GoveeCodec(profile))], what=capability.value
+        coordinator, device.device_id, device.sku, profile, list(build(GoveeCodec(profile))), what=what
     )
 
 

@@ -195,3 +195,54 @@ request_status:
           min: 3
           max: 60
           unit_of_measurement: s
+
+set_light_timer:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    slot:
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+    enabled:
+      required: false
+      default: true
+      selector:
+        boolean:
+    action:
+      required: false
+      example: turn_off
+      selector:
+        select:
+          translation_key: timer_action
+          options:
+            - turn_on
+            - turn_off
+    time:
+      required: false
+      example: "23:30:00"
+      selector:
+        time:
+    weekdays:
+      required: false
+      example: "[monday, friday]"
+      selector:
+        select:
+          translation_key: weekday
+          multiple: true
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday

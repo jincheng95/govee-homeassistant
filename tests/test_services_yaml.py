@@ -43,10 +43,13 @@ class TestServicesYaml:
 
     def test_every_service_registered_in_code_is_described(self):
         """A service with no description gets an empty dialog in the UI."""
-        from custom_components.govee import services
+        from custom_components.govee import raw_actions, services
 
         registered = {
-            value for name, value in vars(services).items() if name.startswith("SERVICE_") and isinstance(value, str)
+            value
+            for module in (services, raw_actions)
+            for name, value in vars(module).items()
+            if name.startswith("SERVICE_") and isinstance(value, str)
         }
 
         assert registered <= set(_descriptions())

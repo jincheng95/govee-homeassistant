@@ -5,6 +5,8 @@
     ee 30 01 <00|01> ...   power report, pushed when the power changes
     aa a3 <00|01>          gradient reply to an ``aa a3`` query
     aa 41 02 <n>           power-off memory reply to an ``aa 41`` query
+    aa 23 ff <4 x 4>       timer reply to an ``aa 23 ff`` query, one
+                           ``<flags> <hour> <minute> <repeat>`` group per slot
 
 A frame with a bad checksum, a wrong length or an unexpected value is skipped.
 ``DeviceProfile.power_push`` and the setting capabilities in
@@ -17,12 +19,24 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from .encoders import GRADIENT_COMMAND_TYPE, POWER_OFF_MEMORY_BEHAVIOURS, POWER_OFF_MEMORY_COMMAND_TYPE
+from .encoders import (
+    GRADIENT_COMMAND_TYPE,
+    LIGHT_TIMER_COMMAND_TYPE,
+    POWER_OFF_MEMORY_BEHAVIOURS,
+    POWER_OFF_MEMORY_COMMAND_TYPE,
+    REPEAT_MARKER,
+    TIMER_ENABLED,
+    TIMER_TURN_ON,
+    repeat_days,
+)
 from .frames import FRAME_LENGTH, PRO_TYPE_QUERY, xor_checksum
 from .profiles import Capability
 
 POWER_REPORT: Final = (0xEE, 0x30, 0x01)
 POWER_OFF_MEMORY_SUB_TYPE: Final = 0x02
+TIMER_READ_ALL: Final = 0xFF
+"""The ``aa 23`` selector that reads every timer slot."""
+TIMER_REPLY_SLOTS: Final = 4
 
 SETTING_QUERIES: Final[Mapping[Capability, int]] = {
     Capability.GRADIENT: GRADIENT_COMMAND_TYPE,
@@ -32,16 +46,50 @@ SETTING_QUERIES: Final[Mapping[Capability, int]] = {
 
 
 @dataclass(frozen=True)
+class LightTimer:
+    """One on/off timer slot. ``weekdays`` runs 0 Monday to 6 Sunday; empty runs once."""
+
+    enabled: bool
+    turn_on: bool
+    hour: int
+    minute: int
+    weekdays: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class StatusReport:
     """What one batch of frames reported. A field stays None when absent."""
 
     power: bool | None = None
     gradient: bool | None = None
     power_off_memory: int | None = None
+    timers: tuple[LightTimer, ...] | None = None
 
 
 def _valid(frame: bytes) -> bool:
     return len(frame) == FRAME_LENGTH and xor_checksum(frame[:-1]) == frame[-1]
+
+
+def _time_of_day(hour: int, minute: int) -> bool:
+    return hour <= 23 and minute <= 59
+
+
+def _decode_timers(frame: bytes) -> tuple[LightTimer, ...] | None:
+    timers: list[LightTimer] = []
+    for slot in range(TIMER_REPLY_SLOTS):
+        flags, hour, minute, repeat = frame[3 + 4 * slot : 7 + 4 * slot]
+        if flags & ~(TIMER_ENABLED | TIMER_TURN_ON) or not repeat & REPEAT_MARKER or not _time_of_day(hour, minute):
+            return None
+        timers.append(
+            LightTimer(
+                enabled=bool(flags & TIMER_ENABLED),
+                turn_on=bool(flags & TIMER_TURN_ON),
+                hour=hour,
+                minute=minute,
+                weekdays=repeat_days(repeat),
+            )
+        )
+    return tuple(timers)
 
 
 def decode_status(frames: Iterable[bytes]) -> StatusReport:
@@ -49,6 +97,7 @@ def decode_status(frames: Iterable[bytes]) -> StatusReport:
     power: bool | None = None
     gradient: bool | None = None
     memory: int | None = None
+    timers: tuple[LightTimer, ...] | None = None
     for frame in frames:
         if not _valid(frame):
             continue
@@ -64,4 +113,6 @@ def decode_status(frames: Iterable[bytes]) -> StatusReport:
             and frame[3] in POWER_OFF_MEMORY_BEHAVIOURS
         ):
             memory = frame[3]
-    return StatusReport(power=power, gradient=gradient, power_off_memory=memory)
+        elif frame[1] == LIGHT_TIMER_COMMAND_TYPE and frame[2] == TIMER_READ_ALL:
+            timers = _decode_timers(frame) or timers
+    return StatusReport(power=power, gradient=gradient, power_off_memory=memory, timers=timers)

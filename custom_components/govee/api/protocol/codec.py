@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .diy import DiyZoneEffect, all_off, encode_payload
-from .encoders import ENCODERS
+from .encoders import ENCODERS, constant
 from .errors import DiyEffectError, GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
 from .frames import ptreal_message, segment_mask
 from .packets import upload_effect
@@ -127,6 +127,40 @@ class GoveeCodec:
     def power_off_memory(self, behaviour: int) -> bytes:
         """What the device does when power returns: 0 last state, 1 on, 2 off."""
         return self._encode(Capability.POWER_OFF_MEMORY, behaviour=behaviour)
+
+    def timer_slots(self) -> int:
+        """How many on/off timers the device keeps."""
+        return constant(self._spec(Capability.LIGHT_TIMER).constants, "slots")
+
+    def light_timer(
+        self,
+        slot: int,
+        *,
+        enabled: bool,
+        turn_on: bool,
+        hour: int,
+        minute: int,
+        weekdays: Iterable[int] = (),
+    ) -> bytes:
+        """Set one on/off timer.
+
+        Args:
+            slot: 0-based timer slot, below :meth:`timer_slots`.
+            enabled: Whether the timer runs.
+            turn_on: True turns the light on at the time, False turns it off.
+            hour: Hour of day, 0-23.
+            minute: Minute, 0-59.
+            weekdays: Days to repeat on, 0 Monday to 6 Sunday. No days runs once.
+        """
+        return self._encode(
+            Capability.LIGHT_TIMER,
+            slot=slot,
+            enabled=enabled,
+            turn_on=turn_on,
+            hour=hour,
+            minute=minute,
+            weekdays=weekdays,
+        )
 
     def bar_power_mask(self, mask: int) -> bytes:
         """H6046 two-bar power mask (0x01 = bar A, 0x10 = bar B, 0x11 = both)."""
