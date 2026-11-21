@@ -133,6 +133,13 @@ class TestTableSelfCheck:
             with pytest.raises(GoveeProtocolError):
                 profiles.validate_table()
 
+    def test_the_two_ee_30_01_reports_are_never_declared_together(self) -> None:
+        broken = replace(H60B0, sku="H9999", power_push=True)
+        with patch.dict(profiles.PROFILES, {"H9999": broken}):
+            with pytest.raises(GoveeProtocolError, match="both power_push and zone_power_report"):
+                profiles.validate_table()
+        profiles.validate_table()
+
 
 class TestReconcile:
     def test_only_changed_zones_notify(self) -> None:

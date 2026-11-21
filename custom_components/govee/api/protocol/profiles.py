@@ -836,6 +836,9 @@ def validate_table() -> None:
                 raise GoveeProtocolError(f"{profile.sku} zone power bit {bit:#04x} is not one of bits 0-6")
         if len(set(power_bits)) != len(power_bits):
             raise GoveeProtocolError(f"{profile.sku} gives two zones the same power bit")
+        if profile.power_push and profile.zone_power_report:
+            # Both reports start ee 30 01, and only this flag tells them apart.
+            raise GoveeProtocolError(f"{profile.sku} declares both power_push and zone_power_report")
         if profile.segment_zone is not None:
             # "Segments live on zone X" is only meaningful if X exists, has
             # segments to mask, and can be painted by the zone-colour frame.
