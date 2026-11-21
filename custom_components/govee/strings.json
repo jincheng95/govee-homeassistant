@@ -865,7 +865,7 @@
         },
         "enabled": {
           "name": "Enabled",
-          "description": "Whether the timer runs. An enabled timer needs a time and an action."
+          "description": "Whether the timer runs. An enabled timer needs a time and an action. Disabling a timer keeps the time, action and days it has unless you give new ones."
         },
         "action": {
           "name": "Action",
@@ -1074,6 +1074,9 @@
     },
     "raw_action_unavailable": {
       "message": "Could not send {action} to {device}. This needs a raw-frame option (local raw writes, BLE raw writes or AWS IoT raw writes) and a reachable device."
+    },
+    "timer_slot_unknown": {
+      "message": "Timer {slot} on {device} is not known yet, so disabling it needs a time. Give a time, or ask the device for its status first."
     },
     "timer_slot_out_of_range": {
       "message": "{device} has timers 1 to {slots}."

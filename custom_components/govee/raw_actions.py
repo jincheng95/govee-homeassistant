@@ -28,7 +28,7 @@ from .api.protocol.encoders import repeat_byte, repeat_days
 from .api.raw_router import async_device_frames, white_point
 from .const import DOMAIN
 from .coordinator import GoveeCoordinator
-from .light_schedule import record_sleep, record_timer, record_wake_up
+from .light_schedule import record_sleep, record_timer, record_wake_up, schedule
 from .models import GoveeDevice
 from .upstream_access import coordinator_for_device, device_not_found
 from .zone_state import profile_for
@@ -73,7 +73,7 @@ SET_LIGHT_TIMER_SCHEMA = vol.Schema(
         vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
         vol.Optional(ATTR_ACTION): vol.In(TIMER_ACTIONS),
         vol.Optional(ATTR_TIME): cv.time,
-        vol.Optional(ATTR_WEEKDAYS, default=[]): _WEEKDAY_LIST,
+        vol.Optional(ATTR_WEEKDAYS): _WEEKDAY_LIST,
     }
 )
 
@@ -172,8 +172,10 @@ async def _async_send(
 async def async_set_light_timer_handler(hass: HomeAssistant, call: ServiceCall) -> None:
     """Handle ``govee.set_light_timer``.
 
-    ``slot`` counts from 1. An enabled timer needs a time and an action; a
-    disabled one writes midnight and "turn off" for any field left out.
+    ``slot`` counts from 1. An enabled timer needs a time and an action. A
+    disabled one takes each field the call leaves out from the slot as last
+    reported or written, and with no time given it needs that slot known. A
+    field left out with nothing known is "turn off" or "run once".
     """
     coordinator, device, profile = _resolve(hass, call, lambda profile: profile.supports(Capability.LIGHT_TIMER))
     data: dict[str, Any] = call.data
@@ -183,9 +185,19 @@ async def async_set_light_timer_handler(hass: HomeAssistant, call: ServiceCall) 
     enabled: bool = data[ATTR_ENABLED]
     if enabled and (ATTR_TIME not in data or ATTR_ACTION not in data):
         raise _validation_error("timer_needs_time_and_action")
-    at: time = data.get(ATTR_TIME, time(0, 0))
-    turn_on = data.get(ATTR_ACTION) == "turn_on"
-    weekdays = _weekday_bits(data[ATTR_WEEKDAYS])
+    timers = schedule(coordinator, device.device_id).timers
+    known = None if enabled or timers is None or data[ATTR_SLOT] > len(timers) else timers[data[ATTR_SLOT] - 1]
+    if not enabled and ATTR_TIME not in data and known is None:
+        raise _validation_error("timer_slot_unknown", device=device.name, slot=str(data[ATTR_SLOT]))
+    at: time = data[ATTR_TIME] if ATTR_TIME in data else time(known.hour, known.minute) if known else time(0, 0)
+    if ATTR_ACTION in data:
+        turn_on = data[ATTR_ACTION] == "turn_on"
+    else:
+        turn_on = known is not None and known.turn_on
+    if ATTR_WEEKDAYS in data:
+        weekdays = _weekday_bits(data[ATTR_WEEKDAYS])
+    else:
+        weekdays = [] if known is None else list(known.weekdays)
 
     await _async_send(
         coordinator,

@@ -149,18 +149,18 @@ class TestCommonGates:
     async def test_no_raw_pipe_is_a_translated_error(self, hass, actions) -> None:
         with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=False)):
             with pytest.raises(HomeAssistantError) as err:
-                await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False)
+                await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False, time="00:00")
         assert err.value.translation_key == "raw_action_unavailable"
 
     async def test_the_raw_option_off_sends_nothing(self, hass, actions, route) -> None:
         actions["coordinator"] = _coordinator(raw=False)
         with pytest.raises(HomeAssistantError) as err:
-            await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False)
+            await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False, time="00:00")
         assert err.value.translation_key == "raw_action_unavailable"
         route.assert_not_awaited()
 
     async def test_the_route_gets_the_device_and_profile(self, hass, actions, route) -> None:
-        await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False)
+        await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False, time="00:00")
         args = route.await_args
         assert args.args[:4] == (actions["coordinator"], DEVICE_ID, SKU, get_profile(SKU))
         assert args.kwargs == {"what": "set_light_timer"}
@@ -174,6 +174,8 @@ TIMER_OFF_ONCE = bytes([0x33, 0x23, 0x00, 0x80, 0x00, 0x00, 0x80, *bytes(12), 0x
 TIMER_ON_MON_SUN = bytes([0x33, 0x23, 0x00, 0x81, 0x00, 0x00, 0xC1, *bytes(12), 0x50])
 TIMER_DISABLED = bytes([0x33, 0x23, 0x00, 0x00, 0x00, 0x00, 0x80, *bytes(12), 0x90])
 TIMER_REPLY_UNSET = bytes([0xAA, 0x23, 0xFF, *([0x00, 0x00, 0x00, 0x80] * 4), 0x76])
+TIMER_REPLY_SET = bytes([0xAA, 0x23, 0xFF, 0x81, 0x06, 0x1E, 0x9F, *([0x00, 0x00, 0x00, 0x80] * 3), 0xF0])
+TIMER_SLOT_1_DISABLED = bytes([0x33, 0x23, 0x00, 0x01, 0x06, 0x1E, 0x9F, *bytes(12), 0x96])
 
 
 class TestLightTimerFrame:
@@ -272,9 +274,32 @@ class TestSetLightTimer:
         )
         assert _sent(route) == [TIMER_ON_MON_SUN]
 
-    async def test_disabling_needs_nothing_else(self, hass, actions, route) -> None:
-        await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False)
+    async def test_disabling_with_a_time_needs_nothing_else(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False, time="00:00")
         assert _sent(route) == [TIMER_DISABLED]
+
+    async def test_disabling_a_known_slot_clears_only_its_enable_bit(self, hass, actions, route) -> None:
+        light_schedule.apply_schedule_report(actions["coordinator"], _light(), [TIMER_REPLY_SET])
+        await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False)
+        assert _sent(route) == [TIMER_SLOT_1_DISABLED]
+        assert _codec().light_timer(
+            0, enabled=False, turn_on=True, hour=6, minute=30, weekdays=(0, 1, 2, 3, 4)
+        ) == TIMER_SLOT_1_DISABLED
+        stored = light_schedule.schedule(actions["coordinator"], DEVICE_ID).timers
+        assert stored is not None
+        assert stored[0] == LightTimer(enabled=False, turn_on=True, hour=6, minute=30, weekdays=(0, 1, 2, 3, 4))
+
+    async def test_disabling_a_known_slot_takes_the_fields_given(self, hass, actions, route) -> None:
+        light_schedule.apply_schedule_report(actions["coordinator"], _light(), [TIMER_REPLY_SET])
+        await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False, action="turn_off", weekdays=[])
+        assert _sent(route) == [bytes([0x33, 0x23, 0x00, 0x00, 0x06, 0x1E, 0x80, *bytes(12), 0x88])]
+
+    async def test_disabling_an_unknown_slot_without_a_time_is_refused(self, hass, actions, route) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=3, enabled=False)
+        assert err.value.translation_key == "timer_slot_unknown"
+        assert err.value.translation_placeholders == {"device": "String lights", "slot": "3"}
+        route.assert_not_awaited()
 
     async def test_the_slot_counts_from_one(self, hass, actions, route) -> None:
         await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=4, action="turn_on", time="21:05")
