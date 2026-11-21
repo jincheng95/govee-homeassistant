@@ -167,8 +167,9 @@ class SceneCatalogue:
         """
         if sku in self._scheduled or self._stopped:
             return
-        if not self._scheduled:
-            self._coordinator.config_entry.async_on_unload(self.async_stop)
+        entry = self._coordinator.config_entry
+        if not self._scheduled and entry is not None:
+            entry.async_on_unload(self.async_stop)
         self._scheduled.add(sku)
         hass.async_create_task(self._async_refresh(hass, sku))
 
