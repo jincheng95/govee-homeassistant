@@ -2,7 +2,8 @@
 
 The platform API names scenes but carries neither their upload blob nor their
 speed and direction options. The app catalogue carries both and needs no
-account, so it is fetched once per SKU and held in memory.
+account, so it is fetched per SKU in the background, held in memory and
+refetched once a day.
 """
 
 from __future__ import annotations
@@ -13,12 +14,15 @@ import binascii
 import json
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 import aiohttp
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 
 from .api.protocol import scenes
 from .upstream_access import platform_scene_cache
@@ -36,6 +40,7 @@ _TIMEOUT: Final = aiohttp.ClientTimeout(total=20)
 
 CATALOGUE_TTL: Final = 24 * 3600.0
 RETRY_AFTER_FAILURE: Final = 600.0
+MIN_RELOAD_DELAY: Final = 1.0
 
 _STORE_ATTR: Final = "_govee_scene_catalogue"
 
@@ -112,6 +117,9 @@ class SceneCatalogue:
         self._scenes: dict[str, dict[str, CatalogueScene]] = {}
         self._retry_at: dict[str, float] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._scheduled: set[str] = set()
+        self._timers: dict[str, Callable[[], None]] = {}
+        self._stopped = False
 
     def scene(self, sku: str, name: str | None) -> CatalogueScene | None:
         """The cached scene called ``name``, or None."""
@@ -147,6 +155,46 @@ class SceneCatalogue:
             else:
                 self._retry_at[sku] = now + RETRY_AFTER_FAILURE
             return sku in self._scenes
+
+    def async_schedule(self, hass: HomeAssistant, sku: str) -> None:
+        """Load the SKU's catalogue in the background and keep it fresh.
+
+        A failed fetch is retried after :data:`RETRY_AFTER_FAILURE`, and a held
+        catalogue is refetched after :data:`CATALOGUE_TTL`. A failed refresh
+        keeps the held copy. The coordinator's listeners are told when a fetch
+        brings a new copy. Later calls for a scheduled SKU do nothing, and
+        unloading the config entry stops the schedule.
+        """
+        if sku in self._scheduled or self._stopped:
+            return
+        if not self._scheduled:
+            self._coordinator.config_entry.async_on_unload(self.async_stop)
+        self._scheduled.add(sku)
+        hass.async_create_task(self._async_refresh(hass, sku))
+
+    @callback
+    def async_stop(self) -> None:
+        """Cancel every scheduled reload."""
+        self._stopped = True
+        for cancel in self._timers.values():
+            cancel()
+        self._timers.clear()
+
+    async def _async_refresh(self, hass: HomeAssistant, sku: str) -> None:
+        self._timers.pop(sku, None)
+        before = self._scenes.get(sku)
+        await self.async_load(sku)
+        if self._stopped:
+            return
+        if self._scenes.get(sku) is not before:
+            self._coordinator.async_update_listeners()
+        delay = max(MIN_RELOAD_DELAY, self._retry_at.get(sku, 0.0) - time.monotonic())
+
+        @callback
+        def _reload(_now: datetime) -> None:
+            hass.async_create_task(self._async_refresh(hass, sku))
+
+        self._timers[sku] = async_call_later(hass, delay, _reload)
 
     async def _async_fetch(self, sku: str) -> dict[str, CatalogueScene]:
         session = async_get_clientsession(self._coordinator.hass)

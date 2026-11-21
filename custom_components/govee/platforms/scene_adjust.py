@@ -229,13 +229,9 @@ class _GoveeSceneSettingBase(GoveeEntity):
         self._profile = profile
 
     async def async_added_to_hass(self) -> None:
-        """Load the catalogue in the background; setup does not wait on it."""
+        """Schedule the catalogue load; setup does not wait on it."""
         await super().async_added_to_hass()
-        self.hass.async_create_task(self._async_load_catalogue())
-
-    async def _async_load_catalogue(self) -> None:
-        if await catalogue(self.coordinator).async_load(self._device.sku):
-            self.async_write_ha_state()
+        catalogue(self.coordinator).async_schedule(self.hass, self._device.sku)
 
     def _scene(self) -> CatalogueScene | None:
         """The catalogue entry of the scene the light is running, if any."""

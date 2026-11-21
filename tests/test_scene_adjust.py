@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -237,6 +238,115 @@ class TestCatalogueCache:
         assert scene_catalogue.catalogue(coordinator) is first
 
 
+class _Schedule:
+    """A store whose clock, tasks and timers the test drives by hand."""
+
+    def __init__(self, session: MagicMock) -> None:
+        self.now = 1000.0
+        self.tasks: list[Any] = []
+        self.timers: list[tuple[float, Any, MagicMock]] = []
+        self.hass = MagicMock()
+        self.hass.async_create_task = self.tasks.append
+        self.coordinator = MagicMock()
+        self.store = scene_catalogue.SceneCatalogue(self.coordinator)
+        self._patches = [
+            patch.object(scene_catalogue, "async_get_clientsession", return_value=session),
+            patch.object(scene_catalogue, "time", SimpleNamespace(monotonic=lambda: self.now, time=lambda: 0.0)),
+            patch.object(scene_catalogue, "async_call_later", self._call_later),
+        ]
+
+    def _call_later(self, _hass: Any, delay: float, action: Any) -> MagicMock:
+        cancel = MagicMock()
+        self.timers.append((delay, action, cancel))
+        return cancel
+
+    async def run(self) -> None:
+        while self.tasks:
+            await self.tasks.pop(0)
+
+    async def fire(self) -> None:
+        delay, action, _cancel = self.timers[-1]
+        self.now += delay
+        action(None)
+        await self.run()
+
+    def __enter__(self) -> _Schedule:
+        for active in self._patches:
+            active.start()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        for active in self._patches:
+            active.stop()
+
+
+class TestCatalogueSchedule:
+    async def test_a_failed_first_fetch_is_retried_then_refreshed_daily(self) -> None:
+        session = _session(_Response(503, {}), _Response(200, _payload()), _Response(200, _payload()))
+        with _Schedule(session) as schedule:
+            schedule.store.async_schedule(schedule.hass, SKU)
+            await schedule.run()
+            assert schedule.store.loaded(SKU) is False
+            schedule.coordinator.async_update_listeners.assert_not_called()
+            assert schedule.timers[-1][0] == scene_catalogue.RETRY_AFTER_FAILURE
+
+            await schedule.fire()
+            assert schedule.store.loaded(SKU) is True
+            schedule.coordinator.async_update_listeners.assert_called_once()
+            assert schedule.timers[-1][0] == scene_catalogue.CATALOGUE_TTL
+
+            await schedule.fire()
+            assert session.get.call_count == 3
+            assert schedule.coordinator.async_update_listeners.call_count == 2
+            assert schedule.timers[-1][0] == scene_catalogue.CATALOGUE_TTL
+
+    async def test_a_failed_refresh_keeps_the_copy_and_retries(self) -> None:
+        session = _session(_Response(200, _payload()), _Response(500, {}))
+        with _Schedule(session) as schedule:
+            schedule.store.async_schedule(schedule.hass, SKU)
+            await schedule.run()
+            await schedule.fire()
+            assert schedule.store.scene(SKU, "Flame B") is not None
+            schedule.coordinator.async_update_listeners.assert_called_once()
+            assert schedule.timers[-1][0] == scene_catalogue.RETRY_AFTER_FAILURE
+
+    async def test_a_reload_is_never_scheduled_at_once(self) -> None:
+        with _Schedule(_session()) as schedule:
+            schedule.store._retry_at[SKU] = schedule.now + 3600
+            schedule.store.async_schedule(schedule.hass, SKU)
+            schedule.now += 3599.5
+            await schedule.run()
+            assert schedule.timers[-1][0] == scene_catalogue.MIN_RELOAD_DELAY
+
+    async def test_scheduling_twice_starts_one_load(self) -> None:
+        with _Schedule(_session(_Response(200, _payload()))) as schedule:
+            schedule.store.async_schedule(schedule.hass, SKU)
+            schedule.store.async_schedule(schedule.hass, SKU)
+            assert len(schedule.tasks) == 1
+            schedule.coordinator.config_entry.async_on_unload.assert_called_once_with(schedule.store.async_stop)
+            await schedule.run()
+
+    async def test_unloading_stops_the_schedule(self) -> None:
+        session = _session(_Response(503, {}))
+        with _Schedule(session) as schedule:
+            schedule.store.async_schedule(schedule.hass, SKU)
+            await schedule.run()
+            cancel = schedule.timers[-1][2]
+            schedule.store.async_stop()
+            cancel.assert_called_once()
+
+            schedule.store.async_schedule(schedule.hass, "H70C1")
+            assert schedule.tasks == []
+
+    async def test_a_load_that_ends_after_unloading_schedules_nothing(self) -> None:
+        with _Schedule(_session(_Response(200, _payload()))) as schedule:
+            schedule.store.async_schedule(schedule.hass, SKU)
+            schedule.store.async_stop()
+            await schedule.run()
+            assert schedule.timers == []
+            schedule.coordinator.async_update_listeners.assert_not_called()
+
+
 # ==============================================================================
 # Builders for the entity tests
 # ==============================================================================
@@ -314,28 +424,17 @@ class TestWiring:
     def test_the_scenes_option_gates_them(self) -> None:
         assert async_scene_adjust_select_entities(_coordinator(), _entry(scenes_on=False)) == []
 
-    async def test_adding_an_entity_loads_the_catalogue_in_the_background(self) -> None:
+    async def test_adding_an_entity_schedules_the_catalogue(self) -> None:
         coordinator = _coordinator()
         speed, _ = _selects(coordinator)
-        loader = AsyncMock(return_value=True)
-        scene_catalogue.catalogue(coordinator).async_load = loader  # type: ignore[method-assign]
-        tasks: list[Any] = []
-        speed.hass.async_create_task = lambda coro: tasks.append(coro)
+        schedule = MagicMock()
+        scene_catalogue.catalogue(coordinator).async_schedule = schedule  # type: ignore[method-assign]
 
         speed.async_get_last_extra_data = AsyncMock(return_value=None)  # type: ignore[method-assign]
         with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass", AsyncMock()):
             await speed.async_added_to_hass()
-        await tasks[0]
 
-        loader.assert_awaited_once_with(SKU)
-        speed.async_write_ha_state.assert_called_once()
-
-    async def test_a_failed_load_writes_no_state(self) -> None:
-        coordinator = _coordinator()
-        speed, _ = _selects(coordinator)
-        scene_catalogue.catalogue(coordinator).async_load = AsyncMock(return_value=False)  # type: ignore[method-assign]
-        await speed._async_load_catalogue()
-        speed.async_write_ha_state.assert_not_called()
+        schedule.assert_called_once_with(speed.hass, SKU)
 
 
 # ==============================================================================
