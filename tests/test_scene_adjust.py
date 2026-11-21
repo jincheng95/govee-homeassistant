@@ -667,34 +667,14 @@ def _with_platform_scenes(coordinator: Any, scenes_list: list[Any] | None = None
     return coordinator
 
 
-class TestReportedSceneCode:
-    def test_scene_mode_carries_the_code(self) -> None:
-        assert scene_catalogue.reported_scene_code([_mode_report(0x04, 0x0C, 0x47)]) == 18188
-
-    def test_other_frames_are_skipped_first(self) -> None:
-        frames = [b"\xaa\x11" + bytes(18), b"short", _mode_report(0x04, 0x31, 0x30)]
-        assert scene_catalogue.reported_scene_code(frames) == 12337
-
-    @pytest.mark.parametrize(
-        "frames",
-        [
-            [],
-            [_mode_report(0x15, 0x01)],
-            [_mode_report(0x0A, 0x20, 0x03)],
-            [_mode_report(0x04, 0x0C, 0x47)[:19] + b"\x00"],
-        ],
-    )
-    def test_no_scene_code(self, frames: list[bytes]) -> None:
-        assert scene_catalogue.reported_scene_code(frames) is None
-
-
 class TestApplySceneReport:
     def test_a_known_code_sets_the_scene(self) -> None:
         coordinator = _with_platform_scenes(_coordinator(scene=None))
         device = coordinator.devices[DEVICE_ID]
 
+        other = [b"\xaa\x11" + bytes(18), b"short"]
         changed = scene_catalogue.apply_scene_report(
-            coordinator, device, coordinator.state, [_mode_report(0x04, 0x0C, 0x47)]
+            coordinator, device, coordinator.state, [*other, _mode_report(0x04, 0x0C, 0x47)]
         )
 
         assert changed is True

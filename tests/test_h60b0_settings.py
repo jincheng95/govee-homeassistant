@@ -16,7 +16,7 @@ from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.govee import raw_status
 from custom_components.govee.api import raw_router
-from custom_components.govee.api.protocol import Capability, FrameError, GoveeCodec, decode_status, get_profile
+from custom_components.govee.api.protocol import Capability, FrameError, GoveeCodec, get_profile
 from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE, SUFFIX_POWER_OFF_MEMORY
 from custom_components.govee.models import GoveeDevice, GoveeDeviceState
 from custom_components.govee.models.device import DEVICE_TYPE_LIGHT
@@ -78,9 +78,6 @@ class TestPowerOffMemoryFrame:
     def test_stay_off_is_byte_exact(self) -> None:
         assert _codec().power_off_memory(2) == MEMORY_STAY_OFF
 
-    def test_last_state_is_the_same_layout(self) -> None:
-        assert _codec().power_off_memory(0) == _frame(0x33, 0x41, 0x02, 0x00)
-
     def test_only_the_verified_behaviours_are_offered(self) -> None:
         assert _codec().power_off_memory_behaviours() == (0, 2)
         assert GoveeCodec(get_profile("H80C5")).power_off_memory_behaviours() == (0, 1, 2)
@@ -89,9 +86,6 @@ class TestPowerOffMemoryFrame:
     def test_other_behaviours_are_refused(self, behaviour: int) -> None:
         with pytest.raises(FrameError):
             _codec().power_off_memory(behaviour)
-
-    def test_the_reply_decodes(self) -> None:
-        assert decode_status([MEMORY_LAST_STATE_REPLY]).power_off_memory == 0
 
     def test_the_setting_is_queried(self) -> None:
         assert raw_router.supports_setting(SKU, Capability.POWER_OFF_MEMORY) is True
@@ -110,14 +104,6 @@ class TestPowerOffMemorySelect:
         assert power_off_memory_options("H80C5") == ["last_state", "on", "off"]
         assert power_off_memory_options("H6076") == []
         assert power_off_memory_options("H0000") == []
-
-    @pytest.mark.parametrize(("option", "byte"), [("last_state", 0), ("off", 2)])
-    async def test_an_option_writes_its_byte(self, option: str, byte: int) -> None:
-        entity = _memory_select()
-        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)) as route:
-            await entity.async_select_option(option)
-        assert list(route.await_args.args[4]) == [_frame(0x33, 0x41, 0x02, byte)]
-        assert entity.current_option == option
 
     async def test_on_is_a_translated_error(self) -> None:
         entity = _memory_select()

@@ -96,11 +96,6 @@ class TestColorTempFrame:
     def test_whole_string_frame_is_byte_exact(self, kelvin: int, white: tuple[int, int, int], expected: bytes) -> None:
         assert GoveeCodec(get_profile(SKU)).segment_color_temp(kelvin, white) == expected
 
-    def test_checksums_match_the_known_frames(self) -> None:
-        codec = GoveeCodec(get_profile(SKU))
-        assert codec.segment_color_temp(2700, (0xFF, 0xAE, 0x54))[19] == 0xA2
-        assert codec.segment_color_temp(9000, (0xD9, 0xE1, 0xFF))[19] == 0xED
-
     def test_a_segment_selection_sets_the_mask(self) -> None:
         frame = GoveeCodec(get_profile(SKU)).segment_color_temp(5800, (0xFF, 0xF1, 0xE7), segments=[2, 9])
         assert frame[:14] == bytes([0x33, 0x05, 0x15, 0x01, 0xFF, 0xFF, 0xFF, 0x16, 0xA8, 0xFF, 0xF1, 0xE7, 0x04, 0x02])
@@ -205,9 +200,6 @@ class TestGradientFrame:
     def test_frame_is_byte_exact(self, on: bool, expected: bytes) -> None:
         assert GoveeCodec(get_profile(SKU)).gradient(on) == expected
 
-    def test_checksum_matches_the_known_frame(self) -> None:
-        assert GoveeCodec(get_profile(SKU)).gradient(False)[19] == 0x90
-
     @pytest.mark.parametrize("sku", ["H6046", "H6076", "H60B0"])
     def test_other_skus_do_not_encode_it(self, sku: str) -> None:
         with pytest.raises(UnsupportedCapabilityError):
@@ -299,10 +291,6 @@ class TestPowerOffMemoryFrame:
     def test_frame_is_byte_exact(self, behaviour: int, expected: bytes) -> None:
         assert GoveeCodec(get_profile(SKU)).power_off_memory(behaviour) == expected
 
-    def test_checksums_match_the_known_frames(self) -> None:
-        codec = GoveeCodec(get_profile(SKU))
-        assert [codec.power_off_memory(n)[19] for n in (0, 1, 2)] == [0x70, 0x71, 0x72]
-
     @pytest.mark.parametrize("behaviour", [-1, 3, 255])
     def test_an_unknown_behaviour_is_refused(self, behaviour: int) -> None:
         with pytest.raises(FrameError):
@@ -369,9 +357,12 @@ class TestPowerOffMemorySelect:
     def test_the_raw_option_gates_it(self, raw: Any) -> None:
         assert async_device_setting_select_entities(_settings_coordinator(), _options_entry(raw=raw)) == []
 
-    @pytest.mark.parametrize(("option", "byte"), [("last_state", 0), ("on", 1), ("off", 2)])
-    async def test_an_option_writes_its_byte(self, option: str, byte: int) -> None:
-        entity = _memory_select()
+    @pytest.mark.parametrize(
+        ("sku", "option", "byte"),
+        [(SKU, "last_state", 0), (SKU, "on", 1), (SKU, "off", 2), ("H60B0", "last_state", 0), ("H60B0", "off", 2)],
+    )
+    async def test_an_option_writes_its_byte(self, sku: str, option: str, byte: int) -> None:
+        entity = _memory_select(_settings_coordinator(_light(sku)))
         with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)) as route:
             await entity.async_select_option(option)
 

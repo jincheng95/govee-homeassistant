@@ -242,18 +242,6 @@ def _mode_report(frames: Iterable[bytes]) -> bytes | None:
     return None
 
 
-def reported_scene_code(frames: Iterable[bytes]) -> int | None:
-    """The scene code in an ``aa 05 04 <lo> <hi>`` mode report, or None.
-
-    None also covers a report of any other mode and a frame that fails its
-    checksum.
-    """
-    raw = _mode_report(frames)
-    if raw is None or raw[2] != scenes.SCENE_SUB_MODE:
-        return None
-    return raw[3] | (raw[4] << 8)
-
-
 def _platform_scene_id(coordinator: GoveeCoordinator, device_id: str, name: str) -> str | None:
     """The platform API id of the scene called ``name``, from the scene cache."""
     cache = platform_scene_cache(coordinator)

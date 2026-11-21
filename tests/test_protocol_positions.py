@@ -10,7 +10,7 @@ import math
 
 import pytest
 
-from custom_components.govee.api.protocol import get_profile, positions
+from custom_components.govee.api.protocol import positions
 from custom_components.govee.api.protocol.errors import FrameError, PositionMapError
 from custom_components.govee.api.protocol.frames import FRAME_LENGTH, xor_checksum
 from custom_components.govee.api.protocol.packets import chunk_mtu
@@ -142,10 +142,3 @@ class TestNormalizePositions:
 
     def test_custom_extent(self) -> None:
         assert positions.normalize_positions([(0, 0, 0), (2, 1, 0)], extent=100) == [(0, 0, 0), (100, 50, 0)]
-
-
-class TestProfile:
-    def test_only_the_h80c5_takes_a_position_map(self) -> None:
-        assert get_profile("H80C5").position_map_bulbs == 300
-        for sku in ("H60B0", "H6046", "H6076"):
-            assert get_profile(sku).position_map_bulbs == 0

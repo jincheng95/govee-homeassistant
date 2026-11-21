@@ -1,9 +1,8 @@
 """Catalogue scene upload for the H70CX effect family.
 
 A named scene is a blob the app pushes as ``0xA3`` multipacket frames and then
-commits with ``33 05 04 <codeLo> <codeHi>``. Three blob kinds exist::
+commits with ``33 05 04 <codeLo> <codeHi>``. Two blob kinds exist::
 
-    empty          firmware preset      commit only
     49 ...         H70CX effect         marker 0x58, lead byte dropped
     anything else  RGBIC effect         marker 0x02, blob sent whole
 
@@ -494,18 +493,18 @@ def scene_frames(blob: bytes, code: int) -> list[bytes]:
     """The frames that upload and start one catalogue scene.
 
     Args:
-        blob: The decoded ``scenceParam``; empty for a firmware preset.
+        blob: The decoded ``scenceParam``.
         code: The catalogue ``sceneCode``.
 
     Raises:
-        FrameError: The code does not fit two bytes, or the upload needs more
-            than :data:`MAX_MESSAGE_FRAMES` frames.
+        FrameError: The blob is empty, the code does not fit two bytes, or the
+            upload needs more than :data:`MAX_MESSAGE_FRAMES` frames.
     """
+    if not blob:
+        raise FrameError("the scene blob is empty")
     if not 0 <= code <= 0xFFFF:
         raise FrameError(f"scene code {code} does not fit two bytes")
     commit = commit_frame(sub_mode=SCENE_SUB_MODE, index=code)
-    if not blob:
-        return [commit]
     if blob[0] == H70CX_LEAD:
         frames = [*terminated_chunks(blob[1:], H70CX_MARKER), commit]
     else:

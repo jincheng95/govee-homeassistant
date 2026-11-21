@@ -174,6 +174,13 @@ class TestSendPath:
         assert all(message[0][0] == 0xA4 for message in messages[:113])
         assert messages[113] == paint.paint_frames([], bulb_count=300)
 
+    async def test_an_empty_upload_sends_nothing(self, coordinator) -> None:
+        sent = await raw_router.async_route_upload(
+            coordinator, DEVICE_ID, "H80C5", MagicMock(), [], gap_seconds=0.0, what="nothing"
+        )
+        assert sent == 0
+        coordinator.lan_send.assert_not_awaited()
+
     async def test_the_settings_sweep_skips_a_device_mid_upload(self, coordinator, sleep) -> None:
         async with raw_router.upload_lock(coordinator, DEVICE_ID):
             assert await raw_status.async_query_settings(coordinator, DEVICE_ID) == 0

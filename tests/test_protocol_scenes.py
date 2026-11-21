@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.govee.api.protocol import get_profile, scenes
+from custom_components.govee.api.protocol import scenes
 from custom_components.govee.api.protocol.errors import FrameError
-from custom_components.govee.api.protocol.frames import xor_checksum
 
 # A single-effect blob: rainbow (effect 3), direction 5, speed 0x5c, 7 colours.
 RAINBOW = bytes.fromhex("491a000304055c07ff0000ff7f00ffff0000ff000000ff00ffff8b00ff")
@@ -45,8 +44,9 @@ class TestSceneFrames:
         assert frames[-2][:2] == bytes([0xA3, 0xFF])
         assert frames[-1].hex().startswith("3305043130")
 
-    def test_preset_scene_is_a_bare_commit(self) -> None:
-        assert _hex(scenes.scene_frames(b"", 100)) == ["33050464000000000000000000000000000000" + "56"]
+    def test_an_empty_blob_is_refused(self) -> None:
+        with pytest.raises(FrameError, match="empty"):
+            scenes.scene_frames(b"", 100)
 
     def test_short_payload_still_gets_a_terminator_packet(self) -> None:
         blob = bytes([scenes.H70CX_LEAD]) + bytes(range(14))
@@ -56,11 +56,6 @@ class TestSceneFrames:
         assert frames[0][5:19] == bytes(range(14))
         assert frames[1][:2] == bytes([0xA3, 0xFF])
         assert frames[1][2:19] == bytes(17)
-
-    def test_every_frame_is_checksummed(self) -> None:
-        for frame in scenes.scene_frames(RGBIC, 12337):
-            assert len(frame) == 20
-            assert xor_checksum(frame[:19]) == frame[19]
 
     def test_an_upload_longer_than_one_message_is_refused(self) -> None:
         blobs = [bytes([0x02]) + bytes(n) for n in range(1, 400)]
@@ -223,11 +218,6 @@ class TestAdjustBlob:
         # Starlight keeps its speed at position 6; this record stops short.
         blob = bytes([0x49, 3, 0, 10, 0, 0])
         assert scenes.adjust_blob(blob, self.ADJUST, speed=0) == blob
-
-
-def test_h80c5_declares_scene_upload() -> None:
-    assert get_profile("H80C5").scene_upload is True
-    assert get_profile("H6076").scene_upload is False
 
 
 # ------------------------------------------------------------------------------

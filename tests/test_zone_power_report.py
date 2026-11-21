@@ -108,9 +108,6 @@ class TestDecode:
     def test_payload_frames_keep_payload_order(self) -> None:
         assert payload_frames(_payload(RIPPLE, DOWNLIGHT)) == [RIPPLE, DOWNLIGHT]
 
-    def test_only_the_h60b0_declares_the_report(self) -> None:
-        assert [sku for sku, profile in profiles.PROFILES.items() if profile.zone_power_report] == ["H60B0"]
-
     def test_h60b0_power_bits(self) -> None:
         bits = {zone.key: zone.power_bit for zone in H60B0.zones}
         assert bits == {

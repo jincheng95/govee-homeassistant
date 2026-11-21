@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from custom_components.govee import light_schedule
-from custom_components.govee.api.protocol import LightTimer, SleepTimer, WakeUp, get_profile
+from custom_components.govee.api.protocol import LightTimer, SleepTimer, WakeUp
 from custom_components.govee.models import GoveeDevice, GoveeDeviceState
 from custom_components.govee.models.device import DEVICE_TYPE_LIGHT
 from custom_components.govee.platforms.light_schedule import (
@@ -93,10 +93,6 @@ class TestApply:
         device = coordinator.devices[DEVICE_ID]
         assert light_schedule.apply_schedule_report(coordinator, device, [SLEEP_OFF]) is False
         assert light_schedule.schedules(coordinator) == {}
-
-    def test_the_profile_flag(self) -> None:
-        assert get_profile("H80C5").schedule_report is True
-        assert get_profile("H6076").schedule_report is False
 
 
 class TestSensors:

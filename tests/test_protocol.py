@@ -437,6 +437,25 @@ class TestProfiles:
     def test_table_is_internally_consistent(self) -> None:
         validate_table()
 
+    def test_the_fork_feature_flags_of_every_profile(self) -> None:
+        flags = {
+            sku: (
+                profile.scene_upload,
+                profile.paint_bulbs,
+                profile.position_map_bulbs,
+                profile.schedule_report,
+                profile.power_push,
+                profile.zone_power_report,
+            )
+            for sku, profile in profiles.PROFILES.items()
+        }
+        assert flags == {
+            "H60B0": (False, 0, 0, False, False, True),
+            "H6046": (False, 0, 0, False, False, False),
+            "H6076": (False, 0, 0, False, False, False),
+            "H80C5": (True, 300, 300, True, True, False),
+        }
+
     def test_lookup_is_case_insensitive(self) -> None:
         assert get_profile("h60b0") is get_profile("H60B0")
 

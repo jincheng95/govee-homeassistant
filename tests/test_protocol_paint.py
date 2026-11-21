@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.govee.api.protocol import get_profile, paint
+from custom_components.govee.api.protocol import paint
 from custom_components.govee.api.protocol.errors import FrameError
 
 PROBE = [
@@ -83,11 +83,6 @@ def test_bad_colours_and_indexes(colors: list) -> None:
 def test_bad_base(kwargs: dict) -> None:
     with pytest.raises(FrameError):
         paint.paint_payload([], bulb_count=300, **kwargs)
-
-
-def test_h80c5_declares_its_led_count() -> None:
-    assert get_profile("H80C5").paint_bulbs == 300
-    assert get_profile("H6076").paint_bulbs == 0
 
 
 def test_an_upload_is_split_into_messages_of_twelve_frames() -> None:
