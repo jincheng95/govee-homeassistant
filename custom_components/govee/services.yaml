@@ -334,3 +334,50 @@ set_wake_up:
           unit: kelvin
           min: 2700
           max: 9000
+
+set_music_mode:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    effect:
+      required: true
+      example: rhythm
+      selector:
+        select:
+          translation_key: music_effect
+          mode: dropdown
+          options:
+            - energic
+            - rhythm
+            - separation
+            - hopping
+            - piano_keys
+            - fountain
+            - day_and_night
+    sensitivity:
+      required: false
+      default: 99
+      selector:
+        number:
+          min: 0
+          max: 99
+          mode: slider
+    soft:
+      required: false
+      default: false
+      selector:
+        boolean:
+    manual_color:
+      required: false
+      example: "[255, 0, 0]"
+      selector:
+        color_rgb:
+    palette:
+      required: false
+      example: "[[255, 0, 0], [0, 0, 255]]"
+      selector:
+        object:

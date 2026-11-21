@@ -1,8 +1,9 @@
-"""Service actions that write on-device schedules over raw frames (fork).
+"""Service actions that write on-device schedules and music mode over raw frames (fork).
 
 - ``govee.set_light_timer``: one of the device's on/off timers.
 - ``govee.set_sleep_timer``: dim to off over a number of minutes.
 - ``govee.set_wake_up``: brighten to a level by a time of day.
+- ``govee.set_music_mode``: one of the device's music effects.
 
 Each action takes one device, checks that its profile encodes the setting, and
 sends the frames through :func:`~.api.raw_router.async_device_frames`. No cloud
@@ -39,10 +40,16 @@ ATTR_START_BRIGHTNESS = "start_brightness"
 ATTR_DURATION = "duration"
 ATTR_END_BRIGHTNESS = "end_brightness"
 ATTR_COLOR_TEMP_KELVIN = "color_temp_kelvin"
+ATTR_EFFECT = "effect"
+ATTR_SENSITIVITY = "sensitivity"
+ATTR_SOFT = "soft"
+ATTR_MANUAL_COLOR = "manual_color"
+ATTR_PALETTE = "palette"
 
 SERVICE_SET_LIGHT_TIMER = "set_light_timer"
 SERVICE_SET_SLEEP_TIMER = "set_sleep_timer"
 SERVICE_SET_WAKE_UP = "set_wake_up"
+SERVICE_SET_MUSIC_MODE = "set_music_mode"
 
 DEFAULT_WAKE_UP_KELVIN: Final = 2700
 
@@ -86,6 +93,19 @@ SET_WAKE_UP_SCHEMA = vol.Schema(
         vol.Optional(ATTR_COLOR_TEMP_KELVIN, default=DEFAULT_WAKE_UP_KELVIN): vol.All(
             vol.Coerce(int), vol.Range(min=1)
         ),
+    }
+)
+
+_RGB = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple))
+
+SET_MUSIC_MODE_SCHEMA = vol.Schema(
+    {
+        vol.Required(services.ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_EFFECT): vol.All(cv.string, vol.Lower),
+        vol.Optional(ATTR_SENSITIVITY, default=99): vol.All(vol.Coerce(int), vol.Range(min=0, max=99)),
+        vol.Optional(ATTR_SOFT, default=False): cv.boolean,
+        vol.Optional(ATTR_MANUAL_COLOR): _RGB,
+        vol.Optional(ATTR_PALETTE): vol.All(cv.ensure_list, vol.Length(min=1), [_RGB]),
     }
 )
 
@@ -235,6 +255,42 @@ async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> N
     )
 
 
+async def async_set_music_mode_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.set_music_mode``.
+
+    An effect that takes a palette always uploads one: the call's, else the
+    profile's default. An effect without a palette refuses one.
+    """
+    coordinator, device, profile = _resolve(hass, call, lambda profile: profile.music is not None)
+    spec = profile.music
+    assert spec is not None
+    data: dict[str, Any] = call.data
+    effect = spec.effects.get(data[ATTR_EFFECT])
+    if effect is None:
+        raise _validation_error("music_effect_unsupported", device=device.name, effect=data[ATTR_EFFECT])
+    palette: Sequence[tuple[int, int, int]] | None = data.get(ATTR_PALETTE)
+    if effect not in spec.palette_effects:
+        if palette is not None:
+            raise _validation_error("music_palette_unsupported", effect=data[ATTR_EFFECT])
+    elif palette is None:
+        palette = spec.default_palette
+    if palette is not None and len(palette) > spec.max_colors:
+        raise _validation_error("music_palette_too_long", maximum=str(spec.max_colors))
+
+    await _async_send(
+        coordinator,
+        device,
+        call,
+        lambda codec: codec.music_effect(
+            effect,
+            sensitivity=data[ATTR_SENSITIVITY],
+            colors=palette,
+            soft=data[ATTR_SOFT],
+            manual_color=data.get(ATTR_MANUAL_COLOR),
+        ),
+    )
+
+
 @callback
 def async_setup_raw_actions(hass: HomeAssistant) -> None:
     """Register the raw schedule actions (called from ``async_setup_services``)."""
@@ -248,6 +304,10 @@ def async_setup_raw_actions(hass: HomeAssistant) -> None:
     async def _set_wake_up(call: ServiceCall) -> None:
         await async_set_wake_up_handler(hass, call)
 
+    async def _set_music_mode(call: ServiceCall) -> None:
+        await async_set_music_mode_handler(hass, call)
+
     hass.services.async_register(DOMAIN, SERVICE_SET_LIGHT_TIMER, _set_light_timer, schema=SET_LIGHT_TIMER_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_SET_SLEEP_TIMER, _set_sleep_timer, schema=SET_SLEEP_TIMER_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_SET_WAKE_UP, _set_wake_up, schema=SET_WAKE_UP_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_SET_MUSIC_MODE, _set_music_mode, schema=SET_MUSIC_MODE_SCHEMA)

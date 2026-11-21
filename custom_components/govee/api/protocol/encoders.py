@@ -235,6 +235,28 @@ def mode_select(
     return build_frame(body)
 
 
+def music_select(
+    *,
+    sub_mode: int,
+    effect: int,
+    sensitivity: int,
+    soft: bool = False,
+    manual_rgb: tuple[int, int, int] | None = None,
+) -> bytes:
+    """``33 05 <submode> <effect> <sensitivity> <soft> <manual> <R G B>``.
+
+    Same opening bytes as :func:`mode_select`, but byte 4 is the sensitivity
+    rather than a high index byte. ``manual_rgb`` sets the manual flag and the
+    colour. With ``soft`` off and no ``manual_rgb`` the frame equals the
+    five-byte form.
+    """
+    body = bytearray([PRO_TYPE_WRITE, SUB_MODE_COMMAND_TYPE, sub_mode, effect, sensitivity, 1 if soft else 0])
+    if manual_rgb is not None:
+        body.append(1)
+        body += rgb_bytes(manual_rgb)
+    return build_frame(body)
+
+
 # sub-mode operate, zone-addressed (H60B0 family, sub_mode 0x2c)
 
 

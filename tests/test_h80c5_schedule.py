@@ -1,10 +1,12 @@
-"""On-device schedules of the H80C5 string lights over raw frames (fork feature).
+"""On-device schedules and music mode of the H80C5 string lights over raw frames (fork feature).
 
 1. Light timers: the frame, the ``aa 23`` reply decoder and
    ``govee.set_light_timer``.
 2. Sleep timer: the frame, the ``aa 11`` reply decoder and
    ``govee.set_sleep_timer``.
 3. Wake-up: the frame, the ``aa 12`` reply decoder and ``govee.set_wake_up``.
+4. Music mode: the palette upload, the commit, the table check and
+   ``govee.set_music_mode``.
 
 The actions run on a real ``hass`` through ``hass.services.async_call``, so
 every payload passes the real schema. The coordinator is a mock and the raw
@@ -25,6 +27,7 @@ from custom_components.govee.api import raw_router
 from custom_components.govee.api.protocol import (
     FrameError,
     GoveeCodec,
+    GoveeProtocolError,
     LightTimer,
     SleepTimer,
     UnsupportedCapabilityError,
@@ -105,6 +108,7 @@ class TestRegistration:
         assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_LIGHT_TIMER)
         assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_SLEEP_TIMER)
         assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_WAKE_UP)
+        assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_MUSIC_MODE)
 
 
 class TestCommonGates:
@@ -127,6 +131,7 @@ class TestCommonGates:
             (raw_actions.SERVICE_SET_LIGHT_TIMER, {"slot": 1, "enabled": False}),
             (raw_actions.SERVICE_SET_SLEEP_TIMER, {}),
             (raw_actions.SERVICE_SET_WAKE_UP, {"enabled": False}),
+            (raw_actions.SERVICE_SET_MUSIC_MODE, {"effect": "rhythm"}),
         ],
     )
     async def test_a_device_without_the_capability_is_refused(
@@ -509,4 +514,219 @@ class TestSetWakeUp:
     async def test_the_schema_refuses_bad_values(self, hass, actions, route, data) -> None:
         with pytest.raises(vol.Invalid):
             await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, time="07:00", **data)
+        route.assert_not_awaited()
+
+
+# ==============================================================================
+# 4. Music mode
+# ==============================================================================
+
+
+def _written(*body: int, checksum: int) -> bytes:
+    """A frame written out with its checksum, zero padding implied."""
+    return bytes([*body, *bytes(19 - len(body)), checksum])
+
+
+_RAINBOW = (0xFF, 0x00, 0x00, 0xFF, 0x7F, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0x00)
+_RAINBOW_REST = (0x00, 0x00, 0xFF, 0x00, 0xFF, 0xFF, 0x8B, 0x00, 0xFF)
+
+MUSIC_FRAMES: dict[str, list[bytes]] = {
+    "energic": [
+        _written(0xA3, 0x00, 0x01, 0x02, 0x41, 0x05, 0x07, *_RAINBOW, checksum=0x63),
+        _written(0xA3, 0xFF, *_RAINBOW_REST, checksum=0xD7),
+        _written(0x33, 0x05, 0x13, 0x05, 0x63, checksum=0x43),
+    ],
+    "rhythm": [
+        _written(0x33, 0x05, 0x13, 0x03, 0x63, checksum=0x45),
+    ],
+    "separation": [
+        _written(0xA3, 0x00, 0x01, 0x02, 0x41, 0x32, 0x07, *_RAINBOW, checksum=0x54),
+        _written(0xA3, 0xFF, *_RAINBOW_REST, 0x03, 0x00, 0x55, checksum=0x81),
+        _written(0x33, 0x05, 0x13, 0x32, 0x63, checksum=0x74),
+    ],
+    "hopping": [
+        _written(0xA3, 0x00, 0x01, 0x03, 0x41, 0x33, 0x07, *_RAINBOW, checksum=0x54),
+        _written(0xA3, 0x01, *_RAINBOW_REST, 0x01, 0x01, 0x01, 0x19, 0x62, 0x01, 0x02, 0x3C, checksum=0x6C),
+        _written(0xA3, 0xFF, 0x64, checksum=0x38),
+        _written(0x33, 0x05, 0x13, 0x33, 0x63, checksum=0x75),
+    ],
+    "piano_keys": [
+        _written(0xA3, 0x00, 0x01, 0x02, 0x41, 0x34, 0x07, *_RAINBOW, checksum=0x52),
+        _written(0xA3, 0xFF, *_RAINBOW_REST, 0x00, 0x0A, 0x23, 0x01, 0x05, checksum=0xFA),
+        _written(0x33, 0x05, 0x13, 0x34, 0x63, checksum=0x72),
+    ],
+    "fountain": [
+        _written(0xA3, 0x00, 0x01, 0x02, 0x41, 0x35, 0x07, *_RAINBOW, checksum=0x53),
+        _written(0xA3, 0xFF, *_RAINBOW_REST, 0x01, 0x02, 0x1A, 0x55, checksum=0x9B),
+        _written(0x33, 0x05, 0x13, 0x35, 0x63, checksum=0x73),
+    ],
+    "day_and_night": [
+        _written(0xA3, 0x00, 0x01, 0x02, 0x41, 0x37, 0x07, *_RAINBOW, checksum=0x51),
+        _written(0xA3, 0xFF, *_RAINBOW_REST, 0x08, 0x14, checksum=0xCB),
+        _written(0x33, 0x05, 0x13, 0x37, 0x63, checksum=0x71),
+    ],
+}
+
+RHYTHM_COMMITS = [
+    ({"sensitivity": 2}, _written(0x33, 0x05, 0x13, 0x03, 0x02, checksum=0x24)),
+    ({"sensitivity": 47}, _written(0x33, 0x05, 0x13, 0x03, 0x2F, checksum=0x09)),
+    ({"sensitivity": 92}, _written(0x33, 0x05, 0x13, 0x03, 0x5C, checksum=0x7A)),
+    ({"sensitivity": 92, "soft": True}, _written(0x33, 0x05, 0x13, 0x03, 0x5C, 0x01, checksum=0x7B)),
+    (
+        {"sensitivity": 92, "manual_color": (0xFF, 0x00, 0x00)},
+        _written(0x33, 0x05, 0x13, 0x03, 0x5C, 0x00, 0x01, 0xFF, 0x00, 0x00, checksum=0x84),
+    ),
+    (
+        {"sensitivity": 92, "manual_color": (0xFF, 0x7F, 0x00)},
+        _written(0x33, 0x05, 0x13, 0x03, 0x5C, 0x00, 0x01, 0xFF, 0x7F, 0x00, checksum=0xFB),
+    ),
+    (
+        {"sensitivity": 92, "manual_color": (0x00, 0x00, 0xFF)},
+        _written(0x33, 0x05, 0x13, 0x03, 0x5C, 0x00, 0x01, 0x00, 0x00, 0xFF, checksum=0x84),
+    ),
+]
+
+
+def _music_spec() -> Any:
+    spec = get_profile(SKU).music
+    assert spec is not None
+    return spec
+
+
+class TestMusicFrames:
+    @pytest.mark.parametrize("effect", sorted(MUSIC_FRAMES))
+    def test_effect_selections_are_byte_exact(self, effect: str) -> None:
+        spec = _music_spec()
+        colors = spec.default_palette if spec.effects[effect] in spec.palette_effects else None
+        assert _codec().music_effect(effect, sensitivity=99, colors=colors) == MUSIC_FRAMES[effect]
+
+    @pytest.mark.parametrize(("kwargs", "expected"), RHYTHM_COMMITS)
+    def test_rhythm_commits_are_byte_exact(self, kwargs: dict[str, Any], expected: bytes) -> None:
+        assert _codec().music_effect("rhythm", **kwargs) == [expected]
+
+    def test_a_raw_effect_id_and_no_palette_send_the_commit_alone(self) -> None:
+        assert _codec().music_effect(0x05, sensitivity=99) == [MUSIC_FRAMES["energic"][-1]]
+
+    def test_an_eight_colour_palette_carries_its_count_and_tail(self) -> None:
+        palette = [(index, 0, 0) for index in range(8)]
+        frames = _codec().music_effect("day_and_night", sensitivity=50, colors=palette)
+        payload = frames[0][5:19] + b"".join(frame[2:19] for frame in frames[1:-1])
+        assert frames[0][3] == len(frames) - 1
+        assert payload[:2] == bytes([0x37, 8])
+        assert payload[26:28] == bytes([0x08, 0x14])
+
+    @pytest.mark.parametrize(
+        ("effect", "kwargs", "error"),
+        [
+            ("rhythm", {"colors": [(1, 2, 3)]}, UnsupportedCapabilityError),
+            ("energic", {"colors": []}, GoveeProtocolError),
+            ("energic", {"colors": [(0, 0, 0)] * 9}, GoveeProtocolError),
+            ("energic", {"sensitivity": 100}, GoveeProtocolError),
+            ("disco", {}, GoveeProtocolError),
+            (0x100, {}, GoveeProtocolError),
+        ],
+    )
+    def test_out_of_range_is_refused(self, effect: Any, kwargs: dict[str, Any], error: type[Exception]) -> None:
+        with pytest.raises(error):
+            _codec().music_effect(effect, **{"sensitivity": 50, **kwargs})
+
+    def test_skus_without_a_music_table_refuse(self) -> None:
+        with pytest.raises(UnsupportedCapabilityError):
+            _codec("H6076").music_effect("rhythm", sensitivity=50)
+
+    @pytest.mark.parametrize("kwargs", [{"soft": True}, {"manual_color": (1, 2, 3)}])
+    def test_a_commit_without_options_refuses_them(self, kwargs: dict[str, Any]) -> None:
+        from dataclasses import replace
+
+        profile = get_profile(SKU)
+        plain = replace(profile, music=replace(_music_spec(), commit_options=False))
+        with pytest.raises(UnsupportedCapabilityError):
+            GoveeCodec(plain).music_effect("rhythm", sensitivity=50, **kwargs)
+
+
+class TestMusicTable:
+    def test_the_table_passes_its_check(self) -> None:
+        from custom_components.govee.api.protocol import validate_table
+
+        validate_table()
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"modes": {"scene": 0x04}},
+            {"music_effects": {"rhythm": 0x103}},
+            {"music_palette_effects": frozenset({0x99})},
+            {"music_palette_tails": {0x03: bytes([1])}},
+            {"music_default_palette": ((0, 0, 0),) * 9},
+        ],
+        ids=["no-sub-mode", "id-range", "palette-effect", "tail-effect", "default-palette"],
+    )
+    def test_a_broken_entry_is_refused(self, monkeypatch: pytest.MonkeyPatch, change: dict[str, Any]) -> None:
+        from dataclasses import replace
+
+        from custom_components.govee.api.protocol import profiles
+
+        spec_changes = {key.removeprefix("music_"): value for key, value in change.items() if key.startswith("music_")}
+        profile = get_profile(SKU)
+        broken = replace(
+            profile,
+            modes=change.get("modes", profile.modes),
+            music=replace(_music_spec(), **spec_changes),
+        )
+        monkeypatch.setattr(profiles, "PROFILES", {**profiles.PROFILES, SKU: broken})
+        with pytest.raises(GoveeProtocolError):
+            profiles.validate_table()
+
+
+class TestSetMusicMode:
+    @pytest.mark.parametrize("effect", sorted(MUSIC_FRAMES))
+    async def test_each_effect_sends_the_known_frames(self, hass, actions, route, effect) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect=effect)
+        assert _sent(route) == MUSIC_FRAMES[effect]
+
+    async def test_options_reach_the_commit(self, hass, actions, route) -> None:
+        await _call(
+            hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="Rhythm", sensitivity=92, manual_color=[255, 127, 0]
+        )
+        assert _sent(route) == [RHYTHM_COMMITS[5][1]]
+
+    async def test_soft(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="rhythm", sensitivity=92, soft=True)
+        assert _sent(route) == [RHYTHM_COMMITS[3][1]]
+
+    async def test_a_palette_replaces_the_default(self, hass, actions, route) -> None:
+        await _call(
+            hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="energic", palette=[[255, 0, 0], [0, 0, 255]]
+        )
+        frames = _sent(route)
+        assert frames[0][:13] == bytes([0xA3, 0xFF, 0x01, 0x01, 0x41, 0x05, 0x02, 0xFF, 0, 0, 0, 0, 0xFF])
+        assert frames[1] == MUSIC_FRAMES["energic"][-1]
+
+    async def test_an_unknown_effect_is_a_translated_error(self, hass, actions, route) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="disco")
+        assert err.value.translation_key == "music_effect_unsupported"
+        assert err.value.translation_placeholders == {"device": "String lights", "effect": "disco"}
+        route.assert_not_awaited()
+
+    async def test_a_palette_on_rhythm_is_a_translated_error(self, hass, actions, route) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="rhythm", palette=[[1, 2, 3]])
+        assert err.value.translation_key == "music_palette_unsupported"
+        route.assert_not_awaited()
+
+    async def test_a_long_palette_is_a_translated_error(self, hass, actions, route) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="fountain", palette=[[1, 2, 3]] * 9)
+        assert err.value.translation_key == "music_palette_too_long"
+        assert err.value.translation_placeholders == {"maximum": "8"}
+        route.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "data",
+        [{"sensitivity": 100}, {"manual_color": [256, 0, 0]}, {"palette": []}, {"palette": [[1, 2]]}],
+    )
+    async def test_the_schema_refuses_bad_values(self, hass, actions, route, data) -> None:
+        with pytest.raises(vol.Invalid):
+            await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="energic", **data)
         route.assert_not_awaited()

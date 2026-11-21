@@ -248,6 +248,42 @@ class DiyEffectSpec:
 
 
 @dataclass(frozen=True)
+class MusicEffectSpec:
+    """How this SKU takes a music effect.
+
+    The commit is ``33 05 <music sub-mode> <effect> <sensitivity>``, followed by
+    ``<soft> <manual> <R G B>`` when ``commit_options`` is set. A palette effect
+    may first upload ``<effect> <count> <RGB>xN <tail>`` as an ``0xA3``
+    multipacket under ``marker``, where ``<tail>`` is that effect's constant
+    from ``palette_tails``.
+    """
+
+    marker: int
+    effects: Mapping[str, int]
+    """Effect name to effect id."""
+
+    palette_effects: frozenset[int]
+    """Effect ids that take a palette upload."""
+
+    max_sensitivity: int
+    """Highest sensitivity the commit takes; the lowest is 0."""
+
+    max_colors: int
+    """Largest palette the upload takes."""
+
+    palette_tails: Mapping[int, bytes] = field(default_factory=dict)
+    """Bytes written after the colours, per effect id. Their meaning is not known."""
+
+    default_palette: tuple[tuple[int, int, int], ...] = ()
+    """The palette a caller uploads when it has none of its own."""
+
+    commit_options: bool = False
+    """Whether the commit carries the soft flag and a manual colour."""
+
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class DeviceProfile:
     """Everything the codec needs to talk to one SKU."""
 
@@ -267,6 +303,7 @@ class DeviceProfile:
     modes: Mapping[str, ConstantValue] = field(default_factory=dict)
     constraints: tuple[MaxSimultaneousZones, ...] = ()
     diy: DiyEffectSpec | None = None
+    music: MusicEffectSpec | None = None
     segment_zone: SegmentZoneSpec | None = None
     """Set when this SKU's segments are painted with the ZONE frame + a mask."""
     segment_readback: bool = False
@@ -654,7 +691,40 @@ H80C5: Final = DeviceProfile(
         Capability.SLEEP_TIMER: CapabilitySpec("sleep_timer", {"trailer": 0x03E8}),
         Capability.WAKE_UP: CapabilitySpec("wake_up"),
     },
-    modes={"scene": 0x04},
+    modes={"scene": 0x04, "music": 0x13},
+    music=MusicEffectSpec(
+        marker=0x41,
+        effects={
+            "energic": 0x05,
+            "rhythm": 0x03,
+            "separation": 0x32,
+            "hopping": 0x33,
+            "piano_keys": 0x34,
+            "fountain": 0x35,
+            "day_and_night": 0x37,
+        },
+        palette_effects=frozenset({0x05, 0x32, 0x33, 0x34, 0x35, 0x37}),
+        max_sensitivity=99,
+        max_colors=8,
+        palette_tails={
+            0x32: bytes([0x03, 0x00, 0x55]),
+            0x33: bytes([0x01, 0x01, 0x01, 0x19, 0x62, 0x01, 0x02, 0x3C, 0x64]),
+            0x34: bytes([0x00, 0x0A, 0x23, 0x01, 0x05]),
+            0x35: bytes([0x01, 0x02, 0x1A, 0x55]),
+            0x37: bytes([0x08, 0x14]),
+        },
+        default_palette=(
+            (0xFF, 0x00, 0x00),
+            (0xFF, 0x7F, 0x00),
+            (0xFF, 0xFF, 0x00),
+            (0x00, 0xFF, 0x00),
+            (0x00, 0x00, 0xFF),
+            (0x00, 0xFF, 0xFF),
+            (0x8B, 0x00, 0xFF),
+        ),
+        commit_options=True,
+        note="tails verified with the seven-colour default palette only",
+    ),
     # `aa a5` answers a query on this SKU; it is not pushed unsolicited.
     segment_readback=False,
     # One scene of each uploaded blob kind read back by its catalogue code.
@@ -713,6 +783,17 @@ def validate_table() -> None:
                     f"{profile.sku} points its segments at zone {segment_zone.key!r}, "
                     "which does not encode zone_color"
                 )
+        if profile.music is not None:
+            music = profile.music
+            if not isinstance(profile.modes.get("music"), int):
+                raise GoveeProtocolError(f"{profile.sku} declares music effects but no 'music' sub-mode")
+            ids = set(music.effects.values())
+            if not all(0 <= effect <= 0xFF for effect in ids):
+                raise GoveeProtocolError(f"{profile.sku} music effect id out of byte range")
+            if not music.palette_effects <= ids or not set(music.palette_tails) <= music.palette_effects:
+                raise GoveeProtocolError(f"{profile.sku} names a palette music effect it does not list")
+            if len(music.default_palette) > music.max_colors:
+                raise GoveeProtocolError(f"{profile.sku} default music palette exceeds {music.max_colors} colours")
         if profile.diy is not None:
             if not profile.diy.zones:
                 raise GoveeProtocolError(

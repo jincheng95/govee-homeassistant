@@ -223,6 +223,17 @@
         "turn_on": "Turn on",
         "turn_off": "Turn off"
       }
+    },
+    "music_effect": {
+      "options": {
+        "energic": "Energic",
+        "rhythm": "Rhythm",
+        "separation": "Separation",
+        "hopping": "Hopping",
+        "piano_keys": "Piano keys",
+        "fountain": "Fountain",
+        "day_and_night": "Day and night"
+      }
     }
   },
   "entity": {
@@ -850,6 +861,36 @@
           "description": "White the light wakes up in, in kelvin, within the light's range."
         }
       }
+    },
+    "set_music_mode": {
+      "name": "Set music mode",
+      "description": "Starts one of the light's on-device music effects over the local raw-frame connection. Effects that take a palette always upload one, the given palette or the default rainbow.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "effect": {
+          "name": "Effect",
+          "description": "The music effect."
+        },
+        "sensitivity": {
+          "name": "Sensitivity",
+          "description": "Microphone sensitivity, 0 to 99."
+        },
+        "soft": {
+          "name": "Soft",
+          "description": "Respond softly instead of dynamically."
+        },
+        "manual_color": {
+          "name": "Manual color",
+          "description": "One fixed color instead of the automatic colors."
+        },
+        "palette": {
+          "name": "Palette",
+          "description": "Colors for effects that take a palette, as a list of [R, G, B] triplets (1-8 colors). Rhythm takes none."
+        }
+      }
     }
   },
   "exceptions": {
@@ -927,6 +968,15 @@
     },
     "kelvin_out_of_range": {
       "message": "{kelvin} K is outside the {minimum}-{maximum} K range of {device}."
+    },
+    "music_effect_unsupported": {
+      "message": "{effect} is not a music effect of {device}."
+    },
+    "music_palette_unsupported": {
+      "message": "The {effect} music effect takes no palette."
+    },
+    "music_palette_too_long": {
+      "message": "A music palette takes at most {maximum} colors."
     }
   },
   "issues": {

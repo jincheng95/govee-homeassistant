@@ -15,10 +15,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .diy import DiyZoneEffect, all_off, encode_payload
-from .encoders import ENCODERS, constant
+from .encoders import ENCODERS, constant, music_select
 from .errors import DiyEffectError, GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
-from .frames import ptreal_message, segment_mask
-from .packets import upload_effect
+from .frames import ptreal_message, rgb_bytes, segment_mask
+from .packets import chunk_effect, upload_effect
 from .profiles import (
     Capability,
     CapabilitySpec,
@@ -127,6 +127,66 @@ class GoveeCodec:
     def power_off_memory(self, behaviour: int) -> bytes:
         """What the device does when power returns: 0 last state, 1 on, 2 off."""
         return self._encode(Capability.POWER_OFF_MEMORY, behaviour=behaviour)
+
+    def music_effect(
+        self,
+        effect: int | str,
+        *,
+        sensitivity: int,
+        colors: Sequence[tuple[int, int, int]] | None = None,
+        soft: bool = False,
+        manual_color: tuple[int, int, int] | None = None,
+    ) -> list[bytes]:
+        """Build a music-effect selection: an optional palette upload, then the commit.
+
+        Args:
+            effect: An effect name from the profile's music table, or a raw id.
+            sensitivity: Microphone sensitivity, 0 to the profile's maximum.
+            colors: The palette to upload first. None sends the commit alone.
+            soft: Soft rather than dynamic response.
+            manual_color: One fixed colour instead of the automatic colours.
+
+        Returns:
+            Frames to send in order, in one envelope.
+
+        Raises:
+            UnsupportedCapabilityError: The SKU has no music table, the effect
+                takes no palette, or the commit carries no options.
+            GoveeProtocolError: A name, sensitivity or palette is out of range.
+        """
+        spec = self.profile.music
+        sub_mode = self.profile.modes.get("music")
+        if spec is None or not isinstance(sub_mode, int):
+            raise UnsupportedCapabilityError(f"{self.profile.sku} has no music effect table")
+        if isinstance(effect, str):
+            try:
+                effect = spec.effects[effect.strip().lower()]
+            except KeyError:
+                raise GoveeProtocolError(
+                    f"{self.profile.sku} has no music effect {effect!r} (have: {sorted(spec.effects)})"
+                ) from None
+        if not 0 <= effect <= 0xFF:
+            raise GoveeProtocolError(f"music effect id {effect} out of byte range")
+        if not 0 <= sensitivity <= spec.max_sensitivity:
+            raise GoveeProtocolError(f"music sensitivity {sensitivity} outside 0-{spec.max_sensitivity}")
+        if (soft or manual_color is not None) and not spec.commit_options:
+            raise UnsupportedCapabilityError(f"{self.profile.sku} music commit carries no soft or manual colour")
+
+        frames: list[bytes] = []
+        if colors is not None:
+            if effect not in spec.palette_effects:
+                raise UnsupportedCapabilityError(f"music effect {effect:#04x} takes no palette")
+            if not 1 <= len(colors) <= spec.max_colors:
+                raise GoveeProtocolError(f"{len(colors)} music palette colours, allowed 1-{spec.max_colors}")
+            payload = bytearray([effect, len(colors)])
+            for rgb in colors:
+                payload += rgb_bytes(rgb)
+            payload += spec.palette_tails.get(effect, b"")
+            frames += chunk_effect(payload, marker=spec.marker)
+        frames.append(
+            music_select(sub_mode=sub_mode, effect=effect, sensitivity=sensitivity, soft=soft, manual_rgb=manual_color)
+        )
+        return frames
 
     def timer_slots(self) -> int:
         """How many on/off timers the device keeps."""
