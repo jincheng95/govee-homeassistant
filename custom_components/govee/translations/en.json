@@ -914,7 +914,7 @@
         },
         "enabled": {
           "name": "Enabled",
-          "description": "Whether the sleep timer runs."
+          "description": "Whether the sleep timer runs. Disabling the sleep timer keeps the minutes and brightness it has unless you give new ones."
         },
         "minutes": {
           "name": "Minutes",
@@ -936,7 +936,7 @@
         },
         "enabled": {
           "name": "Enabled",
-          "description": "Whether the wake-up runs. An enabled wake-up needs a time."
+          "description": "Whether the wake-up runs. An enabled wake-up needs a time. Disabling the wake-up keeps the settings it has unless you give new ones."
         },
         "time": {
           "name": "Time",
@@ -1109,6 +1109,12 @@
     },
     "wake_up_needs_time": {
       "message": "An enabled wake-up needs a time."
+    },
+    "wake_up_unknown": {
+      "message": "The wake-up on {device} is not known yet, so disabling it needs a time. Give a time, or ask the device for its status first."
+    },
+    "sleep_timer_unknown": {
+      "message": "The sleep timer on {device} is not known yet, so disabling it needs the minutes. Give the minutes, or ask the device for its status first."
     },
     "kelvin_out_of_range": {
       "message": "{kelvin} K is outside the {minimum}-{maximum} K range of {device}."

@@ -56,6 +56,10 @@ SERVICE_SET_WAKE_UP = "set_wake_up"
 SERVICE_SET_MUSIC_MODE = "set_music_mode"
 
 DEFAULT_WAKE_UP_KELVIN: Final = 2700
+DEFAULT_WAKE_UP_DURATION: Final = 10
+DEFAULT_WAKE_UP_END_BRIGHTNESS: Final = 100
+DEFAULT_SLEEP_MINUTES: Final = 15
+DEFAULT_SLEEP_START_BRIGHTNESS: Final = 30
 
 WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 """Weekday option keys. The index is the weekday bit."""
@@ -81,8 +85,8 @@ SET_SLEEP_TIMER_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_DEVICE_ID): cv.string,
         vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
-        vol.Optional(ATTR_MINUTES, default=15): _MINUTES,
-        vol.Optional(ATTR_START_BRIGHTNESS, default=30): _PERCENT,
+        vol.Optional(ATTR_MINUTES): _MINUTES,
+        vol.Optional(ATTR_START_BRIGHTNESS): _PERCENT,
     }
 )
 
@@ -91,12 +95,10 @@ SET_WAKE_UP_SCHEMA = vol.Schema(
         vol.Required(ATTR_DEVICE_ID): cv.string,
         vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
         vol.Optional(ATTR_TIME): cv.time,
-        vol.Optional(ATTR_WEEKDAYS, default=[]): _WEEKDAY_LIST,
-        vol.Optional(ATTR_DURATION, default=10): _MINUTES,
-        vol.Optional(ATTR_END_BRIGHTNESS, default=100): _PERCENT,
-        vol.Optional(ATTR_COLOR_TEMP_KELVIN, default=DEFAULT_WAKE_UP_KELVIN): vol.All(
-            vol.Coerce(int), vol.Range(min=1)
-        ),
+        vol.Optional(ATTR_WEEKDAYS): _WEEKDAY_LIST,
+        vol.Optional(ATTR_DURATION): _MINUTES,
+        vol.Optional(ATTR_END_BRIGHTNESS): _PERCENT,
+        vol.Optional(ATTR_COLOR_TEMP_KELVIN): vol.All(vol.Coerce(int), vol.Range(min=1)),
     }
 )
 
@@ -121,6 +123,14 @@ def _weekday_bits(names: Sequence[str]) -> list[int]:
 def _days(weekdays: Sequence[int]) -> tuple[int, ...]:
     """Weekdays as the decoder reports them, sorted and without repeats."""
     return repeat_days(repeat_byte(weekdays))
+
+
+def _field(data: dict[str, Any], key: str, known: int | None, default: int) -> int:
+    """The call's value for ``key``, else the known value, else ``default``."""
+    if key in data:
+        value: int = data[key]
+        return value
+    return default if known is None else known
 
 
 def _validation_error(key: str, **placeholders: str) -> ServiceValidationError:
@@ -224,30 +234,33 @@ async def async_set_light_timer_handler(hass: HomeAssistant, call: ServiceCall) 
 
 
 async def async_set_sleep_timer_handler(hass: HomeAssistant, call: ServiceCall) -> None:
-    """Handle ``govee.set_sleep_timer``."""
+    """Handle ``govee.set_sleep_timer``.
+
+    A disabled sleep timer takes each field the call leaves out from the timer
+    as last reported or written, and with no minutes given it needs that timer
+    known. Any other field left out takes its default.
+    """
     coordinator, device, _profile = _resolve(hass, call, lambda profile: profile.supports(Capability.SLEEP_TIMER))
     data: dict[str, Any] = call.data
+    enabled: bool = data[ATTR_ENABLED]
+    known = None if enabled else schedule(coordinator, device.device_id).sleep
+    if not enabled and ATTR_MINUTES not in data and known is None:
+        raise _validation_error("sleep_timer_unknown", device=device.name)
+    minutes: int = _field(data, ATTR_MINUTES, None if known is None else known.minutes, DEFAULT_SLEEP_MINUTES)
+    start_brightness: int = _field(
+        data, ATTR_START_BRIGHTNESS, None if known is None else known.start_brightness, DEFAULT_SLEEP_START_BRIGHTNESS
+    )
+
     await _async_send(
         coordinator,
         device,
         call,
-        lambda codec: [
-            codec.sleep_timer(
-                enabled=data[ATTR_ENABLED],
-                start_brightness=data[ATTR_START_BRIGHTNESS],
-                minutes=data[ATTR_MINUTES],
-            )
-        ],
+        lambda codec: [codec.sleep_timer(enabled=enabled, start_brightness=start_brightness, minutes=minutes)],
     )
     record_sleep(
         coordinator,
         device.device_id,
-        SleepTimer(
-            enabled=data[ATTR_ENABLED],
-            start_brightness=data[ATTR_START_BRIGHTNESS],
-            minutes=data[ATTR_MINUTES],
-            remaining_minutes=data[ATTR_MINUTES],
-        ),
+        SleepTimer(enabled=enabled, start_brightness=start_brightness, minutes=minutes, remaining_minutes=minutes),
     )
     coordinator.async_update_listeners()
 
@@ -255,25 +268,43 @@ async def async_set_sleep_timer_handler(hass: HomeAssistant, call: ServiceCall) 
 async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> None:
     """Handle ``govee.set_wake_up``.
 
-    An enabled wake-up needs a time. The colour temperature must lie in the
-    profile's range and is sent with HA's RGB approximation of it.
+    An enabled wake-up needs a time. A disabled one takes each field the call
+    leaves out from the wake-up as last reported or written, colour included,
+    and with no time given it needs that wake-up known. Any other field left
+    out takes its default. A given or default colour temperature must lie in
+    the profile's range and is sent with HA's RGB approximation of it.
     """
     coordinator, device, profile = _resolve(hass, call, lambda profile: profile.supports(Capability.WAKE_UP))
     data: dict[str, Any] = call.data
     enabled: bool = data[ATTR_ENABLED]
     if enabled and ATTR_TIME not in data:
         raise _validation_error("wake_up_needs_time")
-    kelvin: int = data[ATTR_COLOR_TEMP_KELVIN]
-    if not profile.kelvin.minimum <= kelvin <= profile.kelvin.maximum:
-        raise _validation_error(
-            "kelvin_out_of_range",
-            device=device.name,
-            kelvin=str(kelvin),
-            minimum=str(profile.kelvin.minimum),
-            maximum=str(profile.kelvin.maximum),
-        )
-    at: time = data.get(ATTR_TIME, time(0, 0))
-    weekdays = _weekday_bits(data[ATTR_WEEKDAYS])
+    known = None if enabled else schedule(coordinator, device.device_id).wake
+    if not enabled and ATTR_TIME not in data and known is None:
+        raise _validation_error("wake_up_unknown", device=device.name)
+    codec = GoveeCodec(profile)
+    if ATTR_COLOR_TEMP_KELVIN in data or known is None:
+        kelvin: int = data.get(ATTR_COLOR_TEMP_KELVIN, DEFAULT_WAKE_UP_KELVIN)
+        if not profile.kelvin.minimum <= kelvin <= profile.kelvin.maximum:
+            raise _validation_error(
+                "kelvin_out_of_range",
+                device=device.name,
+                kelvin=str(kelvin),
+                minimum=str(profile.kelvin.minimum),
+                maximum=str(profile.kelvin.maximum),
+            )
+        rgb = white_point(kelvin)
+    else:
+        kelvin, rgb = codec.clamp_kelvin(known.kelvin), known.rgb
+    at: time = data[ATTR_TIME] if ATTR_TIME in data else time(known.hour, known.minute) if known else time(0, 0)
+    if ATTR_WEEKDAYS in data:
+        weekdays = _weekday_bits(data[ATTR_WEEKDAYS])
+    else:
+        weekdays = [] if known is None else list(known.weekdays)
+    duration: int = _field(data, ATTR_DURATION, None if known is None else known.duration, DEFAULT_WAKE_UP_DURATION)
+    end_brightness: int = _field(
+        data, ATTR_END_BRIGHTNESS, None if known is None else known.end_brightness, DEFAULT_WAKE_UP_END_BRIGHTNESS
+    )
 
     await _async_send(
         coordinator,
@@ -282,13 +313,13 @@ async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> N
         lambda codec: [
             codec.wake_up(
                 enabled=enabled,
-                end_brightness=data[ATTR_END_BRIGHTNESS],
+                end_brightness=end_brightness,
                 hour=at.hour,
                 minute=at.minute,
                 weekdays=weekdays,
-                duration=data[ATTR_DURATION],
+                duration=duration,
                 kelvin=kelvin,
-                white_rgb=white_point(kelvin),
+                white_rgb=rgb,
             )
         ],
     )
@@ -297,12 +328,12 @@ async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> N
         device.device_id,
         WakeUp(
             enabled=enabled,
-            end_brightness=data[ATTR_END_BRIGHTNESS],
+            end_brightness=end_brightness,
             hour=at.hour,
             minute=at.minute,
             weekdays=_days(weekdays),
-            duration=data[ATTR_DURATION],
-            rgb=white_point(kelvin),
+            duration=duration,
+            rgb=rgb,
             kelvin=kelvin,
         ),
     )

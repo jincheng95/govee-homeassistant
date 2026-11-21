@@ -346,6 +346,9 @@ class TestSetLightTimer:
 SLEEP_ON = bytes([0x33, 0x11, 0x01, 0x1E, 0x0F, 0x0F, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0xD6])
 SLEEP_OFF = bytes([0x33, 0x11, 0x00, 0x1E, 0x0F, 0x0F, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0xD7])
 SLEEP_REPLY = bytes([0xAA, 0x11, 0x00, 0x1E, 0x0F, 0x0F, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0x4E])
+SLEEP_80_FOR_120 = bytes([0x33, 0x11, 0x01, 0x50, 0x78, 0x78, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0x98])
+SLEEP_80_FOR_120_OFF = bytes([0x33, 0x11, 0x00, 0x50, 0x78, 0x78, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0x99])
+SLEEP_80_FOR_45_OFF = bytes([0x33, 0x11, 0x00, 0x50, 0x2D, 0x2D, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0x99])
 
 
 class TestSleepTimerFrame:
@@ -420,6 +423,30 @@ class TestSetSleepTimer:
                 await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER)
         assert light_schedule.schedule(actions["coordinator"], DEVICE_ID).sleep is None
 
+    async def test_disabling_a_known_timer_clears_only_its_enable_byte(self, hass, actions, route) -> None:
+        light_schedule.apply_schedule_report(actions["coordinator"], _light(), [_reply(SLEEP_80_FOR_120)])
+        await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, enabled=False)
+        assert _sent(route) == [SLEEP_80_FOR_120_OFF]
+        assert light_schedule.schedule(actions["coordinator"], DEVICE_ID).sleep == SleepTimer(
+            enabled=False, start_brightness=80, minutes=120, remaining_minutes=120
+        )
+
+    async def test_disabling_a_known_timer_takes_the_fields_given(self, hass, actions, route) -> None:
+        light_schedule.apply_schedule_report(actions["coordinator"], _light(), [_reply(SLEEP_80_FOR_120)])
+        await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, enabled=False, minutes=45)
+        assert _sent(route) == [SLEEP_80_FOR_45_OFF]
+
+    async def test_disabling_an_unknown_timer_with_minutes_takes_the_defaults(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, enabled=False, minutes=15)
+        assert _sent(route) == [SLEEP_OFF]
+
+    async def test_disabling_an_unknown_timer_without_minutes_is_refused(self, hass, actions, route) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, enabled=False, start_brightness=30)
+        assert err.value.translation_key == "sleep_timer_unknown"
+        assert err.value.translation_placeholders == {"device": "String lights"}
+        route.assert_not_awaited()
+
 
 # ==============================================================================
 # 3. Wake-up
@@ -434,6 +461,15 @@ WAKE_TUESDAY_OFF = bytes(
 )
 WAKE_ONCE = bytes(
     [0x33, 0x12, 0x01, 0x64, 0x00, 0x00, 0x80, 0x0A, 0x00, 0xFF, 0xAE, 0x54, 0x0A, 0x8C, *bytes(5), 0x4D]
+)
+WAKE_WEEKDAYS = bytes(
+    [0x33, 0x12, 0x01, 0x50, 0x06, 0x2D, 0x9F, 0x1E, 0x00, 0xFF, 0xD1, 0xA3, 0x0F, 0xA0, *bytes(5), 0xF8]
+)
+WAKE_WEEKDAYS_OFF = bytes(
+    [0x33, 0x12, 0x00, 0x50, 0x06, 0x2D, 0x9F, 0x1E, 0x00, 0xFF, 0xD1, 0xA3, 0x0F, 0xA0, *bytes(5), 0xF9]
+)
+WAKE_WEEKDAYS_OFF_AT_50 = bytes(
+    [0x33, 0x12, 0x00, 0x32, 0x06, 0x2D, 0x9F, 0x1E, 0x00, 0xFF, 0xD1, 0xA3, 0x0F, 0xA0, *bytes(5), 0x9B]
 )
 WAKE_REPLY_UNSET = bytes(
     [0xAA, 0x12, 0xFF, 0x64, 0x00, 0x00, 0x80, 0x0A, 0x00, 0xFF, 0xAE, 0x54, 0x00, 0x00, *bytes(5), 0xAC]
@@ -539,9 +575,53 @@ class TestSetWakeUp:
         assert tuple(frame[9:12]) == raw_router.white_point(6500)
         assert frame[12:14] == (6500).to_bytes(2, "big")
 
-    async def test_disabling_needs_no_time(self, hass, actions, route) -> None:
-        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, enabled=False, weekdays=["tuesday"])
+    async def test_disabling_an_unknown_wake_up_with_a_time_takes_the_defaults(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, enabled=False, time="00:00", weekdays=["tuesday"])
         assert _sent(route)[0][:9] == WAKE_TUESDAY_OFF[:9]
+
+    async def test_disabling_an_unknown_wake_up_without_a_time_is_refused(self, hass, actions, route) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, enabled=False, weekdays=["tuesday"])
+        assert err.value.translation_key == "wake_up_unknown"
+        assert err.value.translation_placeholders == {"device": "String lights"}
+        route.assert_not_awaited()
+
+    async def test_disabling_a_known_wake_up_clears_only_its_enable_byte(self, hass, actions, route) -> None:
+        light_schedule.apply_schedule_report(actions["coordinator"], _light(), [_reply(WAKE_WEEKDAYS)])
+        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, enabled=False)
+        assert _sent(route) == [WAKE_WEEKDAYS_OFF]
+        assert light_schedule.schedule(actions["coordinator"], DEVICE_ID).wake == WakeUp(
+            enabled=False,
+            end_brightness=80,
+            hour=6,
+            minute=45,
+            weekdays=(0, 1, 2, 3, 4),
+            duration=30,
+            rgb=(0xFF, 0xD1, 0xA3),
+            kelvin=4000,
+        )
+
+    async def test_disabling_a_known_wake_up_takes_the_fields_given(self, hass, actions, route) -> None:
+        light_schedule.apply_schedule_report(actions["coordinator"], _light(), [_reply(WAKE_WEEKDAYS)])
+        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, enabled=False, end_brightness=50)
+        assert _sent(route) == [WAKE_WEEKDAYS_OFF_AT_50]
+
+    async def test_disabling_a_known_wake_up_with_a_kelvin_sends_its_white_point(self, hass, actions, route) -> None:
+        light_schedule.apply_schedule_report(actions["coordinator"], _light(), [_reply(WAKE_WEEKDAYS)])
+        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, enabled=False, color_temp_kelvin=6500)
+        frame = _sent(route)[0]
+        assert frame[3:9] == WAKE_WEEKDAYS_OFF[3:9]
+        assert tuple(frame[9:12]) == raw_router.white_point(6500)
+        assert frame[12:14] == (6500).to_bytes(2, "big")
+
+    async def test_disabling_the_never_set_wake_up_writes_the_profile_kelvin(self, hass, actions, route) -> None:
+        light_schedule.apply_schedule_report(actions["coordinator"], _light(), [WAKE_REPLY_UNSET])
+        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, enabled=False)
+        frame = _sent(route)[0]
+        assert frame[:12] == bytes([0x33, 0x12, 0x00, 0x64, 0x00, 0x00, 0x80, 0x0A, 0x00, 0xFF, 0xAE, 0x54])
+        assert frame[12:14] == (2700).to_bytes(2, "big")
+        stored = light_schedule.schedule(actions["coordinator"], DEVICE_ID).wake
+        assert stored == decode_status([_reply(frame)]).wake_up
 
     async def test_an_enabled_wake_up_needs_a_time(self, hass, actions, route) -> None:
         with pytest.raises(ServiceValidationError) as err:
