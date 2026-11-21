@@ -4,7 +4,8 @@
 2. Catalogue cache: one fetch per SKU, a failed fetch backs off.
 3. Wiring: only SKUs whose profile declares scene upload get the selects.
 4. The selects: options follow the running scene, a choice uploads the
-   rewritten scene, a refused upload restores the previous choice.
+   rewritten scene and belongs to that scene, a refused upload keeps the
+   previous choice.
 5. Cleanup: the selects leave the registry with the scenes option.
 """
 
@@ -321,6 +322,7 @@ class TestWiring:
         tasks: list[Any] = []
         speed.hass.async_create_task = lambda coro: tasks.append(coro)
 
+        speed.async_get_last_extra_data = AsyncMock(return_value=None)  # type: ignore[method-assign]
         with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass", AsyncMock()):
             await speed.async_added_to_hass()
         await tasks[0]
@@ -411,7 +413,7 @@ class TestSelecting:
         assert list(route.await_args.args[4]) == expected
         assert (speed.current_option, direction.current_option) == ("Slow", "Lower right")
 
-    async def test_a_new_scene_forgets_the_old_choice(self) -> None:
+    async def test_a_choice_belongs_to_its_scene(self) -> None:
         coordinator = _coordinator()
         speed, _ = _selects(coordinator)
         with _routed():
@@ -421,7 +423,7 @@ class TestSelecting:
         assert speed.current_option is None
 
         coordinator.state.active_scene_name = "Rainbow B"
-        assert speed.current_option == "Medium"
+        assert speed.current_option == "Fast"
 
     @pytest.mark.parametrize("which", ["speed", "direction"])
     async def test_a_refused_upload_restores_the_previous_choice(self, which: str) -> None:
@@ -594,17 +596,29 @@ class TestApplySceneReport:
         "frames",
         [
             [_mode_report(0x04, 100, 0)],
-            [_mode_report(0x15, 0x01)],
+            [_mode_report(0x04, 0x0C, 0x47)[:19] + b"\x00"],
             [],
         ],
     )
-    def test_unknown_code_or_other_mode_changes_nothing(self, frames: list[bytes]) -> None:
+    def test_unknown_code_or_no_report_changes_nothing(self, frames: list[bytes]) -> None:
         coordinator = _with_platform_scenes(_coordinator(scene="Flame B"))
         coordinator.state.active_scene = "4102"
         device = coordinator.devices[DEVICE_ID]
 
         assert scene_catalogue.apply_scene_report(coordinator, device, coordinator.state, frames) is False
         assert (coordinator.state.active_scene, coordinator.state.active_scene_name) == ("4102", "Flame B")
+
+    def test_another_mode_clears_the_scene(self) -> None:
+        coordinator = _with_platform_scenes(_coordinator(scene="Flame B"))
+        coordinator.state.active_scene = "4102"
+        device = coordinator.devices[DEVICE_ID]
+
+        assert scene_catalogue.apply_scene_report(coordinator, device, coordinator.state, [_mode_report(0x15, 0x01)])
+        assert (coordinator.state.active_scene, coordinator.state.active_scene_name) == (None, None)
+        assert (
+            scene_catalogue.apply_scene_report(coordinator, device, coordinator.state, [_mode_report(0x15, 0x01)])
+            is False
+        )
 
     def test_the_scene_already_shown_is_not_a_change(self) -> None:
         coordinator = _with_platform_scenes(_coordinator(scene="Rainbow B"))

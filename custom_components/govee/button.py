@@ -5,6 +5,7 @@ Provides button entities for:
 - Clear Water Alert (dehumidifiers with a waterFullEvent capability)
 - Clear leak alert (standalone water detectors, e.g. H5054)
 - Identify device (flash lights if supported)
+- Reset scene settings (fork; SKUs that take scene uploads)
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from .models import GoveeDevice
 from .platforms.diy_effect import (
     async_diy_button_entities,
 )
+from .platforms.scene_adjust import async_scene_reset_button_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ async def async_setup_entry(
             entities.append(GoveeClearLeakAlertButton(coordinator, device))
 
     entities.extend(async_diy_button_entities(coordinator, entry))
+    entities.extend(async_scene_reset_button_entities(coordinator, entry))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee button entities", len(entities))

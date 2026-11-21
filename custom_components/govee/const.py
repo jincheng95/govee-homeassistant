@@ -706,6 +706,16 @@ SUFFIX_SNAPSHOT_SELECT: Final = "_snapshot_select"
 # Fork: adjustments of the running scene, for SKUs that take scene uploads.
 SUFFIX_SCENE_SPEED_SELECT: Final = "_scene_speed_select"
 SUFFIX_SCENE_DIRECTION_SELECT: Final = "_scene_direction_select"
+SUFFIX_SCENE_PALETTE_TEXT: Final = "_scene_palette_"
+SUFFIX_SCENE_RESET_BUTTON: Final = "_scene_reset"
+SCENE_PALETTE_LAYERS: Final = 3
+# Every scene-setting suffix; all of them follow CONF_ENABLE_SCENES.
+SCENE_SETTING_SUFFIXES: Final = (
+    SUFFIX_SCENE_SPEED_SELECT,
+    SUFFIX_SCENE_DIRECTION_SELECT,
+    SUFFIX_SCENE_RESET_BUTTON,
+    *(f"{SUFFIX_SCENE_PALETTE_TEXT}{layer}" for layer in range(1, SCENE_PALETTE_LAYERS + 1)),
+)
 # Fork: the raw power-off memory select, gated by CONF_ENABLE_LAN_RAW_WRITE.
 SUFFIX_POWER_OFF_MEMORY: Final = "_power_off_memory"
 SUFFIX_DIY_SCENE_SELECT: Final = "_diy_scene_select"

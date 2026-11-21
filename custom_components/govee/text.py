@@ -1,10 +1,9 @@
 """Text platform for Govee integration (fork feature).
 
-Exists solely for the DIY-effect palettes in :mod:`.platforms.diy_effect`: an
-ordered list of one to sixteen colours has no representation in any other
-entity class, so it is edited as text. Every entity on this platform is gated
-by ``enable_zone_lights``, so a default install adds this platform and creates
-nothing on it.
+Holds palettes, because an ordered list of colours has no representation in
+any other entity class: the DIY-effect palettes in :mod:`.platforms.diy_effect`
+(gated by ``enable_zone_lights``) and the scene palettes in
+:mod:`.platforms.scene_adjust` (gated by the scenes option).
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import GoveeCoordinator
 from .platforms.diy_effect import async_diy_text_entities
+from .platforms.scene_adjust import async_scene_palette_text_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ async def async_setup_entry(
 
     entities: list[TextEntity] = []
     entities.extend(async_diy_text_entities(coordinator, entry))
+    entities.extend(async_scene_palette_text_entities(coordinator, entry))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee text entities", len(entities))
