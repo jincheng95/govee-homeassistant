@@ -53,7 +53,8 @@ class EffectTemplate:
     params: bytes
     min_colors: int = 1
     directions: tuple[str, ...] | None = None
-    """Direction names the effect takes. None takes any named direction."""
+    """Direction names the effect takes: the tile's own plus any a stock scene
+    uses with the same effect id. None takes any named direction."""
     shaped: bool = False
     """Whether the effect takes a shape and a centre point."""
 
@@ -64,7 +65,7 @@ _STRIPES = _directions(1, 2, 3, 4, 5, 6, 7, 8)
 _WHIRLPOOL = _directions(13, 14)
 _SPIN = _directions(3, 4)
 _SPIRAL = _directions(23, 15, 24, 16)
-_FLOW = _directions(1, 2, 3, 4, 9, 10)
+_FLOW = _directions(1, 2, 3, 4, 5, 9, 10)
 _DIAGONAL = _directions(5, 6, 7, 8)
 
 TEMPLATES: Mapping[str, EffectTemplate] = {

@@ -1,6 +1,8 @@
 """App-named composed string-light effects (fork feature).
 
-Each record head is the composer tile's default block. Colours are synthetic.
+Each record head is the composer tile's default block. An effect's directions
+are the tile's own plus those stock scenes use with the same effect id.
+Colours are synthetic.
 """
 
 from __future__ import annotations
@@ -49,7 +51,10 @@ _STRIPES = {
     "up": 1, "down": 2, "clockwise": 3, "anticlockwise": 4,
     "upper left": 5, "lower left": 6, "upper right": 7, "lower right": 8,
 }
-_FLOW = {"up": 1, "down": 2, "clockwise": 3, "anticlockwise": 4, "expand vertically": 9, "gather vertically": 10}
+_FLOW = {
+    "up": 1, "down": 2, "clockwise": 3, "anticlockwise": 4,
+    "upper left": 5, "expand vertically": 9, "gather vertically": 10,
+}
 
 # Effect -> (direction byte position, direction name -> byte).
 DIRECTIONS: dict[str, tuple[int, dict[str, int]]] = {

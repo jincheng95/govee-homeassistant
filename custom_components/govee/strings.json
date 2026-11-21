@@ -726,7 +726,7 @@
         },
         "direction": {
           "name": "Direction",
-          "description": "Leave empty for the effect's stock direction. Flow 1, rainbow 1 and spin 1-2 take clockwise or anticlockwise. Flow 2-4 take up, down, clockwise, anticlockwise, expand vertically or gather vertically. Stripes take up, down, clockwise, anticlockwise and the four diagonals; rainbow 2 takes the four diagonals. Smudge and blend take up or down, whirlpool takes gather or expand horizontally, and spiral takes the four upward and downward turns. Flow, layered, rainbow, vortex and rotate take any direction; every other effect takes none."
+          "description": "Leave empty for the effect's stock direction. Flow 1, rainbow 1 and spin 1-2 take clockwise or anticlockwise. Flow 2-4 take up, down, clockwise, anticlockwise, upper left, expand vertically or gather vertically. Stripes take up, down, clockwise, anticlockwise and the four diagonals; rainbow 2 takes the four diagonals. Smudge and blend take up or down, whirlpool takes gather or expand horizontally, and spiral takes the four upward and downward turns. Flow, layered, rainbow, vortex and rotate take any direction; every other effect takes none."
         },
         "combine": {
           "name": "Combine",

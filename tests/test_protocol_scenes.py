@@ -180,9 +180,10 @@ class TestAdjustBlob:
         adjust = scenes.SceneAdjust(speeds=((40,), (60,)), directions=(1, 2))
 
         assert scenes.adjust_blob(blob, adjust) == blob
+        assert scenes.adjust_blob(blob, adjust, direction=1) == blob
         sped = scenes.adjust_blob(blob, adjust, speed=1)
         assert [i for i in range(len(blob)) if sped[i] != blob[i]] == [11]
-        assert sped[11] == 60
+        assert (sped[10], sped[11]) == (0x02, 60)
         turned = scenes.adjust_blob(blob, adjust, direction=0)
         assert [i for i in range(len(blob)) if turned[i] != blob[i]] == [10]
         assert turned[10] == 1
