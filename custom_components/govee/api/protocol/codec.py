@@ -162,6 +162,12 @@ class GoveeCodec:
             weekdays=weekdays,
         )
 
+    def sleep_timer(self, *, enabled: bool, start_brightness: int, minutes: int) -> bytes:
+        """Dim the light to off over ``minutes``, starting at ``start_brightness`` percent."""
+        return self._encode(
+            Capability.SLEEP_TIMER, enabled=enabled, start_brightness=start_brightness, minutes=minutes
+        )
+
     def bar_power_mask(self, mask: int) -> bytes:
         """H6046 two-bar power mask (0x01 = bar A, 0x10 = bar B, 0x11 = both)."""
         return self._encode(Capability.BAR_POWER_MASK, mask=mask)

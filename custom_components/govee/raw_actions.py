@@ -1,6 +1,7 @@
 """Service actions that write on-device schedules over raw frames (fork).
 
 - ``govee.set_light_timer``: one of the device's on/off timers.
+- ``govee.set_sleep_timer``: dim to off over a number of minutes.
 
 Each action takes one device, checks that its profile encodes the setting, and
 sends the frames through :func:`~.api.raw_router.async_device_frames`. No cloud
@@ -32,8 +33,11 @@ ATTR_ENABLED = "enabled"
 ATTR_ACTION = "action"
 ATTR_TIME = "time"
 ATTR_WEEKDAYS = "weekdays"
+ATTR_MINUTES = "minutes"
+ATTR_START_BRIGHTNESS = "start_brightness"
 
 SERVICE_SET_LIGHT_TIMER = "set_light_timer"
+SERVICE_SET_SLEEP_TIMER = "set_sleep_timer"
 
 WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 """Weekday option keys. The index is the weekday bit."""
@@ -41,6 +45,8 @@ WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "satu
 TIMER_ACTIONS: Final = ("turn_on", "turn_off")
 
 _WEEKDAY_LIST = vol.All(cv.ensure_list, [vol.In(WEEKDAYS)])
+_PERCENT = vol.All(vol.Coerce(int), vol.Range(min=1, max=100))
+_MINUTES = vol.All(vol.Coerce(int), vol.Range(min=1, max=255))
 
 SET_LIGHT_TIMER_SCHEMA = vol.Schema(
     {
@@ -50,6 +56,15 @@ SET_LIGHT_TIMER_SCHEMA = vol.Schema(
         vol.Optional(ATTR_ACTION): vol.In(TIMER_ACTIONS),
         vol.Optional(ATTR_TIME): cv.time,
         vol.Optional(ATTR_WEEKDAYS, default=[]): _WEEKDAY_LIST,
+    }
+)
+
+SET_SLEEP_TIMER_SCHEMA = vol.Schema(
+    {
+        vol.Required(services.ATTR_DEVICE_ID): cv.string,
+        vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
+        vol.Optional(ATTR_MINUTES, default=15): _MINUTES,
+        vol.Optional(ATTR_START_BRIGHTNESS, default=30): _PERCENT,
     }
 )
 
@@ -139,6 +154,24 @@ async def async_set_light_timer_handler(hass: HomeAssistant, call: ServiceCall) 
     )
 
 
+async def async_set_sleep_timer_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.set_sleep_timer``."""
+    coordinator, device, _profile = _resolve(hass, call, lambda profile: profile.supports(Capability.SLEEP_TIMER))
+    data: dict[str, Any] = call.data
+    await _async_send(
+        coordinator,
+        device,
+        call,
+        lambda codec: [
+            codec.sleep_timer(
+                enabled=data[ATTR_ENABLED],
+                start_brightness=data[ATTR_START_BRIGHTNESS],
+                minutes=data[ATTR_MINUTES],
+            )
+        ],
+    )
+
+
 @callback
 def async_setup_raw_actions(hass: HomeAssistant) -> None:
     """Register the raw schedule actions (called from ``async_setup_services``)."""
@@ -146,4 +179,8 @@ def async_setup_raw_actions(hass: HomeAssistant) -> None:
     async def _set_light_timer(call: ServiceCall) -> None:
         await async_set_light_timer_handler(hass, call)
 
+    async def _set_sleep_timer(call: ServiceCall) -> None:
+        await async_set_sleep_timer_handler(hass, call)
+
     hass.services.async_register(DOMAIN, SERVICE_SET_LIGHT_TIMER, _set_light_timer, schema=SET_LIGHT_TIMER_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_SET_SLEEP_TIMER, _set_sleep_timer, schema=SET_SLEEP_TIMER_SCHEMA)

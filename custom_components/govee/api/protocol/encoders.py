@@ -34,6 +34,7 @@ GRADIENT_COMMAND_TYPE = 0xA3
 POWER_OFF_MEMORY_COMMAND_TYPE = 0x41
 POWER_OFF_MEMORY_BEHAVIOURS = range(3)
 """0 restores the last state, 1 comes back on, 2 stays off."""
+SLEEP_TIMER_COMMAND_TYPE = 0x11
 LIGHT_TIMER_COMMAND_TYPE = 0x23
 
 TIMER_ENABLED = 0x80
@@ -146,6 +147,26 @@ def light_timer(
     return build_frame(
         [PRO_TYPE_WRITE, LIGHT_TIMER_COMMAND_TYPE, slot, flags, *_time_bytes(hour, minute), repeat_byte(weekdays)]
     )
+
+
+def sleep_timer(constants: Mapping[str, Any], *, enabled: bool, start_brightness: int, minutes: int) -> bytes:
+    """``33 11 <enable> <brightness> <minutes> <minutes> 00 00 <trailer hi> <trailer lo>``.
+
+    The light dims from ``start_brightness`` percent to off over ``minutes``.
+    The two-byte ``trailer`` constant is written as the table gives it.
+    """
+    trailer = constant(constants, "trailer")
+    body = [
+        PRO_TYPE_WRITE,
+        SLEEP_TIMER_COMMAND_TYPE,
+        1 if enabled else 0,
+        _byte("sleep brightness", start_brightness, 1, 100),
+        _byte("sleep minutes", minutes, 1),
+        minutes,
+        0,
+        0,
+    ]
+    return build_frame(bytes(body) + trailer.to_bytes(2, "big"))
 
 
 def query(constants: Mapping[str, Any], *, command_type: int) -> bytes:
@@ -308,6 +329,7 @@ ENCODERS: Mapping[str, Encoder] = {
     "gradient": gradient,
     "power_off_memory": power_off_memory,
     "light_timer": light_timer,
+    "sleep_timer": sleep_timer,
     "query": query,
     "mode_select": mode_select,
     "zone_color": zone_color,

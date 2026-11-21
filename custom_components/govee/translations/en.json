@@ -794,6 +794,28 @@
           "description": "Days to repeat on. Leave empty to run once."
         }
       }
+    },
+    "set_sleep_timer": {
+      "name": "Set sleep timer",
+      "description": "Sets the light's on-device sleep timer over the local raw-frame connection. The light dims from the start brightness to off over the given minutes.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether the sleep timer runs."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "How long the light takes to dim to off."
+        },
+        "start_brightness": {
+          "name": "Start brightness",
+          "description": "Brightness the dimming starts from, in percent."
+        }
+      }
     }
   },
   "exceptions": {

@@ -2,6 +2,8 @@
 
 1. Light timers: the frame, the ``aa 23`` reply decoder and
    ``govee.set_light_timer``.
+2. Sleep timer: the frame, the ``aa 11`` reply decoder and
+   ``govee.set_sleep_timer``.
 
 The actions run on a real ``hass`` through ``hass.services.async_call``, so
 every payload passes the real schema. The coordinator is a mock and the raw
@@ -23,6 +25,7 @@ from custom_components.govee.api.protocol import (
     FrameError,
     GoveeCodec,
     LightTimer,
+    SleepTimer,
     UnsupportedCapabilityError,
     decode_status,
     get_profile,
@@ -98,6 +101,7 @@ def _sent(route: AsyncMock) -> list[bytes]:
 class TestRegistration:
     async def test_the_actions_are_registered(self, hass, actions) -> None:
         assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_LIGHT_TIMER)
+        assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_SLEEP_TIMER)
 
 
 class TestCommonGates:
@@ -114,12 +118,21 @@ class TestCommonGates:
         [_light(sku="H6076"), _light(sku="H7099"), _light(is_group=True)],
         ids=["no-capability", "no-profile", "group"],
     )
-    async def test_a_device_without_the_capability_is_refused(self, hass, actions, route, device) -> None:
+    @pytest.mark.parametrize(
+        ("service", "data"),
+        [
+            (raw_actions.SERVICE_SET_LIGHT_TIMER, {"slot": 1, "enabled": False}),
+            (raw_actions.SERVICE_SET_SLEEP_TIMER, {}),
+        ],
+    )
+    async def test_a_device_without_the_capability_is_refused(
+        self, hass, actions, route, device, service, data
+    ) -> None:
         actions["coordinator"] = _coordinator(device)
         with pytest.raises(ServiceValidationError) as err:
-            await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=1, enabled=False)
+            await _call(hass, service, **data)
         assert err.value.translation_key == "raw_action_unsupported"
-        assert err.value.translation_placeholders == {"device": "String lights", "action": "govee.set_light_timer"}
+        assert err.value.translation_placeholders == {"device": "String lights", "action": f"govee.{service}"}
         route.assert_not_awaited()
 
     async def test_no_raw_pipe_is_a_translated_error(self, hass, actions) -> None:
@@ -276,4 +289,72 @@ class TestSetLightTimer:
     async def test_the_schema_refuses_bad_values(self, hass, actions, route, data) -> None:
         with pytest.raises(vol.Invalid):
             await _call(hass, raw_actions.SERVICE_SET_LIGHT_TIMER, enabled=False, **data)
+        route.assert_not_awaited()
+
+
+# ==============================================================================
+# 2. Sleep timer
+# ==============================================================================
+
+SLEEP_ON = bytes([0x33, 0x11, 0x01, 0x1E, 0x0F, 0x0F, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0xD6])
+SLEEP_OFF = bytes([0x33, 0x11, 0x00, 0x1E, 0x0F, 0x0F, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0xD7])
+SLEEP_REPLY = bytes([0xAA, 0x11, 0x00, 0x1E, 0x0F, 0x0F, 0x00, 0x00, 0x03, 0xE8, *bytes(9), 0x4E])
+
+
+class TestSleepTimerFrame:
+    @pytest.mark.parametrize(("enabled", "expected"), [(True, SLEEP_ON), (False, SLEEP_OFF)])
+    def test_frames_are_byte_exact(self, enabled: bool, expected: bytes) -> None:
+        assert _codec().sleep_timer(enabled=enabled, start_brightness=30, minutes=15) == expected
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"start_brightness": 0},
+            {"start_brightness": 101},
+            {"minutes": 0},
+            {"minutes": 256},
+        ],
+    )
+    def test_out_of_range_is_refused(self, kwargs: dict[str, Any]) -> None:
+        with pytest.raises(FrameError):
+            _codec().sleep_timer(enabled=True, **{"start_brightness": 30, "minutes": 15, **kwargs})
+
+    def test_other_skus_do_not_encode_it(self) -> None:
+        with pytest.raises(UnsupportedCapabilityError):
+            _codec("H6076").sleep_timer(enabled=False, start_brightness=30, minutes=15)
+
+
+class TestSleepTimerDecode:
+    def test_the_reply(self) -> None:
+        expected = SleepTimer(enabled=False, start_brightness=30, minutes=15, remaining_minutes=15)
+        assert decode_status([SLEEP_REPLY]).sleep == expected
+
+    def test_round_trip(self) -> None:
+        frame = _codec().sleep_timer(enabled=True, start_brightness=80, minutes=120)
+        assert decode_status([_reply(frame)]).sleep == SleepTimer(
+            enabled=True, start_brightness=80, minutes=120, remaining_minutes=120
+        )
+
+    @pytest.mark.parametrize("body", [(0x02, 0x1E, 0x0F, 0x0F), (0x01, 0x65, 0x0F, 0x0F)], ids=["enable", "brightness"])
+    def test_an_unexpected_value_skips_the_reply(self, body: tuple[int, ...]) -> None:
+        assert decode_status([_reply(bytes([0x33, 0x11, *body, *bytes(14)]))]).sleep is None
+
+
+class TestSetSleepTimer:
+    async def test_on_with_the_defaults(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER)
+        assert _sent(route) == [SLEEP_ON]
+
+    async def test_off(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, enabled=False, minutes=15, start_brightness=30)
+        assert _sent(route) == [SLEEP_OFF]
+
+    async def test_minutes_and_brightness_land_in_place(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, minutes=60, start_brightness=100)
+        assert _sent(route)[0][:10] == bytes([0x33, 0x11, 0x01, 100, 60, 60, 0x00, 0x00, 0x03, 0xE8])
+
+    @pytest.mark.parametrize("data", [{"minutes": 0}, {"minutes": 256}, {"start_brightness": 0}])
+    async def test_the_schema_refuses_bad_values(self, hass, actions, route, data) -> None:
+        with pytest.raises(vol.Invalid):
+            await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, **data)
         route.assert_not_awaited()
