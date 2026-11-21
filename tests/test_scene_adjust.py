@@ -452,46 +452,20 @@ class TestWiring:
 
 
 class TestOptions:
-    @pytest.mark.parametrize(
-        ("direction", "key"), [(1, "up"), (5, "upper_left"), (24, "clockwise_downward"), (19, "direction_19")]
-    )
-    def test_direction_keys(self, direction: int, key: str) -> None:
-        assert scene_adjust.direction_key(direction) == key
-
-    def test_every_option_key_is_translated(self) -> None:
-        with open("custom_components/govee/strings.json", encoding="utf-8") as handle:
-            select = json.load(handle)["entity"]["select"]
-        assert set(select["scene_speed"]["state"]) == set(speed_labels(3))
-        assert set(select["scene_direction"]["state"]) == {
-            scene_adjust.direction_key(direction) for direction in scenes.DIRECTION_NAMES
-        }
-
-    @pytest.mark.parametrize(("label", "key"), [("Fast", "fast"), ("Lower left", "lower_left"), ("fast", "fast")])
-    async def test_the_english_labels_are_accepted_on_write(self, label: str, key: str) -> None:
-        coordinator = _coordinator()
-        speed, direction = _selects(coordinator)
-        entity = speed if key == "fast" else direction
-        with _routed() as route:
-            await entity.async_handle_select_option(label)
-        route.assert_awaited_once()
-        assert entity.current_option == key
-
-    async def test_an_unknown_label_is_still_refused(self) -> None:
-        speed, _ = _selects(_coordinator())
-        with _routed() as route, pytest.raises(ServiceValidationError):
-            await speed.async_handle_select_option("Ludicrous")
-        route.assert_not_awaited()
+    @pytest.mark.parametrize(("direction", "label"), [(3, "Clockwise"), (5, "Upper left"), (19, "Direction 19")])
+    def test_direction_labels(self, direction: int, label: str) -> None:
+        assert scene_adjust.direction_label(direction) == label
 
     def test_three_levels_are_named(self) -> None:
-        assert speed_labels(3) == ["slow", "medium", "fast"]
+        assert speed_labels(3) == ["Slow", "Medium", "Fast"]
         assert speed_labels(4) == ["1", "2", "3", "4"]
 
     def test_options_and_defaults_come_from_the_running_scene(self) -> None:
         speed, direction = _selects(_coordinator())
-        assert speed.options == ["slow", "medium", "fast"]
-        assert speed.current_option == "medium"
-        assert direction.options == ["upper_left", "lower_left", "upper_right", "lower_right"]
-        assert direction.current_option == "upper_left"
+        assert speed.options == ["Slow", "Medium", "Fast"]
+        assert speed.current_option == "Medium"
+        assert direction.options == ["Upper left", "Lower left", "Upper right", "Lower right"]
+        assert direction.current_option == "Upper left"
         assert speed.available is True and direction.available is True
 
     def test_a_scene_without_directions_has_no_direction_select(self) -> None:
@@ -529,13 +503,13 @@ class TestSelecting:
         adjust = scene_catalogue.catalogue(coordinator).scene(SKU, "Rainbow B").adjust
 
         with _routed() as route:
-            await speed.async_select_option("fast")
+            await speed.async_select_option("Fast")
 
         expected = scenes.scene_frames(scenes.adjust_blob(RAINBOW, adjust, speed=2), 18188)
         args = route.await_args.args
         assert args[:4] == (coordinator, DEVICE_ID, SKU, get_profile(SKU))
         assert list(args[4]) == expected
-        assert speed.current_option == "fast"
+        assert speed.current_option == "Fast"
         speed.async_write_ha_state.assert_called_once()
 
     async def test_the_two_choices_travel_together(self) -> None:
@@ -544,30 +518,30 @@ class TestSelecting:
         adjust = scene_catalogue.catalogue(coordinator).scene(SKU, "Rainbow B").adjust
 
         with _routed() as route:
-            await speed.async_select_option("slow")
-            await direction.async_select_option("lower_right")
+            await speed.async_select_option("Slow")
+            await direction.async_select_option("Lower right")
 
         expected = scenes.scene_frames(scenes.adjust_blob(RAINBOW, adjust, speed=0, direction=3), 18188)
         assert list(route.await_args.args[4]) == expected
-        assert (speed.current_option, direction.current_option) == ("slow", "lower_right")
+        assert (speed.current_option, direction.current_option) == ("Slow", "Lower right")
 
     async def test_a_choice_belongs_to_its_scene(self) -> None:
         coordinator = _coordinator()
         speed, _ = _selects(coordinator)
         with _routed():
-            await speed.async_select_option("fast")
+            await speed.async_select_option("Fast")
 
         coordinator.state.active_scene_name = "Flame B"
         assert speed.current_option is None
 
         coordinator.state.active_scene_name = "Rainbow B"
-        assert speed.current_option == "fast"
+        assert speed.current_option == "Fast"
 
     @pytest.mark.parametrize("which", ["speed", "direction"])
     async def test_a_refused_upload_restores_the_previous_choice(self, which: str) -> None:
         coordinator = _coordinator()
         speed, direction = _selects(coordinator)
-        entity, option, before = (speed, "fast", "medium") if which == "speed" else (direction, "lower_left", "upper_left")
+        entity, option, before = (speed, "Fast", "Medium") if which == "speed" else (direction, "Lower left", "Upper left")
 
         with patch.object(scene_adjust.raw_router, "async_route_frames", AsyncMock(return_value=False)):
             with pytest.raises(HomeAssistantError):
@@ -587,10 +561,10 @@ class TestSelecting:
 
         failed = pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "scene_adjust_failed")
         with _routed() as route, failed:
-            await speed.async_select_option("fast")
+            await speed.async_select_option("Fast")
 
         route.assert_not_awaited()
-        assert speed.current_option == "medium"
+        assert speed.current_option == "Medium"
 
     @pytest.mark.parametrize("which", ["speed", "direction"])
     async def test_unknown_option(self, which: str) -> None:
@@ -603,9 +577,9 @@ class TestSelecting:
     async def test_no_running_scene_rejects_any_option(self) -> None:
         speed, direction = _selects(_coordinator(scene=None))
         with pytest.raises(ServiceValidationError):
-            await speed.async_select_option("fast")
+            await speed.async_select_option("Fast")
         with pytest.raises(ServiceValidationError):
-            await direction.async_select_option("up")
+            await direction.async_select_option("Up")
 
 
 # ==============================================================================
@@ -893,14 +867,14 @@ class TestRgbicSceneSpeed:
     async def test_an_rgbic_scene_offers_speed_but_no_direction(self) -> None:
         coordinator = _coordinator(scene="Christmas")
         speed, direction = _selects(coordinator)
-        assert speed.options == ["slow", "medium", "fast"]
-        assert speed.current_option == "medium"
+        assert speed.options == ["Slow", "Medium", "Fast"]
+        assert speed.current_option == "Medium"
         assert direction.options == [] and direction.available is False
 
         adjust = scene_catalogue.catalogue(coordinator).scene(SKU, "Christmas").adjust
         with _routed() as route:
-            await speed.async_select_option("slow")
+            await speed.async_select_option("Slow")
 
         expected = scenes.scene_frames(scenes.adjust_blob(TWO_EFFECT, adjust, speed=0), 12333)
         assert list(route.await_args.args[4]) == expected
-        assert speed.current_option == "slow"
+        assert speed.current_option == "Slow"

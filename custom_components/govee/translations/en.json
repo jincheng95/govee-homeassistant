@@ -341,33 +341,10 @@
         }
       },
       "scene_speed": {
-        "name": "Scene speed",
-        "state": {
-          "slow": "Slow",
-          "medium": "Medium",
-          "fast": "Fast"
-        }
+        "name": "Scene speed"
       },
       "scene_direction": {
-        "name": "Scene direction",
-        "state": {
-          "up": "Up",
-          "down": "Down",
-          "clockwise": "Clockwise",
-          "anticlockwise": "Anticlockwise",
-          "upper_left": "Upper left",
-          "lower_left": "Lower left",
-          "upper_right": "Upper right",
-          "lower_right": "Lower right",
-          "expand_vertically": "Expand vertically",
-          "gather_vertically": "Gather vertically",
-          "gather_horizontally": "Gather horizontally",
-          "expand_horizontally": "Expand horizontally",
-          "anticlockwise_upward": "Anticlockwise upward",
-          "anticlockwise_downward": "Anticlockwise downward",
-          "clockwise_upward": "Clockwise upward",
-          "clockwise_downward": "Clockwise downward"
-        }
+        "name": "Scene direction"
       }
     },
     "switch": {

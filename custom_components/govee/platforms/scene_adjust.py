@@ -45,7 +45,7 @@ from ..zone_state import profile_for
 _LOGGER = logging.getLogger(__name__)
 
 _STORE_ATTR: Final = "_govee_scene_adjust_choices"
-_THREE_LEVELS: Final = ("slow", "medium", "fast")
+_THREE_LEVELS: Final = ("Slow", "Medium", "Fast")
 
 _HEX_COLOUR: Final = re.compile(r"#[0-9a-fA-F]{6}")
 _PALETTE_SEPARATOR: Final = re.compile(r"\s*,\s*")
@@ -85,21 +85,19 @@ def settings_store(coordinator: GoveeCoordinator) -> SceneSettingsStore:
 
 
 def speed_labels(count: int) -> list[str]:
-    """Option keys for ``count`` speed levels, slowest first."""
+    """Option labels for ``count`` speed levels, slowest first.
+
+    The options are English labels rather than translated keys, because
+    automations already store them and a select cannot alias an option.
+    """
     if count == len(_THREE_LEVELS):
         return list(_THREE_LEVELS)
     return [str(level) for level in range(1, count + 1)]
 
 
-def direction_key(direction: int) -> str:
-    """The option key of a scene direction, translated under ``scene_direction``."""
-    name = scenes.DIRECTION_NAMES.get(direction)
-    return f"direction_{direction}" if name is None else option_key(name)
-
-
-def option_key(label: str) -> str:
-    """The option key an English label such as ``Upper left`` stands for."""
-    return label.strip().lower().replace(" ", "_")
+def direction_label(direction: int) -> str:
+    """The option label of a scene direction; an unnamed id keeps its number."""
+    return scenes.DIRECTION_NAMES.get(direction, f"Direction {direction}")
 
 
 def format_palette(colours: tuple[scenes.Colour, ...]) -> str:
@@ -327,12 +325,6 @@ class _GoveeSceneAdjustSelect(_GoveeSceneSettingEntity, SelectEntity):
 
     _field: str
 
-    async def async_handle_select_option(self, option: str) -> None:
-        """Select an option, also accepting its English label such as ``Slow`` or ``Upper left``."""
-        if option not in self.options and option_key(option) in self.options:
-            option = option_key(option)
-        await super().async_handle_select_option(option)
-
     def _labels(self, scene: CatalogueScene) -> list[str]:
         raise NotImplementedError  # pragma: no cover
 
@@ -409,7 +401,7 @@ class GoveeSceneDirectionSelect(_GoveeSceneAdjustSelect):
     def _labels(self, scene: CatalogueScene) -> list[str]:
         if scene.adjust is None:
             return []
-        return [direction_key(direction) for direction in scene.adjust.directions]
+        return [direction_label(direction) for direction in scene.adjust.directions]
 
     def _default(self, scene: CatalogueScene) -> int | None:
         return None if scene.adjust is None else scene.adjust.default_direction
