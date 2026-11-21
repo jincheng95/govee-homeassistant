@@ -2,7 +2,8 @@
 
 Pure: bytes in, bytes out. A frame is exactly 20 bytes::
 
-    [0]     proType    0x33 write/set, 0xAA query/read, 0xA3 multipacket chunk
+    [0]     proType    0x33 write/set, 0xAA query/read, 0xA3 multipacket chunk,
+                       0xA4 MTU multipacket chunk
     [1]     commandType
     [2:19]  payload, zero-padded
     [19]    checksum = XOR of bytes[0..18]
@@ -28,6 +29,7 @@ BODY_LENGTH = 19
 PRO_TYPE_WRITE = 0x33
 PRO_TYPE_QUERY = 0xAA
 PRO_TYPE_MULTIPACKET = 0xA3
+PRO_TYPE_MTU = 0xA4
 
 MASK_BYTES = 2
 """Segment masks are always 2 bytes, LSB-first: mask0 = segs 0-7, mask1 = 8-15."""

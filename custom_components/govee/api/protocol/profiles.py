@@ -341,6 +341,8 @@ class DeviceProfile:
     consumer behaving exactly as it did before the field existed, so a SKU opts
     in only once someone has timed it on hardware.
     """
+    position_map_bulbs: int = 0
+    """How many bulbs the stored 3D position map covers (:mod:`.positions`); 0 for no map."""
     note: str = ""
 
     @property
@@ -729,6 +731,7 @@ H80C5: Final = DeviceProfile(
         commit_options=True,
         note="tails verified with the seven-colour default palette only",
     ),
+    position_map_bulbs=300,
     # `aa a5` answers a query on this SKU; it is not pushed unsolicited.
     segment_readback=False,
     # One scene of each uploaded blob kind read back by its catalogue code.

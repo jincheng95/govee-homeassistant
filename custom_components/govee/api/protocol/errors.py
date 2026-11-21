@@ -51,3 +51,7 @@ class SegmentMaskError(GoveeProtocolError):
     An all-zero mask is accepted by the firmware and silently does nothing,
     so we refuse to send one.
     """
+
+
+class PositionMapError(GoveeProtocolError):
+    """A bulb position map has the wrong bulb count or a coordinate out of range."""

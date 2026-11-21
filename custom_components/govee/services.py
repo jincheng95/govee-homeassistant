@@ -9,6 +9,8 @@ Provides:
 - ``govee.apply_diy_effect``: compose and upload a DIY effect: per zone on a
   multi-zone lamp, or one whole-light or layered effect on a string light (fork).
 - ``govee.paint_bulbs``: colour individual LEDs of a string light (fork).
+- ``govee.upload_bulb_positions``: store a 3D bulb position map on a string
+  light (fork).
 
 Actions are registered once from ``async_setup`` so automations that reference
 them validate even while no config entry is loaded (quality-scale rule
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -48,6 +51,8 @@ from .api.protocol import (
     GoveeProtocolError,
     resolve_mode,
 )
+from .api.protocol import positions
+from .api.protocol.errors import PositionMapError
 from .api.protocol import h70cx, h70cx_basic, paint
 from .const import DOMAIN, REQUEST_STATUS_MIN_INTERVAL
 from .coordinator import GoveeCoordinator
@@ -80,6 +85,19 @@ SERVICE_SET_SEGMENT_COLOR = "set_segment_color"
 SERVICE_SEND_RAW_PTREAL = "send_raw_ptreal"
 SERVICE_APPLY_DIY_EFFECT = "apply_diy_effect"
 SERVICE_REQUEST_STATUS = "request_status"
+SERVICE_UPLOAD_BULB_POSITIONS = "upload_bulb_positions"
+
+ATTR_POSITIONS = "positions"
+ATTR_NORMALIZE = "normalize"
+
+# Positions are checked in the handler, so a bad point gets a translated error.
+SERVICE_UPLOAD_BULB_POSITIONS_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_POSITIONS): vol.All(cv.ensure_list, list),
+        vol.Optional(ATTR_NORMALIZE, default=True): cv.boolean,
+    }
+)
 SERVICE_PAINT_BULBS = "paint_bulbs"
 
 ATTR_COLORS = "colors"
@@ -491,6 +509,100 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
     _LOGGER.info("Applied DIY effect to %s", device.name)
 
 
+def _position_triples(raw: list[Any]) -> list[tuple[float, float, float]]:
+    """Each position as a triple of finite real numbers.
+
+    Raises:
+        ServiceValidationError: ``invalid_bulb_positions`` for the first entry
+            that is not three finite numbers.
+    """
+    triples: list[tuple[float, float, float]] = []
+    for index, point in enumerate(raw):
+        if (
+            not isinstance(point, (list, tuple))
+            or len(point) != 3
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in point)
+        ):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_bulb_positions",
+                translation_placeholders={"reason": f"position {index} is not a list of three numbers"},
+            )
+        triples.append((point[0], point[1], point[2]))
+    return triples
+
+
+def _as_int(value: float) -> float | int:
+    """``value`` as an int when it is integral, else unchanged."""
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
+
+async def async_upload_bulb_positions_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.upload_bulb_positions`` (fork).
+
+    Stores a 3D position map on a string light, replacing the one it holds.
+    Packets go one per raw ``ptReal`` message, :data:`.positions.MESSAGE_GAP_SECONDS`
+    apart, so a 300-bulb map takes about 14 seconds.
+
+    Raises:
+        ServiceValidationError: Unknown or unsupported device, a position that
+            is not three numbers, the wrong number of positions, or (with
+            ``normalize`` off) a coordinate that is not an integer in range.
+        HomeAssistantError: A packet could not be sent. Packets already sent
+            are not rolled back.
+    """
+    raw_id = call.data[ATTR_DEVICE_ID]
+    found = _get_coordinator_for_device(hass, raw_id)
+    if found is None:
+        raise _device_not_found(raw_id)
+    coordinator, device_id = found
+    device = coordinator.devices[device_id]
+
+    profile = profile_for(device.sku)
+    if profile is None or not profile.position_map_bulbs:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="bulb_positions_unsupported",
+            translation_placeholders={"device": device.name},
+        )
+
+    triples = _position_triples(call.data[ATTR_POSITIONS])
+    if len(triples) != profile.position_map_bulbs:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="bulb_position_count",
+            translation_placeholders={
+                "device": device.name,
+                "count": str(len(triples)),
+                "expected": str(profile.position_map_bulbs),
+            },
+        )
+
+    if call.data[ATTR_NORMALIZE]:
+        points: list[tuple[Any, Any, Any]] = list(positions.normalize_positions(triples))
+    else:
+        points = [(_as_int(x), _as_int(y), _as_int(z)) for x, y, z in triples]
+    try:
+        frames = positions.position_map_frames(points, bulb_count=profile.position_map_bulbs)
+    except PositionMapError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_bulb_positions",
+            translation_placeholders={"reason": str(err)},
+        ) from err
+
+    for index, frame in enumerate(frames):
+        if index:
+            await asyncio.sleep(positions.MESSAGE_GAP_SECONDS)
+        if not await coordinator.async_send_raw_ptreal(device_id, frame):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="bulb_positions_failed",
+                translation_placeholders={"device": device.name, "sent": str(index), "total": str(len(frames))},
+            )
+    _LOGGER.info("Uploaded a %d-bulb position map to %s in %d packets", len(points), device.name, len(frames))
+
+
 def _expand_bulbs(entries: list[Any]) -> list[int]:
     """Indexes from a mix of numbers and ``"first-last"`` ranges.
 
@@ -776,6 +888,9 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _request_status(call: ServiceCall) -> None:
         await async_request_status_handler(hass, call)
 
+    async def _upload_bulb_positions(call: ServiceCall) -> None:
+        await async_upload_bulb_positions_handler(hass, call)
+
     async def _paint_bulbs(call: ServiceCall) -> None:
         await async_paint_bulbs_handler(hass, call)
 
@@ -815,6 +930,14 @@ def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_REQUEST_STATUS,
         _request_status,
         schema=SERVICE_REQUEST_STATUS_SCHEMA,
+    )
+    # Admin-only: it overwrites the map the lamp's 3D effects are drawn on.
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_UPLOAD_BULB_POSITIONS,
+        _upload_bulb_positions,
+        schema=SERVICE_UPLOAD_BULB_POSITIONS_SCHEMA,
     )
 
     # Imported here because raw_actions reads this module's helpers.

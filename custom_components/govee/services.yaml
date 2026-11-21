@@ -557,3 +557,22 @@ set_music_mode:
       example: "[[255, 0, 0], [0, 0, 255]]"
       selector:
         object:
+
+upload_bulb_positions:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    positions:
+      required: true
+      example: "[[0, 0, 0], [12, 5, 3], [24, 10, 6]]"
+      selector:
+        object:
+    normalize:
+      required: false
+      default: true
+      selector:
+        boolean:
