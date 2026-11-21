@@ -1063,7 +1063,7 @@
       "message": "The bulb positions are not valid: {reason}."
     },
     "bulb_positions_failed": {
-      "message": "Could not finish uploading the position map to {device}: {sent} of {total} packets were sent. This needs a raw-frame option (local raw writes or AWS IoT raw writes) and a reachable device. Upload the whole map again."
+      "message": "Could not finish uploading the position map to {device}: {sent} of {total} packets were sent. The upload tries local raw writes, then BLE raw writes, then AWS IoT raw writes, so it needs one of those options on and a reachable device. Upload the whole map again."
     },
     "bulb_paint_incomplete": {
       "message": "Could not finish painting {device}: {sent} of {total} packets were sent. Paint it again."
