@@ -6,6 +6,7 @@ per-LED paint, turns the call into frames with the codec, and routes them.
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -56,12 +57,24 @@ async def _run(coordinator: MagicMock, call: SimpleNamespace, *, routed: bool = 
 
 class TestExpandBulbs:
     def test_numbers_and_ranges(self) -> None:
-        assert _expand_bulbs([3, "5-7", "9", " 11 - 12 "]) == [3, 5, 6, 7, 9, 11, 12]
+        assert _expand_bulbs([3, "5-7", "9", " 11 - 12 ", "298-299"], 300) == [3, 5, 6, 7, 9, 11, 12, 298, 299]
 
-    @pytest.mark.parametrize("entry", ["7-5", "a-b", "x", "", "1-"])
+    @pytest.mark.parametrize("entry", ["7-5", "a-b", "x", "", "1-", "299-300", "-1-3"])
     def test_bad_entries(self, entry: str) -> None:
         with pytest.raises(ValueError):
-            _expand_bulbs([entry])
+            _expand_bulbs([entry], 300)
+
+    async def test_a_huge_range_is_refused_before_it_is_expanded(self) -> None:
+        call = _call(colors=[{"rgb_color": [255, 0, 0], "bulbs": ["0-999999999999"]}])
+        started = time.monotonic()
+        with pytest.raises(ServiceValidationError) as err:
+            await _run(_coordinator(), call)
+        assert time.monotonic() - started < 1
+        assert err.value.translation_key == "invalid_bulb_paint"
+        assert err.value.translation_placeholders == {
+            "device": "String lights",
+            "reason": "range '0-999999999999' is outside 0-299",
+        }
 
 
 class TestSchema:

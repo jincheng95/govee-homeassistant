@@ -167,11 +167,15 @@ async def async_upload_bulb_positions_handler(hass: HomeAssistant, call: Service
     _LOGGER.info("Uploaded a %d-bulb position map to %s in %d packets", len(points), device.name, len(frames))
 
 
-def _expand_bulbs(entries: list[Any]) -> list[int]:
+def _expand_bulbs(entries: list[Any], bulb_count: int) -> list[int]:
     """Indexes from a mix of numbers and ``"first-last"`` ranges.
 
+    A range is checked against ``bulb_count`` before it is expanded, so its
+    size is bounded by the light. Single indexes are checked by the encoder.
+
     Raises:
-        ValueError: An entry is neither a number nor an ascending range.
+        ValueError: An entry is neither a number nor an ascending range, or a
+            range reaches outside ``0`` to ``bulb_count - 1``.
     """
     indexes: list[int] = []
     for entry in entries:
@@ -185,6 +189,8 @@ def _expand_bulbs(entries: list[Any]) -> list[int]:
         low, high = int(first), int(last)
         if high < low:
             raise ValueError(f"range {entry!r} runs backwards")
+        if low < 0 or high >= bulb_count:
+            raise ValueError(f"range {entry!r} is outside 0-{bulb_count - 1}")
         indexes.extend(range(low, high + 1))
     return indexes
 
@@ -211,7 +217,7 @@ async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> N
         )
 
     try:
-        colors = [(entry[ATTR_RGB_COLOR], _expand_bulbs(entry[ATTR_BULBS])) for entry in call.data[ATTR_COLORS]]
+        colors = [(entry[ATTR_RGB_COLOR], _expand_bulbs(entry[ATTR_BULBS], profile.paint_bulbs)) for entry in call.data[ATTR_COLORS]]
         frames = paint.paint_frames(
             colors,
             bulb_count=profile.paint_bulbs,
