@@ -629,6 +629,14 @@
       },
       "clear_leak_alert": {
         "name": "Clear leak alert"
+      },
+      "reset_scene_settings": {
+        "name": "Reset scene settings"
+      }
+    },
+    "text": {
+      "scene_palette": {
+        "name": "Scene palette {layer}"
       }
     },
     "event": {
@@ -994,6 +1002,12 @@
     },
     "unknown_option": {
       "message": "{option} is not an option of {device}."
+    },
+    "invalid_scene_palette": {
+      "message": "{value} is not a scene palette. Give 1 to {maximum} colors as #rrggbb, separated by commas."
+    },
+    "scene_setting_unavailable": {
+      "message": "The scene running on {device} has no such setting, or no scene from the catalogue is running."
     },
     "unknown_effect": {
       "message": "{effect} is not a scene of {device}."

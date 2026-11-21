@@ -65,6 +65,14 @@
       },
       "clear_leak_alert": {
         "default": "mdi:water-check"
+      },
+      "reset_scene_settings": {
+        "default": "mdi:restore"
+      }
+    },
+    "text": {
+      "scene_palette": {
+        "default": "mdi:palette"
       }
     },
     "fan": {

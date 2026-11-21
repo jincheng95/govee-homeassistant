@@ -68,8 +68,7 @@ from .const import (
     SUFFIX_DIY_SPEED,
     SUFFIX_DIY_STYLE_SELECT,
     SUFFIX_POWER_OFF_MEMORY,
-    SUFFIX_SCENE_DIRECTION_SELECT,
-    SUFFIX_SCENE_SPEED_SELECT,
+    SCENE_SETTING_SUFFIXES,
     SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SCENE_SELECT,
     SUFFIX_SEGMENT,
@@ -684,8 +683,8 @@ async def _async_cleanup_orphaned_entities(
             elif suffix == SUFFIX_SCENE_SELECT and not enable_scenes:
                 should_remove = True
                 removal_reason = "scenes disabled"
-            elif suffix in (SUFFIX_SCENE_SPEED_SELECT, SUFFIX_SCENE_DIRECTION_SELECT) and not enable_scenes:
-                # Fork: the scene adjustment selects follow the scenes option.
+            elif suffix in SCENE_SETTING_SUFFIXES and not enable_scenes:
+                # Fork: the scene-setting entities follow the scenes option.
                 should_remove = True
                 removal_reason = "scenes disabled"
             elif suffix == SUFFIX_POWER_OFF_MEMORY and not raw_settings_enabled(entry):

@@ -181,22 +181,28 @@ def catalogue(coordinator: GoveeCoordinator) -> SceneCatalogue:
     return existing
 
 
-def reported_scene_code(frames: Iterable[bytes]) -> int | None:
-    """The scene code in an ``aa 05 04 <lo> <hi>`` mode report, or None.
-
-    None also covers a report of any other mode and a frame that fails its
-    checksum.
-    """
+def _mode_report(frames: Iterable[bytes]) -> bytes | None:
+    """The first ``aa 05`` mode report, or None when it fails its checksum."""
     for raw in frames:
         if len(raw) != 20 or raw[0] != 0xAA or raw[1] != 0x05:
             continue
         checksum = 0
         for byte in raw[:19]:
             checksum ^= byte
-        if checksum != raw[19] or raw[2] != scenes.SCENE_SUB_MODE:
-            return None
-        return raw[3] | (raw[4] << 8)
+        return bytes(raw) if checksum == raw[19] else None
     return None
+
+
+def reported_scene_code(frames: Iterable[bytes]) -> int | None:
+    """The scene code in an ``aa 05 04 <lo> <hi>`` mode report, or None.
+
+    None also covers a report of any other mode and a frame that fails its
+    checksum.
+    """
+    raw = _mode_report(frames)
+    if raw is None or raw[2] != scenes.SCENE_SUB_MODE:
+        return None
+    return raw[3] | (raw[4] << 8)
 
 
 def _platform_scene_id(coordinator: GoveeCoordinator, device_id: str, name: str) -> str | None:
@@ -221,8 +227,9 @@ def apply_scene_report(
 ) -> bool:
     """Follow the scene the device says it is running.
 
-    Only a code the catalogue knows changes anything. A scene started through
-    the platform API reports a code outside the catalogue, and that leaves the
+    A report of any other mode clears the active scene. Of scene reports, only
+    a code the catalogue knows changes anything. A scene started through the
+    platform API reports a code outside the catalogue, and that leaves the
     state as the command set it.
 
     Returns:
@@ -231,9 +238,16 @@ def apply_scene_report(
     profile = profile_for(device.sku)
     if profile is None or not profile.scene_upload:
         return False
-    code = reported_scene_code(frames)
-    if code is None:
+    raw = _mode_report(frames)
+    if raw is None:
         return False
+    if raw[2] != scenes.SCENE_SUB_MODE:
+        if state.active_scene is None and state.active_scene_name is None:
+            return False
+        state.active_scene = None
+        state.active_scene_name = None
+        return True
+    code = raw[3] | (raw[4] << 8)
     name = catalogue(coordinator).name_for_code(device.sku, code)
     if name is None or name == state.active_scene_name:
         return False

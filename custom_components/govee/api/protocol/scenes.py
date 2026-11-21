@@ -10,7 +10,9 @@ commits with ``33 05 04 <codeLo> <codeHi>``. Three blob kinds exist::
 An H70CX blob is ``49 | len16 | effect | params | nColours | RGB...``. Effect
 12 stacks layers, each ``len16 | effect | params | nColours | RGB...``. A
 scene's speed and direction are single bytes inside those records, so the
-adjustments rewrite the blob and the scene is uploaded again.
+adjustments rewrite the blob and the scene is uploaded again. The length of
+``params`` depends on the effect, so a palette is rewritten only for effects
+whose parameter length is known.
 
 An RGBIC blob is ``count``, then per effect ``len | record``::
 
@@ -371,6 +373,110 @@ def adjust_blob(
             if position is not None:
                 out[position] = adjust.directions[direction]
 
+    return bytes(out)
+
+
+MAX_SCENE_COLOURS = 8
+
+Colour = tuple[int, int, int]
+
+# Parameter bytes between an effect id and its colour count.
+_PARAM_LENGTHS: Mapping[int, int] = {
+    1: 6, 2: 7, 3: 3, 4: 4, 5: 9, 6: 9, 7: 9, 8: 10, 9: 9,
+    10: 6, 11: 5, 13: 4, 17: 2, 18: 3,
+}
+# The same for sub-typed effects, keyed by the sub-type byte at position 1.
+_SUBTYPED_PARAM_LENGTHS: Mapping[int, Mapping[int, int]] = {
+    14: {1: 8, 2: 5, 4: 3},
+    _GEOMETRY_EFFECT: {1: 5, 3: 7},
+    _NOVELTY_EFFECT: {3: 3, 4: 4, 5: 4},
+}
+
+
+def _colour_count_at(record: bytes | bytearray, start: int, end: int) -> int | None:
+    """Absolute position of a record's colour count, or None when unknown.
+
+    None also covers a record whose colour list does not end it exactly.
+    """
+    effect = record[start]
+    subtyped = _SUBTYPED_PARAM_LENGTHS.get(effect)
+    if subtyped is None:
+        length = _PARAM_LENGTHS.get(effect)
+    else:
+        length = subtyped.get(record[start + 1]) if start + 1 < end else None
+    if length is None:
+        return None
+    at = start + 1 + length
+    if at >= end or at + 1 + 3 * record[at] != end:
+        return None
+    return at
+
+
+def scene_palettes(blob: bytes) -> tuple[tuple[Colour, ...] | None, ...]:
+    """The colour list of every layer of an H70CX blob.
+
+    Returns:
+        One entry per layer, None where the colours cannot be located. Empty
+        for a blob of another kind or a malformed one.
+    """
+    if blob[:1] != bytes([H70CX_LEAD]):
+        return ()
+    try:
+        records = _records(blob)
+    except FrameError:
+        return ()
+    found: list[tuple[Colour, ...] | None] = []
+    for start, end in records:
+        at = _colour_count_at(blob, start, end)
+        if at is None:
+            found.append(None)
+            continue
+        found.append(tuple((blob[i], blob[i + 1], blob[i + 2]) for i in range(at + 1, end, 3)))
+    return tuple(found)
+
+
+def palette_blob(blob: bytes, palettes: Mapping[int, Sequence[Colour]]) -> bytes:
+    """Return an H70CX ``blob`` with the colour lists of some layers replaced.
+
+    A replaced record changes length, so its layer ``len16`` and the outer
+    ``len16`` are rewritten to match. No other byte changes.
+
+    Args:
+        blob: The scene blob.
+        palettes: New colours by 0-based layer index, 1 to
+            :data:`MAX_SCENE_COLOURS` each.
+
+    Raises:
+        FrameError: The blob is not H70CX or is malformed, a layer does not
+            exist or has no locatable colours, or a palette is out of range.
+    """
+    if blob[:1] != bytes([H70CX_LEAD]):
+        raise FrameError("only an H70CX scene blob has rewritable palettes")
+    records = _records(blob)
+    for layer, colours in palettes.items():
+        if not 0 <= layer < len(records):
+            raise FrameError(f"scene has no layer {layer}")
+        if not 1 <= len(colours) <= MAX_SCENE_COLOURS:
+            raise FrameError(f"a scene palette holds 1 to {MAX_SCENE_COLOURS} colours")
+        if any(len(rgb) != 3 or not all(0 <= value <= 0xFF for value in rgb) for rgb in colours):
+            raise FrameError("a scene colour is three bytes")
+
+    layered = blob[3] == MULTI_LAYER_EFFECT
+    out = bytearray(blob[:7] if layered else blob[:3])
+    for layer, (start, end) in enumerate(records):
+        record = bytes(blob[start:end])
+        if layer in palettes:
+            at = _colour_count_at(blob, start, end)
+            if at is None:
+                raise FrameError(f"the colours of layer {layer} cannot be located")
+            colours = palettes[layer]
+            record = blob[start:at] + bytes([len(colours)]) + bytes(value for rgb in colours for value in rgb)
+        if layered:
+            out += len(record).to_bytes(2, "little")
+        out += record
+    if layered:
+        out += blob[records[-1][1] if records else 7 :]
+    out[1:3] = (len(out) - 3).to_bytes(2, "little")
     return bytes(out)
 
 
