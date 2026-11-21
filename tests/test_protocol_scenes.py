@@ -172,6 +172,22 @@ class TestAdjustBlob:
         assert plain_geometry[5] == 9
         assert plain_geometry[6:] == blob(15, 1, 50, 1, 0, 0)[6:]
 
+    def test_smudge_takes_its_direction_at_position_one(self) -> None:
+        # Synthetic one-layer smudge scene: effect 17, direction 2, speed 50.
+        layer = bytes([0x11, 0x02, 0x32, 0x02, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60])
+        body = bytes([0x0C, 0x01, 0x02, 0x00, len(layer), 0x00]) + layer
+        blob = bytes([0x49, len(body), 0x00]) + body
+        adjust = scenes.SceneAdjust(speeds=((40,), (60,)), directions=(1, 2))
+
+        assert scenes.adjust_blob(blob, adjust) == blob
+        assert scenes.adjust_blob(blob, adjust, direction=1) == blob
+        sped = scenes.adjust_blob(blob, adjust, speed=1)
+        assert [i for i in range(len(blob)) if sped[i] != blob[i]] == [11]
+        assert (sped[10], sped[11]) == (0x02, 60)
+        turned = scenes.adjust_blob(blob, adjust, direction=0)
+        assert [i for i in range(len(blob)) if turned[i] != blob[i]] == [10]
+        assert turned[10] == 1
+
     @pytest.mark.parametrize(("speed", "direction"), [(3, None), (-1, None), (None, 4), (None, -1)])
     def test_index_out_of_range(self, speed: int | None, direction: int | None) -> None:
         with pytest.raises(FrameError):

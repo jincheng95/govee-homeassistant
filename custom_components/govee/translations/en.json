@@ -130,9 +130,9 @@
           "confirm_commands": "After a power-off, brightness, colour or colour-temperature command to a light, waits a few seconds for the light's own real-time (AWS IoT) report and asks for one status if none comes. If the light still shows the old value, the command is sent once more over the cloud API. Lights only: appliances such as kettles, heaters and fans are never resent, and a power-on is never resent. A resend uses one cloud request, only when the daily budget and rate limit allow it. Requires email and password login; lights that have not reported over AWS IoT are left as they are. Off by default.",
           "lan_targets": "Only needed when LAN-enabled Govee devices are on a different subnet or VLAN than Home Assistant, so the local discovery scan cannot reach them. Enter a comma-separated list of device IPs (10.20.0.51), broadcast addresses (10.20.0.255), and subnets in CIDR notation (10.20.0.0/24, /24 or smaller). Subnets are scanned device by device, since most routers drop cross-VLAN broadcasts. Leave blank if all devices share Home Assistant's network. Advanced: if a device still is not found because its scan reply cannot cross the VLAN, pin it with device_id=ip (AA:BB:CC:DD:EE:FF:00:11=10.20.0.51) to skip discovery for that device. Add a trailing ! (=10.20.0.51!) only for firmware that accepts LAN commands but never answers a status read. That turns off every LAN health check for the device, so a wrong IP will look like it is working while the device never responds. Enter off to turn LAN discovery and local control off entirely.",
           "enable_lan_nudge": "When the cloud reports a change made outside Home Assistant, the device's real state is read over the local network instead of trusting the push. Locally discovered devices only.",
-          "enable_lan_raw_write": "Segment colour and brightness act immediately instead of taking Govee's cloud round trip. Works on locally discovered lamps with a supported model; others keep using the cloud. Segment state can't be read back, so entities show the last command sent. Zone lights do not need this option \u2014 they always use the local network.",
+          "enable_lan_raw_write": "Segment colour and brightness act immediately instead of taking Govee's cloud round trip. Works on locally discovered lamps with a supported model; others keep using the cloud. Segment state can't be read back, so entities show the last command sent. Zone lights do not need this option — they always use the local network.",
           "enable_ble_raw_write": "For lamps with no local Wi-Fi control. Needs a Bluetooth adapter or an active Bluetooth proxy in range. While a command is being sent, the Govee phone app may briefly be unable to connect.",
-          "enable_zone_lights": "Each zone becomes its own light and the lamp's own entity becomes a dimmable master. Automations that set an effect on the lamp entity must target a zone or the scene selector instead. Zone state shows the last command sent \u2014 the device cannot report it back.",
+          "enable_zone_lights": "Each zone becomes its own light and the lamp's own entity becomes a dimmable master. Automations that set an effect on the lamp entity must target a zone or the scene selector instead. Zone state shows the last command sent — the device cannot report it back.",
           "enable_h6104_ble": "Use experimental Bluetooth control and status readback for H6104 TV lights. Requires a connectable Bluetooth adapter or proxy."
         }
       },
@@ -678,7 +678,7 @@
     },
     "apply_diy_effect": {
       "name": "Apply DIY effect",
-      "description": "Composes and uploads a DIY effect to one multi-zone lamp. Target exactly one device. A zone with every field empty (or mode \"none\") is switched off; an omitted field uses its fixed default, not the currently staged value. Requires the per-zone lights option.",
+      "description": "Composes and uploads a DIY effect to one lamp. Target exactly one device. On a multi-zone lamp, fill the zone fields: a zone with every field empty (or mode \"none\") is switched off, and an omitted field uses its fixed default, not the currently staged value. On a string light, fill the whole-light fields or give 1 to 3 layers. Zone lamps require the per-zone lights option.",
       "fields": {
         "ripple_mode": {
           "name": "Ripple mode",
@@ -711,6 +711,46 @@
         "ring_colors": {
           "name": "Ring colors",
           "description": "Palette for the ring zone as a list of [R, G, B] triplets, in the order the effect cycles them (1-16 colors). Required whenever the zone is used with a mode other than \"none\"."
+        },
+        "effect": {
+          "name": "Effect",
+          "description": "Whole-light effect type, for string lights. The numbered names, mountain_peak, candy_crush, smudge, whirlpool and flexing follow the composer tiles of the Govee app. \"combo\" plays the effects named in Combine."
+        },
+        "colors": {
+          "name": "Colours",
+          "description": "The palette: a list of up to 8 colours, each [red, green, blue]. Most effects need at least two. Fade, breathe, combo, ribbon, mountain_peak, candy_crush, smudge, flexing, spiral, starlight and wave take one; spin_3 needs three; bounce, whirlpool, diffuse_1 and diffuse_2 need four."
+        },
+        "speed": {
+          "name": "Speed",
+          "description": "0 to 100 (1 to 100 for combo). Leave empty for the effect's stock speed."
+        },
+        "direction": {
+          "name": "Direction",
+          "description": "Leave empty for the effect's stock direction. Flow 1, rainbow 1 and spin 1-2 take clockwise or anticlockwise. Flow 2-4 take up, down, clockwise, anticlockwise, upper left, expand vertically or gather vertically. Stripes take up, down, clockwise, anticlockwise and the four diagonals; rainbow 2 takes the four diagonals. Smudge and blend take up or down, whirlpool takes gather or expand horizontally, and spiral takes the four upward and downward turns. Flow, layered, rainbow, vortex and rotate take any direction; every other effect takes none."
+        },
+        "combine": {
+          "name": "Combine",
+          "description": "For the combo effect only: 1 to 4 of flow_1, rainbow_1, fade_1, marquee_3 and breathe, each once. They share the colours and speed."
+        },
+        "shape": {
+          "name": "Shape",
+          "description": "For the flexing effect only: round, square or rhomb. Leave empty for rhomb."
+        },
+        "center": {
+          "name": "Centre point",
+          "description": "For the flexing effect only: the point the shape grows from. Leave empty for center."
+        },
+        "params": {
+          "name": "Parameter block",
+          "description": "The bytes between the effect id and the colour count, as a list of numbers 0 to 255. Replaces the effect's own block, for example with a stock scene's block. It must have the length of the effect's own block, and wave, ribbon, mountain_peak, flexing and candy_crush must keep its first byte. Speed, direction, shape and centre are written over it when given. Every other byte is sent unchecked. Not for the older-format effects or combo."
+        },
+        "layers": {
+          "name": "Layers",
+          "description": "Stacks 1 to 3 effects into one, for string lights. Each layer is an object with effect, colors and optional speed, direction, shape, center and params, checked as the fields above check one effect. Layers are sent in the order given. The older-format effects (flow_1, rainbow_1, fade, marquee, breathe) and combo cannot be layers. Leave the fields above empty when giving layers."
+        },
+        "layer_mode": {
+          "name": "Layer mode",
+          "description": "The two header bytes of a layered effect: default (2, 0), variant_3 (3, 0) or variant_1_2 (1, 2). Stock scenes use all three. Leave empty for default. Only with layers."
         }
       },
       "sections": {
@@ -719,6 +759,9 @@
         },
         "ring_section": {
           "name": "Ring zone"
+        },
+        "effect_section": {
+          "name": "Whole-light effect"
         }
       }
     },
@@ -737,6 +780,28 @@
         "interval": {
           "name": "Interval",
           "description": "Seconds between queries while repeating (at least 3)."
+        }
+      }
+    },
+    "paint_bulbs": {
+      "name": "Paint bulbs",
+      "description": "Colours individual LEDs of a string light. Named LEDs take their colour and every other LED shows the base colour. The paint replaces whatever the light was showing.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The string light to paint. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "colors": {
+          "name": "Colours",
+          "description": "A list of entries, each with rgb_color ([red, green, blue]) and bulbs. Bulbs are 0-based numbers or ranges written as \"first-last\". A bulb named twice takes the later colour."
+        },
+        "base_color": {
+          "name": "Base colour",
+          "description": "Colour of every LED not named. Black leaves them dark."
+        },
+        "base_brightness": {
+          "name": "Base brightness",
+          "description": "Brightness of the base colour."
         }
       }
     }
@@ -798,6 +863,27 @@
     },
     "invalid_tv_sensitivity": {
       "message": "TV sensitivity must be a whole number from 0 to 100."
+    },
+    "bulb_paint_unsupported": {
+      "message": "{device} does not support painting individual bulbs"
+    },
+    "invalid_bulb_paint": {
+      "message": "Cannot paint {device}: {reason}"
+    },
+    "invalid_string_effect": {
+      "message": "Cannot apply the effect to {device}: {reason}"
+    },
+    "invalid_string_effect_layer": {
+      "message": "Cannot apply layer {layer} of the effect to {device}: {reason}"
+    },
+    "invalid_layer_count": {
+      "message": "A layered effect on {device} takes {min} to {max} layers, not {count}."
+    },
+    "layer_mode_without_layers": {
+      "message": "Cannot apply the effect to {device}. Layer mode needs layers."
+    },
+    "layers_with_effect_fields": {
+      "message": "Cannot apply the effect to {device}. Leave {fields} empty when giving layers."
     }
   },
   "issues": {

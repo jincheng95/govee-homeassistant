@@ -43,7 +43,7 @@ _SPEED_AT: Mapping[int, int] = {
     14: 2, 15: 2,
     17: 2, 18: 2,
 }
-_DIRECTION_AT: Mapping[int, int] = {1: 2, 2: 2, 3: 2, 5: 2, 8: 2, 9: 2, 11: 3}
+_DIRECTION_AT: Mapping[int, int] = {1: 2, 2: 2, 3: 2, 5: 2, 8: 2, 9: 2, 11: 3, 17: 1}
 
 # Novelty and geometry effects carry a sub-type at position 1 that decides
 # whether a speed or direction byte exists at all.
@@ -235,8 +235,8 @@ def adjust_blob(
     return bytes(out)
 
 
-def _chunks(data: bytes, marker: int) -> list[bytes]:
-    # A payload that fits the first packet still gets a terminator packet.
+def terminated_chunks(data: bytes, marker: int) -> list[bytes]:
+    """``0xA3`` packets for ``data``, always ending in a terminator packet."""
     if len(data) > FIRST_CHUNK_DATA_BYTES:
         return chunk_effect(data, marker=marker)
     head = bytes([PRO_TYPE_MULTIPACKET, 0x00, DEFAULT_HEADER_LEAD, 0x02, marker & 0xFF]) + data
@@ -259,5 +259,5 @@ def scene_frames(blob: bytes, code: int) -> list[bytes]:
     if not blob:
         return [commit]
     if blob[0] == H70CX_LEAD:
-        return [*_chunks(blob[1:], H70CX_MARKER), commit]
-    return [*_chunks(blob, RGBIC_MARKER), commit]
+        return [*terminated_chunks(blob[1:], H70CX_MARKER), commit]
+    return [*terminated_chunks(blob, RGBIC_MARKER), commit]

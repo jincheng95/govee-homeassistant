@@ -278,6 +278,10 @@ class DeviceProfile:
     True only for a SKU where an uploaded scene has been read back by its
     catalogue code.
     """
+    schedule_report: bool = False
+    """Whether status pushes carry the ``aa 11`` / ``aa 12`` / ``aa 23`` schedule frames."""
+    paint_bulbs: int = 0
+    """How many LEDs the :mod:`.paint` upload addresses one by one; 0 for none."""
     echo_lag_seconds: float = 0.0
     """How long this SKU keeps reporting its PRE-command state after a write.
 
@@ -637,6 +641,8 @@ H80C5: Final = DeviceProfile(
     segment_readback=False,
     # One scene of each uploaded blob kind read back by its catalogue code.
     scene_upload=True,
+    paint_bulbs=300,
+    schedule_report=True,
 )
 
 PROFILES: Final[Mapping[str, DeviceProfile]] = {profile.sku: profile for profile in (H60B0, H6046, H6076, H80C5)}

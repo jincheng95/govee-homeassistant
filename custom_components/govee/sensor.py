@@ -50,6 +50,7 @@ from .kettle.entities import kettle_sensors
 from .models import GoveeDevice, TransportHealth, TransportKind
 from .models.device import GoveeLeakSensor, leak_sensor_device_info
 from .models.energy_counter import EnergyCounter
+from .platforms.light_schedule import async_light_schedule_sensor_entities
 from .platforms.diy_effect import (
     async_diy_preview_entities,
 )
@@ -241,6 +242,7 @@ async def async_setup_entry(
     # Fork: one preview sensor per DIY zone, carrying the shipped artwork URL
     # for the mode staged on that zone's select.
     entities.extend(async_diy_preview_entities(coordinator, entry))
+    entities.extend(async_light_schedule_sensor_entities(coordinator))
 
     async_add_entities(entities)
     _LOGGER.debug("Set up %d Govee sensor entities", len(entities))

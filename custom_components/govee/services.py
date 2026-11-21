@@ -6,8 +6,9 @@ Provides:
 - ``govee.send_raw_ptreal``: send a raw BLE ptReal frame (developer/debug aid).
 - ``govee.request_status``: ask a device for its status over AWS IoT, once or
   repeatedly for a while (a status burst).
-- ``govee.apply_diy_effect``: compose and upload a DIY effect to a multi-zone
-  lamp (fork).
+- ``govee.apply_diy_effect``: compose and upload a DIY effect: per zone on a
+  multi-zone lamp, or one whole-light or layered effect on a string light (fork).
+- ``govee.paint_bulbs``: colour individual LEDs of a string light (fork).
 
 Actions are registered once from ``async_setup`` so automations that reference
 them validate even while no config entry is loaded (quality-scale rule
@@ -19,6 +20,7 @@ automations written against the Govee ID keep working.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -35,6 +37,7 @@ from homeassistant.helpers.target import (
     async_extract_referenced_entity_ids,
 )
 
+from .api import raw_router
 from .api.ble_packet import calculate_checksum
 from .api.protocol import (
     DIRECTIONS,
@@ -45,6 +48,7 @@ from .api.protocol import (
     GoveeProtocolError,
     resolve_mode,
 )
+from .api.protocol import h70cx, h70cx_basic, paint
 from .const import DOMAIN, REQUEST_STATUS_MIN_INTERVAL
 from .coordinator import GoveeCoordinator
 from .diy_state import (
@@ -56,6 +60,7 @@ from .diy_state import (
 from .diy_state import store as diy_store
 from .models import GoveeDevice, RGBColor, SegmentColorCommand
 from .segment_limit import manual_segment_count, segment_count
+from .zone_state import profile_for
 from .status_burst import STATUS_BURST_MAX_DURATION, STATUS_BURST_MIN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,6 +80,54 @@ SERVICE_SET_SEGMENT_COLOR = "set_segment_color"
 SERVICE_SEND_RAW_PTREAL = "send_raw_ptreal"
 SERVICE_APPLY_DIY_EFFECT = "apply_diy_effect"
 SERVICE_REQUEST_STATUS = "request_status"
+SERVICE_PAINT_BULBS = "paint_bulbs"
+
+ATTR_COLORS = "colors"
+ATTR_BULBS = "bulbs"
+ATTR_BASE_COLOR = "base_color"
+ATTR_BASE_BRIGHTNESS = "base_brightness"
+ATTR_EFFECT = "effect"
+ATTR_SPEED = "speed"
+ATTR_DIRECTION = "direction"
+ATTR_COMBINE = "combine"
+ATTR_SHAPE = "shape"
+ATTR_CENTER = "center"
+ATTR_LAYERS = "layers"
+ATTR_PARAMS = "params"
+ATTR_LAYER_MODE = "layer_mode"
+
+# Top-level whole-light fields a layered call leaves out.
+_SINGLE_EFFECT_FIELDS = (
+    ATTR_EFFECT,
+    ATTR_COLORS,
+    ATTR_SPEED,
+    ATTR_DIRECTION,
+    ATTR_SHAPE,
+    ATTR_CENTER,
+    ATTR_PARAMS,
+    ATTR_COMBINE,
+)
+
+_RGB_SCHEMA = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple))
+
+SERVICE_PAINT_BULBS_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_DEVICE_ID): cv.string,
+        vol.Optional(ATTR_COLORS, default=list): vol.All(
+            cv.ensure_list,
+            [
+                vol.Schema(
+                    {
+                        vol.Required(ATTR_RGB_COLOR): _RGB_SCHEMA,
+                        vol.Required(ATTR_BULBS): vol.All(cv.ensure_list, [vol.Any(cv.positive_int, cv.string)]),
+                    }
+                )
+            ],
+        ),
+        vol.Optional(ATTR_BASE_COLOR, default=(0, 0, 0)): _RGB_SCHEMA,
+        vol.Optional(ATTR_BASE_BRIGHTNESS, default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+    }
+)
 
 SERVICE_REFRESH_SCENES_SCHEMA = vol.Schema(
     {
@@ -162,6 +215,28 @@ def _require_mode_with_zone_fields(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+_STRING_EFFECT = vol.All(cv.string, vol.Lower, vol.In(sorted({*h70cx.TEMPLATES, *h70cx_basic.NAMES})))
+_STRING_COLORS = vol.All(cv.ensure_list, vol.Length(min=1, max=h70cx.MAX_COLORS), [_RGB_SCHEMA])
+_STRING_SPEED = vol.All(vol.Coerce(int), vol.Range(min=0, max=h70cx.MAX_SPEED))
+_STRING_DIRECTION = vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.DIRECTION_IDS)))
+_SHAPE = vol.All(cv.string, vol.Lower, vol.In(list(h70cx.SHAPES)))
+_CENTER = vol.All(cv.string, vol.Lower, vol.In(list(h70cx.CENTERS)))
+_PARAMS = vol.All(cv.ensure_list, vol.Length(min=1), [cv.byte])
+
+# A layer accepts every whole-light name so that an older-format one is
+# refused by the handler with a translated reason.
+_LAYER_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_EFFECT): _STRING_EFFECT,
+        vol.Required(ATTR_COLORS): _STRING_COLORS,
+        vol.Optional(ATTR_SPEED): _STRING_SPEED,
+        vol.Optional(ATTR_DIRECTION): _STRING_DIRECTION,
+        vol.Optional(ATTR_SHAPE): _SHAPE,
+        vol.Optional(ATTR_CENTER): _CENTER,
+        vol.Optional(ATTR_PARAMS): _PARAMS,
+    }
+)
+
 SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
     vol.All(
         {
@@ -176,6 +251,21 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
             vol.Optional("ring_mode"): _DIY_MODE,
             vol.Optional("ring_speed"): _DIY_PERCENT,
             vol.Optional("ring_colors"): _DIY_COLORS,
+            # Whole-light effect, for lamps with no zones (H70CX family).
+            vol.Optional(ATTR_EFFECT): _STRING_EFFECT,
+            vol.Optional(ATTR_COLORS): _STRING_COLORS,
+            vol.Optional(ATTR_SPEED): _STRING_SPEED,
+            vol.Optional(ATTR_DIRECTION): _STRING_DIRECTION,
+            vol.Optional(ATTR_COMBINE): vol.All(
+                cv.ensure_list,
+                vol.Length(min=1, max=h70cx_basic.MAX_COMBINED),
+                [vol.All(cv.string, vol.Lower, vol.In(h70cx_basic.COMBINABLE))],
+            ),
+            vol.Optional(ATTR_SHAPE): _SHAPE,
+            vol.Optional(ATTR_CENTER): _CENTER,
+            vol.Optional(ATTR_PARAMS): _PARAMS,
+            vol.Optional(ATTR_LAYERS): vol.All(cv.ensure_list, vol.Length(min=1), [_LAYER_SCHEMA]),
+            vol.Optional(ATTR_LAYER_MODE): vol.All(cv.string, vol.Lower, vol.In(list(h70cx.LAYER_MODES))),
         },
         _require_mode_with_zone_fields,
     )
@@ -380,6 +470,12 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
             table, the effect cannot be encoded (no zone on, or a zone with
             a mode and no colours), or the upload could not be sent.
     """
+    string_target = _string_effect_target(hass, call)
+    if string_target is not None:
+        await _async_apply_string_effect(*string_target, call.data)
+        _LOGGER.info("Applied DIY effect to %s", string_target[1].name)
+        return
+
     coordinator, device, profile, diy = _resolve_diy_target(hass, call)
     device_id = device.device_id
 
@@ -393,6 +489,237 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
 
     await async_send_diy_effect(coordinator, device, profile, store.effects(device_id, diy))
     _LOGGER.info("Applied DIY effect to %s", device.name)
+
+
+def _expand_bulbs(entries: list[Any]) -> list[int]:
+    """Indexes from a mix of numbers and ``"first-last"`` ranges.
+
+    Raises:
+        ValueError: An entry is neither a number nor an ascending range.
+    """
+    indexes: list[int] = []
+    for entry in entries:
+        if isinstance(entry, int):
+            indexes.append(entry)
+            continue
+        first, dash, last = str(entry).partition("-")
+        if not dash:
+            indexes.append(int(first))
+            continue
+        low, high = int(first), int(last)
+        if high < low:
+            raise ValueError(f"range {entry!r} runs backwards")
+        indexes.extend(range(low, high + 1))
+    return indexes
+
+
+async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.paint_bulbs`` (fork).
+
+    Colours the named LEDs and shows the base colour on every other one. The
+    paint replaces whatever the light was showing, including an earlier paint.
+    """
+    raw_id = call.data[ATTR_DEVICE_ID]
+    found = _get_coordinator_for_device(hass, raw_id)
+    if found is None:
+        raise _device_not_found(raw_id)
+    coordinator, device_id = found
+    device = coordinator.devices[device_id]
+
+    profile = profile_for(device.sku)
+    if profile is None or not profile.paint_bulbs:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="bulb_paint_unsupported",
+            translation_placeholders={"device": device.name},
+        )
+
+    try:
+        colors = [(entry[ATTR_RGB_COLOR], _expand_bulbs(entry[ATTR_BULBS])) for entry in call.data[ATTR_COLORS]]
+        frames = paint.paint_frames(
+            colors,
+            bulb_count=profile.paint_bulbs,
+            base_color=call.data[ATTR_BASE_COLOR],
+            base_brightness=call.data[ATTR_BASE_BRIGHTNESS],
+        )
+        if len(frames) > MAX_PTREAL_FRAMES:
+            raise ValueError(f"the paint needs {len(frames)} frames, the limit is {MAX_PTREAL_FRAMES}")
+    except (ValueError, GoveeProtocolError) as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_bulb_paint",
+            translation_placeholders={"device": device.name, "reason": str(err)},
+        ) from err
+
+    for index, message in enumerate(paint.messages(frames)):
+        if index:
+            await asyncio.sleep(paint.MESSAGE_GAP_SECONDS)
+        if not await raw_router.async_route_frames(
+            coordinator, device_id, device.sku, profile, message, what="bulb paint"
+        ):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_failed",
+                translation_placeholders={"device": device.name},
+            )
+
+    _clear_optimistic_scene(coordinator, device_id)
+
+
+def _clear_optimistic_scene(coordinator: GoveeCoordinator, device_id: str) -> None:
+    """Drop the scene shown for a light that was just given something else."""
+    state = coordinator.get_state(device_id)
+    if state is not None and (state.active_scene or state.active_scene_name):
+        state.active_scene = None
+        state.active_scene_name = None
+        coordinator.async_update_listeners()
+
+
+async def _async_apply_string_effect(
+    coordinator: GoveeCoordinator, device: GoveeDevice, profile: DeviceProfile, data: Mapping[str, Any]
+) -> None:
+    """Upload one composed, basic, combo or layered whole-light effect (H70CX family)."""
+    if ATTR_LAYER_MODE in data and ATTR_LAYERS not in data:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="layer_mode_without_layers",
+            translation_placeholders={"device": device.name},
+        )
+    if ATTR_LAYERS in data:
+        frames = _layered_frames(device, data)
+    else:
+        frames = _single_effect_frames(device, data)
+
+    if not await raw_router.async_route_frames(
+        coordinator, device.device_id, device.sku, profile, frames, what="string effect"
+    ):
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="command_failed",
+            translation_placeholders={"device": device.name},
+        )
+    _clear_optimistic_scene(coordinator, device.device_id)
+
+
+def _layered_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[bytes]:
+    """Frames for the ``layers`` field, refusing it beside the single-effect fields."""
+    mixed = [field for field in _SINGLE_EFFECT_FIELDS if field in data]
+    if mixed:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="layers_with_effect_fields",
+            translation_placeholders={"device": device.name, "fields": ", ".join(mixed)},
+        )
+    items = data[ATTR_LAYERS]
+    if not h70cx.MIN_LAYERS <= len(items) <= h70cx.MAX_LAYERS:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_layer_count",
+            translation_placeholders={
+                "device": device.name,
+                "count": str(len(items)),
+                "min": str(h70cx.MIN_LAYERS),
+                "max": str(h70cx.MAX_LAYERS),
+            },
+        )
+    layers = [
+        h70cx.Layer(
+            effect=item[ATTR_EFFECT],
+            colors=item[ATTR_COLORS],
+            speed=item.get(ATTR_SPEED),
+            direction=item.get(ATTR_DIRECTION),
+            shape=item.get(ATTR_SHAPE),
+            center=item.get(ATTR_CENTER),
+            params=item.get(ATTR_PARAMS),
+        )
+        for item in items
+    ]
+    try:
+        return h70cx.layered_frames(layers, data.get(ATTR_LAYER_MODE, h70cx.DEFAULT_LAYER_MODE))
+    except h70cx.LayerError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_string_effect_layer",
+            translation_placeholders={"device": device.name, "layer": str(err.layer), "reason": err.reason},
+        ) from err
+    except GoveeProtocolError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_string_effect",
+            translation_placeholders={"device": device.name, "reason": str(err)},
+        ) from err
+
+
+def _single_effect_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[bytes]:
+    """Frames for the top-level whole-light fields."""
+    try:
+        if ATTR_EFFECT not in data or ATTR_COLORS not in data:
+            raise GoveeProtocolError("this light takes the whole-light fields: effect and colors, or layers")
+        effect = data[ATTR_EFFECT]
+        if effect in h70cx_basic.NAMES:
+            for option in (ATTR_SHAPE, ATTR_CENTER, ATTR_PARAMS):
+                if option in data:
+                    raise GoveeProtocolError(f"{effect} has no {option}")
+            return h70cx_basic.effect_frames(
+                effect,
+                data[ATTR_COLORS],
+                speed=data.get(ATTR_SPEED),
+                direction=data.get(ATTR_DIRECTION),
+                combine=data.get(ATTR_COMBINE),
+            )
+        if ATTR_COMBINE in data:
+            raise GoveeProtocolError(f"only {h70cx_basic.COMBO} takes effects to combine")
+        return h70cx.effect_frames(
+            effect,
+            data[ATTR_COLORS],
+            speed=data.get(ATTR_SPEED),
+            direction=data.get(ATTR_DIRECTION),
+            shape=data.get(ATTR_SHAPE),
+            center=data.get(ATTR_CENTER),
+            params=data.get(ATTR_PARAMS),
+        )
+    except GoveeProtocolError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_string_effect",
+            translation_placeholders={"device": device.name, "reason": str(err)},
+        ) from err
+
+
+def _string_effect_target(
+    hass: HomeAssistant, call: ServiceCall
+) -> tuple[GoveeCoordinator, GoveeDevice, DeviceProfile] | None:
+    """The one whole-light-effect device a DIY call targets, or None.
+
+    None hands the call to the zone path, which also words every error for a
+    target that names no such device.
+
+    Raises:
+        HomeAssistantError: The target mixes such a device with another
+            DIY-capable one.
+    """
+    capable = 0
+    found_string: tuple[GoveeCoordinator, GoveeDevice, DeviceProfile] | None = None
+    for raw_id in _targeted_govee_device_ids(hass, call):
+        found = _get_coordinator_for_device(hass, raw_id)
+        if found is None:
+            continue
+        coordinator, device_id = found
+        device = coordinator.devices[device_id]
+        if diy_spec_for(device.sku) is not None:
+            capable += 1
+            continue
+        profile = profile_for(device.sku)
+        if profile is not None and profile.scene_upload:
+            capable += 1
+            found_string = (coordinator, device, profile)
+    if found_string is None:
+        return None
+    if capable > 1:
+        raise HomeAssistantError(
+            f"This action uploads one authored effect and takes exactly one device, but the target resolved to {capable}"
+        )
+    return found_string
 
 
 async def async_request_status_handler(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -448,6 +775,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
     async def _request_status(call: ServiceCall) -> None:
         await async_request_status_handler(hass, call)
+
+    async def _paint_bulbs(call: ServiceCall) -> None:
+        await async_paint_bulbs_handler(hass, call)
+
+    hass.services.async_register(DOMAIN, SERVICE_PAINT_BULBS, _paint_bulbs, schema=SERVICE_PAINT_BULBS_SCHEMA)
 
     hass.services.async_register(
         DOMAIN,

@@ -167,6 +167,7 @@ from .request_budget import (
 
 # Fork: §6.2 per-segment readback riding the MQTT status push.
 from .api.segment_readback import decode_payload as decode_segment_payload
+from .light_schedule import apply_schedule_report
 from .segment_limit import pushes_segment_readback, verified_segment_count
 
 from .models import (
@@ -4230,6 +4231,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # replaces HA's optimistic DreamView flag (issue #213).
         if device is not None and device.sku.upper() in DREAMVIEW_STATE_FROM_FRAMES_SKUS and device.supports_dreamview:
             state.update_dreamview_from_frames(self._op_frames_from(state_data))
+        # Fork: lights that report their sleep / wake-up / timer settings.
+        if device is not None:
+            apply_schedule_report(self, device, self._op_frames_from(state_data))
         if device is not None and device.supports_pump_state:
             frames = self._op_frames_from(state_data)
             state.update_pump_state_from_frames(frames)

@@ -35,6 +35,7 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.govee import diy_state, services
+from custom_components.govee.api.protocol import h70cx, h70cx_basic
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import (
     DiyZoneEffect,
@@ -1143,6 +1144,14 @@ class TestService:
             assert sorted(options) == sorted(zone.modes)
 
         assert sorted(fields) == [
+            "center",
+            "colors",
+            "combine",
+            "direction",
+            "effect",
+            "layer_mode",
+            "layers",
+            "params",
             "ring_colors",
             "ring_mode",
             "ring_speed",
@@ -1151,7 +1160,20 @@ class TestService:
             "ripple_flow_rate",
             "ripple_mode",
             "ripple_speed",
+            "shape",
+            "speed",
         ]
+        # The whole-light dropdowns follow the composer's tables the same way.
+        assert sorted(fields["effect"]["selector"]["select"]["options"]) == sorted(
+            {*h70cx.TEMPLATES, *h70cx_basic.NAMES}
+        )
+        assert fields["combine"]["selector"]["select"]["options"] == list(h70cx_basic.COMBINABLE)
+        assert sorted(fields["direction"]["selector"]["select"]["options"]) == sorted(h70cx.DIRECTION_IDS)
+        assert fields["shape"]["selector"]["select"]["options"] == list(h70cx.SHAPES)
+        assert fields["center"]["selector"]["select"]["options"] == list(h70cx.CENTERS)
+        assert fields["layers"]["selector"] == {"object": None}
+        assert fields["params"]["selector"] == {"object": None}
+        assert fields["layer_mode"]["selector"]["select"]["options"] == list(h70cx.LAYER_MODES)
 
     @pytest.mark.asyncio
     async def test_the_service_is_registered_without_an_entry(self, hass):
