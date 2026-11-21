@@ -256,3 +256,119 @@ class TestTargeting:
         coordinator = _coordinator({DEVICE_ID: "H0000"})
         with pytest.raises(HomeAssistantError, match="does not support DIY effects"):
             await _run(coordinator, _call(effect="flame", colors=COLORS))
+
+
+LAYERS = [
+    {"effect": "flow_2", "colors": COLORS, "speed": 90, "direction": "upper left"},
+    {"effect": "starlight", "colors": COLORS, "speed": 3},
+]
+
+
+class TestLayeredEffect:
+    def test_layer_fields_are_lowered(self) -> None:
+        data = SERVICE_APPLY_DIY_EFFECT_SCHEMA(
+            {"layers": [{"effect": "Flexing", "colors": COLORS, "shape": "Round", "center": "Top_Center"}]}
+        )
+        assert data["layers"] == [
+            {"effect": "flexing", "colors": [(255, 0, 0), (0, 255, 0)], "shape": "round", "center": "top_center"}
+        ]
+
+    @pytest.mark.parametrize(
+        "layer",
+        [
+            {"effect": "flow"},
+            {"colors": COLORS},
+            {"effect": "sparkle", "colors": COLORS},
+            {"effect": "flow", "colors": COLORS, "combine": ["breathe"]},
+            {"effect": "flow", "colors": COLORS, "speed": 101},
+            {"effect": "flow", "colors": [[1, 1]]},
+        ],
+    )
+    def test_a_malformed_layer_is_rejected(self, layer: dict[str, Any]) -> None:
+        with pytest.raises(vol.Invalid):
+            SERVICE_APPLY_DIY_EFFECT_SCHEMA({"layers": [LAYERS[0], layer]})
+
+    async def test_routes_the_layered_frames(self) -> None:
+        coordinator = _coordinator(scene="Rainbow B")
+        route = await _run(coordinator, _call(layers=LAYERS))
+
+        expected = h70cx.layered_frames(
+            [
+                h70cx.Layer("flow_2", [(255, 0, 0), (0, 255, 0)], speed=90, direction="upper left"),
+                h70cx.Layer("starlight", [(255, 0, 0), (0, 255, 0)], speed=3),
+            ]
+        )
+        args = route.await_args.args
+        assert args[:4] == (coordinator, DEVICE_ID, "H80C5", get_profile("H80C5"))
+        assert list(args[4]) == expected
+        assert coordinator.state.active_scene_name is None
+
+    @pytest.mark.parametrize(
+        ("extra", "fields"),
+        [
+            ({"effect": "flow"}, "effect"),
+            ({"colors": COLORS}, "colors"),
+            ({"speed": 5, "direction": "up"}, "speed, direction"),
+            ({"shape": "round", "center": "center"}, "shape, center"),
+            ({"combine": ["breathe"]}, "combine"),
+        ],
+    )
+    async def test_layers_beside_the_effect_fields_are_refused(self, extra: dict[str, Any], fields: str) -> None:
+        coordinator = _coordinator(scene="Rainbow B")
+        with pytest.raises(ServiceValidationError) as err:
+            await _run(coordinator, _call(layers=LAYERS, **extra))
+        assert err.value.translation_key == "layers_with_effect_fields"
+        assert err.value.translation_placeholders == {"device": "Light H80C5", "fields": fields}
+        assert coordinator.state.active_scene_name == "Rainbow B"
+
+    @pytest.mark.parametrize("count", [1, 4])
+    async def test_one_or_four_layers_are_refused(self, count: int) -> None:
+        coordinator = _coordinator()
+        with pytest.raises(ServiceValidationError) as err:
+            await _run(coordinator, _call(layers=[LAYERS[0]] * count))
+        assert err.value.translation_key == "invalid_layer_count"
+        assert err.value.translation_placeholders == {
+            "device": "Light H80C5",
+            "count": str(count),
+            "min": "2",
+            "max": "3",
+        }
+
+    @pytest.mark.parametrize(
+        ("layer", "index", "reason"),
+        [
+            ({"effect": "smudge", "colors": COLORS, "direction": "clockwise"}, "2", "smudge takes only up, down, not 'clockwise'"),
+            ({"effect": "bounce_1", "colors": COLORS}, "2", "bounce_1 takes 4 to 8 colours"),
+            ({"effect": "rainbow", "colors": COLORS, "center": "center"}, "2", "rainbow has no center"),
+        ],
+    )
+    async def test_a_layer_error_carries_the_layer_index(self, layer: dict[str, Any], index: str, reason: str) -> None:
+        coordinator = _coordinator()
+        with pytest.raises(ServiceValidationError) as err:
+            await _run(coordinator, _call(layers=[LAYERS[0], layer]))
+        assert err.value.translation_key == "invalid_string_effect_layer"
+        assert err.value.translation_placeholders == {"device": "Light H80C5", "layer": index, "reason": reason}
+
+    @pytest.mark.parametrize("effect", [*h70cx_basic.NAMES])
+    async def test_an_older_format_effect_is_not_a_layer(self, effect: str) -> None:
+        coordinator = _coordinator()
+        with pytest.raises(ServiceValidationError) as err:
+            await _run(coordinator, _call(layers=[{"effect": effect, "colors": COLORS}, *LAYERS]))
+        assert err.value.translation_key == "invalid_string_effect_layer"
+        assert err.value.translation_placeholders["layer"] == "1"
+        assert err.value.translation_placeholders["reason"].startswith(f"{effect} cannot be a layer")
+
+    async def test_an_upload_over_the_frame_limit_is_a_translated_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(h70cx, "MAX_FRAMES", 2)
+        coordinator = _coordinator()
+        with pytest.raises(ServiceValidationError) as err:
+            await _run(coordinator, _call(layers=LAYERS))
+        assert err.value.translation_key == "invalid_string_effect"
+        assert err.value.translation_placeholders["reason"].endswith("the limit is 2")
+
+    async def test_a_refused_upload_raises(self) -> None:
+        coordinator = _coordinator(scene="Rainbow B")
+        with pytest.raises(HomeAssistantError) as err:
+            await _run(coordinator, _call(layers=LAYERS), routed=False)
+        assert err.value.translation_key == "command_failed"
+        assert coordinator.state.active_scene_name == "Rainbow B"

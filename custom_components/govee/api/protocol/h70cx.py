@@ -4,6 +4,9 @@ One effect is ``effect | params | nColours | RGB...``. It uploads like a scene
 blob (``len16`` in front, ``0xA3`` marker ``0x58``) and is committed as a DIY:
 ``33 05 0a ca 02``.
 
+A layered effect stacks two or three such records under effect id 12, each
+framed by its own ``len16``, and uploads and commits the same way.
+
 The generic names carry a parameter block from a stock scene. The numbered and
 other app-named effects carry the block of the matching composer tile and only
 take the directions, colour counts and options that tile offers. Every byte a
@@ -17,11 +20,21 @@ from dataclasses import dataclass
 
 from .errors import FrameError
 from .packets import DIY_COMMIT_SUB_MODE, commit_frame
-from .scenes import DIRECTION_NAMES, H70CX_MARKER, _field_positions, terminated_chunks
+from .paint import MESSAGE_FRAMES
+from .scenes import DIRECTION_NAMES, H70CX_MARKER, MULTI_LAYER_EFFECT, _field_positions, terminated_chunks
 
 EFFECT_CODE = 714
 MAX_COLORS = 8
 MAX_SPEED = 100
+
+MIN_LAYERS = 2
+MAX_LAYERS = 3
+MAX_FRAMES = MESSAGE_FRAMES
+"""Frames one upload may take, commit included, so it fits one ``ptReal`` message."""
+
+# Header of a layered record after the layer count. The two bytes are fixed.
+_LAYERED_MODE = 2
+_LAYERED_FLAG = 0
 
 SHAPES: Mapping[str, int] = {"round": 0, "square": 1, "rhomb": 2}
 CENTERS: Mapping[str, int] = {
@@ -185,6 +198,17 @@ def effect_record(
     return bytes(record) + bytes([len(colors)]) + bytes(palette)
 
 
+def _upload(record: bytes) -> list[bytes]:
+    payload = bytes([len(record) & 0xFF, len(record) >> 8]) + record
+    frames = [
+        *terminated_chunks(payload, H70CX_MARKER),
+        commit_frame(sub_mode=DIY_COMMIT_SUB_MODE, index=EFFECT_CODE),
+    ]
+    if len(frames) > MAX_FRAMES:
+        raise FrameError(f"the effect needs {len(frames)} frames, the limit is {MAX_FRAMES}")
+    return frames
+
+
 def effect_frames(
     effect: str,
     colors: Sequence[Sequence[int]],
@@ -195,9 +219,73 @@ def effect_frames(
     center: str | None = None,
 ) -> list[bytes]:
     """The frames that upload and show one composed effect. See :func:`effect_record`."""
-    record = effect_record(effect, colors, speed=speed, direction=direction, shape=shape, center=center)
-    payload = bytes([len(record) & 0xFF, len(record) >> 8]) + record
-    return [
-        *terminated_chunks(payload, H70CX_MARKER),
-        commit_frame(sub_mode=DIY_COMMIT_SUB_MODE, index=EFFECT_CODE),
-    ]
+    return _upload(effect_record(effect, colors, speed=speed, direction=direction, shape=shape, center=center))
+
+
+@dataclass(frozen=True)
+class Layer:
+    """One layer of a layered effect. The fields are those of :func:`effect_record`."""
+
+    effect: str
+    colors: Sequence[Sequence[int]]
+    speed: int | None = None
+    direction: str | None = None
+    shape: str | None = None
+    center: str | None = None
+
+
+class LayerError(FrameError):
+    """One layer of a layered effect could not be encoded."""
+
+    def __init__(self, layer: int, reason: str) -> None:
+        super().__init__(f"layer {layer}: {reason}")
+        self.layer = layer
+        """1-based position of the layer in the call."""
+        self.reason = reason
+
+
+def layered_record(layers: Sequence[Layer]) -> bytes:
+    """Encode a layered effect record.
+
+    The record is ``0c | nLayers | mode | flag`` followed by ``len16 | record``
+    per layer, in the order given. Every layer is checked as
+    :func:`effect_record` checks a single effect.
+
+    Args:
+        layers: :data:`MIN_LAYERS` to :data:`MAX_LAYERS` layers, each naming
+            a key of :data:`TEMPLATES`.
+
+    Raises:
+        FrameError: Too few or too many layers.
+        LayerError: A layer names an effect that cannot be a layer or fails
+            the checks of :func:`effect_record`.
+    """
+    if not MIN_LAYERS <= len(layers) <= MAX_LAYERS:
+        raise FrameError(f"a layered effect takes {MIN_LAYERS} to {MAX_LAYERS} layers, not {len(layers)}")
+    out = bytearray([MULTI_LAYER_EFFECT, len(layers), _LAYERED_MODE, _LAYERED_FLAG])
+    for index, layer in enumerate(layers, start=1):
+        if layer.effect not in TEMPLATES:
+            raise LayerError(index, f"{layer.effect} cannot be a layer (have: {', '.join(TEMPLATES)})")
+        try:
+            record = effect_record(
+                layer.effect,
+                layer.colors,
+                speed=layer.speed,
+                direction=layer.direction,
+                shape=layer.shape,
+                center=layer.center,
+            )
+        except FrameError as err:
+            raise LayerError(index, str(err)) from err
+        out += bytes([len(record) & 0xFF, len(record) >> 8]) + record
+    return bytes(out)
+
+
+def layered_frames(layers: Sequence[Layer]) -> list[bytes]:
+    """The frames that upload and show one layered effect. See :func:`layered_record`.
+
+    Raises:
+        FrameError: As :func:`layered_record`, or the upload needs more than
+            :data:`MAX_FRAMES` frames.
+    """
+    return _upload(layered_record(layers))

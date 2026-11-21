@@ -678,7 +678,7 @@
     },
     "apply_diy_effect": {
       "name": "Apply DIY effect",
-      "description": "Composes and uploads a DIY effect to one lamp. Target exactly one device. On a multi-zone lamp, fill the zone fields: a zone with every field empty (or mode \"none\") is switched off, and an omitted field uses its fixed default, not the currently staged value. On a string light, fill the whole-light fields. Zone lamps require the per-zone lights option.",
+      "description": "Composes and uploads a DIY effect to one lamp. Target exactly one device. On a multi-zone lamp, fill the zone fields: a zone with every field empty (or mode \"none\") is switched off, and an omitted field uses its fixed default, not the currently staged value. On a string light, fill the whole-light fields or give 2 or 3 layers. Zone lamps require the per-zone lights option.",
       "fields": {
         "ripple_mode": {
           "name": "Ripple mode",
@@ -739,6 +739,10 @@
         "center": {
           "name": "Centre point",
           "description": "For the flexing effect only: the point the shape grows from. Leave empty for center."
+        },
+        "layers": {
+          "name": "Layers",
+          "description": "Stacks 2 or 3 effects into one, for string lights. Each layer is an object with effect, colors and optional speed, direction, shape and center, checked as the fields above check one effect. Layers are sent in the order given. The older-format effects (flow_1, rainbow_1, fade, marquee, breathe) and combo cannot be layers. Leave the fields above empty when giving layers."
         }
       },
       "sections": {
@@ -860,6 +864,15 @@
     },
     "invalid_string_effect": {
       "message": "Cannot apply the effect to {device}: {reason}"
+    },
+    "invalid_string_effect_layer": {
+      "message": "Cannot apply layer {layer} of the effect to {device}: {reason}"
+    },
+    "invalid_layer_count": {
+      "message": "A layered effect on {device} takes {min} to {max} layers, not {count}. For one effect, use the effect and colors fields instead of layers."
+    },
+    "layers_with_effect_fields": {
+      "message": "Cannot apply the effect to {device}. Leave {fields} empty when giving layers."
     }
   },
   "issues": {

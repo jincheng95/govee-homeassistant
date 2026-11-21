@@ -283,6 +283,13 @@ apply_diy_effect:
                 - upper_right
                 - right_center
                 - bottom_right
+        layers:
+          required: false
+          example: >-
+            [{"effect": "flow_2", "colors": [[255, 0, 0], [0, 255, 0]], "speed": 90},
+            {"effect": "starlight", "colors": [[255, 255, 0], [255, 229, 255]], "speed": 3}]
+          selector:
+            object:
 
 send_raw_ptreal:
   fields:

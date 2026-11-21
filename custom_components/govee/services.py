@@ -7,7 +7,7 @@ Provides:
 - ``govee.request_status``: ask a device for its status over AWS IoT, once or
   repeatedly for a while (a status burst).
 - ``govee.apply_diy_effect``: compose and upload a DIY effect: per zone on a
-  multi-zone lamp, or one whole-light effect on a string light (fork).
+  multi-zone lamp, or one whole-light or layered effect on a string light (fork).
 - ``govee.paint_bulbs``: colour individual LEDs of a string light (fork).
 
 Actions are registered once from ``async_setup`` so automations that reference
@@ -92,6 +92,10 @@ ATTR_DIRECTION = "direction"
 ATTR_COMBINE = "combine"
 ATTR_SHAPE = "shape"
 ATTR_CENTER = "center"
+ATTR_LAYERS = "layers"
+
+# Top-level whole-light fields a layered call leaves out.
+_SINGLE_EFFECT_FIELDS = (ATTR_EFFECT, ATTR_COLORS, ATTR_SPEED, ATTR_DIRECTION, ATTR_SHAPE, ATTR_CENTER, ATTR_COMBINE)
 
 _RGB_SCHEMA = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple))
 
@@ -200,6 +204,26 @@ def _require_mode_with_zone_fields(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+_STRING_EFFECT = vol.All(cv.string, vol.Lower, vol.In(sorted({*h70cx.TEMPLATES, *h70cx_basic.NAMES})))
+_STRING_COLORS = vol.All(cv.ensure_list, vol.Length(min=1, max=h70cx.MAX_COLORS), [_RGB_SCHEMA])
+_STRING_SPEED = vol.All(vol.Coerce(int), vol.Range(min=0, max=h70cx.MAX_SPEED))
+_STRING_DIRECTION = vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.DIRECTION_IDS)))
+_SHAPE = vol.All(cv.string, vol.Lower, vol.In(list(h70cx.SHAPES)))
+_CENTER = vol.All(cv.string, vol.Lower, vol.In(list(h70cx.CENTERS)))
+
+# A layer accepts every whole-light name so that an older-format one is
+# refused by the handler with a translated reason.
+_LAYER_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_EFFECT): _STRING_EFFECT,
+        vol.Required(ATTR_COLORS): _STRING_COLORS,
+        vol.Optional(ATTR_SPEED): _STRING_SPEED,
+        vol.Optional(ATTR_DIRECTION): _STRING_DIRECTION,
+        vol.Optional(ATTR_SHAPE): _SHAPE,
+        vol.Optional(ATTR_CENTER): _CENTER,
+    }
+)
+
 SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
     vol.All(
         {
@@ -215,19 +239,18 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
             vol.Optional("ring_speed"): _DIY_PERCENT,
             vol.Optional("ring_colors"): _DIY_COLORS,
             # Whole-light effect, for lamps with no zones (H70CX family).
-            vol.Optional(ATTR_EFFECT): vol.All(
-                cv.string, vol.Lower, vol.In(sorted({*h70cx.TEMPLATES, *h70cx_basic.NAMES}))
-            ),
-            vol.Optional(ATTR_COLORS): vol.All(cv.ensure_list, vol.Length(min=1, max=h70cx.MAX_COLORS), [_RGB_SCHEMA]),
-            vol.Optional(ATTR_SPEED): vol.All(vol.Coerce(int), vol.Range(min=0, max=h70cx.MAX_SPEED)),
-            vol.Optional(ATTR_DIRECTION): vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.DIRECTION_IDS))),
+            vol.Optional(ATTR_EFFECT): _STRING_EFFECT,
+            vol.Optional(ATTR_COLORS): _STRING_COLORS,
+            vol.Optional(ATTR_SPEED): _STRING_SPEED,
+            vol.Optional(ATTR_DIRECTION): _STRING_DIRECTION,
             vol.Optional(ATTR_COMBINE): vol.All(
                 cv.ensure_list,
                 vol.Length(min=1, max=h70cx_basic.MAX_COMBINED),
                 [vol.All(cv.string, vol.Lower, vol.In(h70cx_basic.COMBINABLE))],
             ),
-            vol.Optional(ATTR_SHAPE): vol.All(cv.string, vol.Lower, vol.In(list(h70cx.SHAPES))),
-            vol.Optional(ATTR_CENTER): vol.All(cv.string, vol.Lower, vol.In(list(h70cx.CENTERS))),
+            vol.Optional(ATTR_SHAPE): _SHAPE,
+            vol.Optional(ATTR_CENTER): _CENTER,
+            vol.Optional(ATTR_LAYERS): vol.All(cv.ensure_list, vol.Length(min=1), [_LAYER_SCHEMA]),
         },
         _require_mode_with_zone_fields,
     )
@@ -540,39 +563,11 @@ def _clear_optimistic_scene(coordinator: GoveeCoordinator, device_id: str) -> No
 async def _async_apply_string_effect(
     coordinator: GoveeCoordinator, device: GoveeDevice, profile: DeviceProfile, data: Mapping[str, Any]
 ) -> None:
-    """Upload one composed, basic or combo whole-light effect (H70CX family)."""
-    try:
-        if ATTR_EFFECT not in data or ATTR_COLORS not in data:
-            raise GoveeProtocolError("this light takes the whole-light fields: effect and colors are required")
-        effect = data[ATTR_EFFECT]
-        if effect in h70cx_basic.NAMES:
-            for option in (ATTR_SHAPE, ATTR_CENTER):
-                if option in data:
-                    raise GoveeProtocolError(f"{effect} has no {option}")
-            frames = h70cx_basic.effect_frames(
-                effect,
-                data[ATTR_COLORS],
-                speed=data.get(ATTR_SPEED),
-                direction=data.get(ATTR_DIRECTION),
-                combine=data.get(ATTR_COMBINE),
-            )
-        else:
-            if ATTR_COMBINE in data:
-                raise GoveeProtocolError(f"only {h70cx_basic.COMBO} takes effects to combine")
-            frames = h70cx.effect_frames(
-                effect,
-                data[ATTR_COLORS],
-                speed=data.get(ATTR_SPEED),
-                direction=data.get(ATTR_DIRECTION),
-                shape=data.get(ATTR_SHAPE),
-                center=data.get(ATTR_CENTER),
-            )
-    except GoveeProtocolError as err:
-        raise ServiceValidationError(
-            translation_domain=DOMAIN,
-            translation_key="invalid_string_effect",
-            translation_placeholders={"device": device.name, "reason": str(err)},
-        ) from err
+    """Upload one composed, basic, combo or layered whole-light effect (H70CX family)."""
+    if ATTR_LAYERS in data:
+        frames = _layered_frames(device, data)
+    else:
+        frames = _single_effect_frames(device, data)
 
     if not await raw_router.async_route_frames(
         coordinator, device.device_id, device.sku, profile, frames, what="string effect"
@@ -583,6 +578,89 @@ async def _async_apply_string_effect(
             translation_placeholders={"device": device.name},
         )
     _clear_optimistic_scene(coordinator, device.device_id)
+
+
+def _layered_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[bytes]:
+    """Frames for the ``layers`` field, refusing it beside the single-effect fields."""
+    mixed = [field for field in _SINGLE_EFFECT_FIELDS if field in data]
+    if mixed:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="layers_with_effect_fields",
+            translation_placeholders={"device": device.name, "fields": ", ".join(mixed)},
+        )
+    items = data[ATTR_LAYERS]
+    if not h70cx.MIN_LAYERS <= len(items) <= h70cx.MAX_LAYERS:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_layer_count",
+            translation_placeholders={
+                "device": device.name,
+                "count": str(len(items)),
+                "min": str(h70cx.MIN_LAYERS),
+                "max": str(h70cx.MAX_LAYERS),
+            },
+        )
+    layers = [
+        h70cx.Layer(
+            effect=item[ATTR_EFFECT],
+            colors=item[ATTR_COLORS],
+            speed=item.get(ATTR_SPEED),
+            direction=item.get(ATTR_DIRECTION),
+            shape=item.get(ATTR_SHAPE),
+            center=item.get(ATTR_CENTER),
+        )
+        for item in items
+    ]
+    try:
+        return h70cx.layered_frames(layers)
+    except h70cx.LayerError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_string_effect_layer",
+            translation_placeholders={"device": device.name, "layer": str(err.layer), "reason": err.reason},
+        ) from err
+    except GoveeProtocolError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_string_effect",
+            translation_placeholders={"device": device.name, "reason": str(err)},
+        ) from err
+
+
+def _single_effect_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[bytes]:
+    """Frames for the top-level whole-light fields."""
+    try:
+        if ATTR_EFFECT not in data or ATTR_COLORS not in data:
+            raise GoveeProtocolError("this light takes the whole-light fields: effect and colors, or layers")
+        effect = data[ATTR_EFFECT]
+        if effect in h70cx_basic.NAMES:
+            for option in (ATTR_SHAPE, ATTR_CENTER):
+                if option in data:
+                    raise GoveeProtocolError(f"{effect} has no {option}")
+            return h70cx_basic.effect_frames(
+                effect,
+                data[ATTR_COLORS],
+                speed=data.get(ATTR_SPEED),
+                direction=data.get(ATTR_DIRECTION),
+                combine=data.get(ATTR_COMBINE),
+            )
+        if ATTR_COMBINE in data:
+            raise GoveeProtocolError(f"only {h70cx_basic.COMBO} takes effects to combine")
+        return h70cx.effect_frames(
+            effect,
+            data[ATTR_COLORS],
+            speed=data.get(ATTR_SPEED),
+            direction=data.get(ATTR_DIRECTION),
+            shape=data.get(ATTR_SHAPE),
+            center=data.get(ATTR_CENTER),
+        )
+    except GoveeProtocolError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_string_effect",
+            translation_placeholders={"device": device.name, "reason": str(err)},
+        ) from err
 
 
 def _string_effect_target(
