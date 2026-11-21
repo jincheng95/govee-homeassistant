@@ -28,10 +28,13 @@ from custom_components.govee.bulb_actions import (
     async_upload_bulb_positions_handler,
 )
 from custom_components.govee.services import async_setup_services
+from custom_components.govee.zone_state import profile_for
 
 LOOKUP = "custom_components.govee.services._get_coordinator_for_device"
 SLEEP = "custom_components.govee.api.raw_router.asyncio.sleep"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
+OTHER_ID = "AA:BB:CC:DD:EE:FF:00:22"
+FRAME = bytes([0x33, 0x01, 0x01, *([0x00] * 16), 0x33])
 REAL_MQTT_SEND = mqtt_raw_write.async_send_frames
 
 
@@ -174,16 +177,43 @@ class TestSendPath:
         assert all(message[0][0] == 0xA4 for message in messages[:113])
         assert messages[113] == paint.paint_frames([], bulb_count=300)
 
+    async def test_frames_wait_for_a_running_upload_to_the_same_device_only(self, coordinator, sleep) -> None:
+        profile = profile_for("H80C5")
+        coordinator._lan_devices[OTHER_ID] = SimpleNamespace(ip="other")
+        held = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _send(_coordinator, device_id, _ip, _frames, **_kwargs) -> bool:
+            if device_id == DEVICE_ID and coordinator.lan_send.await_count == 5:
+                held.set()
+                await release.wait()
+            return True
+
+        coordinator.lan_send.side_effect = _send
+        upload = asyncio.ensure_future(async_upload_bulb_positions_handler(MagicMock(), _call(_grid())))
+        await held.wait()
+        same = asyncio.ensure_future(raw_router.async_route_frames(coordinator, DEVICE_ID, "H80C5", profile, [FRAME]))
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert await raw_router.async_route_frames(coordinator, OTHER_ID, "H80C5", profile, [FRAME]) is True
+        assert not same.done()
+        release.set()
+        await asyncio.gather(upload, same)
+
+        sends = [(call.args[1], call.args[3]) for call in coordinator.lan_send.await_args_list]
+        own = [message for device_id, message in sends if device_id == DEVICE_ID]
+        assert sends[5] == (OTHER_ID, [FRAME])
+        assert len(own) == 114
+        assert all(message[0][0] == 0xA4 for message in own[:113])
+        assert own[113] == [FRAME]
+
     async def test_an_empty_upload_sends_nothing(self, coordinator) -> None:
         sent = await raw_router.async_route_upload(
             coordinator, DEVICE_ID, "H80C5", MagicMock(), [], gap_seconds=0.0, what="nothing"
         )
         assert sent == 0
         coordinator.lan_send.assert_not_awaited()
-
-    async def test_the_settings_sweep_skips_a_device_mid_upload(self, coordinator, sleep) -> None:
-        async with raw_router.upload_lock(coordinator, DEVICE_ID):
-            assert await raw_status.async_query_settings(coordinator, DEVICE_ID) == 0
 
     async def test_a_cancelled_upload_logs_how_far_it_got(self, coordinator, sleep, caplog) -> None:
         sent = asyncio.Event()
@@ -201,6 +231,24 @@ class TestSendPath:
             await task
 
         assert "bulb position map to AA:BB:CC:DD:EE:FF:00:11 was cancelled after 5 of 113 messages" in caplog.text
+
+
+class TestSettingsSweep:
+    """The settings sweep against a single H80C5 with raw writes on."""
+
+    @pytest.fixture(autouse=True)
+    def _single_device(self, coordinator) -> None:
+        coordinator.devices[DEVICE_ID].is_group = False
+
+    async def test_the_sweep_sends_one_query_per_setting(self, coordinator) -> None:
+        assert await raw_status.async_query_settings(coordinator, DEVICE_ID) == 2
+        assert coordinator.mqtt_send.await_count == 2
+
+    async def test_the_sweep_skips_a_device_mid_upload(self, coordinator) -> None:
+        async with raw_router.upload_lock(coordinator, DEVICE_ID):
+            assert await raw_status.async_query_settings(coordinator, DEVICE_ID) == 0
+
+        coordinator.mqtt_send.assert_not_awaited()
 
 
 class TestValidation:
