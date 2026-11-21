@@ -4,13 +4,14 @@ One effect is ``effect | params | nColours | RGB...``. It uploads like a scene
 blob (``len16`` in front, ``0xA3`` marker ``0x58``) and is committed as a DIY:
 ``33 05 0a ca 02``.
 
-A layered effect stacks two or three such records under effect id 12, each
+A layered effect stacks one to three such records under effect id 12, each
 framed by its own ``len16``, and uploads and commits the same way.
 
 The generic names carry a parameter block from a stock scene. The numbered and
 other app-named effects carry the block of the matching composer tile and only
-take the directions, colour counts and options that tile offers. Every byte a
-caller does not set keeps its template value.
+take the directions, colour counts and options that tile offers. A caller may
+replace the whole block with one of the same length. Every byte a caller does
+not set keeps its block value.
 """
 
 from __future__ import annotations
@@ -27,14 +28,22 @@ EFFECT_CODE = 714
 MAX_COLORS = 8
 MAX_SPEED = 100
 
-MIN_LAYERS = 2
+MIN_LAYERS = 1
 MAX_LAYERS = 3
 MAX_FRAMES = MESSAGE_FRAMES
 """Frames one upload may take, commit included, so it fits one ``ptReal`` message."""
 
-# Header of a layered record after the layer count. The two bytes are fixed.
-_LAYERED_MODE = 2
-_LAYERED_FLAG = 0
+LAYER_MODES: Mapping[str, tuple[int, int]] = {
+    "default": (2, 0),
+    "variant_3": (3, 0),
+    "variant_1_2": (1, 2),
+}
+"""The two header bytes of a layered record that follow the layer count."""
+
+DEFAULT_LAYER_MODE = "default"
+
+# Effects whose first block byte is a sub-type that decides the block layout.
+_SUB_TYPED = frozenset({14, 15, 16})
 
 SHAPES: Mapping[str, int] = {"round": 0, "square": 1, "rhomb": 2}
 CENTERS: Mapping[str, int] = {
@@ -142,6 +151,19 @@ def _option(effect: str, template: EffectTemplate, kind: str, value: str, table:
     return table[value]
 
 
+def _block(effect: str, template: EffectTemplate, params: Sequence[int] | None) -> bytes:
+    """The parameter block: the template's, or ``params`` checked against it."""
+    if params is None:
+        return template.params
+    if any(not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 0xFF for value in params):
+        raise FrameError("params must be values from 0 to 255")
+    if len(params) != len(template.params):
+        raise FrameError(f"{effect} takes {len(template.params)} params, not {len(params)}")
+    if template.effect in _SUB_TYPED and params[0] != template.params[0]:
+        raise FrameError(f"the params of {effect} must start with {template.params[0]}, not {params[0]}")
+    return bytes(params)
+
+
 def effect_record(
     effect: str,
     colors: Sequence[Sequence[int]],
@@ -150,24 +172,31 @@ def effect_record(
     direction: str | None = None,
     shape: str | None = None,
     center: str | None = None,
+    params: Sequence[int] | None = None,
 ) -> bytes:
     """Encode one effect record.
 
     Args:
         effect: A key of :data:`TEMPLATES`.
         colors: The palette, each colour three values from 0 to 255.
-        speed: 0-100, or None for the template's speed.
+        speed: 0-100, or None for the block's speed.
         direction: A lower-case direction name the effect takes, or None for
-            the template's direction.
+            the block's direction.
         shape: A key of :data:`SHAPES`, for a shaped effect only.
         center: A key of :data:`CENTERS`, for a shaped effect only.
+        params: A parameter block that replaces the template's, or None for
+            the template's. It must have the template's length, and a
+            sub-typed effect's block must keep the template's first byte.
+            ``speed``, ``direction``, ``shape`` and ``center`` are written over
+            it at their usual positions. Every other byte is sent unchecked.
 
     Raises:
         FrameError: Unknown effect or direction, a bad colour or speed, too
-            few or too many colours, a direction the effect does not take, or
-            a shape or centre for an effect without one.
+            few or too many colours, a direction the effect does not take, a
+            shape or centre for an effect without one, or a bad ``params``.
     """
     template = _template(effect)
+    block = _block(effect, template, params)
     if not template.min_colors <= len(colors) <= MAX_COLORS:
         raise FrameError(f"{effect} takes {template.min_colors} to {MAX_COLORS} colours")
     palette = bytearray()
@@ -176,7 +205,7 @@ def effect_record(
             raise FrameError("a colour must be three values from 0 to 255")
         palette += bytes(color)
 
-    record = bytearray([template.effect]) + template.params
+    record = bytearray([template.effect]) + block
     speed_at, direction_at = _field_positions(record, 0, len(record))
     if speed is not None:
         if not isinstance(speed, int) or not 0 <= speed <= MAX_SPEED:
@@ -217,9 +246,12 @@ def effect_frames(
     direction: str | None = None,
     shape: str | None = None,
     center: str | None = None,
+    params: Sequence[int] | None = None,
 ) -> list[bytes]:
     """The frames that upload and show one composed effect. See :func:`effect_record`."""
-    return _upload(effect_record(effect, colors, speed=speed, direction=direction, shape=shape, center=center))
+    return _upload(
+        effect_record(effect, colors, speed=speed, direction=direction, shape=shape, center=center, params=params)
+    )
 
 
 @dataclass(frozen=True)
@@ -232,6 +264,7 @@ class Layer:
     direction: str | None = None
     shape: str | None = None
     center: str | None = None
+    params: Sequence[int] | None = None
 
 
 class LayerError(FrameError):
@@ -244,25 +277,28 @@ class LayerError(FrameError):
         self.reason = reason
 
 
-def layered_record(layers: Sequence[Layer]) -> bytes:
+def layered_record(layers: Sequence[Layer], mode: str = DEFAULT_LAYER_MODE) -> bytes:
     """Encode a layered effect record.
 
-    The record is ``0c | nLayers | mode | flag`` followed by ``len16 | record``
-    per layer, in the order given. Every layer is checked as
-    :func:`effect_record` checks a single effect.
+    The record is ``0c | nLayers`` and the two bytes of ``mode``, followed by
+    ``len16 | record`` per layer, in the order given. Every layer is checked
+    as :func:`effect_record` checks a single effect.
 
     Args:
         layers: :data:`MIN_LAYERS` to :data:`MAX_LAYERS` layers, each naming
             a key of :data:`TEMPLATES`.
+        mode: A key of :data:`LAYER_MODES`.
 
     Raises:
-        FrameError: Too few or too many layers.
+        FrameError: Too few or too many layers, or an unknown mode.
         LayerError: A layer names an effect that cannot be a layer or fails
             the checks of :func:`effect_record`.
     """
     if not MIN_LAYERS <= len(layers) <= MAX_LAYERS:
         raise FrameError(f"a layered effect takes {MIN_LAYERS} to {MAX_LAYERS} layers, not {len(layers)}")
-    out = bytearray([MULTI_LAYER_EFFECT, len(layers), _LAYERED_MODE, _LAYERED_FLAG])
+    if mode not in LAYER_MODES:
+        raise FrameError(f"unknown layer mode {mode!r} (have: {', '.join(LAYER_MODES)})")
+    out = bytearray([MULTI_LAYER_EFFECT, len(layers), *LAYER_MODES[mode]])
     for index, layer in enumerate(layers, start=1):
         if layer.effect not in TEMPLATES:
             raise LayerError(index, f"{layer.effect} cannot be a layer (have: {', '.join(TEMPLATES)})")
@@ -274,6 +310,7 @@ def layered_record(layers: Sequence[Layer]) -> bytes:
                 direction=layer.direction,
                 shape=layer.shape,
                 center=layer.center,
+                params=layer.params,
             )
         except FrameError as err:
             raise LayerError(index, str(err)) from err
@@ -281,11 +318,11 @@ def layered_record(layers: Sequence[Layer]) -> bytes:
     return bytes(out)
 
 
-def layered_frames(layers: Sequence[Layer]) -> list[bytes]:
+def layered_frames(layers: Sequence[Layer], mode: str = DEFAULT_LAYER_MODE) -> list[bytes]:
     """The frames that upload and show one layered effect. See :func:`layered_record`.
 
     Raises:
         FrameError: As :func:`layered_record`, or the upload needs more than
             :data:`MAX_FRAMES` frames.
     """
-    return _upload(layered_record(layers))
+    return _upload(layered_record(layers, mode))

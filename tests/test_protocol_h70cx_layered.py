@@ -1,6 +1,6 @@
 """Layered composed string-light effects (fork feature).
 
-A layered record stacks 2 or 3 single-effect records. The stock blocks below
+A layered record stacks 1 to 3 single-effect records. The stock blocks below
 are layers as Govee's scenes store them; every other colour is synthetic.
 """
 
@@ -122,9 +122,9 @@ class TestLayeredRecord:
         )
         assert built == bytes([0x0C, 2, 2, 0, len(first), 0]) + first + bytes([len(second), 0]) + second
 
-    @pytest.mark.parametrize("count", [0, 1, 4])
-    def test_layer_count_is_two_or_three(self, count: int) -> None:
-        with pytest.raises(FrameError, match=f"takes 2 to 3 layers, not {count}") as err:
+    @pytest.mark.parametrize("count", [0, 4])
+    def test_layer_count_is_one_to_three(self, count: int) -> None:
+        with pytest.raises(FrameError, match=f"takes 1 to 3 layers, not {count}") as err:
             h70cx.layered_record([Layer("flow", TWO)] * count)
         assert not isinstance(err.value, h70cx.LayerError)
 

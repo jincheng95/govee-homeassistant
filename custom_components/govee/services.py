@@ -93,9 +93,20 @@ ATTR_COMBINE = "combine"
 ATTR_SHAPE = "shape"
 ATTR_CENTER = "center"
 ATTR_LAYERS = "layers"
+ATTR_PARAMS = "params"
+ATTR_LAYER_MODE = "layer_mode"
 
 # Top-level whole-light fields a layered call leaves out.
-_SINGLE_EFFECT_FIELDS = (ATTR_EFFECT, ATTR_COLORS, ATTR_SPEED, ATTR_DIRECTION, ATTR_SHAPE, ATTR_CENTER, ATTR_COMBINE)
+_SINGLE_EFFECT_FIELDS = (
+    ATTR_EFFECT,
+    ATTR_COLORS,
+    ATTR_SPEED,
+    ATTR_DIRECTION,
+    ATTR_SHAPE,
+    ATTR_CENTER,
+    ATTR_PARAMS,
+    ATTR_COMBINE,
+)
 
 _RGB_SCHEMA = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple))
 
@@ -210,6 +221,7 @@ _STRING_SPEED = vol.All(vol.Coerce(int), vol.Range(min=0, max=h70cx.MAX_SPEED))
 _STRING_DIRECTION = vol.All(cv.string, vol.Lower, vol.In(sorted(h70cx.DIRECTION_IDS)))
 _SHAPE = vol.All(cv.string, vol.Lower, vol.In(list(h70cx.SHAPES)))
 _CENTER = vol.All(cv.string, vol.Lower, vol.In(list(h70cx.CENTERS)))
+_PARAMS = vol.All(cv.ensure_list, vol.Length(min=1), [cv.byte])
 
 # A layer accepts every whole-light name so that an older-format one is
 # refused by the handler with a translated reason.
@@ -221,6 +233,7 @@ _LAYER_SCHEMA = vol.Schema(
         vol.Optional(ATTR_DIRECTION): _STRING_DIRECTION,
         vol.Optional(ATTR_SHAPE): _SHAPE,
         vol.Optional(ATTR_CENTER): _CENTER,
+        vol.Optional(ATTR_PARAMS): _PARAMS,
     }
 )
 
@@ -250,7 +263,9 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
             ),
             vol.Optional(ATTR_SHAPE): _SHAPE,
             vol.Optional(ATTR_CENTER): _CENTER,
+            vol.Optional(ATTR_PARAMS): _PARAMS,
             vol.Optional(ATTR_LAYERS): vol.All(cv.ensure_list, vol.Length(min=1), [_LAYER_SCHEMA]),
+            vol.Optional(ATTR_LAYER_MODE): vol.All(cv.string, vol.Lower, vol.In(list(h70cx.LAYER_MODES))),
         },
         _require_mode_with_zone_fields,
     )
@@ -564,6 +579,12 @@ async def _async_apply_string_effect(
     coordinator: GoveeCoordinator, device: GoveeDevice, profile: DeviceProfile, data: Mapping[str, Any]
 ) -> None:
     """Upload one composed, basic, combo or layered whole-light effect (H70CX family)."""
+    if ATTR_LAYER_MODE in data and ATTR_LAYERS not in data:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="layer_mode_without_layers",
+            translation_placeholders={"device": device.name},
+        )
     if ATTR_LAYERS in data:
         frames = _layered_frames(device, data)
     else:
@@ -609,11 +630,12 @@ def _layered_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[bytes]
             direction=item.get(ATTR_DIRECTION),
             shape=item.get(ATTR_SHAPE),
             center=item.get(ATTR_CENTER),
+            params=item.get(ATTR_PARAMS),
         )
         for item in items
     ]
     try:
-        return h70cx.layered_frames(layers)
+        return h70cx.layered_frames(layers, data.get(ATTR_LAYER_MODE, h70cx.DEFAULT_LAYER_MODE))
     except h70cx.LayerError as err:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
@@ -635,7 +657,7 @@ def _single_effect_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[
             raise GoveeProtocolError("this light takes the whole-light fields: effect and colors, or layers")
         effect = data[ATTR_EFFECT]
         if effect in h70cx_basic.NAMES:
-            for option in (ATTR_SHAPE, ATTR_CENTER):
+            for option in (ATTR_SHAPE, ATTR_CENTER, ATTR_PARAMS):
                 if option in data:
                     raise GoveeProtocolError(f"{effect} has no {option}")
             return h70cx_basic.effect_frames(
@@ -654,6 +676,7 @@ def _single_effect_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[
             direction=data.get(ATTR_DIRECTION),
             shape=data.get(ATTR_SHAPE),
             center=data.get(ATTR_CENTER),
+            params=data.get(ATTR_PARAMS),
         )
     except GoveeProtocolError as err:
         raise ServiceValidationError(

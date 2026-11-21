@@ -283,6 +283,11 @@ apply_diy_effect:
                 - upper_right
                 - right_center
                 - bottom_right
+        params:
+          required: false
+          example: "[50, 0, 1, 0, 0, 96]"
+          selector:
+            object:
         layers:
           required: false
           example: >-
@@ -290,6 +295,16 @@ apply_diy_effect:
             {"effect": "starlight", "colors": [[255, 255, 0], [255, 229, 255]], "speed": 3}]
           selector:
             object:
+        layer_mode:
+          required: false
+          example: default
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - default
+                - variant_3
+                - variant_1_2
 
 send_raw_ptreal:
   fields:

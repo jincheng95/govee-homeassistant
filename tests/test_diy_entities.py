@@ -1149,7 +1149,9 @@ class TestService:
             "combine",
             "direction",
             "effect",
+            "layer_mode",
             "layers",
+            "params",
             "ring_colors",
             "ring_mode",
             "ring_speed",
@@ -1170,6 +1172,8 @@ class TestService:
         assert fields["shape"]["selector"]["select"]["options"] == list(h70cx.SHAPES)
         assert fields["center"]["selector"]["select"]["options"] == list(h70cx.CENTERS)
         assert fields["layers"]["selector"] == {"object": None}
+        assert fields["params"]["selector"] == {"object": None}
+        assert fields["layer_mode"]["selector"]["select"]["options"] == list(h70cx.LAYER_MODES)
 
     @pytest.mark.asyncio
     async def test_the_service_is_registered_without_an_entry(self, hass):

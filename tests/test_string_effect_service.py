@@ -321,18 +321,24 @@ class TestLayeredEffect:
         assert err.value.translation_placeholders == {"device": "Light H80C5", "fields": fields}
         assert coordinator.state.active_scene_name == "Rainbow B"
 
-    @pytest.mark.parametrize("count", [1, 4])
-    async def test_one_or_four_layers_are_refused(self, count: int) -> None:
+    async def test_four_layers_are_refused(self) -> None:
         coordinator = _coordinator()
         with pytest.raises(ServiceValidationError) as err:
-            await _run(coordinator, _call(layers=[LAYERS[0]] * count))
+            await _run(coordinator, _call(layers=[LAYERS[0]] * 4))
         assert err.value.translation_key == "invalid_layer_count"
         assert err.value.translation_placeholders == {
             "device": "Light H80C5",
-            "count": str(count),
-            "min": "2",
+            "count": "4",
+            "min": "1",
             "max": "3",
         }
+
+    async def test_one_layer_is_a_layered_effect(self) -> None:
+        coordinator = _coordinator()
+        route = await _run(coordinator, _call(layers=[LAYERS[1]]))
+
+        expected = h70cx.layered_frames([h70cx.Layer("starlight", [(255, 0, 0), (0, 255, 0)], speed=3)])
+        assert list(route.await_args.args[4]) == expected
 
     @pytest.mark.parametrize(
         ("layer", "index", "reason"),
