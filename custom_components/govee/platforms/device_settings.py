@@ -16,19 +16,27 @@ from homeassistant.const import EntityCategory
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from ..api.protocol import Capability
+from ..api.protocol import Capability, GoveeCodec
 from ..api.raw_router import async_device_setting, supports_setting
 from ..const import DOMAIN, SUFFIX_POWER_OFF_MEMORY
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice
 from ..raw_status import device_settings, record_settings
-from ..zone_state import raw_settings_enabled
+from ..zone_state import profile_for, raw_settings_enabled
 
 _LOGGER = logging.getLogger(__name__)
 
 POWER_OFF_MEMORY_OPTIONS: Final = ("last_state", "on", "off")
 """Option keys in wire order. The index is the byte the frame carries."""
+
+
+def power_off_memory_options(sku: str) -> list[str]:
+    """The option keys the SKU's profile takes, in wire order."""
+    profile = profile_for(sku)
+    if profile is None or not profile.supports(Capability.POWER_OFF_MEMORY):
+        return []
+    return [POWER_OFF_MEMORY_OPTIONS[n] for n in GoveeCodec(profile).power_off_memory_behaviours()]
 
 
 def async_device_setting_select_entities(coordinator: GoveeCoordinator, entry: ConfigEntry) -> list[SelectEntity]:
@@ -48,33 +56,37 @@ def async_device_setting_select_entities(coordinator: GoveeCoordinator, entry: C
 class GoveePowerOffMemorySelect(GoveeEntity, SelectEntity, RestoreEntity):
     """What the device does when power returns.
 
-    Shows the setting the device last reported (:mod:`..raw_status`), else the
-    last option written or restored.
+    Offers only the options the profile takes. Shows the setting the device
+    last reported (:mod:`..raw_status`), else the last option written or
+    restored; a reported behaviour outside the options shows as unknown.
     """
 
     _attr_entity_category = EntityCategory.CONFIG
     _attr_translation_key = "power_off_memory"
-    _attr_options = list(POWER_OFF_MEMORY_OPTIONS)
 
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice) -> None:
         super().__init__(coordinator, device)
         self._attr_unique_id = f"{device.device_id}{SUFFIX_POWER_OFF_MEMORY}"
+        self._attr_options = power_off_memory_options(device.sku)
         self._option: str | None = None
 
     async def async_added_to_hass(self) -> None:
         """Restore the last option."""
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state in POWER_OFF_MEMORY_OPTIONS:
+        if last_state is not None and last_state.state in self._attr_options:
             self._option = last_state.state
 
     @property
     def current_option(self) -> str | None:
         reported = device_settings(self.coordinator, self._device_id).power_off_memory
-        return self._option if reported is None else POWER_OFF_MEMORY_OPTIONS[reported]
+        if reported is None:
+            return self._option
+        option = POWER_OFF_MEMORY_OPTIONS[reported]
+        return option if option in self._attr_options else None
 
     async def async_select_option(self, option: str) -> None:
-        if option not in POWER_OFF_MEMORY_OPTIONS:
+        if option not in self._attr_options:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="unknown_option",
