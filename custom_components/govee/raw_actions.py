@@ -260,7 +260,8 @@ async def async_set_music_mode_handler(hass: HomeAssistant, call: ServiceCall) -
 
     An effect that takes a palette uploads the call's, else the profile's
     default; with neither, the commit goes alone. An effect without a palette
-    refuses one.
+    refuses one, and a profile whose commit carries no options refuses a
+    manual colour.
     """
     coordinator, device, profile = _resolve(hass, call, lambda profile: profile.music is not None)
     spec = profile.music
@@ -268,7 +269,11 @@ async def async_set_music_mode_handler(hass: HomeAssistant, call: ServiceCall) -
     data: dict[str, Any] = call.data
     effect = spec.effects.get(data[ATTR_EFFECT])
     if effect is None:
-        raise _validation_error("music_effect_unsupported", device=device.name, effect=data[ATTR_EFFECT])
+        raise _validation_error(
+            "music_effect_unsupported", device=device.name, effect=data[ATTR_EFFECT], effects=", ".join(spec.effects)
+        )
+    if ATTR_MANUAL_COLOR in data and not spec.commit_options:
+        raise _validation_error("music_manual_color_unsupported", device=device.name)
     palette: Sequence[tuple[int, int, int]] | None = data.get(ATTR_PALETTE)
     if effect not in spec.palette_effects:
         if palette is not None:

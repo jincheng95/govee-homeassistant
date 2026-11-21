@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from custom_components.govee import raw_status
 from custom_components.govee.api.protocol import get_profile, profiles
 from custom_components.govee.api.protocol.errors import GoveeProtocolError
 from custom_components.govee.api.segment_readback import payload_frames
@@ -21,7 +22,7 @@ from custom_components.govee.api.zone_power_report import (
     decode_payload,
 )
 from custom_components.govee.coordinator import GoveeCoordinator
-from custom_components.govee.models import GoveeCapability, GoveeDevice
+from custom_components.govee.models import GoveeCapability, GoveeDevice, GoveeDeviceState
 from custom_components.govee.models.device import (
     CAPABILITY_ON_OFF,
     DEVICE_TYPE_LIGHT,
@@ -221,3 +222,62 @@ class TestCoordinatorHook:
         assert registry(coordinator).is_on(DEVICE_ID, "ripple") is True
         # The H60B0 pushes no segment readback, so the segment signal stays quiet.
         send.assert_not_called()
+
+
+def _uplighter_state(power: bool) -> MagicMock:
+    coordinator = MagicMock()
+    state = GoveeDeviceState.create_empty(DEVICE_ID)
+    state.power_state = power
+    coordinator.get_state = MagicMock(return_value=state)
+    coordinator.state = state
+    return coordinator
+
+
+def _uplighter() -> GoveeDevice:
+    return GoveeDevice(device_id=DEVICE_ID, sku="H60B0", name="Uplighter", device_type=DEVICE_TYPE_LIGHT, capabilities=())
+
+
+class TestLampPower:
+    """Bit 7 of the report is the main light's power."""
+
+    @pytest.mark.parametrize(
+        ("frame", "before", "after"),
+        [(LAMP_ONLY, False, True), (RIPPLE_RING, False, True), (LAMP_OFF, True, False)],
+    )
+    def test_the_lamp_bit_sets_the_power(self, frame: bytes, before: bool, after: bool) -> None:
+        coordinator = _uplighter_state(before)
+        assert raw_status.apply_raw_status(coordinator, _uplighter(), [frame]) is True
+        assert coordinator.state.power_state is after
+
+    def test_the_newest_report_wins(self) -> None:
+        coordinator = _uplighter_state(True)
+        assert raw_status.apply_raw_status(coordinator, _uplighter(), [LAMP_ONLY, LAMP_OFF]) is True
+        assert coordinator.state.power_state is False
+
+    def test_the_same_power_is_no_change(self) -> None:
+        coordinator = _uplighter_state(True)
+        assert raw_status.apply_raw_status(coordinator, _uplighter(), [RIPPLE]) is False
+
+    def test_other_frames_leave_the_power_alone(self) -> None:
+        coordinator = _uplighter_state(True)
+        assert raw_status.apply_raw_status(coordinator, _uplighter(), [BRIGHTNESS_PUSH]) is False
+        assert coordinator.state.power_state is True
+
+    def test_a_push_reaches_the_main_light(self) -> None:
+        import custom_components.govee.coordinator as coord_mod
+
+        config_entry = MagicMock()
+        config_entry.options = {}
+        coord = coord_mod.GoveeCoordinator(
+            hass=MagicMock(), config_entry=config_entry, api_client=MagicMock(), iot_credentials=None, poll_interval=60
+        )
+        coord._devices[DEVICE_ID] = _uplighter()
+        coord._states[DEVICE_ID] = GoveeDeviceState.create_empty(DEVICE_ID)
+        coord.async_set_updated_data = MagicMock()
+
+        coord._on_mqtt_raw_frames(DEVICE_ID, _payload(LAMP_ONLY))
+        assert coord._states[DEVICE_ID].power_state is True
+        coord.async_set_updated_data.assert_called_once_with(coord._states)
+
+        coord._on_mqtt_raw_frames(DEVICE_ID, _payload(LAMP_OFF))
+        assert coord._states[DEVICE_ID].power_state is False

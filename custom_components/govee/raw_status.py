@@ -1,7 +1,9 @@
 """Device state from raw status frames on the AWS IoT channel (fork feature).
 
 Applies the reports :func:`~.api.protocol.decode_status` reads, for the SKUs
-whose profile declares them. Power goes into the device state. The gradient and
+whose profile declares them. Power goes into the device state: from the
+``ee 30 01 <on>`` push on a ``power_push`` profile, and from the lamp bit of the
+zone power report on a ``zone_power_report`` profile. The gradient and
 power-off memory settings go into a per-device store that their entities read.
 Settings are read with raw queries over MQTT ``ptReal`` only, because a raw
 query is answered on the device's cloud topic and nowhere else.
@@ -15,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from .api import mqtt_raw_write
 from .api.protocol import SETTING_QUERIES, Capability, GoveeCodec, decode_status
+from .api.zone_power_report import decode_frames as decode_zone_power_frames
 from .zone_state import profile_for
 
 if TYPE_CHECKING:
@@ -65,11 +68,16 @@ def apply_raw_status(coordinator: GoveeCoordinator, device: GoveeDevice, frames:
     profile = profile_for(device.sku)
     if profile is None or device.is_group:
         return False
+    frames = list(frames)
     report = decode_status(frames)
+    power = report.power if profile.power_push else None
+    zone_report = decode_zone_power_frames(frames, profile)
+    if zone_report is not None:
+        power = zone_report.lamp_on
     changed = False
     state = coordinator.get_state(device.device_id)
-    if profile.power_push and report.power is not None and state is not None and state.power_state != report.power:
-        state.power_state = report.power
+    if power is not None and state is not None and state.power_state != power:
+        state.power_state = power
         changed = True
 
     changes: dict[str, Any] = {}

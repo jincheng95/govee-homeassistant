@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .diy import DiyZoneEffect, all_off, encode_payload
-from .encoders import ENCODERS, constant, music_select
+from .encoders import ENCODERS, constant, music_select, power_off_memory_behaviours
 from .errors import DiyEffectError, GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
 from .frames import ptreal_message, rgb_bytes, segment_mask
 from .packets import chunk_effect, upload_effect
@@ -126,6 +126,10 @@ class GoveeCodec:
     def power_off_memory(self, behaviour: int) -> bytes:
         """What the device does when power returns: 0 last state, 1 on, 2 off."""
         return self._encode(Capability.POWER_OFF_MEMORY, behaviour=behaviour)
+
+    def power_off_memory_behaviours(self) -> tuple[int, ...]:
+        """The power-off memory behaviours this SKU takes, in wire order."""
+        return power_off_memory_behaviours(self._spec(Capability.POWER_OFF_MEMORY).constants)
 
     def music_effect(
         self,

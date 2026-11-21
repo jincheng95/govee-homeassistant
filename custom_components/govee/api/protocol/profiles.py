@@ -523,6 +523,8 @@ H60B0: Final = DeviceProfile(
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
+        # Only "last state" (0) and "stay off" (2) are verified on this SKU.
+        Capability.POWER_OFF_MEMORY: CapabilitySpec("power_off_memory", {"sub_type": 0x02, "behaviours": 0b101}),
     },
     modes={"scene": 0x04, "diy": 0x0A, "solid": 0x0D, "music": 0x13, "game": 0x14},
     diy=DiyEffectSpec(

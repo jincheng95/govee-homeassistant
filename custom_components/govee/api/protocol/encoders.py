@@ -91,10 +91,26 @@ def gradient(constants: Mapping[str, Any], *, on: bool) -> bytes:
     return build_frame([PRO_TYPE_WRITE, GRADIENT_COMMAND_TYPE, 1 if on else 0])
 
 
+def power_off_memory_behaviours(constants: Mapping[str, Any]) -> tuple[int, ...]:
+    """The behaviours a SKU takes, in wire order.
+
+    The optional ``behaviours`` constant is a bit mask with bit ``n`` set for
+    behaviour ``n``. Without it every behaviour is taken.
+    """
+    if "behaviours" not in constants:
+        return tuple(POWER_OFF_MEMORY_BEHAVIOURS)
+    mask = constant(constants, "behaviours")
+    return tuple(behaviour for behaviour in POWER_OFF_MEMORY_BEHAVIOURS if mask & (1 << behaviour))
+
+
 def power_off_memory(constants: Mapping[str, Any], *, behaviour: int) -> bytes:
-    """``33 41 <sub_type> <behaviour>`` — what the device does when power returns."""
-    if behaviour not in POWER_OFF_MEMORY_BEHAVIOURS:
-        raise FrameError(f"power-off memory behaviour {behaviour!r} is not one of 0, 1, 2")
+    """``33 41 <sub_type> <behaviour>`` — what the device does when power returns.
+
+    ``behaviour`` must be one of :func:`power_off_memory_behaviours`.
+    """
+    allowed = power_off_memory_behaviours(constants)
+    if behaviour not in allowed:
+        raise FrameError(f"power-off memory behaviour {behaviour!r} is not one of {allowed}")
     return build_frame([PRO_TYPE_WRITE, POWER_OFF_MEMORY_COMMAND_TYPE, constant(constants, "sub_type"), behaviour])
 
 
