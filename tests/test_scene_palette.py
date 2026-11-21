@@ -7,6 +7,7 @@
 4. Reset: catalogue values back, refused upload keeps the settings.
 5. Restore: the active scene's values come back after a restart.
 6. Wiring and cleanup.
+7. The raw power push and DIY / music mode reports against these entities.
 
 Every blob here is synthetic and shaped like a catalogue blob.
 """
@@ -604,3 +605,47 @@ async def test_cleanup_follows_the_scenes_option(hass, mock_light_device, scenes
 
     kept = {uid for uid, eid in ids.items() if registry.async_get(eid) is not None}
     assert kept == (set(ids) if scenes_on else {device_id})
+
+
+# ==============================================================================
+# 7. Raw power push and mode reports together (H80C5)
+# ==============================================================================
+
+
+class TestPowerPushAndModeReports:
+    async def test_power_off_then_on_keeps_the_scene_and_its_settings(self) -> None:
+        from custom_components.govee import raw_status
+        from tests.test_h80c5_local import POWER_OFF, POWER_ON
+
+        coordinator = _coordinator("Layers")
+        entities = _entities(coordinator)
+        device = coordinator.devices[DEVICE_ID]
+        with _routed():
+            await entities["palette1"].async_set_value("#123456")
+
+        assert raw_status.apply_raw_status(coordinator, device, [POWER_OFF]) is True
+        assert coordinator.state.power_state is False
+        assert coordinator.state.active_scene_name == "Layers"
+        assert not any(entity.available for entity in entities.values())
+
+        assert raw_status.apply_raw_status(coordinator, device, [POWER_ON]) is True
+        assert coordinator.state.power_state is True
+        available = tuple(name for name in _ORDER if entities[name].available)
+        assert available == ("speed", "direction", "palette1", "palette2", "reset")
+        assert entities["palette1"].native_value == "#123456"
+
+    @pytest.mark.parametrize("sub_mode", [0x0A, 0x13], ids=["diy", "music"])
+    async def test_a_diy_or_music_report_leaves_no_scene_setting(self, sub_mode: int) -> None:
+        from tests.test_scene_adjust import _mode_report
+
+        coordinator = _coordinator("Layers")
+        coordinator._scene_cache = None
+        entities = _entities(coordinator)
+        device = coordinator.devices[DEVICE_ID]
+
+        assert scene_catalogue.apply_scene_report(coordinator, device, coordinator.state, [_mode_report(sub_mode)])
+        assert coordinator.state.active_scene is None
+        assert coordinator.state.active_scene_name is None
+        assert not any(entity.available for entity in entities.values())
+        assert all(entities[name].native_value is None for name in ("palette1", "palette2", "palette3"))
+        assert entities["speed"].current_option is None
