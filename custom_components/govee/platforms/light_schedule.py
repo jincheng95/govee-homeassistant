@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import EntityCategory
 
 from ..api.protocol.encoders import repeat_byte
@@ -45,12 +45,13 @@ class _GoveeScheduleSensor(GoveeEntity, SensorEntity):
 class GoveeSleepTimerSensor(_GoveeScheduleSensor):
     """Whether the light's sleep timer is on."""
 
-    _attr_icon = "mdi:sleep"
+    _attr_translation_key = "schedule_sleep"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [STATE_ON, STATE_OFF]
 
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice) -> None:
         super().__init__(coordinator, device)
         self._attr_unique_id = f"{device.device_id}{SUFFIX_SCHEDULE_SLEEP}"
-        self._attr_name = "Sleep timer"
 
     @property
     def native_value(self) -> str | None:
@@ -72,12 +73,13 @@ class GoveeSleepTimerSensor(_GoveeScheduleSensor):
 class GoveeWakeUpSensor(_GoveeScheduleSensor):
     """Whether the light's wake-up is on."""
 
-    _attr_icon = "mdi:weather-sunset-up"
+    _attr_translation_key = "schedule_wake"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [STATE_ON, STATE_OFF]
 
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice) -> None:
         super().__init__(coordinator, device)
         self._attr_unique_id = f"{device.device_id}{SUFFIX_SCHEDULE_WAKE}"
-        self._attr_name = "Wake-up"
 
     @property
     def native_value(self) -> str | None:
@@ -100,12 +102,11 @@ class GoveeWakeUpSensor(_GoveeScheduleSensor):
 class GoveeTimersSensor(_GoveeScheduleSensor):
     """How many of the light's timers are on."""
 
-    _attr_icon = "mdi:timer-outline"
+    _attr_translation_key = "schedule_timers"
 
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice) -> None:
         super().__init__(coordinator, device)
         self._attr_unique_id = f"{device.device_id}{SUFFIX_SCHEDULE_TIMERS}"
-        self._attr_name = "Timers on"
 
     @property
     def native_value(self) -> int | None:

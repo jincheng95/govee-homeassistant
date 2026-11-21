@@ -339,6 +339,35 @@
           "on": "On",
           "off": "Off"
         }
+      },
+      "scene_speed": {
+        "name": "Scene speed",
+        "state": {
+          "slow": "Slow",
+          "medium": "Medium",
+          "fast": "Fast"
+        }
+      },
+      "scene_direction": {
+        "name": "Scene direction",
+        "state": {
+          "up": "Up",
+          "down": "Down",
+          "clockwise": "Clockwise",
+          "anticlockwise": "Anticlockwise",
+          "upper_left": "Upper left",
+          "lower_left": "Lower left",
+          "upper_right": "Upper right",
+          "lower_right": "Lower right",
+          "expand_vertically": "Expand vertically",
+          "gather_vertically": "Gather vertically",
+          "gather_horizontally": "Gather horizontally",
+          "expand_horizontally": "Expand horizontally",
+          "anticlockwise_upward": "Anticlockwise upward",
+          "anticlockwise_downward": "Anticlockwise downward",
+          "clockwise_upward": "Clockwise upward",
+          "clockwise_downward": "Clockwise downward"
+        }
       }
     },
     "switch": {
@@ -532,6 +561,23 @@
       },
       "kettle_keep_warm_remaining": {
         "name": "Keep warm remaining"
+      },
+      "schedule_sleep": {
+        "name": "Sleep timer",
+        "state": {
+          "on": "On",
+          "off": "Off"
+        }
+      },
+      "schedule_wake": {
+        "name": "Wake-up",
+        "state": {
+          "on": "On",
+          "off": "Off"
+        }
+      },
+      "schedule_timers": {
+        "name": "Timers on"
       }
     },
     "binary_sensor": {

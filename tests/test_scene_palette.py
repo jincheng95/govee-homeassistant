@@ -321,7 +321,7 @@ class TestSetPalette:
 
         with _routed() as route:
             await entities["speed"].async_select_option("2")
-            await entities["direction"].async_select_option("Anticlockwise")
+            await entities["direction"].async_select_option("anticlockwise")
             await entities["palette2"].async_set_value(" #102030 ")
 
         scene = scene_catalogue.catalogue(coordinator).scene(SKU, "Layers")
@@ -491,7 +491,7 @@ class TestRestore:
         await _add(entities["palette2"], {"scene": 21002, "palette": [[1, 2, 3]]})
 
         assert entities["speed"].current_option == "2"
-        assert entities["direction"].current_option == "Anticlockwise"
+        assert entities["direction"].current_option == "anticlockwise"
         assert entities["palette2"].native_value == "#010203"
 
         coordinator.state.active_scene_name = "Single"

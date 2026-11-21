@@ -225,12 +225,6 @@ class TestAdjustBlob:
         assert scenes.adjust_blob(blob, self.ADJUST, speed=0) == blob
 
 
-class TestNames:
-    def test_known_and_unknown_directions(self) -> None:
-        assert scenes.direction_name(3) == "Clockwise"
-        assert scenes.direction_name(17) == "Direction 17"
-
-
 def test_h80c5_declares_scene_upload() -> None:
     assert get_profile("H80C5").scene_upload is True
     assert get_profile("H6076").scene_upload is False

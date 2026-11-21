@@ -153,6 +153,12 @@
       },
       "power_off_memory": {
         "default": "mdi:power-settings"
+      },
+      "scene_speed": {
+        "default": "mdi:speedometer"
+      },
+      "scene_direction": {
+        "default": "mdi:rotate-3d-variant"
       }
     },
     "sensor": {
@@ -210,6 +216,15 @@
       },
       "last_measurement": {
         "default": "mdi:clock-check-outline"
+      },
+      "schedule_sleep": {
+        "default": "mdi:sleep"
+      },
+      "schedule_wake": {
+        "default": "mdi:weather-sunset-up"
+      },
+      "schedule_timers": {
+        "default": "mdi:timer-outline"
       }
     },
     "switch": {

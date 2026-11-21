@@ -45,7 +45,7 @@ from ..zone_state import profile_for
 _LOGGER = logging.getLogger(__name__)
 
 _STORE_ATTR: Final = "_govee_scene_adjust_choices"
-_THREE_LEVELS: Final = ("Slow", "Medium", "Fast")
+_THREE_LEVELS: Final = ("slow", "medium", "fast")
 
 _HEX_COLOUR: Final = re.compile(r"#[0-9a-fA-F]{6}")
 _PALETTE_SEPARATOR: Final = re.compile(r"\s*,\s*")
@@ -85,10 +85,21 @@ def settings_store(coordinator: GoveeCoordinator) -> SceneSettingsStore:
 
 
 def speed_labels(count: int) -> list[str]:
-    """Option labels for ``count`` speed levels, slowest first."""
+    """Option keys for ``count`` speed levels, slowest first."""
     if count == len(_THREE_LEVELS):
         return list(_THREE_LEVELS)
     return [str(level) for level in range(1, count + 1)]
+
+
+def direction_key(direction: int) -> str:
+    """The option key of a scene direction, translated under ``scene_direction``."""
+    name = scenes.DIRECTION_NAMES.get(direction)
+    return f"direction_{direction}" if name is None else option_key(name)
+
+
+def option_key(label: str) -> str:
+    """The option key an English label such as ``Upper left`` stands for."""
+    return label.strip().lower().replace(" ", "_")
 
 
 def format_palette(colours: tuple[scenes.Colour, ...]) -> str:
@@ -312,6 +323,12 @@ class _GoveeSceneAdjustSelect(_GoveeSceneSettingEntity, SelectEntity):
 
     _field: str
 
+    async def async_handle_select_option(self, option: str) -> None:
+        """Select an option, also accepting its English label such as ``Slow`` or ``Upper left``."""
+        if option not in self.options and option_key(option) in self.options:
+            option = option_key(option)
+        await super().async_handle_select_option(option)
+
     def _labels(self, scene: CatalogueScene) -> list[str]:
         raise NotImplementedError  # pragma: no cover
 
@@ -361,13 +378,12 @@ class _GoveeSceneAdjustSelect(_GoveeSceneSettingEntity, SelectEntity):
 class GoveeSceneSpeedSelect(_GoveeSceneAdjustSelect):
     """Speed level of the running scene."""
 
-    _attr_icon = "mdi:speedometer"
+    _attr_translation_key = "scene_speed"
     _field = "speed"
 
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice, profile: DeviceProfile) -> None:
         super().__init__(coordinator, device, profile)
         self._attr_unique_id = f"{device.device_id}{SUFFIX_SCENE_SPEED_SELECT}"
-        self._attr_name = "Scene speed"
 
     def _labels(self, scene: CatalogueScene) -> list[str]:
         return [] if scene.adjust is None else speed_labels(scene.adjust.speed_levels)
@@ -379,18 +395,17 @@ class GoveeSceneSpeedSelect(_GoveeSceneAdjustSelect):
 class GoveeSceneDirectionSelect(_GoveeSceneAdjustSelect):
     """Direction of the running scene."""
 
-    _attr_icon = "mdi:rotate-3d-variant"
+    _attr_translation_key = "scene_direction"
     _field = "direction"
 
     def __init__(self, coordinator: GoveeCoordinator, device: GoveeDevice, profile: DeviceProfile) -> None:
         super().__init__(coordinator, device, profile)
         self._attr_unique_id = f"{device.device_id}{SUFFIX_SCENE_DIRECTION_SELECT}"
-        self._attr_name = "Scene direction"
 
     def _labels(self, scene: CatalogueScene) -> list[str]:
         if scene.adjust is None:
             return []
-        return [scenes.direction_name(direction) for direction in scene.adjust.directions]
+        return [direction_key(direction) for direction in scene.adjust.directions]
 
     def _default(self, scene: CatalogueScene) -> int | None:
         return None if scene.adjust is None else scene.adjust.default_direction

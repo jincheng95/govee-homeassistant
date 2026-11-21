@@ -117,7 +117,12 @@ class TestSensors:
         for sensor in (sleep, wake, timers):
             assert sensor.native_value is None
             assert sensor.extra_state_attributes == {}
-        assert {sleep.name, wake.name, timers.name} == {"Sleep timer", "Wake-up", "Timers on"}
+        assert [sensor.translation_key for sensor in (sleep, wake, timers)] == [
+            "schedule_sleep",
+            "schedule_wake",
+            "schedule_timers",
+        ]
+        assert sleep.options == wake.options == ["on", "off"]
         assert sleep.unique_id == f"{DEVICE_ID}_schedule_sleep"
         assert wake.unique_id == f"{DEVICE_ID}_schedule_wake"
         assert timers.unique_id == f"{DEVICE_ID}_schedule_timers"

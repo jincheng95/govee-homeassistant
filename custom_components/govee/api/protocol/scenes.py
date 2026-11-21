@@ -88,11 +88,6 @@ DIRECTION_NAMES: Mapping[int, str] = {
 }
 
 
-def direction_name(direction: int) -> str:
-    """Display name of a direction id; unnamed ids keep their number."""
-    return DIRECTION_NAMES.get(direction, f"Direction {direction}")
-
-
 @dataclass(frozen=True)
 class RgbicPage:
     """The speed values of one effect of an RGBIC blob, one value per level."""
