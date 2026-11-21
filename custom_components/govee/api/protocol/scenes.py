@@ -35,6 +35,13 @@ from .packets import DEFAULT_HEADER_LEAD, FIRST_CHUNK_DATA_BYTES, SEQUENCE_TERMI
 
 SCENE_SUB_MODE = 0x04
 
+MAX_MESSAGE_FRAMES = 18
+"""Most frames, commit included, one scene upload may take.
+
+A scene upload travels as one ``ptReal`` message, and the lamp drops messages
+longer than this.
+"""
+
 H70CX_LEAD = 0x49
 H70CX_MARKER = 0x58
 RGBIC_MARKER = 0x02
@@ -496,7 +503,8 @@ def scene_frames(blob: bytes, code: int) -> list[bytes]:
         code: The catalogue ``sceneCode``.
 
     Raises:
-        FrameError: The code does not fit two bytes.
+        FrameError: The code does not fit two bytes, or the upload needs more
+            than :data:`MAX_MESSAGE_FRAMES` frames.
     """
     if not 0 <= code <= 0xFFFF:
         raise FrameError(f"scene code {code} does not fit two bytes")
@@ -504,5 +512,9 @@ def scene_frames(blob: bytes, code: int) -> list[bytes]:
     if not blob:
         return [commit]
     if blob[0] == H70CX_LEAD:
-        return [*terminated_chunks(blob[1:], H70CX_MARKER), commit]
-    return [*terminated_chunks(blob, RGBIC_MARKER), commit]
+        frames = [*terminated_chunks(blob[1:], H70CX_MARKER), commit]
+    else:
+        frames = [*terminated_chunks(blob, RGBIC_MARKER), commit]
+    if len(frames) > MAX_MESSAGE_FRAMES:
+        raise FrameError(f"the scene needs {len(frames)} frames, the limit is {MAX_MESSAGE_FRAMES}")
+    return frames

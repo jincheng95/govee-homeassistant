@@ -27,7 +27,11 @@ STILL_SPEED = 0
 """The effect animates at any other speed; at 0 the paint holds still."""
 
 MESSAGE_FRAMES = 12
-"""Frames per ``ptReal`` message. The lamp drops larger messages."""
+"""Frames per ``ptReal`` message of a paint upload.
+
+This module's chosen size, below the lamp's limit of
+:data:`.scenes.MAX_MESSAGE_FRAMES`.
+"""
 MESSAGE_GAP_SECONDS = 0.04
 
 _WIDE_FROM = 256

@@ -62,6 +62,16 @@ class TestSceneFrames:
             assert len(frame) == 20
             assert xor_checksum(frame[:19]) == frame[19]
 
+    def test_an_upload_longer_than_one_message_is_refused(self) -> None:
+        blobs = [bytes([0x02]) + bytes(n) for n in range(1, 400)]
+        longest = max(
+            (b for b in blobs if len(scenes.terminated_chunks(b, scenes.RGBIC_MARKER)) < scenes.MAX_MESSAGE_FRAMES),
+            key=len,
+        )
+        assert len(scenes.scene_frames(longest, 1)) == scenes.MAX_MESSAGE_FRAMES
+        with pytest.raises(FrameError, match="the scene needs 19 frames, the limit is 18"):
+            scenes.scene_frames(longest + bytes(1), 1)
+
     @pytest.mark.parametrize("code", [-1, 0x10000])
     def test_code_must_fit_two_bytes(self, code: int) -> None:
         with pytest.raises(FrameError):

@@ -396,6 +396,15 @@ def _selects(coordinator: Any) -> tuple[GoveeSceneSpeedSelect, GoveeSceneDirecti
     return speed, direction
 
 
+def _rgbic_blob(frames: int) -> bytes:
+    """An RGBIC blob whose upload takes ``frames`` frames, commit included."""
+    for length in range(1, 400):
+        blob = bytes([0x02]) + bytes(length)
+        if len(scenes.terminated_chunks(blob, scenes.RGBIC_MARKER)) + 1 == frames:
+            return blob
+    raise AssertionError(frames)  # pragma: no cover
+
+
 def _routed() -> Any:
     return patch.object(scene_adjust.raw_router, "async_route_frames", AsyncMock(return_value=True))
 
@@ -787,6 +796,23 @@ class TestStartSceneLocally:
     async def test_declines_a_scene_the_catalogue_lacks(self) -> None:
         route = await self._declined(_coordinator(scene=None), "Sunrise")
         route.assert_not_awaited()
+
+    @pytest.mark.parametrize(("frames", "local"), [(16, True), (scenes.MAX_MESSAGE_FRAMES, True), (19, False)])
+    async def test_only_a_scene_that_fits_one_message_starts_locally(self, frames: int, local: bool) -> None:
+        coordinator = _coordinator(scene=None)
+        blob = _rgbic_blob(frames)
+        scene_catalogue.catalogue(coordinator)._scenes[SKU]["Long"] = scene_catalogue.CatalogueScene(
+            name="Long", code=7, blob=blob, adjust=None
+        )
+        device = coordinator.devices[DEVICE_ID]
+        with _routed() as route:
+            started = await scene_adjust.async_start_scene_locally(coordinator, device, 7, "Long")
+        assert started is local
+        if local:
+            assert len(route.await_args.args[4]) == frames
+        else:
+            route.assert_not_awaited()
+            assert coordinator.state.active_scene_name is None
 
     async def test_declines_a_scene_that_cannot_be_framed(self) -> None:
         coordinator = _coordinator(scene=None)

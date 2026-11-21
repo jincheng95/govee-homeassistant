@@ -31,7 +31,7 @@ MAX_SPEED = 100
 MIN_LAYERS = 1
 MAX_LAYERS = 3
 MAX_FRAMES = MESSAGE_FRAMES
-"""Frames one upload may take, commit included, so it fits one ``ptReal`` message."""
+"""Frames one upload may take, commit included. It is sent as one ``ptReal`` message."""
 
 LAYER_MODES: Mapping[str, tuple[int, int]] = {
     "default": (2, 0),
