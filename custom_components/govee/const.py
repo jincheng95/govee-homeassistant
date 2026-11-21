@@ -743,6 +743,10 @@ SUFFIX_DIY_APPLY: Final = "_diy_apply"
 # staged on SUFFIX_DIY_MODE. Same namespace and the same gate as the staging
 # controls, so it is pruned with them.
 SUFFIX_DIY_PREVIEW: Final = "_diy_preview_"
+# Fork: the string-light preview sensor, one per device that takes string
+# effects. Ungated, and outside the SUFFIX_DIY_PREVIEW namespace so the
+# zone-light option does not prune it.
+SUFFIX_DIY_EFFECT_PREVIEWS: Final = "_diy_effect_previews"
 # Fork: diagnostic sensors for a light's on-device schedule.
 SUFFIX_SCHEDULE_SLEEP: Final = "_schedule_sleep"
 SUFFIX_SCHEDULE_WAKE: Final = "_schedule_wake"

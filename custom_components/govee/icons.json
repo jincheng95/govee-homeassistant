@@ -225,6 +225,9 @@
       },
       "schedule_timers": {
         "default": "mdi:timer-outline"
+      },
+      "diy_effect_previews": {
+        "default": "mdi:image-multiple"
       }
     },
     "switch": {

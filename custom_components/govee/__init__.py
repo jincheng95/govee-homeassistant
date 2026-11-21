@@ -63,6 +63,7 @@ from .const import (
     SUFFIX_DIY_FLOW_RATE,
     SUFFIX_DIY_MODE,
     SUFFIX_DIY_PALETTE,
+    SUFFIX_DIY_EFFECT_PREVIEWS,
     SUFFIX_DIY_PREVIEW,
     SUFFIX_DIY_SCENE_SELECT,
     SUFFIX_DIY_SPEED,
@@ -76,6 +77,7 @@ from .const import (
     hub_device_identifier,
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
+from .diy_preview_sources import takes_string_effects
 from .diy_previews import async_register_previews
 from .registry import device_config_entry_ids, get_registry_device
 from .repairs import async_cleanup_legacy_issues, async_create_mqtt_issue
@@ -691,6 +693,9 @@ async def _async_cleanup_orphaned_entities(
                 # Fork: the raw-only setting selects follow enable_lan_raw_write.
                 should_remove = True
                 removal_reason = "raw writes disabled"
+            elif suffix == SUFFIX_DIY_EFFECT_PREVIEWS and not takes_string_effects(coordinator.devices[owner_id].sku):
+                should_remove = True
+                removal_reason = "string effects not supported"
             elif suffix == SUFFIX_DIY_SCENE_SELECT and not enable_diy_scenes:
                 should_remove = True
                 removal_reason = "DIY scenes disabled"

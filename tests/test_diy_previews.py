@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -31,6 +31,7 @@ from custom_components.govee.const import (
     CONF_ENABLE_ZONE_LIGHTS,
     SUFFIX_DIY_PREVIEW,
 )
+from custom_components.govee.diy_preview_sources import PreviewSources
 from custom_components.govee.diy_previews import (
     PREVIEW_FILES,
     STRING_EFFECT_FILES,
@@ -312,7 +313,8 @@ class TestPreviewSensors:
         sensor = _previews(coordinator, _entry())["ring"]
         sensor.async_on_remove = MagicMock()
 
-        await sensor.async_added_to_hass()
+        with patch.object(PreviewSources, "async_schedule"):
+            await sensor.async_added_to_hass()
         store(coordinator).set_mode(DEVICE_ID, "ring", 6)
 
         sensor.async_write_ha_state.assert_called()

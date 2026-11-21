@@ -5,8 +5,9 @@ preview images are shipped in ``diy_mode_previews/`` and served as URLs a
 picture card can point at. The multi-zone lamp's mode stills sit at the top of
 the directory and the H70CX string-light effects in ``h70cx/``. The URLs are
 outside ``/api/`` because the images hold no secrets and a card has no bearer
-token. Nothing fetches at runtime. The tests assert both name-to-file maps both
-ways, so a mode or effect added without artwork fails the suite.
+token. The vendor's CDN copies are resolved in :mod:`.diy_preview_sources`.
+The tests assert both name-to-file maps both ways, so a mode or effect added
+without artwork fails the suite.
 """
 
 from __future__ import annotations

@@ -555,6 +555,9 @@
       },
       "schedule_timers": {
         "name": "Timers on"
+      },
+      "diy_effect_previews": {
+        "name": "DIY effect previews"
       }
     },
     "binary_sensor": {

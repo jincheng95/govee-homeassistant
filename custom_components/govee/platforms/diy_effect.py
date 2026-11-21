@@ -44,6 +44,7 @@ from ..const import (
     SUFFIX_DIY_PREVIEW,
     SUFFIX_DIY_SPEED,
 )
+from ..diy_preview_sources import sources, zone_preview_sources
 from ..diy_previews import preview_map, preview_url
 from ..diy_state import async_send_diy_effect, diy_spec_for, store, zone_lights_enabled
 from ..lan_udp_health import zone_lan_writable
@@ -647,6 +648,10 @@ class GoveeDiyModePreviewSensor(GoveeEntity, SensorEntity):
     ``previews`` attribute is the whole zone's map, so a dashboard can render
     the current mode, a gallery of all of them, or both, from this one entity.
 
+    ``preview_sources`` maps each mode in ``previews`` to ``{"url",
+    "fallback"}``: the vendor's CDN copy when its list names the mode, and the
+    shipped copy.
+
     Diagnostic, and not a RestoreEntity: every field is derived from the store
     and the profile table, both of which are available the moment the entity is
     added. Restoring a URL would only risk showing a stale one.
@@ -655,6 +660,7 @@ class GoveeDiyModePreviewSensor(GoveeEntity, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:image-multiple"
     _attr_translation_key = "diy_mode_preview"
+    _unrecorded_attributes = frozenset({"preview_sources"})
 
     def __init__(
         self,
@@ -708,14 +714,18 @@ class GoveeDiyModePreviewSensor(GoveeEntity, SensorEntity):
         attrs["diy_zone"] = self._zone_key
         attrs["mode"] = self._mode_name
         attrs["previews"] = dict(self._previews)
+        attrs["preview_sources"] = zone_preview_sources(
+            self._zone, sources(self.coordinator).urls(self._device.sku)
+        )
         return attrs
 
     async def async_added_to_hass(self) -> None:
-        """Follow the zone's staged record."""
+        """Follow the zone's staged record and schedule the vendor list."""
         await super().async_added_to_hass()
         self.async_on_remove(
             self._store.register(self._device_id, self._zone_key, self._on_store_change)
         )
+        sources(self.coordinator).async_schedule(self.hass, self._device.sku)
 
     def _on_store_change(self) -> None:
         """Store callback — the mode select (or the service) moved this zone."""
