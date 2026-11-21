@@ -7,6 +7,8 @@
 3. Wake-up: the frame, the ``aa 12`` reply decoder and ``govee.set_wake_up``.
 4. Music mode: the palette upload, the commit, the table check and
    ``govee.set_music_mode``.
+5. Music effect choices: the dropdown against every profile's table, and the
+   per-device refusals on the H60B0 uplighter.
 
 The actions run on a real ``hass`` through ``hass.services.async_call``, so
 every payload passes the real schema. The coordinator is a mock and the raw
@@ -719,7 +721,11 @@ class TestSetMusicMode:
         with pytest.raises(ServiceValidationError) as err:
             await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="disco")
         assert err.value.translation_key == "music_effect_unsupported"
-        assert err.value.translation_placeholders == {"device": "String lights", "effect": "disco"}
+        assert err.value.translation_placeholders == {
+            "device": "String lights",
+            "effect": "disco",
+            "effects": "energic, rhythm, separation, hopping, piano_keys, fountain, day_and_night",
+        }
         route.assert_not_awaited()
 
     async def test_a_palette_on_rhythm_is_a_translated_error(self, hass, actions, route) -> None:
@@ -742,4 +748,78 @@ class TestSetMusicMode:
     async def test_the_schema_refuses_bad_values(self, hass, actions, route, data) -> None:
         with pytest.raises(vol.Invalid):
             await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="energic", **data)
+        route.assert_not_awaited()
+
+
+_SHINY_SOFT = [
+    _written(0xA3, 0x00, 0x01, 0x02, 0x41, 0x31, 0x07, *_RAINBOW, checksum=0x57),
+    _written(0xA3, 0xFF, *_RAINBOW_REST, 0x01, checksum=0xD6),
+    _written(0x33, 0x05, 0x13, 0x31, 0x63, checksum=0x77),
+]
+_RAINBOW_PALETTE = [
+    [0xFF, 0x00, 0x00],
+    [0xFF, 0x7F, 0x00],
+    [0xFF, 0xFF, 0x00],
+    [0x00, 0xFF, 0x00],
+    [0x00, 0x00, 0xFF],
+    [0x00, 0xFF, 0xFF],
+    [0x8B, 0x00, 0xFF],
+]
+
+
+def _music_options() -> list[str]:
+    import yaml
+
+    with open("custom_components/govee/services.yaml", encoding="utf-8") as handle:
+        fields = yaml.safe_load(handle)[raw_actions.SERVICE_SET_MUSIC_MODE]["fields"]
+    return fields["effect"]["selector"]["select"]["options"]
+
+
+class TestMusicEffectChoices:
+    def test_the_dropdown_lists_every_profiles_effects(self) -> None:
+        """A drift guard: the dropdown is hand-written, the music tables are truth."""
+        from custom_components.govee.api.protocol import profiles
+
+        names = {name for profile in profiles.PROFILES.values() if profile.music for name in profile.music.effects}
+        options = _music_options()
+        assert len(options) == len(set(options))
+        assert set(options) == names
+
+    def test_every_effect_has_a_label(self) -> None:
+        import json
+
+        for path in ("custom_components/govee/strings.json", "custom_components/govee/translations/en.json"):
+            with open(path, encoding="utf-8") as handle:
+                labels = json.load(handle)["selector"]["music_effect"]["options"]
+            assert set(labels) == set(_music_options()), path
+
+    async def test_an_uplighter_effect_is_byte_exact(self, hass, actions, route) -> None:
+        actions["coordinator"] = _coordinator(_light("H60B0"))
+        await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="shiny", soft=True, palette=_RAINBOW_PALETTE)
+        assert _sent(route) == _SHINY_SOFT
+
+    async def test_the_uplighter_refuses_a_string_light_effect(self, hass, actions, route) -> None:
+        actions["coordinator"] = _coordinator(_light("H60B0"))
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="energic")
+        assert err.value.translation_key == "music_effect_unsupported"
+        assert err.value.translation_placeholders == {
+            "device": "String lights",
+            "effect": "energic",
+            "effects": "custom, stippling, hopping, flowing_light, luminous, bloom, rhythm, shiny",
+        }
+        route.assert_not_awaited()
+
+    async def test_the_string_lights_refuse_an_uplighter_effect(self, hass, actions, route) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="bloom")
+        assert err.value.translation_key == "music_effect_unsupported"
+        route.assert_not_awaited()
+
+    async def test_a_manual_color_on_the_uplighter_is_a_translated_error(self, hass, actions, route) -> None:
+        actions["coordinator"] = _coordinator(_light("H60B0"))
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="rhythm", manual_color=[255, 0, 0])
+        assert err.value.translation_key == "music_manual_color_unsupported"
+        assert err.value.translation_placeholders == {"device": "String lights"}
         route.assert_not_awaited()

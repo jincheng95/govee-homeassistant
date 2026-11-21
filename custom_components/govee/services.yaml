@@ -534,6 +534,12 @@ set_music_mode:
             - piano_keys
             - fountain
             - day_and_night
+            - custom
+            - stippling
+            - flowing_light
+            - luminous
+            - bloom
+            - shiny
     sensitivity:
       required: false
       default: 99

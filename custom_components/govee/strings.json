@@ -232,7 +232,13 @@
         "hopping": "Hopping",
         "piano_keys": "Piano keys",
         "fountain": "Fountain",
-        "day_and_night": "Day and night"
+        "day_and_night": "Day and night",
+        "custom": "Custom",
+        "stippling": "Stippling",
+        "flowing_light": "Flowing light",
+        "luminous": "Luminous",
+        "bloom": "Bloom",
+        "shiny": "Shiny"
       }
     }
   },
@@ -945,7 +951,7 @@
         },
         "manual_color": {
           "name": "Manual color",
-          "description": "One fixed color instead of the automatic colors."
+          "description": "One fixed color instead of the automatic colors. Not every light takes one."
         },
         "palette": {
           "name": "Palette",
@@ -1065,7 +1071,10 @@
       "message": "{kelvin} K is outside the {minimum}-{maximum} K range of {device}."
     },
     "music_effect_unsupported": {
-      "message": "{effect} is not a music effect of {device}."
+      "message": "{effect} is not a music effect of {device}. Its effects are {effects}."
+    },
+    "music_manual_color_unsupported": {
+      "message": "{device} takes no manual color in music mode."
     },
     "music_palette_unsupported": {
       "message": "The {effect} music effect takes no palette."
