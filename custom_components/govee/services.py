@@ -817,6 +817,11 @@ def async_setup_services(hass: HomeAssistant) -> None:
         schema=SERVICE_REQUEST_STATUS_SCHEMA,
     )
 
+    # Imported here because raw_actions reads this module's helpers.
+    from .raw_actions import async_setup_raw_actions
+
+    async_setup_raw_actions(hass)
+
 
 def _targeted_govee_device_ids(hass: HomeAssistant, call: ServiceCall) -> list[str]:
     """Every Govee device id the call's ``target:`` points at, in a stable order.

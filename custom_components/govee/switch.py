@@ -39,7 +39,9 @@ from .const import (
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .entity import GoveeEntity
-from .api.raw_router import async_zone_power
+from .api.protocol import Capability
+from .api.raw_router import async_device_setting, async_zone_power
+from .raw_status import device_settings, record_settings
 from .zone_state import note_zone_power, register_zone_switch, zone_switch_suppressed
 from .models import (
     GoveeDevice,
@@ -656,6 +658,11 @@ class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity)
     Govee does not report this toggle back on poll, so state is optimistic and
     restored across restarts via RestoreEntity — the same approach the named
     light and light-zone switches take.
+
+    A profile that encodes ``Capability.GRADIENT`` takes the raw frame first;
+    the cloud toggle is the fallback. Such a device also reports the setting
+    in raw status frames (:mod:`.raw_status`), and a report wins over the
+    optimistic value.
     """
 
     _attr_translation_key = "govee_segment_blending"
@@ -683,27 +690,28 @@ class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity)
 
     @property
     def is_on(self) -> bool:
-        """Return True if segment paints blend across boundaries (optimistic)."""
-        return self._is_on
+        """Return True if segment paints blend across boundaries."""
+        reported = device_settings(self.coordinator, self._device_id).gradient
+        return self._is_on if reported is None else reported
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Blend the next segment paint across segment boundaries."""
-        success = await self.coordinator.async_control_device(
-            self._device_id,
-            ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=True),
-        )
-        if success:
-            self._is_on = True
-            self.async_write_ha_state()
+        await self._async_set(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Leave the next segment paint's boundaries hard-edged."""
-        success = await self.coordinator.async_control_device(
+        await self._async_set(False)
+
+    async def _async_set(self, enabled: bool) -> None:
+        success = await async_device_setting(
+            self.coordinator, self._device, Capability.GRADIENT, lambda codec: codec.gradient(enabled)
+        ) or await self.coordinator.async_control_device(
             self._device_id,
-            ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=False),
+            ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=enabled),
         )
         if success:
-            self._is_on = False
+            self._is_on = enabled
+            record_settings(self.coordinator, self._device_id, gradient=enabled)
             self.async_write_ha_state()
 
 

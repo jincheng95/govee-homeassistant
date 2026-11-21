@@ -15,10 +15,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .diy import DiyZoneEffect, all_off, encode_payload
-from .encoders import ENCODERS
+from .encoders import ENCODERS, constant, music_select
 from .errors import DiyEffectError, GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
-from .frames import ptreal_message, segment_mask
-from .packets import upload_effect
+from .frames import ptreal_message, rgb_bytes, segment_mask
+from .packets import chunk_effect, upload_effect
 from .profiles import (
     Capability,
     CapabilitySpec,
@@ -106,8 +106,7 @@ class GoveeCodec:
         return self._encode(Capability.BRIGHTNESS, percent=percent)
 
     def query(self, command_type: int) -> bytes:
-        """Build an ``aa <commandType>`` frame. Nothing will answer it — see
-        :mod:`.client`. Present for completeness and golden-frame coverage."""
+        """Build an ``aa <commandType>`` frame. Only MQTT ``ptReal`` carries an answer back."""
         return self._encode(Capability.QUERY, command_type=command_type)
 
     def mode(self, name: str, *, index: int = 0, marker: int | None = None) -> bytes:
@@ -120,6 +119,150 @@ class GoveeCodec:
         if isinstance(sub_mode, Unknown):
             raise UnknownEncodingError(f"{self.profile.sku} mode {name!r} sub-mode byte is UNKNOWN")
         return self._encode(Capability.MODE_SELECT, sub_mode=sub_mode, index=index, marker=marker)
+
+    def gradient(self, on: bool) -> bytes:
+        """Blend segment paints across segment boundaries, or keep them hard-edged."""
+        return self._encode(Capability.GRADIENT, on=on)
+
+    def power_off_memory(self, behaviour: int) -> bytes:
+        """What the device does when power returns: 0 last state, 1 on, 2 off."""
+        return self._encode(Capability.POWER_OFF_MEMORY, behaviour=behaviour)
+
+    def music_effect(
+        self,
+        effect: int | str,
+        *,
+        sensitivity: int,
+        colors: Sequence[tuple[int, int, int]] | None = None,
+        soft: bool = False,
+        manual_color: tuple[int, int, int] | None = None,
+    ) -> list[bytes]:
+        """Build a music-effect selection: an optional palette upload, then the commit.
+
+        Args:
+            effect: An effect name from the profile's music table, or a raw id.
+            sensitivity: Microphone sensitivity, 0 to the profile's maximum.
+            colors: The palette to upload first. None sends the commit alone.
+            soft: Soft rather than dynamic response.
+            manual_color: One fixed colour instead of the automatic colours.
+
+        Returns:
+            Frames to send in order, in one envelope.
+
+        Raises:
+            UnsupportedCapabilityError: The SKU has no music table, the effect
+                takes no palette, or the commit carries no options.
+            GoveeProtocolError: A name, sensitivity or palette is out of range.
+        """
+        spec = self.profile.music
+        sub_mode = self.profile.modes.get("music")
+        if spec is None or not isinstance(sub_mode, int):
+            raise UnsupportedCapabilityError(f"{self.profile.sku} has no music effect table")
+        if isinstance(effect, str):
+            try:
+                effect = spec.effects[effect.strip().lower()]
+            except KeyError:
+                raise GoveeProtocolError(
+                    f"{self.profile.sku} has no music effect {effect!r} (have: {sorted(spec.effects)})"
+                ) from None
+        if not 0 <= effect <= 0xFF:
+            raise GoveeProtocolError(f"music effect id {effect} out of byte range")
+        if not 0 <= sensitivity <= spec.max_sensitivity:
+            raise GoveeProtocolError(f"music sensitivity {sensitivity} outside 0-{spec.max_sensitivity}")
+        if (soft or manual_color is not None) and not spec.commit_options:
+            raise UnsupportedCapabilityError(f"{self.profile.sku} music commit carries no soft or manual colour")
+
+        frames: list[bytes] = []
+        if colors is not None:
+            if effect not in spec.palette_effects:
+                raise UnsupportedCapabilityError(f"music effect {effect:#04x} takes no palette")
+            if not 1 <= len(colors) <= spec.max_colors:
+                raise GoveeProtocolError(f"{len(colors)} music palette colours, allowed 1-{spec.max_colors}")
+            payload = bytearray([effect, len(colors)])
+            for rgb in colors:
+                payload += rgb_bytes(rgb)
+            payload += spec.palette_tails.get(effect, b"")
+            frames += chunk_effect(payload, marker=spec.marker)
+        frames.append(
+            music_select(sub_mode=sub_mode, effect=effect, sensitivity=sensitivity, soft=soft, manual_rgb=manual_color)
+        )
+        return frames
+
+    def timer_slots(self) -> int:
+        """How many on/off timers the device keeps."""
+        return constant(self._spec(Capability.LIGHT_TIMER).constants, "slots")
+
+    def light_timer(
+        self,
+        slot: int,
+        *,
+        enabled: bool,
+        turn_on: bool,
+        hour: int,
+        minute: int,
+        weekdays: Iterable[int] = (),
+    ) -> bytes:
+        """Set one on/off timer.
+
+        Args:
+            slot: 0-based timer slot, below :meth:`timer_slots`.
+            enabled: Whether the timer runs.
+            turn_on: True turns the light on at the time, False turns it off.
+            hour: Hour of day, 0-23.
+            minute: Minute, 0-59.
+            weekdays: Days to repeat on, 0 Monday to 6 Sunday. No days runs once.
+        """
+        return self._encode(
+            Capability.LIGHT_TIMER,
+            slot=slot,
+            enabled=enabled,
+            turn_on=turn_on,
+            hour=hour,
+            minute=minute,
+            weekdays=weekdays,
+        )
+
+    def sleep_timer(self, *, enabled: bool, start_brightness: int, minutes: int) -> bytes:
+        """Dim the light to off over ``minutes``, starting at ``start_brightness`` percent."""
+        return self._encode(
+            Capability.SLEEP_TIMER, enabled=enabled, start_brightness=start_brightness, minutes=minutes
+        )
+
+    def wake_up(
+        self,
+        *,
+        enabled: bool,
+        end_brightness: int,
+        hour: int,
+        minute: int,
+        weekdays: Iterable[int] = (),
+        duration: int,
+        kelvin: int,
+        white_rgb: tuple[int, int, int],
+    ) -> bytes:
+        """Brighten the light so it reaches ``end_brightness`` at the given time.
+
+        Args:
+            enabled: Whether the wake-up runs.
+            end_brightness: Brightness reached at the end, in percent.
+            hour: Hour of day the wake-up ends, 0-23.
+            minute: Minute, 0-59.
+            weekdays: Days to repeat on, 0 Monday to 6 Sunday. No days runs once.
+            duration: Minutes the light takes to brighten.
+            kelvin: Colour temperature, clamped to the profile range.
+            white_rgb: RGB approximation of ``kelvin``, carried beside it.
+        """
+        return self._encode(
+            Capability.WAKE_UP,
+            enabled=enabled,
+            end_brightness=end_brightness,
+            hour=hour,
+            minute=minute,
+            weekdays=weekdays,
+            duration=duration,
+            kelvin=self.clamp_kelvin(kelvin),
+            white_rgb=white_rgb,
+        )
 
     def bar_power_mask(self, mask: int) -> bytes:
         """H6046 two-bar power mask (0x01 = bar A, 0x10 = bar B, 0x11 = both)."""
@@ -218,6 +361,33 @@ class GoveeCodec:
         spec = self._zone(zone)
         mask = self._require_mask(spec, segments)
         return self._encode(Capability.SEGMENT_COLOR, spec, rgb=rgb, mask=mask, kelvin=kelvin, white_rgb=white_rgb)
+
+    def segment_color_temp(
+        self,
+        kelvin: int,
+        white_rgb: tuple[int, int, int],
+        *,
+        segments: Iterable[int] | None = None,
+        zone: str = "segments",
+    ) -> bytes:
+        """Set segments to a colour temperature.
+
+        Args:
+            kelvin: Colour temperature, clamped to the profile range.
+            white_rgb: RGB approximation of ``kelvin``, carried beside it.
+            segments: 0-based segments; None means every segment.
+            zone: The segmented zone.
+        """
+        spec = self._zone(zone)
+        mask = self._require_mask(spec, segments)
+        return self._encode(
+            Capability.SEGMENT_COLOR_TEMP,
+            spec,
+            rgb=(0xFF, 0xFF, 0xFF),
+            mask=mask,
+            kelvin=self.clamp_kelvin(kelvin),
+            white_rgb=white_rgb,
+        )
 
     def segment_brightness(
         self, percent: int, *, segments: Iterable[int] | None = None, zone: str = "segments"

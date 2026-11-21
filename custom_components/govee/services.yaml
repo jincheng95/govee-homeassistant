@@ -371,3 +371,189 @@ paint_bulbs:
           min: 0
           max: 100
           unit_of_measurement: "%"
+
+set_light_timer:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    slot:
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+    enabled:
+      required: false
+      default: true
+      selector:
+        boolean:
+    action:
+      required: false
+      example: turn_off
+      selector:
+        select:
+          translation_key: timer_action
+          options:
+            - turn_on
+            - turn_off
+    time:
+      required: false
+      example: "23:30:00"
+      selector:
+        time:
+    weekdays:
+      required: false
+      example: "[monday, friday]"
+      selector:
+        select:
+          translation_key: weekday
+          multiple: true
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+
+set_sleep_timer:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    enabled:
+      required: false
+      default: true
+      selector:
+        boolean:
+    minutes:
+      required: false
+      default: 15
+      selector:
+        number:
+          min: 1
+          max: 255
+          unit_of_measurement: min
+    start_brightness:
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+
+set_wake_up:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    enabled:
+      required: false
+      default: true
+      selector:
+        boolean:
+    time:
+      required: false
+      example: "07:00:00"
+      selector:
+        time:
+    weekdays:
+      required: false
+      example: "[monday, tuesday, wednesday, thursday, friday]"
+      selector:
+        select:
+          translation_key: weekday
+          multiple: true
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+    duration:
+      required: false
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 255
+          unit_of_measurement: min
+    end_brightness:
+      required: false
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    color_temp_kelvin:
+      required: false
+      default: 2700
+      selector:
+        color_temp:
+          unit: kelvin
+          min: 2700
+          max: 9000
+
+set_music_mode:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    effect:
+      required: true
+      example: rhythm
+      selector:
+        select:
+          translation_key: music_effect
+          mode: dropdown
+          options:
+            - energic
+            - rhythm
+            - separation
+            - hopping
+            - piano_keys
+            - fountain
+            - day_and_night
+    sensitivity:
+      required: false
+      default: 99
+      selector:
+        number:
+          min: 0
+          max: 99
+          mode: slider
+    soft:
+      required: false
+      default: false
+      selector:
+        boolean:
+    manual_color:
+      required: false
+      example: "[255, 0, 0]"
+      selector:
+        color_rgb:
+    palette:
+      required: false
+      example: "[[255, 0, 0], [0, 0, 255]]"
+      selector:
+        object:

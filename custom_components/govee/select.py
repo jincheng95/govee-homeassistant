@@ -35,6 +35,7 @@ from .const import (
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .platforms.diy_effect import async_diy_select_entities
+from .platforms.device_settings import async_device_setting_select_entities
 from .platforms.scene_adjust import async_scene_adjust_select_entities, async_start_scene_locally
 from .entity import GoveeEntity
 from .h6104 import GoveeTVAreaSelect
@@ -288,6 +289,7 @@ async def async_setup_entry(
 
     entities.extend(async_diy_select_entities(coordinator, entry))
     entities.extend(async_scene_adjust_select_entities(coordinator, entry))
+    entities.extend(async_device_setting_select_entities(coordinator, entry))
 
     # H7175 kettles: Brew mode (selects without switching the kettle on).
     entities.extend(kettle_selects(coordinator))

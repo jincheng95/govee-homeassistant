@@ -169,6 +169,9 @@ from .request_budget import (
 from .api.segment_readback import decode_payload as decode_segment_payload
 from .light_schedule import apply_schedule_report
 from .scene_catalogue import apply_scene_report
+from .api.segment_readback import payload_frames
+from .raw_status import apply_raw_status, async_query_settings as async_query_raw_settings
+from .api.raw_router import async_color_temp as async_raw_color_temp
 from .segment_limit import pushes_segment_readback, verified_segment_count
 
 from .models import (
@@ -3946,6 +3949,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                             self._status_query_unanswered_skus.clear()
                     finally:
                         self._status_query_in_flight = None
+                    # Fork: raw settings reads ride the same sweep.
+                    await async_query_raw_settings(self, device_id)
         finally:
             self._status_sweep_running = False
 
@@ -4113,7 +4118,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
     @callback
     def _on_mqtt_raw_frames(self, device_id: str, payload: dict[str, Any]) -> None:
-        """Fork: reconcile segment entities from the push's `aa a5` frames.
+        """Fork: apply the push's raw status reports and `aa a5` segment frames.
+
+        Status reports (see :mod:`.raw_status`) go into coordinator state and
+        notify listeners only on a change.
 
         The H6046 light bar's status pushes carry `reference` §6.2 per-segment
         readback in ``op.command``. It arrives ~1-2 s after our own writes and
@@ -4132,6 +4140,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device = self._devices.get(device_id)
         if device is None:
             return
+        if apply_raw_status(self, device, payload_frames(payload)):
+            self.async_set_updated_data(self._states)
         # Two profile gates, both table truth, no SKU branch here. Having
         # segments is not the same as pushing readback for them: `aa a5` is a
         # BLE query answer on every other SKU, so a push carrying that header
@@ -4653,6 +4663,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             finally:
                 if self._status_query_in_flight == device_id:
                     self._status_query_in_flight = None
+            # Fork: raw settings reads ride the same request.
+            await async_query_raw_settings(self, device_id)
             return True
 
     async def _async_update_data(self) -> dict[str, GoveeDeviceState]:
@@ -5984,6 +5996,14 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         try:
             if isinstance(command, MusicModeCommand) and await self._try_mqtt_music_mode(device_id, device, command):
                 return True
+
+            # Fork: a raw colour-temperature frame, for profiles that encode one.
+            if isinstance(command, ColorTempCommand):
+                kelvin = await async_raw_color_temp(self, device, command.kelvin)
+                if kelvin is not None:
+                    self._apply_optimistic_update(device_id, ColorTempCommand(kelvin=kelvin))
+                    self.async_set_updated_data(self._states)
+                    return True
 
             if isinstance(command, ToggleCommand) and await self._try_ptreal_light_zone(device_id, device, command):
                 return True

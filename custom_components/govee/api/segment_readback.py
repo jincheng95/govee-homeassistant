@@ -176,12 +176,25 @@ def decode_payload(
         Zero-based segment index → reading, empty when this payload carried no
         readback frames.
     """
+    return decode_frames(payload_frames(data), segment_count=segment_count)
+
+
+def payload_frames(data: Mapping[str, Any]) -> list[bytes]:
+    """The raw frames base64-encoded in one inbound payload's ``op.command``.
+
+    Args:
+        data: The parsed AWS IoT message. Any other shape yields nothing.
+
+    Returns:
+        The decoded frames, in order. Malformed and oversized entries are
+        skipped.
+    """
     op = data.get("op")
     if not isinstance(op, Mapping):
-        return {}
+        return []
     commands = op.get("command")
     if not isinstance(commands, (list, tuple)):
-        return {}
+        return []
 
     frames: list[bytes] = []
     # Bounded before decoding: `op.command` is remote input, and a base64
@@ -199,5 +212,4 @@ def decode_payload(
         except (binascii.Error, ValueError):
             _LOGGER.debug("Failed to base64-decode an op.command entry")
             continue
-
-    return decode_frames(frames, segment_count=segment_count)
+    return frames

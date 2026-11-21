@@ -98,9 +98,15 @@ class Capability(str, Enum):
     ZONE_FLOW_RATE = "zone_flow_rate"
     SEGMENT_COLOR = "segment_color"
     SEGMENT_BRIGHTNESS = "segment_brightness"
+    SEGMENT_COLOR_TEMP = "segment_color_temp"
     BAR_POWER_MASK = "bar_power_mask"
     MODE_SELECT = "mode_select"
     QUERY = "query"
+    GRADIENT = "gradient"
+    POWER_OFF_MEMORY = "power_off_memory"
+    LIGHT_TIMER = "light_timer"
+    SLEEP_TIMER = "sleep_timer"
+    WAKE_UP = "wake_up"
 
 
 @dataclass(frozen=True)
@@ -242,6 +248,42 @@ class DiyEffectSpec:
 
 
 @dataclass(frozen=True)
+class MusicEffectSpec:
+    """How this SKU takes a music effect.
+
+    The commit is ``33 05 <music sub-mode> <effect> <sensitivity>``, followed by
+    ``<soft> <manual> <R G B>`` when ``commit_options`` is set. A palette effect
+    may first upload ``<effect> <count> <RGB>xN <tail>`` as an ``0xA3``
+    multipacket under ``marker``, where ``<tail>`` is that effect's constant
+    from ``palette_tails``.
+    """
+
+    marker: int
+    effects: Mapping[str, int]
+    """Effect name to effect id."""
+
+    palette_effects: frozenset[int]
+    """Effect ids that take a palette upload."""
+
+    max_sensitivity: int
+    """Highest sensitivity the commit takes; the lowest is 0."""
+
+    max_colors: int
+    """Largest palette the upload takes."""
+
+    palette_tails: Mapping[int, bytes] = field(default_factory=dict)
+    """Bytes written after the colours, per effect id. Their meaning is not known."""
+
+    default_palette: tuple[tuple[int, int, int], ...] = ()
+    """The palette a caller uploads when it has none of its own."""
+
+    commit_options: bool = False
+    """Whether the commit carries the soft flag and a manual colour."""
+
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class DeviceProfile:
     """Everything the codec needs to talk to one SKU."""
 
@@ -261,6 +303,7 @@ class DeviceProfile:
     modes: Mapping[str, ConstantValue] = field(default_factory=dict)
     constraints: tuple[MaxSimultaneousZones, ...] = ()
     diy: DiyEffectSpec | None = None
+    music: MusicEffectSpec | None = None
     segment_zone: SegmentZoneSpec | None = None
     """Set when this SKU's segments are painted with the ZONE frame + a mask."""
     segment_readback: bool = False
@@ -282,6 +325,8 @@ class DeviceProfile:
     """Whether status pushes carry the ``aa 11`` / ``aa 12`` / ``aa 23`` schedule frames."""
     paint_bulbs: int = 0
     """How many LEDs the :mod:`.paint` upload addresses one by one; 0 for none."""
+    power_push: bool = False
+    """Whether this SKU pushes ``ee 30 01 <on>`` when its power changes (:mod:`.status`)."""
     echo_lag_seconds: float = 0.0
     """How long this SKU keeps reporting its PRE-command state after a write.
 
@@ -605,7 +650,7 @@ H80C5: Final = DeviceProfile(
     sku="H80C5",
     goods_type=260,
     name="Christmas string lights",
-    kelvin=KelvinRange(2000, 9000, verified=False, note="cloud-declared range; not swept on hardware"),
+    kelvin=KelvinRange(2700, 9000, verified=True, note="range of the raw colour-temperature frame"),
     # Both pipes are hardware-verified with `aa a5` readback after the write.
     transports=(Transport.LAN_RAW, Transport.MQTT_PTREAL),
     # Not read off an advertisement. The device declares encryption support,
@@ -617,7 +662,9 @@ H80C5: Final = DeviceProfile(
             name="Segments",
             zone_byte=None,
             segments=10,
-            capabilities=frozenset({Capability.SEGMENT_COLOR, Capability.SEGMENT_BRIGHTNESS}),
+            capabilities=frozenset(
+                {Capability.SEGMENT_COLOR, Capability.SEGMENT_BRIGHTNESS, Capability.SEGMENT_COLOR_TEMP}
+            ),
             note="300 LEDs in 10 segments; `aa a5 03` returns segments 9 and 10 only",
         ),
     ),
@@ -633,16 +680,62 @@ H80C5: Final = DeviceProfile(
             "segment_level_v2",
             {"sub_mode": 0x15, "attribute": 0x02, "mask_offset": 5},
         ),
+        # The colour frame again: full-white RGB, then the Kelvin and its RGB
+        # white point.
+        Capability.SEGMENT_COLOR_TEMP: CapabilitySpec(
+            "segment_color_v2",
+            {"sub_mode": 0x15, "attribute": 0x01, "mask_offset": 12},
+        ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
+        Capability.GRADIENT: CapabilitySpec("gradient"),
+        Capability.POWER_OFF_MEMORY: CapabilitySpec("power_off_memory", {"sub_type": 0x02}),
+        Capability.LIGHT_TIMER: CapabilitySpec("light_timer", {"slots": 4}),
+        # The trailer's meaning is not known. It is written as 03 e8.
+        Capability.SLEEP_TIMER: CapabilitySpec("sleep_timer", {"trailer": 0x03E8}),
+        Capability.WAKE_UP: CapabilitySpec("wake_up"),
     },
-    modes={"scene": 0x04},
+    modes={"scene": 0x04, "music": 0x13},
+    music=MusicEffectSpec(
+        marker=0x41,
+        effects={
+            "energic": 0x05,
+            "rhythm": 0x03,
+            "separation": 0x32,
+            "hopping": 0x33,
+            "piano_keys": 0x34,
+            "fountain": 0x35,
+            "day_and_night": 0x37,
+        },
+        palette_effects=frozenset({0x05, 0x32, 0x33, 0x34, 0x35, 0x37}),
+        max_sensitivity=99,
+        max_colors=8,
+        palette_tails={
+            0x32: bytes([0x03, 0x00, 0x55]),
+            0x33: bytes([0x01, 0x01, 0x01, 0x19, 0x62, 0x01, 0x02, 0x3C, 0x64]),
+            0x34: bytes([0x00, 0x0A, 0x23, 0x01, 0x05]),
+            0x35: bytes([0x01, 0x02, 0x1A, 0x55]),
+            0x37: bytes([0x08, 0x14]),
+        },
+        default_palette=(
+            (0xFF, 0x00, 0x00),
+            (0xFF, 0x7F, 0x00),
+            (0xFF, 0xFF, 0x00),
+            (0x00, 0xFF, 0x00),
+            (0x00, 0x00, 0xFF),
+            (0x00, 0xFF, 0xFF),
+            (0x8B, 0x00, 0xFF),
+        ),
+        commit_options=True,
+        note="tails verified with the seven-colour default palette only",
+    ),
     # `aa a5` answers a query on this SKU; it is not pushed unsolicited.
     segment_readback=False,
     # One scene of each uploaded blob kind read back by its catalogue code.
     scene_upload=True,
     paint_bulbs=300,
     schedule_report=True,
+    power_push=True,
 )
 
 PROFILES: Final[Mapping[str, DeviceProfile]] = {profile.sku: profile for profile in (H60B0, H6046, H6076, H80C5)}
@@ -696,6 +789,17 @@ def validate_table() -> None:
                     f"{profile.sku} points its segments at zone {segment_zone.key!r}, "
                     "which does not encode zone_color"
                 )
+        if profile.music is not None:
+            music = profile.music
+            if not isinstance(profile.modes.get("music"), int):
+                raise GoveeProtocolError(f"{profile.sku} declares music effects but no 'music' sub-mode")
+            ids = set(music.effects.values())
+            if not all(0 <= effect <= 0xFF for effect in ids):
+                raise GoveeProtocolError(f"{profile.sku} music effect id out of byte range")
+            if not music.palette_effects <= ids or not set(music.palette_tails) <= music.palette_effects:
+                raise GoveeProtocolError(f"{profile.sku} names a palette music effect it does not list")
+            if len(music.default_palette) > music.max_colors:
+                raise GoveeProtocolError(f"{profile.sku} default music palette exceeds {music.max_colors} colours")
         if profile.diy is not None:
             if not profile.diy.zones:
                 raise GoveeProtocolError(

@@ -6,14 +6,18 @@ the cloud MQTT ``ptReal`` passthrough, and reports False when no tier accepted
 ("not handled, use the cloud command you had"). No tier raises at the entity and
 no tier confirms, so callers keep optimistic state. Also home to the per-segment
 paint (:func:`async_segment_color`), which picks its wire form from the profile,
-and to zone power (:func:`async_zone_power`).
+to whole-device colour temperature (:func:`async_color_temp`), to device
+settings and schedules (:func:`async_device_setting`, :func:`async_device_frames`) and to zone
+power (:func:`async_zone_power`).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Final
+
+from homeassistant.util import color as color_util
 
 from ..lan_udp_health import lan_writable
 from ..segment_limit import manual_segment_count, segment_count
@@ -29,6 +33,7 @@ from .protocol import (
 
 if TYPE_CHECKING:
     from ..coordinator import GoveeCoordinator
+    from ..models import GoveeDevice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -229,6 +234,114 @@ def zone_power_supported(profile: DeviceProfile, zone_key: str) -> bool:
     if zone.zone_byte is None:
         return False
     return profile.supports(Capability.ZONE_POWER, zone=zone_key)
+
+
+# Whole-device colour temperature (the coordinator's cloud tiers)
+
+
+async def async_color_temp(coordinator: GoveeCoordinator, device: GoveeDevice, kelvin: int) -> int | None:
+    """Try to set a colour temperature on every segment over a raw pipe.
+
+    The frame carries HA's RGB approximation of the clamped Kelvin as its white
+    point. Like the segment paint, it is refused when the device's segment
+    count disagrees with the profile's mask width.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device: The device to set.
+        kelvin: The requested colour temperature.
+
+    Returns:
+        The Kelvin sent, clamped to the profile range, or None when no tier
+        took the frame and the caller keeps its own path.
+    """
+    profile = profile_for(device.sku)
+    if device.is_group or profile is None or not raw_write_enabled(coordinator):
+        return None
+    try:
+        zone = profile.zone(SEGMENT_ZONE_KEY)
+        if not profile.supports(Capability.SEGMENT_COLOR_TEMP, zone=SEGMENT_ZONE_KEY):
+            return None
+    except GoveeProtocolError:
+        return None
+    if zone.segments != segment_count(device):
+        return None
+
+    codec = GoveeCodec(profile)
+    sent = codec.clamp_kelvin(kelvin)
+    frame = codec.segment_color_temp(sent, white_point(sent))
+    if not await async_route_frames(
+        coordinator, device.device_id, device.sku, profile, [frame], what=f"colour temperature -> {sent} K"
+    ):
+        return None
+    return sent
+
+
+def white_point(kelvin: int) -> tuple[int, int, int]:
+    """HA's RGB approximation of ``kelvin``, the white point raw CT frames carry."""
+    red, green, blue = color_util.color_temperature_to_rgb(kelvin)
+    return round(red), round(green), round(blue)
+
+
+# Device settings (the gradient switch and the settings selects)
+
+
+async def async_device_setting(
+    coordinator: GoveeCoordinator,
+    device: GoveeDevice,
+    capability: Capability,
+    build: Callable[[GoveeCodec], bytes],
+) -> bool:
+    """Try to write one device setting over a raw pipe.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device: The device to write.
+        capability: The setting's capability, e.g. ``Capability.GRADIENT``.
+        build: Builds the frame from the device's codec.
+
+    Returns:
+        True when a tier took the frame. False when the profile does not
+        encode the setting, the raw option is off, or no tier took it.
+    """
+    if not supports_setting(device.sku, capability):
+        return False
+    return await async_device_frames(coordinator, device, lambda codec: [build(codec)], what=capability.value)
+
+
+async def async_device_frames(
+    coordinator: GoveeCoordinator,
+    device: GoveeDevice,
+    build: Callable[[GoveeCodec], Sequence[bytes]],
+    *,
+    what: str,
+) -> bool:
+    """Try to write frames built from the device's codec over a raw pipe.
+
+    The caller checks that the profile encodes what ``build`` asks for.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device: The device to write.
+        build: Builds the frames, in send order, from the device's codec.
+        what: Human-readable intent, for the debug log.
+
+    Returns:
+        True when a tier took the frames. False for a group, a SKU with no
+        profile, the raw option off, or no tier taking them.
+    """
+    profile = profile_for(device.sku)
+    if device.is_group or profile is None or not raw_write_enabled(coordinator):
+        return False
+    return await async_route_frames(
+        coordinator, device.device_id, device.sku, profile, list(build(GoveeCodec(profile))), what=what
+    )
+
+
+def supports_setting(sku: str, capability: Capability) -> bool:
+    """Whether the SKU's profile encodes ``capability``."""
+    profile = profile_for(sku)
+    return profile is not None and profile.supports(capability)
 
 
 # Per-segment colour (the segment light entities)

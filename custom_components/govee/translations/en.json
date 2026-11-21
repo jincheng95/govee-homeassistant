@@ -206,6 +206,34 @@
         "both": "Both (grouped and individual entities)",
         "groups": "Custom groups (one entity per group you define)"
       }
+    },
+    "weekday": {
+      "options": {
+        "monday": "Monday",
+        "tuesday": "Tuesday",
+        "wednesday": "Wednesday",
+        "thursday": "Thursday",
+        "friday": "Friday",
+        "saturday": "Saturday",
+        "sunday": "Sunday"
+      }
+    },
+    "timer_action": {
+      "options": {
+        "turn_on": "Turn on",
+        "turn_off": "Turn off"
+      }
+    },
+    "music_effect": {
+      "options": {
+        "energic": "Energic",
+        "rhythm": "Rhythm",
+        "separation": "Separation",
+        "hopping": "Hopping",
+        "piano_keys": "Piano keys",
+        "fountain": "Fountain",
+        "day_and_night": "Day and night"
+      }
     }
   },
   "entity": {
@@ -296,6 +324,14 @@
         "state": {
           "part": "Part of screen",
           "whole": "Whole screen"
+        }
+      },
+      "power_off_memory": {
+        "name": "Power-off memory",
+        "state": {
+          "last_state": "Last state",
+          "on": "On",
+          "off": "Off"
         }
       }
     },
@@ -783,6 +819,122 @@
         }
       }
     },
+    "set_light_timer": {
+      "name": "Set light timer",
+      "description": "Sets one of the light's on-device on/off timers over the local raw-frame connection. The light keeps running the timer without Home Assistant.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "slot": {
+          "name": "Timer",
+          "description": "Which timer to set, counting from 1."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether the timer runs. An enabled timer needs a time and an action."
+        },
+        "action": {
+          "name": "Action",
+          "description": "What the timer does at its time."
+        },
+        "time": {
+          "name": "Time",
+          "description": "Time of day the timer fires."
+        },
+        "weekdays": {
+          "name": "Repeat on",
+          "description": "Days to repeat on. Leave empty to run once."
+        }
+      }
+    },
+    "set_sleep_timer": {
+      "name": "Set sleep timer",
+      "description": "Sets the light's on-device sleep timer over the local raw-frame connection. The light dims from the start brightness to off over the given minutes.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether the sleep timer runs."
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "How long the light takes to dim to off."
+        },
+        "start_brightness": {
+          "name": "Start brightness",
+          "description": "Brightness the dimming starts from, in percent."
+        }
+      }
+    },
+    "set_wake_up": {
+      "name": "Set wake-up",
+      "description": "Sets the light's on-device wake-up over the local raw-frame connection. The light brightens over the duration so it reaches the end brightness at the time.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether the wake-up runs. An enabled wake-up needs a time."
+        },
+        "time": {
+          "name": "Time",
+          "description": "Time of day the light reaches the end brightness."
+        },
+        "weekdays": {
+          "name": "Repeat on",
+          "description": "Days to repeat on. Leave empty to run once."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "Minutes the light takes to brighten."
+        },
+        "end_brightness": {
+          "name": "End brightness",
+          "description": "Brightness reached at the time, in percent."
+        },
+        "color_temp_kelvin": {
+          "name": "Color temperature",
+          "description": "White the light wakes up in, in kelvin, within the light's range."
+        }
+      }
+    },
+    "set_music_mode": {
+      "name": "Set music mode",
+      "description": "Starts one of the light's on-device music effects over the local raw-frame connection. Effects that take a palette always upload one, the given palette or the default rainbow.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "effect": {
+          "name": "Effect",
+          "description": "The music effect."
+        },
+        "sensitivity": {
+          "name": "Sensitivity",
+          "description": "Microphone sensitivity, 0 to 99."
+        },
+        "soft": {
+          "name": "Soft",
+          "description": "Respond softly instead of dynamically."
+        },
+        "manual_color": {
+          "name": "Manual color",
+          "description": "One fixed color instead of the automatic colors."
+        },
+        "palette": {
+          "name": "Palette",
+          "description": "Colors for effects that take a palette, as a list of [R, G, B] triplets (1-8 colors). Rhythm takes none."
+        }
+      }
+    },
     "paint_bulbs": {
       "name": "Paint bulbs",
       "description": "Colours individual LEDs of a string light. Named LEDs take their colour and every other LED shows the base colour. The paint replaces whatever the light was showing.",
@@ -863,6 +1015,33 @@
     },
     "invalid_tv_sensitivity": {
       "message": "TV sensitivity must be a whole number from 0 to 100."
+    },
+    "raw_action_unsupported": {
+      "message": "{device} does not support {action}."
+    },
+    "raw_action_unavailable": {
+      "message": "Could not send {action} to {device}. This needs a raw-frame option (local raw writes, BLE raw writes or AWS IoT raw writes) and a reachable device."
+    },
+    "timer_slot_out_of_range": {
+      "message": "{device} has timers 1 to {slots}."
+    },
+    "timer_needs_time_and_action": {
+      "message": "An enabled timer needs a time and an action."
+    },
+    "wake_up_needs_time": {
+      "message": "An enabled wake-up needs a time."
+    },
+    "kelvin_out_of_range": {
+      "message": "{kelvin} K is outside the {minimum}-{maximum} K range of {device}."
+    },
+    "music_effect_unsupported": {
+      "message": "{effect} is not a music effect of {device}."
+    },
+    "music_palette_unsupported": {
+      "message": "The {effect} music effect takes no palette."
+    },
+    "music_palette_too_long": {
+      "message": "A music palette takes at most {maximum} colors."
     },
     "bulb_paint_unsupported": {
       "message": "{device} does not support painting individual bulbs"

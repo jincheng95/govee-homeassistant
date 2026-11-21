@@ -23,7 +23,7 @@ from .api.protocol import (
     MaxSimultaneousZones,
     get_profile,
 )
-from .const import CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
+from .const import CONF_ENABLE_LAN_RAW_WRITE, CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -96,6 +96,15 @@ def zone_lights_enabled(entry: ConfigEntry) -> bool:
         True when zone lights should replace the zone switches.
     """
     return entry.options.get(CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS) is True
+
+
+def raw_settings_enabled(entry: ConfigEntry) -> bool:
+    """Whether the setting entities that only raw frames can carry are built.
+
+    ``enable_lan_raw_write`` decides, because every raw tier requires it.
+    Strictly a boolean check, as for :func:`zone_lights_enabled`.
+    """
+    return entry.options.get(CONF_ENABLE_LAN_RAW_WRITE) is True
 
 
 def zone_switch_suppressed(entry: ConfigEntry, sku: str, toggle_instance: str) -> bool:

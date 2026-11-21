@@ -67,6 +67,7 @@ from .const import (
     SUFFIX_DIY_SCENE_SELECT,
     SUFFIX_DIY_SPEED,
     SUFFIX_DIY_STYLE_SELECT,
+    SUFFIX_POWER_OFF_MEMORY,
     SUFFIX_SCENE_DIRECTION_SELECT,
     SUFFIX_SCENE_SPEED_SELECT,
     SUFFIX_GROUPED_SEGMENT,
@@ -85,7 +86,7 @@ from .segment_limit import (
     is_segment_group_suffix,
 )
 from .services import async_setup_services
-from .zone_state import zone_lights_enabled
+from .zone_state import raw_settings_enabled, zone_lights_enabled
 
 __all__ = ["GoveeConfigEntry"]
 
@@ -687,6 +688,10 @@ async def _async_cleanup_orphaned_entities(
                 # Fork: the scene adjustment selects follow the scenes option.
                 should_remove = True
                 removal_reason = "scenes disabled"
+            elif suffix == SUFFIX_POWER_OFF_MEMORY and not raw_settings_enabled(entry):
+                # Fork: the raw-only setting selects follow enable_lan_raw_write.
+                should_remove = True
+                removal_reason = "raw writes disabled"
             elif suffix == SUFFIX_DIY_SCENE_SELECT and not enable_diy_scenes:
                 should_remove = True
                 removal_reason = "DIY scenes disabled"
