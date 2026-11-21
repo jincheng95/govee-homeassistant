@@ -714,11 +714,11 @@
         },
         "effect": {
           "name": "Effect",
-          "description": "Whole-light effect type, for string lights. \"combo\" plays the effects named in Combine."
+          "description": "Whole-light effect type, for string lights. The numbered names, mountain_peak, candy_crush, smudge, whirlpool and flexing follow the composer tiles of the Govee app. \"combo\" plays the effects named in Combine."
         },
         "colors": {
           "name": "Colours",
-          "description": "The palette: a list of up to 8 colours, each [red, green, blue]. Most effects need at least two; fade, breathe and combo take one."
+          "description": "The palette: a list of up to 8 colours, each [red, green, blue]. Most effects need at least two. Fade, breathe, combo, ribbon, mountain_peak, candy_crush, smudge, flexing, spiral, starlight and wave take one; spin_3 needs three; bounce, whirlpool, diffuse_1 and diffuse_2 need four."
         },
         "speed": {
           "name": "Speed",
@@ -726,11 +726,19 @@
         },
         "direction": {
           "name": "Direction",
-          "description": "Leave empty for the effect's stock direction. Flame, diffuse, concentric, starlight, wave and blend take none. Flow 1 and rainbow 1 take clockwise or anticlockwise; the other numbered effects and combo take none."
+          "description": "Leave empty for the effect's stock direction. Flow 1, rainbow 1 and spin 1-2 take clockwise or anticlockwise. Flow 2-4 take up, down, clockwise, anticlockwise, expand vertically or gather vertically. Stripes take up, down, clockwise, anticlockwise and the four diagonals; rainbow 2 takes the four diagonals. Smudge and blend take up or down, whirlpool takes gather or expand horizontally, and spiral takes the four upward and downward turns. Flow, layered, rainbow, vortex and rotate take any direction; every other effect takes none."
         },
         "combine": {
           "name": "Combine",
           "description": "For the combo effect only: 1 to 4 of flow_1, rainbow_1, fade_1, marquee_3 and breathe, each once. They share the colours and speed."
+        },
+        "shape": {
+          "name": "Shape",
+          "description": "For the flexing effect only: round, square or rhomb. Leave empty for rhomb."
+        },
+        "center": {
+          "name": "Centre point",
+          "description": "For the flexing effect only: the point the shape grows from. Leave empty for center."
         }
       },
       "sections": {

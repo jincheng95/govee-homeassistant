@@ -43,7 +43,7 @@ _SPEED_AT: Mapping[int, int] = {
     14: 2, 15: 2,
     17: 2, 18: 2,
 }
-_DIRECTION_AT: Mapping[int, int] = {1: 2, 2: 2, 3: 2, 5: 2, 8: 2, 9: 2, 11: 3}
+_DIRECTION_AT: Mapping[int, int] = {1: 2, 2: 2, 3: 2, 5: 2, 8: 2, 9: 2, 11: 3, 17: 1}
 
 # Novelty and geometry effects carry a sub-type at position 1 that decides
 # whether a speed or direction byte exists at all.

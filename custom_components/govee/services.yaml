@@ -168,27 +168,48 @@ apply_diy_effect:
               mode: dropdown
               options:
                 - blend
+                - bounce_1
+                - bounce_2
+                - bounce_3
                 - breathe
+                - candy_crush
                 - combo
                 - concentric
                 - diffuse
+                - diffuse_1
+                - diffuse_2
                 - fade_1
                 - fade_2
                 - fade_3
                 - flame
+                - flexing
                 - flow
                 - flow_1
+                - flow_2
+                - flow_3
+                - flow_4
                 - layered
                 - marquee_1
                 - marquee_2
                 - marquee_3
+                - mountain_peak
                 - rainbow
                 - rainbow_1
+                - rainbow_2
+                - ribbon_1
+                - ribbon_2
                 - rotate
+                - smudge
+                - spin_1
+                - spin_2
+                - spin_3
                 - spiral
                 - starlight
+                - stripes_1
+                - stripes_2
                 - vortex
                 - wave
+                - whirlpool
         colors:
           required: false
           example: "[[255, 0, 0], [0, 255, 0]]"
@@ -236,6 +257,32 @@ apply_diy_effect:
                 - fade_1
                 - marquee_3
                 - breathe
+        shape:
+          required: false
+          example: round
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - round
+                - square
+                - rhomb
+        center:
+          required: false
+          example: center
+          selector:
+            select:
+              mode: dropdown
+              options:
+                - upper_left
+                - left_center
+                - bottom_left
+                - top_center
+                - center
+                - bottom_center
+                - upper_right
+                - right_center
+                - bottom_right
 
 send_raw_ptreal:
   fields:

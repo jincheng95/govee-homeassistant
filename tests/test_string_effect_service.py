@@ -176,6 +176,64 @@ class TestWholeLightEffect:
         assert coordinator.state.active_scene_name == "Rainbow B"
 
 
+class TestAppNamedEffect:
+    def test_shape_and_center_are_lowered(self) -> None:
+        data = SERVICE_APPLY_DIY_EFFECT_SCHEMA(
+            {"effect": "Flexing", "colors": COLORS, "shape": "Round", "center": "Bottom_Right"}
+        )
+        assert (data["effect"], data["shape"], data["center"]) == ("flexing", "round", "bottom_right")
+
+    @pytest.mark.parametrize("extra", [{"shape": "oval"}, {"center": "middle"}, {"shape": 3}])
+    def test_unknown_shape_or_center_is_malformed(self, extra: dict[str, Any]) -> None:
+        with pytest.raises(vol.Invalid):
+            SERVICE_APPLY_DIY_EFFECT_SCHEMA({"effect": "flexing", "colors": COLORS, **extra})
+
+    async def test_routes_flexing_with_its_options(self) -> None:
+        coordinator = _coordinator()
+        route = await _run(
+            coordinator, _call(effect="flexing", colors=COLORS, speed=9, shape="square", center="top_center")
+        )
+
+        record = bytes([0x0F, 0x01, 0x09, 0x01, 0x01, 0x03, 0x02, 255, 0, 0, 0, 255, 0])
+        expected = h70cx.effect_frames("flexing", COLORS, speed=9, shape="square", center="top_center")
+        frames = list(route.await_args.args[4])
+        assert frames == expected
+        assert frames[0][5:19] == (bytes([len(record), 0]) + record)[:14]
+
+    async def test_routes_smudge_down(self) -> None:
+        coordinator = _coordinator()
+        route = await _run(coordinator, _call(effect="smudge", colors=COLORS, direction="down"))
+
+        record = bytes([0x11, 0x02, 0x32, 0x02, 255, 0, 0, 0, 255, 0])
+        frames = list(route.await_args.args[4])
+        assert frames[0][5:7 + len(record)] == bytes([len(record), 0]) + record
+
+    @pytest.mark.parametrize(
+        ("data", "reason"),
+        [
+            ({"effect": "smudge", "direction": "clockwise"}, "smudge takes only up, down, not 'clockwise'"),
+            ({"effect": "spin_3", "colors": [[1, 2, 3]] * 3, "direction": "clockwise"}, "spin_3 has no direction"),
+            ({"effect": "candy_crush", "direction": "up"}, "candy_crush has no direction"),
+            ({"effect": "spiral", "direction": "up"}, (
+                "spiral takes only clockwise upward, anticlockwise upward, clockwise downward, "
+                "anticlockwise downward, not 'up'"
+            )),
+            ({"effect": "bounce_1"}, "bounce_1 takes 4 to 8 colours"),
+            ({"effect": "smudge", "shape": "round"}, "smudge has no shape"),
+            ({"effect": "rainbow", "center": "center"}, "rainbow has no center"),
+            ({"effect": "breathe", "shape": "round"}, "breathe has no shape"),
+            ({"effect": "flow_1", "center": "center"}, "flow_1 has no center"),
+        ],
+    )
+    async def test_options_an_effect_lacks_are_translated_errors(self, data: dict[str, Any], reason: str) -> None:
+        coordinator = _coordinator(scene="Rainbow B")
+        with pytest.raises(ServiceValidationError) as err:
+            await _run(coordinator, _call(**{"colors": COLORS, **data}))
+        assert err.value.translation_key == "invalid_string_effect"
+        assert err.value.translation_placeholders == {"device": "Light H80C5", "reason": reason}
+        assert coordinator.state.active_scene_name == "Rainbow B"
+
+
 class TestTargeting:
     async def test_two_diy_capable_devices_are_refused(self) -> None:
         coordinator = _coordinator({DEVICE_ID: "H80C5", OTHER_ID: "H60B0"})

@@ -4,9 +4,10 @@ One effect is ``effect | params | nColours | RGB...``. It uploads like a scene
 blob (``len16`` in front, ``0xA3`` marker ``0x58``) and is committed as a DIY:
 ``33 05 0a ca 02``.
 
-Each effect's parameter block is taken whole from a stock scene that uses the
-effect, so every byte a caller does not set holds a value the lamp is known to
-accept. Only the speed and direction bytes are rewritten.
+The generic names carry a parameter block from a stock scene. The numbered and
+other app-named effects carry the block of the matching composer tile and only
+take the directions, colour counts and options that tile offers. Every byte a
+caller does not set keeps its template value.
 """
 
 from __future__ import annotations
@@ -22,6 +23,27 @@ EFFECT_CODE = 714
 MAX_COLORS = 8
 MAX_SPEED = 100
 
+SHAPES: Mapping[str, int] = {"round": 0, "square": 1, "rhomb": 2}
+CENTERS: Mapping[str, int] = {
+    "upper_left": 0,
+    "left_center": 1,
+    "bottom_left": 2,
+    "top_center": 3,
+    "center": 4,
+    "bottom_center": 5,
+    "upper_right": 6,
+    "right_center": 7,
+    "bottom_right": 8,
+}
+
+# Record positions of the shape and centre bytes of a shaped effect.
+_SHAPE_AT = 4
+_CENTER_AT = 5
+
+
+def _directions(*ids: int) -> tuple[str, ...]:
+    return tuple(DIRECTION_NAMES[direction].lower() for direction in ids)
+
 
 @dataclass(frozen=True)
 class EffectTemplate:
@@ -30,8 +52,20 @@ class EffectTemplate:
     effect: int
     params: bytes
     min_colors: int = 1
-    """Fewest colours any stock scene gives this effect."""
+    directions: tuple[str, ...] | None = None
+    """Direction names the effect takes. None takes any named direction."""
+    shaped: bool = False
+    """Whether the effect takes a shape and a centre point."""
 
+
+_NONE: tuple[str, ...] = ()
+_UP_DOWN = _directions(1, 2)
+_STRIPES = _directions(1, 2, 3, 4, 5, 6, 7, 8)
+_WHIRLPOOL = _directions(13, 14)
+_SPIN = _directions(3, 4)
+_SPIRAL = _directions(23, 15, 24, 16)
+_FLOW = _directions(1, 2, 3, 4, 9, 10)
+_DIAGONAL = _directions(5, 6, 7, 8)
 
 TEMPLATES: Mapping[str, EffectTemplate] = {
     "flow": EffectTemplate(1, bytes([0x03, 0x09, 0x62, 0x01, 0x01, 0x48]), 2),
@@ -42,20 +76,41 @@ TEMPLATES: Mapping[str, EffectTemplate] = {
     "diffuse": EffectTemplate(6, bytes([0x05, 0x5C, 0x00, 0x24, 0x05, 0x00, 0x00, 0x00, 0x00]), 2),
     "concentric": EffectTemplate(7, bytes([0x03, 0x60, 0x01, 0x32, 0x05, 0x00, 0x00, 0x00, 0x00]), 2),
     "rotate": EffectTemplate(8, bytes([0x04, 0x03, 0x5D, 0x01, 0x11, 0x04, 0x00, 0x00, 0x00, 0x00]), 2),
-    "spiral": EffectTemplate(9, bytes([0x05, 0x0F, 0x5D, 0x00, 0x01, 0x02, 0x00, 0x64, 0x00]), 2),
     "starlight": EffectTemplate(10, bytes([0x1E, 0x00, 0x01, 0x00, 0x00, 0x1E]), 1),
     "wave": EffectTemplate(14, bytes([0x01, 0x32, 0x02, 0x08, 0x01, 0x0D, 0x02, 0x01]), 1),
-    "blend": EffectTemplate(17, bytes([0x02, 0x32]), 2),
+    "blend": EffectTemplate(17, bytes([0x02, 0x32]), 2, _UP_DOWN),
+    "stripes_1": EffectTemplate(2, bytes([0x03, 0x05, 0x5E, 0x01, 0x01, 0x00, 0x01]), 2, _STRIPES),
+    "stripes_2": EffectTemplate(2, bytes([0x09, 0x05, 0x5E, 0x00, 0x00, 0x00, 0x01]), 2, _STRIPES),
+    "bounce_1": EffectTemplate(4, bytes([0x01, 0x5E, 0x01, 0x00]), 4, _NONE),
+    "bounce_2": EffectTemplate(4, bytes([0x06, 0x5E, 0x01, 0x01]), 4, _NONE),
+    "bounce_3": EffectTemplate(4, bytes([0x0A, 0x5E, 0x00, 0x00]), 4, _NONE),
+    "whirlpool": EffectTemplate(5, bytes([0x05, 0x0D, 0x5E, 0x01, 0x05, 0x00, 0x00, 0x00, 0x00]), 4, _WHIRLPOOL),
+    "diffuse_1": EffectTemplate(6, bytes([0x05, 0x5E, 0x00, 0x46, 0x05, 0x00, 0x00, 0x00, 0x00]), 4, _NONE),
+    "diffuse_2": EffectTemplate(7, bytes([0x02, 0x5E, 0x01, 0x1E, 0x04, 0x00, 0x00, 0x00, 0x00]), 4, _NONE),
+    "spin_1": EffectTemplate(8, bytes([0x08, 0x03, 0x5E, 0x00, 0x0A, 0x05, 0x00, 0x00, 0x00, 0x00]), 2, _SPIN),
+    "spin_2": EffectTemplate(8, bytes([0x05, 0x03, 0x5E, 0x00, 0x01, 0x05, 0x00, 0x00, 0x00, 0x00]), 2, _SPIN),
+    "spin_3": EffectTemplate(18, bytes([0x01, 0x32, 0x02]), 3, _NONE),
+    "spiral": EffectTemplate(9, bytes([0x05, 0x17, 0x5A, 0x00, 0x01, 0x02, 0x00, 0x64, 0x00]), 1, _SPIRAL),
+    "flow_2": EffectTemplate(1, bytes([0x03, 0x01, 0x64, 0x01, 0x01, 0x00]), 2, _FLOW),
+    "flow_3": EffectTemplate(1, bytes([0x05, 0x01, 0x64, 0x01, 0x00, 0x00]), 2, _FLOW),
+    "flow_4": EffectTemplate(1, bytes([0x08, 0x01, 0x64, 0x00, 0x00, 0x00]), 2, _FLOW),
+    "rainbow_2": EffectTemplate(3, bytes([0x04, 0x05, 0x55]), 2, _DIAGONAL),
+    "ribbon_1": EffectTemplate(14, bytes([0x01, 0x32, 0x02, 0x07, 0x01, 0x14, 0x02, 0x01]), 1, _NONE),
+    "ribbon_2": EffectTemplate(14, bytes([0x01, 0x32, 0x02, 0x07, 0x01, 0x14, 0x02, 0x00]), 1, _NONE),
+    "mountain_peak": EffectTemplate(14, bytes([0x02, 0x32, 0x0A, 0x01, 0x01]), 1, _NONE),
+    "candy_crush": EffectTemplate(16, bytes([0x03, 0x32, 0x00]), 1, _NONE),
+    "smudge": EffectTemplate(17, bytes([0x01, 0x32]), 1, _UP_DOWN),
+    "flexing": EffectTemplate(15, bytes([0x01, 0x32, 0x01, 0x02, 0x04]), 1, _NONE, shaped=True),
 }
 
 DIRECTION_IDS: Mapping[str, int] = {name.lower(): direction for direction, name in DIRECTION_NAMES.items()}
 
 
 def has_direction(effect: str) -> bool:
-    """Whether ``effect`` carries a direction byte."""
+    """Whether ``effect`` takes a direction."""
     template = _template(effect)
     record = bytes([template.effect]) + template.params
-    return _field_positions(record, 0, len(record))[1] is not None
+    return _field_positions(record, 0, len(record))[1] is not None and template.directions != ()
 
 
 def _template(effect: str) -> EffectTemplate:
@@ -65,24 +120,38 @@ def _template(effect: str) -> EffectTemplate:
         raise FrameError(f"unknown effect {effect!r} (have: {', '.join(TEMPLATES)})") from None
 
 
+def _option(effect: str, template: EffectTemplate, kind: str, value: str, table: Mapping[str, int]) -> int:
+    if not template.shaped:
+        raise FrameError(f"{effect} has no {kind}")
+    if value not in table:
+        raise FrameError(f"unknown {kind} {value!r} (have: {', '.join(table)})")
+    return table[value]
+
+
 def effect_record(
     effect: str,
     colors: Sequence[Sequence[int]],
     *,
     speed: int | None = None,
     direction: str | None = None,
+    shape: str | None = None,
+    center: str | None = None,
 ) -> bytes:
     """Encode one effect record.
 
     Args:
         effect: A key of :data:`TEMPLATES`.
         colors: The palette, each colour three values from 0 to 255.
-        speed: 0-100, or None for the stock scene's speed.
-        direction: A lower-case direction name, or None for the stock one.
+        speed: 0-100, or None for the template's speed.
+        direction: A lower-case direction name the effect takes, or None for
+            the template's direction.
+        shape: A key of :data:`SHAPES`, for a shaped effect only.
+        center: A key of :data:`CENTERS`, for a shaped effect only.
 
     Raises:
         FrameError: Unknown effect or direction, a bad colour or speed, too
-            few or too many colours, or a direction for an effect without one.
+            few or too many colours, a direction the effect does not take, or
+            a shape or centre for an effect without one.
     """
     template = _template(effect)
     if not template.min_colors <= len(colors) <= MAX_COLORS:
@@ -103,9 +172,15 @@ def effect_record(
     if direction is not None:
         if direction not in DIRECTION_IDS:
             raise FrameError(f"unknown direction {direction!r}")
-        if direction_at is None:
+        if direction_at is None or template.directions == ():
             raise FrameError(f"{effect} has no direction")
+        if template.directions is not None and direction not in template.directions:
+            raise FrameError(f"{effect} takes only {', '.join(template.directions)}, not {direction!r}")
         record[direction_at] = DIRECTION_IDS[direction]
+    if shape is not None:
+        record[_SHAPE_AT] = _option(effect, template, "shape", shape, SHAPES)
+    if center is not None:
+        record[_CENTER_AT] = _option(effect, template, "center", center, CENTERS)
     return bytes(record) + bytes([len(colors)]) + bytes(palette)
 
 
@@ -115,9 +190,11 @@ def effect_frames(
     *,
     speed: int | None = None,
     direction: str | None = None,
+    shape: str | None = None,
+    center: str | None = None,
 ) -> list[bytes]:
     """The frames that upload and show one composed effect. See :func:`effect_record`."""
-    record = effect_record(effect, colors, speed=speed, direction=direction)
+    record = effect_record(effect, colors, speed=speed, direction=direction, shape=shape, center=center)
     payload = bytes([len(record) & 0xFF, len(record) >> 8]) + record
     return [
         *terminated_chunks(payload, H70CX_MARKER),

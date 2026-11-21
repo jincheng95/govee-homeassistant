@@ -29,38 +29,42 @@ def test_record_is_effect_params_count_colours() -> None:
 
 
 @pytest.mark.parametrize(
-    ("effect", "speed_at", "direction_at"),
+    ("effect", "speed_at", "direction_at", "direction"),
     [
-        ("flow", 3, 2),
-        ("layered", 3, 2),
-        ("rainbow", 3, 2),
-        ("flame", 2, None),
-        ("vortex", 3, 2),
-        ("diffuse", 2, None),
-        ("concentric", 2, None),
-        ("rotate", 3, 2),
-        ("spiral", 3, 2),
-        ("starlight", 6, None),
-        ("wave", 2, None),
-        ("blend", 2, None),
+        ("flow", 3, 2, "down"),
+        ("layered", 3, 2, "down"),
+        ("rainbow", 3, 2, "down"),
+        ("flame", 2, None, None),
+        ("vortex", 3, 2, "down"),
+        ("diffuse", 2, None, None),
+        ("concentric", 2, None, None),
+        ("rotate", 3, 2, "down"),
+        ("starlight", 6, None, None),
+        ("wave", 2, None, None),
+        ("blend", 2, 1, "up"),
     ],
 )
-def test_speed_and_direction_land_on_their_bytes(effect: str, speed_at: int, direction_at: int | None) -> None:
+def test_speed_and_direction_land_on_their_bytes(
+    effect: str, speed_at: int, direction_at: int | None, direction: str | None
+) -> None:
     stock = h70cx.effect_record(effect, RED_GREEN)
-    direction = "down" if direction_at is not None else None
     record = h70cx.effect_record(effect, RED_GREEN, speed=7, direction=direction)
 
     expected = {speed_at: 7}
-    if direction_at is not None:
-        expected[direction_at] = 2
+    if direction is not None:
+        expected[direction_at] = h70cx.DIRECTION_IDS[direction]
     changed = {index: record[index] for index in range(len(stock)) if stock[index] != record[index]}
     assert changed == expected
     assert h70cx.has_direction(effect) is (direction_at is not None)
 
 
-def test_every_template_is_listed_once_per_effect_id() -> None:
-    ids = [template.effect for template in h70cx.TEMPLATES.values()]
+GENERIC = ("flow", "layered", "rainbow", "flame", "vortex", "diffuse", "concentric", "rotate", "starlight", "wave", "blend")
+
+
+def test_every_generic_template_is_listed_once_per_effect_id() -> None:
+    ids = [h70cx.TEMPLATES[name].effect for name in GENERIC]
     assert len(ids) == len(set(ids))
+    assert all(h70cx.TEMPLATES[name].directions is None for name in GENERIC if name != "blend")
 
 
 def test_direction_names_are_lower_case_and_complete() -> None:

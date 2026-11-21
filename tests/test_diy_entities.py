@@ -1144,6 +1144,7 @@ class TestService:
             assert sorted(options) == sorted(zone.modes)
 
         assert sorted(fields) == [
+            "center",
             "colors",
             "combine",
             "direction",
@@ -1156,6 +1157,7 @@ class TestService:
             "ripple_flow_rate",
             "ripple_mode",
             "ripple_speed",
+            "shape",
             "speed",
         ]
         # The whole-light dropdowns follow the composer's tables the same way.
@@ -1164,6 +1166,8 @@ class TestService:
         )
         assert fields["combine"]["selector"]["select"]["options"] == list(h70cx_basic.COMBINABLE)
         assert sorted(fields["direction"]["selector"]["select"]["options"]) == sorted(h70cx.DIRECTION_IDS)
+        assert fields["shape"]["selector"]["select"]["options"] == list(h70cx.SHAPES)
+        assert fields["center"]["selector"]["select"]["options"] == list(h70cx.CENTERS)
 
     @pytest.mark.asyncio
     async def test_the_service_is_registered_without_an_entry(self, hass):

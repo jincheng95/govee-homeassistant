@@ -90,6 +90,8 @@ ATTR_EFFECT = "effect"
 ATTR_SPEED = "speed"
 ATTR_DIRECTION = "direction"
 ATTR_COMBINE = "combine"
+ATTR_SHAPE = "shape"
+ATTR_CENTER = "center"
 
 _RGB_SCHEMA = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple))
 
@@ -224,6 +226,8 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
                 vol.Length(min=1, max=h70cx_basic.MAX_COMBINED),
                 [vol.All(cv.string, vol.Lower, vol.In(h70cx_basic.COMBINABLE))],
             ),
+            vol.Optional(ATTR_SHAPE): vol.All(cv.string, vol.Lower, vol.In(list(h70cx.SHAPES))),
+            vol.Optional(ATTR_CENTER): vol.All(cv.string, vol.Lower, vol.In(list(h70cx.CENTERS))),
         },
         _require_mode_with_zone_fields,
     )
@@ -542,6 +546,9 @@ async def _async_apply_string_effect(
             raise GoveeProtocolError("this light takes the whole-light fields: effect and colors are required")
         effect = data[ATTR_EFFECT]
         if effect in h70cx_basic.NAMES:
+            for option in (ATTR_SHAPE, ATTR_CENTER):
+                if option in data:
+                    raise GoveeProtocolError(f"{effect} has no {option}")
             frames = h70cx_basic.effect_frames(
                 effect,
                 data[ATTR_COLORS],
@@ -557,6 +564,8 @@ async def _async_apply_string_effect(
                 data[ATTR_COLORS],
                 speed=data.get(ATTR_SPEED),
                 direction=data.get(ATTR_DIRECTION),
+                shape=data.get(ATTR_SHAPE),
+                center=data.get(ATTR_CENTER),
             )
     except GoveeProtocolError as err:
         raise ServiceValidationError(
