@@ -195,3 +195,22 @@ request_status:
           min: 3
           max: 60
           unit_of_measurement: s
+
+upload_bulb_positions:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    positions:
+      required: true
+      example: "[[0, 0, 0], [12, 5, 3], [24, 10, 6]]"
+      selector:
+        object:
+    normalize:
+      required: false
+      default: true
+      selector:
+        boolean:

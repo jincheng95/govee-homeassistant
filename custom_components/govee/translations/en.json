@@ -676,6 +676,24 @@
         }
       }
     },
+    "upload_bulb_positions": {
+      "name": "Upload bulb positions",
+      "description": "Stores a 3D position map on a string light, one [x, y, z] point per bulb in LED order, with y as height. The light draws its position-aware effects from this map. Replaces the map the light holds. Takes about 14 seconds for 300 bulbs.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The string light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "positions": {
+          "name": "Positions",
+          "description": "A list of [x, y, z] points, one per bulb, in LED order. The list must cover every bulb."
+        },
+        "normalize": {
+          "name": "Normalize",
+          "description": "Scale the points uniformly into a 0-500 cube with the minimum at the origin, keeping the shape's proportions, as the Govee app does. Turn off to send integer coordinates (0-1000) unchanged."
+        }
+      }
+    },
     "apply_diy_effect": {
       "name": "Apply DIY effect",
       "description": "Composes and uploads a DIY effect to one multi-zone lamp. Target exactly one device. A zone with every field empty (or mode \"none\") is switched off; an omitted field uses its fixed default, not the currently staged value. Requires the per-zone lights option.",
@@ -774,6 +792,18 @@
     },
     "ptreal_unavailable": {
       "message": "Could not send the raw ptReal frame to {device}. This requires a healthy LAN connection to the device or the account (email/password) login with AWS IoT connected, and the device must not be a group."
+    },
+    "bulb_positions_unsupported": {
+      "message": "{device} does not take a bulb position map."
+    },
+    "bulb_position_count": {
+      "message": "{count} positions were given, but {device} has {expected} bulbs. Give one position per bulb."
+    },
+    "invalid_bulb_positions": {
+      "message": "The bulb positions are not valid: {reason}."
+    },
+    "bulb_positions_failed": {
+      "message": "Could not finish uploading the position map to {device}: {sent} of {total} packets were sent. This requires a healthy LAN connection to the device or the account (email/password) login with AWS IoT connected."
     },
     "too_many_ptreal_frames": {
       "message": "{count} frames were given, but at most {max} can be sent in one message."

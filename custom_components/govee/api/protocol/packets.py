@@ -11,6 +11,9 @@ separate commit frame::
 
 Packet 0 spends 3 of its 17 data bytes on that header, so effect data starts at
 its 4th data byte. Payloads come from :mod:`.diy`.
+
+The ``0xA4`` MTU multipacket (:func:`chunk_mtu`) carries a command byte and
+16-bit packet count and sequence numbers instead.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from collections.abc import Sequence
 
 from .encoders import mode_select
 from .errors import FrameError
-from .frames import BODY_LENGTH, PRO_TYPE_MULTIPACKET, build_frame
+from .frames import BODY_LENGTH, PRO_TYPE_MTU, PRO_TYPE_MULTIPACKET, build_frame
 
 CHUNK_DATA_BYTES = BODY_LENGTH - 2
 """Data bytes per continuation packet: 19 body bytes minus proType and sequence."""
@@ -103,3 +106,56 @@ def upload_effect(
 ) -> Sequence[bytes]:
     """Chunks + commit, in the order they must be sent."""
     return [*chunk_effect(data, marker=marker, lead=lead), commit_frame(sub_mode=sub_mode, index=index, marker=marker)]
+
+
+MTU_FIRST_DATA_BYTES = BODY_LENGTH - 7
+"""Data bytes in the first ``0xA4`` packet, after ``a4 00 00 01 <n16> <command>``."""
+
+MTU_DATA_BYTES = BODY_LENGTH - 3
+"""Data bytes in every later ``0xA4`` packet, after ``a4 <seq16>``."""
+
+MTU_LAST_SEQUENCE = 0xFFFF
+"""The last packet's sequence number."""
+
+MTU_FIRST_LEAD = 0x01
+"""Constant byte after the first packet's zero sequence."""
+
+
+def chunk_mtu(command: int, data: bytes | bytearray) -> list[bytes]:
+    """Split a payload into ``0xA4`` MTU multipacket frames for ``command``.
+
+    The packet count ``n`` and the sequence numbers are u16 little-endian::
+
+        first   a4 00 00 01 <n> <command> | first 12 data bytes  | xor
+        middle  a4 <seq 1, 2, ...>        | 16 data bytes        | xor
+        last    a4 ff ff                  | remaining data       | xor
+
+    ``n`` counts every packet, first and last included, so a message is at
+    least two packets. The last packet carries 1-16 bytes, or none when the
+    payload fits in the first packet.
+
+    Args:
+        command: The command byte the payload belongs to.
+        data: The command payload.
+
+    Returns:
+        The frames, in send order.
+
+    Raises:
+        FrameError: If ``command`` is not a byte or the payload needs more
+            packets than the 16-bit count can hold.
+    """
+    if not 0 <= command <= 0xFF:
+        raise FrameError(f"MTU command is not a byte: {command}")
+    rest = bytes(data[MTU_FIRST_DATA_BYTES:])
+    chunks = [rest[offset : offset + MTU_DATA_BYTES] for offset in range(0, len(rest), MTU_DATA_BYTES)] or [b""]
+    total = len(chunks) + 1
+    if total > MTU_LAST_SEQUENCE:
+        raise FrameError(f"MTU payload needs {total} packets, the packet count overflows")
+
+    header = bytes([PRO_TYPE_MTU, 0x00, 0x00, MTU_FIRST_LEAD]) + total.to_bytes(2, "little") + bytes([command])
+    frames = [build_frame(header + bytes(data[:MTU_FIRST_DATA_BYTES]))]
+    for sequence, chunk in enumerate(chunks[:-1], start=1):
+        frames.append(build_frame(bytes([PRO_TYPE_MTU]) + sequence.to_bytes(2, "little") + chunk))
+    frames.append(build_frame(bytes([PRO_TYPE_MTU]) + MTU_LAST_SEQUENCE.to_bytes(2, "little") + chunks[-1]))
+    return frames
