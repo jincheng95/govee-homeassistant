@@ -309,7 +309,7 @@ class TestCapabilities:
         light = _lights(_coordinator(), _entry(_coordinator()))["downlight"]
         kelvin = get_profile("H60B0").kelvin
 
-        assert light.min_color_temp_kelvin == kelvin.minimum == 2000
+        assert light.min_color_temp_kelvin == kelvin.minimum == 2700
         # NOT the 9000 K the H6046 reaches — ceilings are per-SKU.
         assert light.max_color_temp_kelvin == kelvin.maximum == 6500
 

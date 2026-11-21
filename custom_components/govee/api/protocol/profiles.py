@@ -139,6 +139,8 @@ class ZoneSpec:
     zone_byte: int | None
     segments: int = 0
     capabilities: frozenset[Capability] = frozenset()
+    power_bit: int | None = None
+    """Bit of the zone power report that is set while this zone is lit."""
     note: str = ""
 
     @property
@@ -220,6 +222,11 @@ class DiyZoneSpec:
     modes: Mapping[str, int]
     has_direction: bool = False
     has_flow_rate: bool = False
+    mode_fields: Mapping[int, bytes] = field(default_factory=dict)
+    """Fixed bytes a mode carries between its speed and its colour count.
+
+    Keyed by mode int. A mode absent here has no such field.
+    """
     note: str = ""
 
 
@@ -255,7 +262,8 @@ class MusicEffectSpec:
     ``<soft> <manual> <R G B>`` when ``commit_options`` is set. A palette effect
     may first upload ``<effect> <count> <RGB>xN <tail>`` as an ``0xA3``
     multipacket under ``marker``, where ``<tail>`` is that effect's constant
-    from ``palette_tails``.
+    from ``palette_tails``. With ``palette_style`` set, a ``<style>`` byte
+    follows the tail: 0 for dynamic, 1 for soft.
     """
 
     marker: int
@@ -279,6 +287,12 @@ class MusicEffectSpec:
 
     commit_options: bool = False
     """Whether the commit carries the soft flag and a manual colour."""
+
+    palette_style: bool = False
+    """Whether the palette upload ends with the soft/dynamic style byte.
+
+    When set, ``soft`` goes into that byte and not into the commit.
+    """
 
     note: str = ""
 
@@ -314,6 +328,12 @@ class DeviceProfile:
     header would be something else with the same first two bytes. Default False
     means "not observed on this SKU", which keeps an unmarked profile
     dispatching nothing rather than applying a guess to live entities.
+    """
+    zone_power_report: bool = False
+    """Whether this SKU reports zone power in an ``ee 30 01 <bits>`` frame.
+
+    Each zone's :attr:`ZoneSpec.power_bit` locates it in ``<bits>``. Default
+    False means not observed on this SKU, so nothing is decoded for it.
     """
     scene_upload: bool = False
     """Whether catalogue scenes upload as raw frames in the :mod:`.scenes` layout.
@@ -411,8 +431,9 @@ H60B0: Final = DeviceProfile(
     goods_type=301,
     name="Uplighter",
     # Manufacturer claims 9000 K; above ~6500 K the firmware drops the zone
-    # entirely, so 6500 K is a hard cap.
-    kelvin=KelvinRange(2000, 6500, verified=True, note="above ~6500 K the zone drops out"),
+    # entirely, so 6500 K is a hard cap. 2700 K is the warmest value the
+    # vendor's controls write to any zone.
+    kelvin=KelvinRange(2700, 6500, verified=True, note="2700 K floor; above ~6500 K the zone drops out"),
     transports=(Transport.LAN_RAW, Transport.BLE_ENCRYPTED, Transport.MQTT_PTREAL),
     ble_manufacturer_id=BLE_MANUFACTURER_MODERN,
     zones=(
@@ -429,6 +450,7 @@ H60B0: Final = DeviceProfile(
                     Capability.ZONE_FLOW_RATE,
                 }
             ),
+            power_bit=0x40,
             note="ripple uplight; app name TOP",
         ),
         ZoneSpec(
@@ -443,6 +465,7 @@ H60B0: Final = DeviceProfile(
                     Capability.ZONE_BRIGHTNESS,
                 }
             ),
+            power_bit=0x20,
             note="ring uplight, 8 addressable segments; app name SIDE",
         ),
         ZoneSpec(
@@ -457,6 +480,7 @@ H60B0: Final = DeviceProfile(
                     Capability.ZONE_COLOR_TEMP,
                 }
             ),
+            power_bit=0x10,
             note="white-only downlight; app name BOTTOM",
         ),
         ZoneSpec(
@@ -536,10 +560,33 @@ H60B0: Final = DeviceProfile(
                     "cover": 9,
                     "colorful": 10,
                 },
+                # Gleam's four bytes are constant in every sample; their
+                # meaning is not decoded.
+                mode_fields={8: bytes([0x01, 0x01, 0x01, 0x01])},
                 note="no direction/flow tail; mode 9 'cover' sets mode_param=0x01 in the one sample",
             ),
         ),
         note="0x50-form payload: 0d + ripple record + ring record; commit 33 05 0a <idx> 00 58",
+    ),
+    music=MusicEffectSpec(
+        marker=0x41,
+        effects={
+            "custom": 0x82,
+            "stippling": 0x83,
+            "hopping": 0x33,
+            "flowing_light": 0x53,
+            "luminous": 0x51,
+            "bloom": 0x30,
+            "rhythm": 0x72,
+            "shiny": 0x31,
+        },
+        # Hopping appends undecoded option bytes and Custom nests two
+        # sub-effects, so neither takes the plain palette layout.
+        palette_effects=frozenset({0x83, 0x53, 0x51, 0x30, 0x72, 0x31}),
+        max_sensitivity=99,
+        max_colors=8,
+        palette_style=True,
+        note="palette upload marker 0x41, then commit 33 05 13 <effect> <sensitivity>",
     ),
     # No SEGMENT_COLOR capability at all: the addressable LEDs are the ring
     # zone's, and a segment paint is the zone-colour frame with the mask filled
@@ -557,6 +604,7 @@ H60B0: Final = DeviceProfile(
             note="at most 2 zones lit; yield order downlight -> ripple -> ring",
         ),
     ),
+    zone_power_report=True,
     # This SKU repeats its PRE-command state for well over a second after a
     # write, so a confirm read taken sooner than this can only fail.
     echo_lag_seconds=1.5,
@@ -779,6 +827,13 @@ def validate_table() -> None:
         for constraint in profile.constraints:
             for key in constraint.displacement_order:
                 profile.zone(key)
+        power_bits = [zone.power_bit for zone in profile.zones if zone.power_bit is not None]
+        for bit in power_bits:
+            # Bit 7 is the whole lamp's.
+            if bit not in (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40):
+                raise GoveeProtocolError(f"{profile.sku} zone power bit {bit:#04x} is not one of bits 0-6")
+        if len(set(power_bits)) != len(power_bits):
+            raise GoveeProtocolError(f"{profile.sku} gives two zones the same power bit")
         if profile.segment_zone is not None:
             # "Segments live on zone X" is only meaningful if X exists, has
             # segments to mask, and can be painted by the zone-colour frame.

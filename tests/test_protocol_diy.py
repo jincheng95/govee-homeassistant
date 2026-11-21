@@ -17,6 +17,7 @@ from custom_components.govee.api.protocol import (
     DiyZoneEffect,
     GoveeCodec,
     UnsupportedCapabilityError,
+    commit_frame,
     resolve_mode,
     xor_checksum,
 )
@@ -27,6 +28,17 @@ CODEC = GoveeCodec.for_sku("H60B0")
 
 SEVEN_COLORS = tuple((index, 2 * index, 3 * index) for index in range(1, 8))
 SEVEN_RGB_HEX = " ".join(f"{r:02x} {g:02x} {b:02x}" for r, g, b in SEVEN_COLORS)
+
+RAINBOW = (
+    (0xFF, 0x00, 0x00),
+    (0xFF, 0x7F, 0x00),
+    (0xFF, 0xFF, 0x00),
+    (0x00, 0xFF, 0x00),
+    (0x00, 0x00, 0xFF),
+    (0x00, 0xFF, 0xFF),
+    (0x8B, 0x00, 0xFF),
+)
+RAINBOW_RGB = bytes(channel for rgb in RAINBOW for channel in rgb)
 
 
 def _hex(data: bytes) -> str:
@@ -84,6 +96,40 @@ class TestDiyPayload:
         )
         assert record[2] == 0x01
 
+    def test_gleam_record_carries_mode_fields(self) -> None:
+        """Gleam puts four fixed bytes between the speed and the colour count."""
+        spec = H60B0.diy.zone("ring")
+        record = diy_mod.encode_record(
+            spec, DiyZoneEffect(mode=8, speed=0x32, colors=RAINBOW)
+        )
+        assert record == bytes([0x08, 0x1C, 0x00, 0x32, 0x01, 0x01, 0x01, 0x01, 0x07]) + RAINBOW_RGB
+        assert record[1] == len(record) - 2
+
+    def test_gleam_payload_matches_the_app(self) -> None:
+        """Ripple gradient + ring gleam, byte for byte."""
+        payload = diy_mod.encode_payload(
+            H60B0.diy,
+            {
+                "ripple": DiyZoneEffect(
+                    mode=1, speed=0x33, colors=RAINBOW, direction=DIRECTION_CW, flow_rate=0x64
+                ),
+                "ring": DiyZoneEffect(mode=8, speed=0x32, colors=RAINBOW),
+            },
+        )
+        expected = (
+            bytes([0x0D, 0x01, 0x1A, 0x00, 0x33, 0x07])
+            + RAINBOW_RGB
+            + bytes([0x01, 0x64, 0x08, 0x1C, 0x00, 0x32, 0x01, 0x01, 0x01, 0x01, 0x07])
+            + RAINBOW_RGB
+        )
+        assert payload == expected
+
+    def test_other_ring_modes_have_no_mode_fields(self) -> None:
+        spec = H60B0.diy.zone("ring")
+        for mode in (1, 2, 3, 4, 5, 6, 7, 9, 10):
+            record = diy_mod.encode_record(spec, DiyZoneEffect(mode=mode, colors=RAINBOW))
+            assert record[1] == 0x18
+
     def test_zone_off_is_two_byte_empty_record(self) -> None:
         spec = H60B0.diy.zone("ring")
         assert diy_mod.encode_record(spec, None) == b"\x00\x00"
@@ -111,6 +157,22 @@ class TestDiyValidation:
         with pytest.raises(DiyEffectError):
             diy_mod.encode_record(
                 spec, DiyZoneEffect(mode=1, speed=speed, colors=((1, 1, 1),))
+            )
+
+    def test_flow_rate_zero_encodes(self) -> None:
+        """Flow rate 0 is the slider's minimum, not an error."""
+        spec = H60B0.diy.zone("ripple")
+        record = diy_mod.encode_record(
+            spec, DiyZoneEffect(mode=1, speed=0x33, colors=RAINBOW, flow_rate=0)
+        )
+        assert record == bytes([0x01, 0x1A, 0x00, 0x33, 0x07]) + RAINBOW_RGB + bytes([0x01, 0x00])
+
+    @pytest.mark.parametrize("flow_rate", [-1, 101])
+    def test_flow_rate_range(self, flow_rate: int) -> None:
+        spec = H60B0.diy.zone("ripple")
+        with pytest.raises(DiyEffectError):
+            diy_mod.encode_record(
+                spec, DiyZoneEffect(mode=1, colors=((1, 1, 1),), flow_rate=flow_rate)
             )
 
     def test_empty_palette_refused(self) -> None:
@@ -189,6 +251,17 @@ class TestCodecDiyEffect:
             assert len(frame) == 20
             assert xor_checksum(frame[:19]) == frame[19]
 
+    @pytest.mark.parametrize(
+        ("marker", "expected"),
+        [
+            (None, bytes([0x33, 0x05, 0x0A, 0xBD, 0x00] + [0x00] * 14 + [0x81])),
+            (0x58, bytes([0x33, 0x05, 0x0A, 0xBD, 0x00, 0x58] + [0x00] * 13 + [0xD9])),
+        ],
+    )
+    def test_both_commit_forms(self, marker: int | None, expected: bytes) -> None:
+        """The DIY code is 16-bit, low byte first; the marker byte is optional."""
+        assert commit_frame(index=0xBD, marker=marker) == expected
+
     def test_payload_reassembles_across_chunks(self) -> None:
         effects = {
             "ripple": DiyZoneEffect(
@@ -205,6 +278,25 @@ class TestCodecDiyEffect:
         assert data[: len(expected)] == expected
         assert chunks[0][3] == len(chunks)  # packet count in header
         assert chunks[0][4] == 0x58  # DIY marker
+
+    def test_gleam_upload_chunks_byte_exact(self) -> None:
+        """The four 0xA3 chunks of a ripple gradient + ring gleam upload."""
+        frames = CODEC.diy_effect(
+            {
+                "ripple": DiyZoneEffect(mode=1, speed=0x33, colors=RAINBOW, flow_rate=0x64),
+                "ring": DiyZoneEffect(mode=8, speed=0x32, colors=RAINBOW),
+            }
+        )
+        assert frames[:-1] == [
+            bytes([0xA3, 0x00, 0x01, 0x04, 0x58, 0x0D, 0x01, 0x1A, 0x00, 0x33,
+                   0x07, 0xFF, 0x00, 0x00, 0xFF, 0x7F, 0x00, 0xFF, 0xFF, 0xA3]),
+            bytes([0xA3, 0x01, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00,
+                   0xFF, 0xFF, 0x8B, 0x00, 0xFF, 0x01, 0x64, 0x08, 0x1C, 0xA7]),
+            bytes([0xA3, 0x02, 0x00, 0x32, 0x01, 0x01, 0x01, 0x01, 0x07, 0xFF,
+                   0x00, 0x00, 0xFF, 0x7F, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xEB]),
+            bytes([0xA3, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0xFF,
+                   0x8B, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28]),
+        ]
 
     def test_all_off_refused(self) -> None:
         with pytest.raises(DiyEffectError):

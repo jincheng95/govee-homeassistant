@@ -9,6 +9,8 @@ separate commit frame::
     last      a3 ff                              | remaining data      | xor
     commit    33 05 <submode> <idxLo> <idxHi> [marker]   submode 0x0a for DIY
 
+The H60B0 takes the DIY commit with or without the trailing marker byte.
+
 Packet 0 spends 3 of its 17 data bytes on that header, so effect data starts at
 its 4th data byte. Payloads come from :mod:`.diy`.
 
@@ -89,6 +91,8 @@ def commit_frame(
     marker: int | None = None,
 ) -> bytes:
     """The ``33 05 <submode> <idxLo> <idxHi> [marker]`` activation frame.
+
+    ``marker=None`` leaves the marker byte off.
 
     Same layout as a mode select — a commit *is* a mode select naming the
     just-uploaded effect — so it delegates to :func:`~.encoders.mode_select`.

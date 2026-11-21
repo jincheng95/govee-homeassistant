@@ -702,6 +702,19 @@ class TestSetMusicMode:
         assert frames[0][:13] == bytes([0xA3, 0xFF, 0x01, 0x01, 0x41, 0x05, 0x02, 0xFF, 0, 0, 0, 0, 0xFF])
         assert frames[1] == MUSIC_FRAMES["energic"][-1]
 
+    async def test_without_a_default_palette_the_commit_goes_alone(self, hass, actions, route) -> None:
+        actions["coordinator"] = _coordinator(_light("H60B0"))
+        await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="shiny")
+        assert _sent(route) == [bytes([0x33, 0x05, 0x13, 0x31, 0x63] + [0x00] * 14 + [0x77])]
+
+    async def test_soft_sets_the_palette_style_byte_where_the_profile_has_one(self, hass, actions, route) -> None:
+        actions["coordinator"] = _coordinator(_light("H60B0"))
+        await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="bloom", soft=True, palette=[[1, 2, 3]])
+        assert _sent(route) == GoveeCodec.for_sku("H60B0").music_effect(
+            "bloom", sensitivity=99, colors=[(1, 2, 3)], soft=True
+        )
+        assert _sent(route)[0][10] == 0x01
+
     async def test_an_unknown_effect_is_a_translated_error(self, hass, actions, route) -> None:
         with pytest.raises(ServiceValidationError) as err:
             await _call(hass, raw_actions.SERVICE_SET_MUSIC_MODE, effect="disco")

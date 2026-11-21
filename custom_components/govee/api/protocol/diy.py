@@ -1,13 +1,18 @@
 """DIY effect payload encoder — the ``0x50``-form blob the H60B0 takes.
 
 A DIY effect is per-zone: each zone gets a record of ``<mode> <recLen> <body>``,
-where the body is ``<modeParam> <speed> <colorCount> <RGB>xN`` plus, on zones
-whose :class:`~.profiles.DiyZoneSpec` declares them, a direction and flow rate.
+where the body is ``<modeParam> <speed> [modeFields] <colorCount> <RGB>xN``
+plus, on zones whose :class:`~.profiles.DiyZoneSpec` declares them, a direction
+and flow rate. ``modeFields`` are the fixed bytes the zone spec lists for that
+mode, and nothing for any other mode.
 ``recLen`` counts the bytes after it; ``recLen = 0`` is a zone switched off. Both
 records are always present, in the profile's declared order, behind a constant
 lead byte; the payload rides an ``0xA3`` multipacket upload and a commit frame
 (:mod:`.packets`). Effect modes are per-zone ints with no shared enum — the
 name-to-int tables live in the profile, and raw ints are accepted everywhere.
+
+The H60B0 also takes a single-record upload with no lead byte and no
+``recLen``. This module does not build that form.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ sample exceeds 7 colours and the app's own ceiling is unknown — refuse rather
 than send an unproven count."""
 
 _SPEED_RANGE = range(1, 101)
+_FLOW_RATE_RANGE = range(0, 101)
 
 
 @dataclass(frozen=True)
@@ -110,7 +116,9 @@ def encode_record(spec: DiyZoneSpec, effect: DiyZoneEffect | None) -> bytes:
             f"zone {spec.zone_key!r}: mode_param {effect.mode_param} out of byte range"
         )
 
-    body = bytearray([effect.mode_param, effect.speed, len(effect.colors)])
+    body = bytearray([effect.mode_param, effect.speed])
+    body += spec.mode_fields.get(effect.mode, b"")
+    body.append(len(effect.colors))
     for rgb in effect.colors:
         body += rgb_bytes(rgb)
 
@@ -127,9 +135,9 @@ def encode_record(spec: DiyZoneSpec, effect: DiyZoneEffect | None) -> bytes:
 
     if spec.has_flow_rate:
         flow = 50 if effect.flow_rate is None else effect.flow_rate
-        if flow not in _SPEED_RANGE:
+        if flow not in _FLOW_RATE_RANGE:
             raise DiyEffectError(
-                f"zone {spec.zone_key!r}: flow rate {flow} outside 1-100"
+                f"zone {spec.zone_key!r}: flow rate {flow} outside 0-100"
             )
         body.append(flow)
     elif effect.flow_rate is not None:

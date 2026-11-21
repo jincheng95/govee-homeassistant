@@ -731,6 +731,21 @@ class TestRestore:
         assert params.colors == ((255, 0, 0), (0, 176, 255))
 
     @pytest.mark.asyncio
+    async def test_flow_rate_restores_zero_but_speed_does_not(self):
+        """The record's flow rate reaches 0; its speed starts at 1."""
+        coordinator = _coordinator()
+        controls = _controls(coordinator, _entry(coordinator))
+
+        await _restore(controls["flowratenumber.ripple"], "0")
+        await _restore(controls["speednumber.ripple"], "0")
+
+        params = diy_state.store(coordinator).params(DEVICE_ID, "ripple")
+        assert params.flow_rate == 0
+        assert params.speed == diy_state.DEFAULT_SPEED
+        assert controls["flowratenumber.ripple"].native_min_value == 0
+        assert controls["speednumber.ripple"].native_min_value == 1
+
+    @pytest.mark.asyncio
     async def test_restore_does_not_notify(self):
         """The value came from the entity; echoing it back is noise."""
         coordinator = _coordinator()
@@ -1115,6 +1130,17 @@ class TestService:
             with pytest.raises(vol.Invalid):
                 services.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
                     {"device_id": DEVICE_ID, "ring_mode": "gradient", stray: "cw"}
+                )
+
+    def test_flow_rate_accepts_zero_and_speed_does_not(self):
+        validated = services.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
+            {"device_id": DEVICE_ID, "ripple_mode": "gradient", "ripple_flow_rate": 0}
+        )
+        assert validated["ripple_flow_rate"] == 0
+        for field, value in (("ripple_flow_rate", 101), ("ripple_speed", 0)):
+            with pytest.raises(vol.Invalid):
+                services.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
+                    {"device_id": DEVICE_ID, "ripple_mode": "gradient", field: value}
                 )
 
     def test_a_zone_field_without_its_mode_is_rejected(self):

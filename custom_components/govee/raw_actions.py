@@ -258,8 +258,9 @@ async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> N
 async def async_set_music_mode_handler(hass: HomeAssistant, call: ServiceCall) -> None:
     """Handle ``govee.set_music_mode``.
 
-    An effect that takes a palette always uploads one: the call's, else the
-    profile's default. An effect without a palette refuses one.
+    An effect that takes a palette uploads the call's, else the profile's
+    default; with neither, the commit goes alone. An effect without a palette
+    refuses one.
     """
     coordinator, device, profile = _resolve(hass, call, lambda profile: profile.music is not None)
     spec = profile.music
@@ -273,7 +274,7 @@ async def async_set_music_mode_handler(hass: HomeAssistant, call: ServiceCall) -
         if palette is not None:
             raise _validation_error("music_palette_unsupported", effect=data[ATTR_EFFECT])
     elif palette is None:
-        palette = spec.default_palette
+        palette = spec.default_palette or None
     if palette is not None and len(palette) > spec.max_colors:
         raise _validation_error("music_palette_too_long", maximum=str(spec.max_colors))
 

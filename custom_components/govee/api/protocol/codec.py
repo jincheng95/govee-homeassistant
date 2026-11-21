@@ -2,9 +2,8 @@
 
 :class:`GoveeCodec` binds one :class:`~.profiles.DeviceProfile` and turns
 *intents* ("paint ring segments 0-3 blue") into 20-byte frames. It never reads
-device state: zone and segment state is readable by nothing — not LAN, not
-cloud — so every consumer is necessarily optimistic and must be able to build a
-frame from nothing but the intent.
+device state. Most zone and segment state has no readback, so a consumer must
+be able to build a frame from nothing but the intent.
 
 Segment indices are always 0-based, matching the mask bit positions.
 """
@@ -94,7 +93,7 @@ class GoveeCodec:
         return mask
 
     def clamp_kelvin(self, kelvin: int) -> int:
-        """Clamp to the profile's usable range (2000-6500 K on the H60B0)."""
+        """Clamp to the profile's usable range (2700-6500 K on the H60B0)."""
         return self.profile.kelvin.clamp(kelvin)
 
     # -- whole device -----------------------------------------------------
@@ -143,7 +142,8 @@ class GoveeCodec:
             effect: An effect name from the profile's music table, or a raw id.
             sensitivity: Microphone sensitivity, 0 to the profile's maximum.
             colors: The palette to upload first. None sends the commit alone.
-            soft: Soft rather than dynamic response.
+            soft: Soft rather than dynamic response. It goes into the palette's
+                style byte when the profile has one, else into the commit.
             manual_color: One fixed colour instead of the automatic colours.
 
         Returns:
@@ -169,7 +169,7 @@ class GoveeCodec:
             raise GoveeProtocolError(f"music effect id {effect} out of byte range")
         if not 0 <= sensitivity <= spec.max_sensitivity:
             raise GoveeProtocolError(f"music sensitivity {sensitivity} outside 0-{spec.max_sensitivity}")
-        if (soft or manual_color is not None) and not spec.commit_options:
+        if (manual_color is not None or (soft and not spec.palette_style)) and not spec.commit_options:
             raise UnsupportedCapabilityError(f"{self.profile.sku} music commit carries no soft or manual colour")
 
         frames: list[bytes] = []
@@ -182,9 +182,14 @@ class GoveeCodec:
             for rgb in colors:
                 payload += rgb_bytes(rgb)
             payload += spec.palette_tails.get(effect, b"")
+            if spec.palette_style:
+                payload.append(1 if soft else 0)
             frames += chunk_effect(payload, marker=spec.marker)
+        commit_soft = soft and not spec.palette_style
         frames.append(
-            music_select(sub_mode=sub_mode, effect=effect, sensitivity=sensitivity, soft=soft, manual_rgb=manual_color)
+            music_select(
+                sub_mode=sub_mode, effect=effect, sensitivity=sensitivity, soft=commit_soft, manual_rgb=manual_color
+            )
         )
         return frames
 
@@ -329,9 +334,8 @@ class GoveeCodec:
         record. At least one zone must be on — an all-off DIY would just
         blank the lamp, which is a power intent, not an effect.
 
-        ``index`` is the commit frame's effect slot. The verified capture
-        used a cloud-saved DIY's slot (3); 0 — a locally composed, unsaved
-        effect — is the untested-but-expected default.
+        ``index`` is the 16-bit DIY code the commit names, low byte first.
+        0 is the default for a locally composed effect.
 
         Send the returned frames in order, in one envelope
         (:meth:`message` / ``LanUdpClient.async_send_frames``).

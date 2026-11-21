@@ -391,7 +391,7 @@ class GoveeDiyDirectionSelect(_GoveeDiyZoneEntityBase, SelectEntity):
 
 
 class _GoveeDiyZoneNumber(_GoveeDiyZoneEntityBase, NumberEntity):
-    """Shared body for the 1-100 staged numbers (speed, flow rate)."""
+    """Shared body for the staged percentage numbers (speed, flow rate)."""
 
     _attr_mode = NumberMode.SLIDER
     _attr_native_min_value = 1.0
@@ -420,7 +420,7 @@ class _GoveeDiyZoneNumber(_GoveeDiyZoneEntityBase, NumberEntity):
             value = int(float(state))
         except ValueError:  # pragma: no cover - malformed restore
             return
-        if 1 <= value <= 100:
+        if self._attr_native_min_value <= value <= self._attr_native_max_value:
             self._seed(value)
 
     def _seed(self, value: int) -> None:
@@ -455,13 +455,14 @@ class GoveeDiySpeedNumber(_GoveeDiyZoneNumber):
 
 
 class GoveeDiyFlowRateNumber(_GoveeDiyZoneNumber):
-    """Flow rate carried *inside* the staged DIY record, 1-100.
+    """Flow rate carried *inside* the staged DIY record, 0-100.
 
     Not the same entity as the live zone flow rate in :mod:`.zone_light`, and
     deliberately so — see the module docstring.
     """
 
     _attr_icon = "mdi:speedometer"
+    _attr_native_min_value = 0.0
 
     def __init__(
         self,

@@ -201,6 +201,7 @@ _DIY_COLORS = vol.All(
 )
 _DIY_MODE = vol.Any(vol.All(vol.Coerce(int), vol.Range(min=0, max=255)), cv.string)
 _DIY_PERCENT = vol.All(vol.Coerce(int), vol.Range(min=1, max=100))
+_DIY_FLOW_RATE = vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
 
 # Zone key -> its flat field suffixes, longest tail first. The ripple is the
 # only zone whose wire record has a direction/flow-rate tail; the ring encoder
@@ -265,7 +266,7 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
             vol.Optional("ripple_speed"): _DIY_PERCENT,
             vol.Optional("ripple_colors"): _DIY_COLORS,
             vol.Optional("ripple_direction"): vol.In(sorted(DIRECTIONS)),
-            vol.Optional("ripple_flow_rate"): _DIY_PERCENT,
+            vol.Optional("ripple_flow_rate"): _DIY_FLOW_RATE,
             vol.Optional("ring_mode"): _DIY_MODE,
             vol.Optional("ring_speed"): _DIY_PERCENT,
             vol.Optional("ring_colors"): _DIY_COLORS,

@@ -173,6 +173,7 @@ from .api.segment_readback import payload_frames
 from .raw_status import apply_raw_status, async_query_settings as async_query_raw_settings
 from .api.raw_router import async_color_temp as async_raw_color_temp
 from .segment_limit import pushes_segment_readback, verified_segment_count
+from .zone_state import apply_power_report as apply_zone_power_report
 
 from .models import (
     GoveeDevice,
@@ -4118,10 +4119,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
     @callback
     def _on_mqtt_raw_frames(self, device_id: str, payload: dict[str, Any]) -> None:
-        """Fork: apply the push's raw status reports and `aa a5` segment frames.
+        """Fork: apply the push's raw status reports, zone power and `aa a5` segment frames.
 
         Status reports (see :mod:`.raw_status`) go into coordinator state and
-        notify listeners only on a change.
+        notify listeners only on a change. Zone power comes from an `ee 30 01`
+        report (see :func:`.zone_state.apply_power_report`); segments from `aa a5`.
 
         The H6046 light bar's status pushes carry `reference` §6.2 per-segment
         readback in ``op.command``. It arrives ~1-2 s after our own writes and
@@ -4142,6 +4144,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             return
         if apply_raw_status(self, device, payload_frames(payload)):
             self.async_set_updated_data(self._states)
+        # Fork: the `ee 30 01` zone power report, gated by the profile.
+        apply_zone_power_report(self, device_id, device.sku, payload)
         # Two profile gates, both table truth, no SKU branch here. Having
         # segments is not the same as pushing readback for them: `aa a5` is a
         # BLE query answer on every other SKU, so a push carrying that header
