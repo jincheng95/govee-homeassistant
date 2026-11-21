@@ -269,13 +269,18 @@ async def async_color_temp(coordinator: GoveeCoordinator, device: GoveeDevice, k
 
     codec = GoveeCodec(profile)
     sent = codec.clamp_kelvin(kelvin)
-    red, green, blue = color_util.color_temperature_to_rgb(sent)
-    frame = codec.segment_color_temp(sent, (round(red), round(green), round(blue)))
+    frame = codec.segment_color_temp(sent, white_point(sent))
     if not await async_route_frames(
         coordinator, device.device_id, device.sku, profile, [frame], what=f"colour temperature -> {sent} K"
     ):
         return None
     return sent
+
+
+def white_point(kelvin: int) -> tuple[int, int, int]:
+    """HA's RGB approximation of ``kelvin``, the white point raw CT frames carry."""
+    red, green, blue = color_util.color_temperature_to_rgb(kelvin)
+    return round(red), round(green), round(blue)
 
 
 # Device settings (the gradient switch and the settings selects)

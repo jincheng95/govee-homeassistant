@@ -2,6 +2,7 @@
 
 - ``govee.set_light_timer``: one of the device's on/off timers.
 - ``govee.set_sleep_timer``: dim to off over a number of minutes.
+- ``govee.set_wake_up``: brighten to a level by a time of day.
 
 Each action takes one device, checks that its profile encodes the setting, and
 sends the frames through :func:`~.api.raw_router.async_device_frames`. No cloud
@@ -22,7 +23,7 @@ from homeassistant.helpers import config_validation as cv
 
 from . import services
 from .api.protocol import Capability, DeviceProfile, GoveeCodec
-from .api.raw_router import async_device_frames
+from .api.raw_router import async_device_frames, white_point
 from .const import DOMAIN
 from .coordinator import GoveeCoordinator
 from .models import GoveeDevice
@@ -35,9 +36,15 @@ ATTR_TIME = "time"
 ATTR_WEEKDAYS = "weekdays"
 ATTR_MINUTES = "minutes"
 ATTR_START_BRIGHTNESS = "start_brightness"
+ATTR_DURATION = "duration"
+ATTR_END_BRIGHTNESS = "end_brightness"
+ATTR_COLOR_TEMP_KELVIN = "color_temp_kelvin"
 
 SERVICE_SET_LIGHT_TIMER = "set_light_timer"
 SERVICE_SET_SLEEP_TIMER = "set_sleep_timer"
+SERVICE_SET_WAKE_UP = "set_wake_up"
+
+DEFAULT_WAKE_UP_KELVIN: Final = 2700
 
 WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 """Weekday option keys. The index is the weekday bit."""
@@ -65,6 +72,20 @@ SET_SLEEP_TIMER_SCHEMA = vol.Schema(
         vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
         vol.Optional(ATTR_MINUTES, default=15): _MINUTES,
         vol.Optional(ATTR_START_BRIGHTNESS, default=30): _PERCENT,
+    }
+)
+
+SET_WAKE_UP_SCHEMA = vol.Schema(
+    {
+        vol.Required(services.ATTR_DEVICE_ID): cv.string,
+        vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
+        vol.Optional(ATTR_TIME): cv.time,
+        vol.Optional(ATTR_WEEKDAYS, default=[]): _WEEKDAY_LIST,
+        vol.Optional(ATTR_DURATION, default=10): _MINUTES,
+        vol.Optional(ATTR_END_BRIGHTNESS, default=100): _PERCENT,
+        vol.Optional(ATTR_COLOR_TEMP_KELVIN, default=DEFAULT_WAKE_UP_KELVIN): vol.All(
+            vol.Coerce(int), vol.Range(min=1)
+        ),
     }
 )
 
@@ -172,6 +193,48 @@ async def async_set_sleep_timer_handler(hass: HomeAssistant, call: ServiceCall) 
     )
 
 
+async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Handle ``govee.set_wake_up``.
+
+    An enabled wake-up needs a time. The colour temperature must lie in the
+    profile's range and is sent with HA's RGB approximation of it.
+    """
+    coordinator, device, profile = _resolve(hass, call, lambda profile: profile.supports(Capability.WAKE_UP))
+    data: dict[str, Any] = call.data
+    enabled: bool = data[ATTR_ENABLED]
+    if enabled and ATTR_TIME not in data:
+        raise _validation_error("wake_up_needs_time")
+    kelvin: int = data[ATTR_COLOR_TEMP_KELVIN]
+    if not profile.kelvin.minimum <= kelvin <= profile.kelvin.maximum:
+        raise _validation_error(
+            "kelvin_out_of_range",
+            device=device.name,
+            kelvin=str(kelvin),
+            minimum=str(profile.kelvin.minimum),
+            maximum=str(profile.kelvin.maximum),
+        )
+    at: time = data.get(ATTR_TIME, time(0, 0))
+    weekdays = _weekday_bits(data[ATTR_WEEKDAYS])
+
+    await _async_send(
+        coordinator,
+        device,
+        call,
+        lambda codec: [
+            codec.wake_up(
+                enabled=enabled,
+                end_brightness=data[ATTR_END_BRIGHTNESS],
+                hour=at.hour,
+                minute=at.minute,
+                weekdays=weekdays,
+                duration=data[ATTR_DURATION],
+                kelvin=kelvin,
+                white_rgb=white_point(kelvin),
+            )
+        ],
+    )
+
+
 @callback
 def async_setup_raw_actions(hass: HomeAssistant) -> None:
     """Register the raw schedule actions (called from ``async_setup_services``)."""
@@ -182,5 +245,9 @@ def async_setup_raw_actions(hass: HomeAssistant) -> None:
     async def _set_sleep_timer(call: ServiceCall) -> None:
         await async_set_sleep_timer_handler(hass, call)
 
+    async def _set_wake_up(call: ServiceCall) -> None:
+        await async_set_wake_up_handler(hass, call)
+
     hass.services.async_register(DOMAIN, SERVICE_SET_LIGHT_TIMER, _set_light_timer, schema=SET_LIGHT_TIMER_SCHEMA)
     hass.services.async_register(DOMAIN, SERVICE_SET_SLEEP_TIMER, _set_sleep_timer, schema=SET_SLEEP_TIMER_SCHEMA)
+    hass.services.async_register(DOMAIN, SERVICE_SET_WAKE_UP, _set_wake_up, schema=SET_WAKE_UP_SCHEMA)

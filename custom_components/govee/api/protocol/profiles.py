@@ -106,6 +106,7 @@ class Capability(str, Enum):
     POWER_OFF_MEMORY = "power_off_memory"
     LIGHT_TIMER = "light_timer"
     SLEEP_TIMER = "sleep_timer"
+    WAKE_UP = "wake_up"
 
 
 @dataclass(frozen=True)
@@ -651,6 +652,7 @@ H80C5: Final = DeviceProfile(
         Capability.LIGHT_TIMER: CapabilitySpec("light_timer", {"slots": 4}),
         # The trailer's meaning is not known. It is written as 03 e8.
         Capability.SLEEP_TIMER: CapabilitySpec("sleep_timer", {"trailer": 0x03E8}),
+        Capability.WAKE_UP: CapabilitySpec("wake_up"),
     },
     modes={"scene": 0x04},
     # `aa a5` answers a query on this SKU; it is not pushed unsolicited.

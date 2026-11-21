@@ -276,3 +276,61 @@ set_sleep_timer:
           min: 1
           max: 100
           unit_of_measurement: "%"
+
+set_wake_up:
+  fields:
+    device_id:
+      required: true
+      example: "AA:BB:CC:DD:EE:FF:00:11"
+      selector:
+        device:
+          integration: govee
+    enabled:
+      required: false
+      default: true
+      selector:
+        boolean:
+    time:
+      required: false
+      example: "07:00:00"
+      selector:
+        time:
+    weekdays:
+      required: false
+      example: "[monday, tuesday, wednesday, thursday, friday]"
+      selector:
+        select:
+          translation_key: weekday
+          multiple: true
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+    duration:
+      required: false
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 255
+          unit_of_measurement: min
+    end_brightness:
+      required: false
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    color_temp_kelvin:
+      required: false
+      default: 2700
+      selector:
+        color_temp:
+          unit: kelvin
+          min: 2700
+          max: 9000

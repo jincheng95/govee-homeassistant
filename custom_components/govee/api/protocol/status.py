@@ -7,6 +7,9 @@
     aa 41 02 <n>           power-off memory reply to an ``aa 41`` query
     aa 11 <en> <brightness> <minutes> <minutes left> ...
                            sleep timer reply to an ``aa 11`` query
+    aa 12 <en> <brightness> <hour> <minute> <repeat> <minutes> 00 <R G B> <K>
+                           wake-up reply to an ``aa 12`` query; an enable
+                           byte of ``ff`` reads as disabled
     aa 23 ff <4 x 4>       timer reply to an ``aa 23 ff`` query, one
                            ``<flags> <hour> <minute> <repeat>`` group per slot
 
@@ -30,6 +33,7 @@ from .encoders import (
     SLEEP_TIMER_COMMAND_TYPE,
     TIMER_ENABLED,
     TIMER_TURN_ON,
+    WAKE_UP_COMMAND_TYPE,
     repeat_days,
 )
 from .frames import FRAME_LENGTH, PRO_TYPE_QUERY, xor_checksum
@@ -40,6 +44,7 @@ POWER_OFF_MEMORY_SUB_TYPE: Final = 0x02
 TIMER_READ_ALL: Final = 0xFF
 """The ``aa 23`` selector that reads every timer slot."""
 TIMER_REPLY_SLOTS: Final = 4
+WAKE_UP_NEVER_SET: Final = 0xFF
 
 SETTING_QUERIES: Final[Mapping[Capability, int]] = {
     Capability.GRADIENT: GRADIENT_COMMAND_TYPE,
@@ -70,6 +75,20 @@ class SleepTimer:
 
 
 @dataclass(frozen=True)
+class WakeUp:
+    """The wake-up, which brightens to ``end_brightness`` percent by the given time."""
+
+    enabled: bool
+    end_brightness: int
+    hour: int
+    minute: int
+    weekdays: tuple[int, ...]
+    duration: int
+    rgb: tuple[int, int, int]
+    kelvin: int
+
+
+@dataclass(frozen=True)
 class StatusReport:
     """What one batch of frames reported. A field stays None when absent."""
 
@@ -78,6 +97,7 @@ class StatusReport:
     power_off_memory: int | None = None
     timers: tuple[LightTimer, ...] | None = None
     sleep: SleepTimer | None = None
+    wake_up: WakeUp | None = None
 
 
 def _valid(frame: bytes) -> bool:
@@ -113,6 +133,24 @@ def _decode_sleep(frame: bytes) -> SleepTimer | None:
     return SleepTimer(enabled=enabled == 1, start_brightness=brightness, minutes=minutes, remaining_minutes=remaining)
 
 
+def _decode_wake_up(frame: bytes) -> WakeUp | None:
+    enabled, brightness, hour, minute, repeat, duration = frame[2:8]
+    if enabled not in (0, 1, WAKE_UP_NEVER_SET) or brightness > 100 or not repeat & REPEAT_MARKER:
+        return None
+    if not _time_of_day(hour, minute):
+        return None
+    return WakeUp(
+        enabled=enabled == 1,
+        end_brightness=brightness,
+        hour=hour,
+        minute=minute,
+        weekdays=repeat_days(repeat),
+        duration=duration,
+        rgb=(frame[9], frame[10], frame[11]),
+        kelvin=int.from_bytes(frame[12:14], "big"),
+    )
+
+
 def decode_status(frames: Iterable[bytes]) -> StatusReport:
     """Decode the reports in ``frames``; the last frame of each kind wins."""
     power: bool | None = None
@@ -120,6 +158,7 @@ def decode_status(frames: Iterable[bytes]) -> StatusReport:
     memory: int | None = None
     timers: tuple[LightTimer, ...] | None = None
     sleep: SleepTimer | None = None
+    wake: WakeUp | None = None
     for frame in frames:
         if not _valid(frame):
             continue
@@ -139,4 +178,8 @@ def decode_status(frames: Iterable[bytes]) -> StatusReport:
             timers = _decode_timers(frame) or timers
         elif frame[1] == SLEEP_TIMER_COMMAND_TYPE:
             sleep = _decode_sleep(frame) or sleep
-    return StatusReport(power=power, gradient=gradient, power_off_memory=memory, timers=timers, sleep=sleep)
+        elif frame[1] == WAKE_UP_COMMAND_TYPE:
+            wake = _decode_wake_up(frame) or wake
+    return StatusReport(
+        power=power, gradient=gradient, power_off_memory=memory, timers=timers, sleep=sleep, wake_up=wake
+    )

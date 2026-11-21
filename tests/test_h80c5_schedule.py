@@ -4,6 +4,7 @@
    ``govee.set_light_timer``.
 2. Sleep timer: the frame, the ``aa 11`` reply decoder and
    ``govee.set_sleep_timer``.
+3. Wake-up: the frame, the ``aa 12`` reply decoder and ``govee.set_wake_up``.
 
 The actions run on a real ``hass`` through ``hass.services.async_call``, so
 every payload passes the real schema. The coordinator is a mock and the raw
@@ -27,6 +28,7 @@ from custom_components.govee.api.protocol import (
     LightTimer,
     SleepTimer,
     UnsupportedCapabilityError,
+    WakeUp,
     decode_status,
     get_profile,
 )
@@ -102,6 +104,7 @@ class TestRegistration:
     async def test_the_actions_are_registered(self, hass, actions) -> None:
         assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_LIGHT_TIMER)
         assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_SLEEP_TIMER)
+        assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_WAKE_UP)
 
 
 class TestCommonGates:
@@ -123,6 +126,7 @@ class TestCommonGates:
         [
             (raw_actions.SERVICE_SET_LIGHT_TIMER, {"slot": 1, "enabled": False}),
             (raw_actions.SERVICE_SET_SLEEP_TIMER, {}),
+            (raw_actions.SERVICE_SET_WAKE_UP, {"enabled": False}),
         ],
     )
     async def test_a_device_without_the_capability_is_refused(
@@ -357,4 +361,152 @@ class TestSetSleepTimer:
     async def test_the_schema_refuses_bad_values(self, hass, actions, route, data) -> None:
         with pytest.raises(vol.Invalid):
             await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, **data)
+        route.assert_not_awaited()
+
+
+# ==============================================================================
+# 3. Wake-up
+# ==============================================================================
+
+APP_2700_WHITE = (0xFF, 0xAE, 0x54)
+WAKE_TUESDAY = bytes(
+    [0x33, 0x12, 0x01, 0x64, 0x00, 0x00, 0x82, 0x0A, 0x00, 0xFF, 0xAE, 0x54, 0x0A, 0x8C, *bytes(5), 0x4F]
+)
+WAKE_TUESDAY_OFF = bytes(
+    [0x33, 0x12, 0x00, 0x64, 0x00, 0x00, 0x82, 0x0A, 0x00, 0xFF, 0xAE, 0x54, 0x0A, 0x8C, *bytes(5), 0x4E]
+)
+WAKE_ONCE = bytes(
+    [0x33, 0x12, 0x01, 0x64, 0x00, 0x00, 0x80, 0x0A, 0x00, 0xFF, 0xAE, 0x54, 0x0A, 0x8C, *bytes(5), 0x4D]
+)
+WAKE_REPLY_UNSET = bytes(
+    [0xAA, 0x12, 0xFF, 0x64, 0x00, 0x00, 0x80, 0x0A, 0x00, 0xFF, 0xAE, 0x54, 0x00, 0x00, *bytes(5), 0xAC]
+)
+
+
+def _wake(**kwargs: Any) -> bytes:
+    values: dict[str, Any] = {
+        "enabled": True,
+        "end_brightness": 100,
+        "hour": 0,
+        "minute": 0,
+        "weekdays": (),
+        "duration": 10,
+        "kelvin": 2700,
+        "white_rgb": APP_2700_WHITE,
+        **kwargs,
+    }
+    return _codec().wake_up(**values)
+
+
+class TestWakeUpFrame:
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            ({"weekdays": (1,)}, WAKE_TUESDAY),
+            ({"weekdays": (1,), "enabled": False}, WAKE_TUESDAY_OFF),
+            ({}, WAKE_ONCE),
+        ],
+    )
+    def test_frames_are_byte_exact(self, kwargs: dict[str, Any], expected: bytes) -> None:
+        assert _wake(**kwargs) == expected
+
+    def test_kelvin_is_clamped_to_the_profile_range(self) -> None:
+        assert _wake(kelvin=12000)[12:14] == (9000).to_bytes(2, "big")
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"end_brightness": 0}, {"duration": 0}, {"hour": 24}, {"weekdays": (-1,)}],
+    )
+    def test_out_of_range_is_refused(self, kwargs: dict[str, Any]) -> None:
+        with pytest.raises(FrameError):
+            _wake(**kwargs)
+
+    def test_other_skus_do_not_encode_it(self) -> None:
+        with pytest.raises(UnsupportedCapabilityError):
+            GoveeCodec(get_profile("H6076")).wake_up(
+                enabled=False, end_brightness=100, hour=0, minute=0, duration=10, kelvin=2700, white_rgb=(0, 0, 0)
+            )
+
+
+class TestWakeUpDecode:
+    def test_the_never_set_reply_reads_as_disabled(self) -> None:
+        assert decode_status([WAKE_REPLY_UNSET]).wake_up == WakeUp(
+            enabled=False,
+            end_brightness=100,
+            hour=0,
+            minute=0,
+            weekdays=(),
+            duration=10,
+            rgb=APP_2700_WHITE,
+            kelvin=0,
+        )
+
+    def test_round_trip(self) -> None:
+        frame = _wake(hour=6, minute=45, weekdays=(0, 1, 2, 3, 4), duration=30, end_brightness=80)
+        assert decode_status([_reply(frame)]).wake_up == WakeUp(
+            enabled=True,
+            end_brightness=80,
+            hour=6,
+            minute=45,
+            weekdays=(0, 1, 2, 3, 4),
+            duration=30,
+            rgb=APP_2700_WHITE,
+            kelvin=2700,
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            (0x02, 0x64, 0x00, 0x00, 0x80),
+            (0x01, 0x65, 0x00, 0x00, 0x80),
+            (0x01, 0x64, 0x18, 0x00, 0x80),
+            (0x01, 0x64, 0x00, 0x00, 0x00),
+        ],
+        ids=["enable", "brightness", "hour", "repeat-marker"],
+    )
+    def test_an_unexpected_value_skips_the_reply(self, body: tuple[int, ...]) -> None:
+        assert decode_status([_reply(bytes([0x33, 0x12, *body, *bytes(13)]))]).wake_up is None
+
+
+class TestSetWakeUp:
+    async def test_tuesday_at_midnight_in_2700_k(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, time="00:00", weekdays=["tuesday"])
+        expected = _wake(weekdays=(1,), white_rgb=raw_router.white_point(2700))
+        assert _sent(route) == [expected]
+        assert expected[:9] == WAKE_TUESDAY[:9] and expected[12:14] == WAKE_TUESDAY[12:14]
+
+    async def test_the_white_point_follows_the_kelvin(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, time="07:30", color_temp_kelvin=6500, duration=20)
+        frame = _sent(route)[0]
+        assert frame[4:8] == bytes([7, 30, 0x80, 20])
+        assert tuple(frame[9:12]) == raw_router.white_point(6500)
+        assert frame[12:14] == (6500).to_bytes(2, "big")
+
+    async def test_disabling_needs_no_time(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, enabled=False, weekdays=["tuesday"])
+        assert _sent(route)[0][:9] == WAKE_TUESDAY_OFF[:9]
+
+    async def test_an_enabled_wake_up_needs_a_time(self, hass, actions, route) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_WAKE_UP)
+        assert err.value.translation_key == "wake_up_needs_time"
+        route.assert_not_awaited()
+
+    @pytest.mark.parametrize("kelvin", [2000, 9500])
+    async def test_a_kelvin_outside_the_profile_is_a_translated_error(self, hass, actions, route, kelvin) -> None:
+        with pytest.raises(ServiceValidationError) as err:
+            await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, time="07:00", color_temp_kelvin=kelvin)
+        assert err.value.translation_key == "kelvin_out_of_range"
+        assert err.value.translation_placeholders == {
+            "device": "String lights",
+            "kelvin": str(kelvin),
+            "minimum": "2700",
+            "maximum": "9000",
+        }
+        route.assert_not_awaited()
+
+    @pytest.mark.parametrize("data", [{"duration": 0}, {"end_brightness": 101}, {"weekdays": ["noday"]}])
+    async def test_the_schema_refuses_bad_values(self, hass, actions, route, data) -> None:
+        with pytest.raises(vol.Invalid):
+            await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, time="07:00", **data)
         route.assert_not_awaited()

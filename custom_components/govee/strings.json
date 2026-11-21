@@ -816,6 +816,40 @@
           "description": "Brightness the dimming starts from, in percent."
         }
       }
+    },
+    "set_wake_up": {
+      "name": "Set wake-up",
+      "description": "Sets the light's on-device wake-up over the local raw-frame connection. The light brightens over the duration so it reaches the end brightness at the time.",
+      "fields": {
+        "device_id": {
+          "name": "Device",
+          "description": "The light. Accepts a Home Assistant device or a Govee device ID."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether the wake-up runs. An enabled wake-up needs a time."
+        },
+        "time": {
+          "name": "Time",
+          "description": "Time of day the light reaches the end brightness."
+        },
+        "weekdays": {
+          "name": "Repeat on",
+          "description": "Days to repeat on. Leave empty to run once."
+        },
+        "duration": {
+          "name": "Duration",
+          "description": "Minutes the light takes to brighten."
+        },
+        "end_brightness": {
+          "name": "End brightness",
+          "description": "Brightness reached at the time, in percent."
+        },
+        "color_temp_kelvin": {
+          "name": "Color temperature",
+          "description": "White the light wakes up in, in kelvin, within the light's range."
+        }
+      }
     }
   },
   "exceptions": {
@@ -887,6 +921,12 @@
     },
     "timer_needs_time_and_action": {
       "message": "An enabled timer needs a time and an action."
+    },
+    "wake_up_needs_time": {
+      "message": "An enabled wake-up needs a time."
+    },
+    "kelvin_out_of_range": {
+      "message": "{kelvin} K is outside the {minimum}-{maximum} K range of {device}."
     }
   },
   "issues": {

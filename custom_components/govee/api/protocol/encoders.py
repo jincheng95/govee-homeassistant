@@ -35,6 +35,7 @@ POWER_OFF_MEMORY_COMMAND_TYPE = 0x41
 POWER_OFF_MEMORY_BEHAVIOURS = range(3)
 """0 restores the last state, 1 comes back on, 2 stays off."""
 SLEEP_TIMER_COMMAND_TYPE = 0x11
+WAKE_UP_COMMAND_TYPE = 0x12
 LIGHT_TIMER_COMMAND_TYPE = 0x23
 
 TIMER_ENABLED = 0x80
@@ -167,6 +168,42 @@ def sleep_timer(constants: Mapping[str, Any], *, enabled: bool, start_brightness
         0,
     ]
     return build_frame(bytes(body) + trailer.to_bytes(2, "big"))
+
+
+def wake_up(
+    constants: Mapping[str, Any],
+    *,
+    enabled: bool,
+    end_brightness: int,
+    hour: int,
+    minute: int,
+    weekdays: Iterable[int],
+    duration: int,
+    kelvin: int,
+    white_rgb: tuple[int, int, int],
+) -> bytes:
+    """``33 12 <enable> <brightness> <hour> <minute> <repeat> <minutes> 00 <R G B> <Khi Klo>``.
+
+    The light brightens to ``end_brightness`` percent over ``duration``
+    minutes, ending at ``hour``:``minute``, in ``kelvin`` with ``white_rgb``
+    as its RGB approximation.
+    """
+    del constants
+    body = bytearray(
+        [
+            PRO_TYPE_WRITE,
+            WAKE_UP_COMMAND_TYPE,
+            1 if enabled else 0,
+            _byte("wake-up brightness", end_brightness, 1, 100),
+            *_time_bytes(hour, minute),
+            repeat_byte(weekdays),
+            _byte("wake-up minutes", duration, 1),
+            0,
+        ]
+    )
+    body += rgb_bytes(white_rgb)
+    body += kelvin_bytes(kelvin)
+    return build_frame(body)
 
 
 def query(constants: Mapping[str, Any], *, command_type: int) -> bytes:
@@ -330,6 +367,7 @@ ENCODERS: Mapping[str, Encoder] = {
     "power_off_memory": power_off_memory,
     "light_timer": light_timer,
     "sleep_timer": sleep_timer,
+    "wake_up": wake_up,
     "query": query,
     "mode_select": mode_select,
     "zone_color": zone_color,

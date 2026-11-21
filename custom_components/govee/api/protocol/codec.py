@@ -168,6 +168,42 @@ class GoveeCodec:
             Capability.SLEEP_TIMER, enabled=enabled, start_brightness=start_brightness, minutes=minutes
         )
 
+    def wake_up(
+        self,
+        *,
+        enabled: bool,
+        end_brightness: int,
+        hour: int,
+        minute: int,
+        weekdays: Iterable[int] = (),
+        duration: int,
+        kelvin: int,
+        white_rgb: tuple[int, int, int],
+    ) -> bytes:
+        """Brighten the light so it reaches ``end_brightness`` at the given time.
+
+        Args:
+            enabled: Whether the wake-up runs.
+            end_brightness: Brightness reached at the end, in percent.
+            hour: Hour of day the wake-up ends, 0-23.
+            minute: Minute, 0-59.
+            weekdays: Days to repeat on, 0 Monday to 6 Sunday. No days runs once.
+            duration: Minutes the light takes to brighten.
+            kelvin: Colour temperature, clamped to the profile range.
+            white_rgb: RGB approximation of ``kelvin``, carried beside it.
+        """
+        return self._encode(
+            Capability.WAKE_UP,
+            enabled=enabled,
+            end_brightness=end_brightness,
+            hour=hour,
+            minute=minute,
+            weekdays=weekdays,
+            duration=duration,
+            kelvin=self.clamp_kelvin(kelvin),
+            white_rgb=white_rgb,
+        )
+
     def bar_power_mask(self, mask: int) -> bytes:
         """H6046 two-bar power mask (0x01 = bar A, 0x10 = bar B, 0x11 = both)."""
         return self._encode(Capability.BAR_POWER_MASK, mask=mask)
