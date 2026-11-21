@@ -50,6 +50,14 @@ RAINBOW_CONFIG = {"defDirIndex": 0, "defSpeed": 1, "directions": [5, 6, 7, 8], "
 FLAME = bytes.fromhex("490a0004045a010002ff0000ff7f00")
 FLAME_CONFIG = {"defDirIndex": -1, "defSpeed": -1, "directions": [], "speedRange": [60, 70, 80, 90]}
 RGBIC = bytes([0x02]) + bytes(range(1, 40))
+TWO_EFFECT = bytes.fromhex(
+    "02290000000f0001ffff0000141402fc0506000000ff000000000000000000ff000000000000fc1000e500"
+    "290000000f0001ffff0000141402fc0506ff000000000000000000ff000000000000000200fc1200e500"
+)
+TWO_EFFECT_CONFIG = [
+    {"defaultIndex": 1, "color": [247, 252, 252], "page": 0, "moveAll": [229, 229, 252]},
+    {"moveAll": [229, 229, 252], "color": [247, 252, 252], "page": 1, "defaultIndex": 1},
+]
 
 
 def _effect(blob: bytes, code: int, config: Any = None) -> dict[str, Any]:
@@ -71,6 +79,7 @@ def _payload() -> dict[str, Any]:
                         {"sceneName": "Rainbow B", "lightEffects": [_effect(RAINBOW, 18188, RAINBOW_CONFIG)]},
                         {"sceneName": "Flame B", "lightEffects": [_effect(FLAME, 20001, FLAME_CONFIG)]},
                         {"sceneName": "Candy Cane", "lightEffects": [_effect(RGBIC, 12337, [{"page": 1}])]},
+                        {"sceneName": "Christmas", "lightEffects": [_effect(TWO_EFFECT, 12333, TWO_EFFECT_CONFIG)]},
                         {"sceneName": "Sunrise", "lightEffects": [_effect(b"", 0)]},
                         {"sceneName": "Rainbow B", "lightEffects": [_effect(FLAME, 3)]},
                     ],
@@ -89,7 +98,7 @@ def _payload() -> dict[str, Any]:
 class TestParseCatalogue:
     def test_scenes_by_name(self) -> None:
         found = scene_catalogue.parse_catalogue(_payload())
-        assert set(found) == {"Rainbow B", "Flame B", "Candy Cane"}
+        assert set(found) == {"Rainbow B", "Flame B", "Candy Cane", "Christmas"}
         rainbow = found["Rainbow B"]
         assert (rainbow.code, rainbow.blob) == (18188, RAINBOW)
         assert rainbow.adjust is not None and rainbow.adjust.directions == (5, 6, 7, 8)
@@ -489,3 +498,259 @@ async def test_cleanup_keeps_the_selects_while_scenes_are_on(hass, mock_light_de
     await _async_cleanup_orphaned_entities(hass, entry, _cleanup_coordinator([device_id]))
 
     assert all(registry.async_get(eid) is not None for eid in ids.values())
+
+
+# ==============================================================================
+# 6. Scene readback
+# ==============================================================================
+
+
+def _mode_report(*body: int) -> bytes:
+    raw = bytes([0xAA, 0x05, *body]).ljust(19, b"\0")
+    checksum = 0
+    for byte in raw:
+        checksum ^= byte
+    return raw + bytes([checksum])
+
+
+PLATFORM_SCENES = [
+    {"name": "Rainbow B", "value": {"id": 4101, "paramId": 1}},
+    {"name": "Flame B", "value": {"id": 4102, "paramId": 2}},
+    {"name": "Odd", "value": "not a mapping"},
+    "junk",
+]
+
+
+def _with_platform_scenes(coordinator: Any, scenes_list: list[Any] | None = None) -> Any:
+    coordinator._scene_cache._scene_cache = {DEVICE_ID: (0.0, PLATFORM_SCENES if scenes_list is None else scenes_list)}
+    return coordinator
+
+
+class TestReportedSceneCode:
+    def test_scene_mode_carries_the_code(self) -> None:
+        assert scene_catalogue.reported_scene_code([_mode_report(0x04, 0x0C, 0x47)]) == 18188
+
+    def test_other_frames_are_skipped_first(self) -> None:
+        frames = [b"\xaa\x11" + bytes(18), b"short", _mode_report(0x04, 0x31, 0x30)]
+        assert scene_catalogue.reported_scene_code(frames) == 12337
+
+    @pytest.mark.parametrize(
+        "frames",
+        [
+            [],
+            [_mode_report(0x15, 0x01)],
+            [_mode_report(0x0A, 0x20, 0x03)],
+            [_mode_report(0x04, 0x0C, 0x47)[:19] + b"\x00"],
+        ],
+    )
+    def test_no_scene_code(self, frames: list[bytes]) -> None:
+        assert scene_catalogue.reported_scene_code(frames) is None
+
+
+class TestApplySceneReport:
+    def test_a_known_code_sets_the_scene(self) -> None:
+        coordinator = _with_platform_scenes(_coordinator(scene=None))
+        device = coordinator.devices[DEVICE_ID]
+
+        changed = scene_catalogue.apply_scene_report(
+            coordinator, device, coordinator.state, [_mode_report(0x04, 0x0C, 0x47)]
+        )
+
+        assert changed is True
+        assert coordinator.state.active_scene_name == "Rainbow B"
+        assert coordinator.state.active_scene == "4101"
+
+    def test_a_scene_missing_from_the_platform_list_keeps_its_name_only(self) -> None:
+        coordinator = _with_platform_scenes(_coordinator(scene=None), [])
+        device = coordinator.devices[DEVICE_ID]
+        coordinator.state.active_scene = "9"
+
+        assert scene_catalogue.apply_scene_report(
+            coordinator, device, coordinator.state, [_mode_report(0x04, 0x0C, 0x47)]
+        )
+        assert coordinator.state.active_scene_name == "Rainbow B"
+        assert coordinator.state.active_scene is None
+
+    @pytest.mark.parametrize(
+        "scenes_list",
+        [[{"name": "Rainbow B", "value": "x"}], [{"name": "Rainbow B", "value": {}}]],
+    )
+    def test_a_platform_entry_without_an_id(self, scenes_list: list[Any]) -> None:
+        coordinator = _with_platform_scenes(_coordinator(scene=None), scenes_list)
+        device = coordinator.devices[DEVICE_ID]
+        scene_catalogue.apply_scene_report(coordinator, device, coordinator.state, [_mode_report(0x04, 0x0C, 0x47)])
+        assert coordinator.state.active_scene is None
+
+    def test_no_scene_cache_at_all(self) -> None:
+        coordinator = _coordinator(scene=None)
+        coordinator._scene_cache = None
+        device = coordinator.devices[DEVICE_ID]
+        assert scene_catalogue.apply_scene_report(
+            coordinator, device, coordinator.state, [_mode_report(0x04, 0x0C, 0x47)]
+        )
+        assert coordinator.state.active_scene is None
+
+    @pytest.mark.parametrize(
+        "frames",
+        [
+            [_mode_report(0x04, 100, 0)],
+            [_mode_report(0x15, 0x01)],
+            [],
+        ],
+    )
+    def test_unknown_code_or_other_mode_changes_nothing(self, frames: list[bytes]) -> None:
+        coordinator = _with_platform_scenes(_coordinator(scene="Flame B"))
+        coordinator.state.active_scene = "4102"
+        device = coordinator.devices[DEVICE_ID]
+
+        assert scene_catalogue.apply_scene_report(coordinator, device, coordinator.state, frames) is False
+        assert (coordinator.state.active_scene, coordinator.state.active_scene_name) == ("4102", "Flame B")
+
+    def test_the_scene_already_shown_is_not_a_change(self) -> None:
+        coordinator = _with_platform_scenes(_coordinator(scene="Rainbow B"))
+        device = coordinator.devices[DEVICE_ID]
+        assert (
+            scene_catalogue.apply_scene_report(coordinator, device, coordinator.state, [_mode_report(0x04, 0x0C, 0x47)])
+            is False
+        )
+
+    def test_a_sku_without_scene_upload_is_ignored(self) -> None:
+        other = _device("H6076", DEVICE_ID)
+        coordinator = _with_platform_scenes(_coordinator(other, scene=None))
+        assert (
+            scene_catalogue.apply_scene_report(coordinator, other, coordinator.state, [_mode_report(0x04, 0x0C, 0x47)])
+            is False
+        )
+        assert coordinator.state.active_scene_name is None
+
+
+# ==============================================================================
+# 7. Local scene start
+# ==============================================================================
+
+
+class TestStartSceneLocally:
+    async def test_uploads_the_catalogue_scene_and_records_it(self) -> None:
+        coordinator = _coordinator(scene=None)
+        device = coordinator.devices[DEVICE_ID]
+
+        with _routed() as route:
+            started = await scene_adjust.async_start_scene_locally(coordinator, device, 4101, "Rainbow B")
+
+        assert started is True
+        assert list(route.await_args.args[4]) == scenes.scene_frames(RAINBOW, 18188)
+        assert (coordinator.state.active_scene, coordinator.state.active_scene_name) == ("4101", "Rainbow B")
+        coordinator.async_update_listeners.assert_called_once()
+
+    async def _declined(self, coordinator: Any, name: str = "Rainbow B", *, routed: bool = True) -> AsyncMock:
+        device = next(iter(coordinator.devices.values()))
+        route = AsyncMock(return_value=routed)
+        with patch.object(scene_adjust.raw_router, "async_route_frames", route):
+            assert await scene_adjust.async_start_scene_locally(coordinator, device, 1, name) is False
+        assert coordinator.state.active_scene_name is None
+        return route
+
+    async def test_declines_a_sku_without_scene_upload(self) -> None:
+        route = await self._declined(_coordinator(_device("H6076", DEVICE_ID), scene=None))
+        route.assert_not_awaited()
+
+    @pytest.mark.parametrize("power", [False, None])
+    async def test_declines_a_light_not_known_to_be_on(self, power: bool | None) -> None:
+        coordinator = _coordinator(scene=None)
+        coordinator.state.power_state = power
+        route = await self._declined(coordinator)
+        route.assert_not_awaited()
+
+    async def test_declines_without_state(self) -> None:
+        coordinator = _coordinator(scene=None)
+        state = coordinator.state
+        coordinator.get_state = MagicMock(return_value=None)
+        device = coordinator.devices[DEVICE_ID]
+        with _routed() as route:
+            assert await scene_adjust.async_start_scene_locally(coordinator, device, 1, "Rainbow B") is False
+        route.assert_not_awaited()
+        assert state.active_scene_name is None
+
+    async def test_declines_a_scene_the_catalogue_lacks(self) -> None:
+        route = await self._declined(_coordinator(scene=None), "Sunrise")
+        route.assert_not_awaited()
+
+    async def test_declines_a_scene_that_cannot_be_framed(self) -> None:
+        coordinator = _coordinator(scene=None)
+        scene_catalogue.catalogue(coordinator)._scenes[SKU]["Rainbow B"] = scene_catalogue.CatalogueScene(
+            name="Rainbow B", code=0x10000, blob=RAINBOW, adjust=None
+        )
+        route = await self._declined(coordinator)
+        route.assert_not_awaited()
+
+    async def test_declines_when_no_pipe_takes_the_frames(self) -> None:
+        coordinator = _coordinator(scene=None)
+        route = await self._declined(coordinator, routed=False)
+        route.assert_awaited_once()
+        coordinator.async_update_listeners.assert_not_called()
+
+
+class TestSceneSelectRouting:
+    def _select(self, coordinator: Any, scenes_list: list[dict[str, Any]]) -> Any:
+        from custom_components.govee.select import GoveeSceneSelectEntity
+
+        entity = GoveeSceneSelectEntity(coordinator, coordinator.devices[DEVICE_ID], scenes_list)
+        entity.hass = MagicMock()
+        entity.async_write_ha_state = MagicMock()
+        coordinator.async_control_device = AsyncMock(return_value=True)
+        return entity
+
+    async def test_a_catalogue_scene_starts_locally(self) -> None:
+        coordinator = _coordinator(scene=None)
+        entity = self._select(coordinator, PLATFORM_SCENES[:2])
+
+        with _routed() as route:
+            await entity.async_select_option("Rainbow B")
+
+        route.assert_awaited_once()
+        coordinator.async_control_device.assert_not_awaited()
+        assert coordinator.state.active_scene == "4101"
+        entity.async_write_ha_state.assert_called_once()
+
+    async def test_a_declined_local_start_falls_back_to_the_cloud(self) -> None:
+        coordinator = _coordinator(scene=None)
+        entity = self._select(coordinator, PLATFORM_SCENES[:2])
+
+        with patch.object(scene_adjust.raw_router, "async_route_frames", AsyncMock(return_value=False)):
+            await entity.async_select_option("Rainbow B")
+
+        coordinator.async_control_device.assert_awaited_once()
+        command = coordinator.async_control_device.await_args.args[1]
+        assert (command.scene_id, command.scene_name) == (4101, "Rainbow B")
+
+    async def test_a_repeated_name_always_uses_the_cloud(self) -> None:
+        coordinator = _coordinator(scene=None)
+        twins = [
+            {"name": "Rainbow B", "value": {"id": 4101}},
+            {"name": "Rainbow B", "value": {"id": 4999}},
+        ]
+        entity = self._select(coordinator, twins)
+
+        with _routed() as route:
+            await entity.async_select_option("Rainbow B (1)")
+
+        route.assert_not_awaited()
+        command = coordinator.async_control_device.await_args.args[1]
+        assert command.scene_id == 4999
+
+
+class TestRgbicSceneSpeed:
+    async def test_an_rgbic_scene_offers_speed_but_no_direction(self) -> None:
+        coordinator = _coordinator(scene="Christmas")
+        speed, direction = _selects(coordinator)
+        assert speed.options == ["Slow", "Medium", "Fast"]
+        assert speed.current_option == "Medium"
+        assert direction.options == [] and direction.available is False
+
+        adjust = scene_catalogue.catalogue(coordinator).scene(SKU, "Christmas").adjust
+        with _routed() as route:
+            await speed.async_select_option("Slow")
+
+        expected = scenes.scene_frames(scenes.adjust_blob(TWO_EFFECT, adjust, speed=0), 12333)
+        assert list(route.await_args.args[4]) == expected
+        assert speed.current_option == "Slow"

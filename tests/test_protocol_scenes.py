@@ -224,3 +224,157 @@ class TestNames:
 def test_h80c5_declares_scene_upload() -> None:
     assert get_profile("H80C5").scene_upload is True
     assert get_profile("H6076").scene_upload is False
+
+
+# ------------------------------------------------------------------------------
+# RGBIC scenes. Both blobs and their speed lists are catalogue data.
+# ------------------------------------------------------------------------------
+
+# Two effects; speed lives in each effect's colour and area-move bytes.
+TWO_EFFECT = bytes.fromhex(
+    "02290000000f0001ffff0000141402fc0506000000ff000000000000000000ff000000000000fc1000e500"
+    "290000000f0001ffff0000141402fc0506ff000000000000000000ff000000000000000200fc1200e500"
+)
+TWO_EFFECT_CONFIG = [
+    {"defaultIndex": 1, "color": [247, 252, 252], "page": 0, "moveAll": [229, 229, 252]},
+    {"moveAll": [229, 229, 252], "color": [247, 252, 252], "page": 1, "defaultIndex": 1},
+]
+
+# Three effects; only the second and third carry a speed, in a brightness record.
+THREE_EFFECT = bytes.fromhex(
+    "031d000000010201ff0b01c1141403ee140200ff00c2ff0800000000000000"
+    "26000291190201ff1403e0010101f70a0504ff00b4ff0047ffffe3ff00ff9f0700000000000000"
+    "26000291190201ff1403d3010101f70a0504ff00b4ff0047ffffe3ff00ff9f0700000000000000"
+)
+THREE_EFFECT_CONFIG = [
+    {"bright": [{"brightPage": "0", "brightValue": [201, 211, 224]}], "page": 1, "defaultIndex": 2},
+    {"bright": [{"brightValue": [191, 198, 211], "brightPage": "0"}], "page": 2, "defaultIndex": 2},
+]
+
+
+def _changed(before: bytes, after: bytes) -> dict[int, int]:
+    assert len(before) == len(after)
+    return {index: after[index] for index in range(len(before)) if before[index] != after[index]}
+
+
+class TestRgbicAdjust:
+    def test_parse_reads_every_page(self) -> None:
+        adjust = scenes.parse_adjust(TWO_EFFECT_CONFIG, TWO_EFFECT)
+        assert adjust is not None
+        assert adjust.pages == (
+            scenes.RgbicPage(page=0, color=(247, 252, 252), move_all=(229, 229, 252)),
+            scenes.RgbicPage(page=1, color=(247, 252, 252), move_all=(229, 229, 252)),
+        )
+        assert adjust.speed_levels == 3
+        assert adjust.default_speed == 1
+        assert adjust.directions == ()
+
+    def test_parse_reads_brightness_rows(self) -> None:
+        adjust = scenes.parse_adjust(THREE_EFFECT_CONFIG, THREE_EFFECT)
+        assert adjust is not None
+        assert [page.page for page in adjust.pages] == [1, 2]
+        assert adjust.pages[0].bright == ((201, 211, 224),)
+        assert adjust.default_speed == 2
+
+    def test_a_repeated_page_keeps_the_later_entry(self) -> None:
+        config = [{"page": 0, "color": [1, 2, 3]}, {"page": 0, "moveIn": [4, 5, 6]}]
+        adjust = scenes.parse_adjust(config, TWO_EFFECT)
+        assert adjust is not None
+        assert adjust.pages == (scenes.RgbicPage(page=0, move_in=(4, 5, 6)),)
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            [],
+            [{"page": 1}],
+            ["junk", {"page": "0", "color": [1]}, {"page": -1, "color": [1]}, {"page": True, "color": [1]}],
+            [{"page": 0, "bright": "x"}],
+            [{"page": 0, "bright": ["x", {"brightValue": "y"}]}],
+            {"speedRange": [1, 2, 3]},
+            None,
+        ],
+    )
+    def test_configs_offering_nothing(self, config: object) -> None:
+        assert scenes.parse_adjust(config, TWO_EFFECT) is None
+
+    def test_an_empty_blob_offers_nothing(self) -> None:
+        assert scenes.parse_adjust(TWO_EFFECT_CONFIG, b"") is None
+
+    def test_default_outside_the_levels_is_dropped(self) -> None:
+        adjust = scenes.parse_adjust([{"page": 0, "color": [1, 2], "defaultIndex": 5}], TWO_EFFECT)
+        assert adjust is not None and adjust.default_speed is None
+
+    def test_slowest_level_rewrites_the_colour_speed_of_both_effects(self) -> None:
+        adjust = scenes.parse_adjust(TWO_EFFECT_CONFIG, TWO_EFFECT)
+        assert adjust is not None
+        out = scenes.adjust_blob(TWO_EFFECT, adjust, speed=0)
+        assert _changed(TWO_EFFECT, out) == {15: 247, 57: 247}
+
+    def test_fastest_level_rewrites_the_area_move_of_both_effects(self) -> None:
+        adjust = scenes.parse_adjust(TWO_EFFECT_CONFIG, TWO_EFFECT)
+        assert adjust is not None
+        out = scenes.adjust_blob(TWO_EFFECT, adjust, speed=2)
+        assert _changed(TWO_EFFECT, out) == {41: 252, 83: 252}
+
+    def test_the_default_level_is_the_blob_as_shipped(self) -> None:
+        adjust = scenes.parse_adjust(TWO_EFFECT_CONFIG, TWO_EFFECT)
+        assert adjust is not None
+        assert scenes.adjust_blob(TWO_EFFECT, adjust, speed=1) == TWO_EFFECT
+        assert scenes.adjust_blob(TWO_EFFECT, adjust) == TWO_EFFECT
+
+    def test_brightness_rows_write_into_their_own_effect(self) -> None:
+        adjust = scenes.parse_adjust(THREE_EFFECT_CONFIG, THREE_EFFECT)
+        assert adjust is not None
+        out = scenes.adjust_blob(THREE_EFFECT, adjust, speed=0)
+        changed = _changed(THREE_EFFECT, out)
+        assert sorted(changed.values()) == [191, 201]
+        assert all(index > 30 for index in changed)
+
+    def test_move_in_is_written_too(self) -> None:
+        adjust = scenes.SceneAdjust(pages=(scenes.RgbicPage(page=0, move_in=(7, 8)),))
+        out = scenes.adjust_blob(TWO_EFFECT, adjust, speed=0)
+        assert _changed(TWO_EFFECT, out) == {38: 7}
+
+    def test_a_short_list_and_a_missing_page_are_skipped(self) -> None:
+        adjust = scenes.SceneAdjust(
+            pages=(
+                scenes.RgbicPage(page=0, color=(1,), move_all=(2, 3, 4)),
+                scenes.RgbicPage(page=9, color=(5, 6, 7)),
+            )
+        )
+        out = scenes.adjust_blob(TWO_EFFECT, adjust, speed=2)
+        assert _changed(TWO_EFFECT, out) == {41: 4}
+
+    @pytest.mark.parametrize("speed", [3, -1])
+    def test_level_out_of_range(self, speed: int) -> None:
+        adjust = scenes.parse_adjust(TWO_EFFECT_CONFIG, TWO_EFFECT)
+        assert adjust is not None
+        with pytest.raises(FrameError):
+            scenes.adjust_blob(TWO_EFFECT, adjust, speed=speed)
+
+    def test_an_rgbic_scene_takes_no_direction(self) -> None:
+        adjust = scenes.parse_adjust(TWO_EFFECT_CONFIG, TWO_EFFECT)
+        assert adjust is not None
+        with pytest.raises(FrameError):
+            scenes.adjust_blob(TWO_EFFECT, adjust, direction=0)
+
+    @pytest.mark.parametrize(
+        "blob",
+        [
+            bytes([1]),
+            bytes([1, 40, 0, 0, 0]),
+            bytes([1, 3, 0, 0, 0]),
+            bytes([1, 8, 0, 0, 0, 0, 0, 0, 0, 0]),
+            TWO_EFFECT[:-1],
+            TWO_EFFECT + b"\x00",
+            bytes([1]) + TWO_EFFECT[1:43] + b"\x00",
+        ],
+    )
+    def test_malformed_rgbic_blob(self, blob: bytes) -> None:
+        adjust = scenes.SceneAdjust(pages=(scenes.RgbicPage(page=0, color=(1, 2, 3)),))
+        with pytest.raises(FrameError):
+            scenes.adjust_blob(blob, adjust, speed=0)
+
+    def test_levels_of_an_empty_adjust(self) -> None:
+        assert scenes.SceneAdjust().speed_levels == 0
+        assert scenes.RgbicPage(page=0).levels == 0

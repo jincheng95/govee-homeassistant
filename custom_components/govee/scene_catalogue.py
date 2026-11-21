@@ -13,6 +13,7 @@ import binascii
 import json
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
@@ -20,9 +21,11 @@ import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api.protocol import scenes
+from .zone_state import profile_for
 
 if TYPE_CHECKING:
     from .coordinator import GoveeCoordinator
+    from .models import GoveeDevice, GoveeDeviceState
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,6 +121,13 @@ class SceneCatalogue:
     def loaded(self, sku: str) -> bool:
         return sku in self._scenes
 
+    def name_for_code(self, sku: str, code: int) -> str | None:
+        """The cached scene that uploads with ``code``, or None."""
+        for scene in self._scenes.get(sku, {}).values():
+            if scene.code == code:
+                return scene.name
+        return None
+
     async def async_load(self, sku: str) -> bool:
         """Fetch the catalogue for ``sku`` unless a fresh copy is held.
 
@@ -169,3 +179,64 @@ def catalogue(coordinator: GoveeCoordinator) -> SceneCatalogue:
         existing = SceneCatalogue(coordinator)
         setattr(coordinator, _STORE_ATTR, existing)
     return existing
+
+
+def reported_scene_code(frames: Iterable[bytes]) -> int | None:
+    """The scene code in an ``aa 05 04 <lo> <hi>`` mode report, or None.
+
+    None also covers a report of any other mode and a frame that fails its
+    checksum.
+    """
+    for raw in frames:
+        if len(raw) != 20 or raw[0] != 0xAA or raw[1] != 0x05:
+            continue
+        checksum = 0
+        for byte in raw[:19]:
+            checksum ^= byte
+        if checksum != raw[19] or raw[2] != scenes.SCENE_SUB_MODE:
+            return None
+        return raw[3] | (raw[4] << 8)
+    return None
+
+
+def _platform_scene_id(coordinator: GoveeCoordinator, device_id: str, name: str) -> str | None:
+    """The platform API id of the scene called ``name``, from the scene cache."""
+    cache = getattr(getattr(coordinator, "_scene_cache", None), "_scene_cache", None)
+    entry = cache.get(device_id) if isinstance(cache, dict) else None
+    if not entry:
+        return None
+    for scene in entry[1]:
+        if isinstance(scene, dict) and scene.get("name") == name:
+            value = scene.get("value")
+            scene_id = value.get("id") if isinstance(value, dict) else None
+            return None if scene_id is None else str(scene_id)
+    return None
+
+
+def apply_scene_report(
+    coordinator: GoveeCoordinator,
+    device: GoveeDevice,
+    state: GoveeDeviceState,
+    frames: Iterable[bytes],
+) -> bool:
+    """Follow the scene the device says it is running.
+
+    Only a code the catalogue knows changes anything. A scene started through
+    the platform API reports a code outside the catalogue, and that leaves the
+    state as the command set it.
+
+    Returns:
+        True when the active scene changed.
+    """
+    profile = profile_for(device.sku)
+    if profile is None or not profile.scene_upload:
+        return False
+    code = reported_scene_code(frames)
+    if code is None:
+        return False
+    name = catalogue(coordinator).name_for_code(device.sku, code)
+    if name is None or name == state.active_scene_name:
+        return False
+    state.active_scene = _platform_scene_id(coordinator, device.device_id, name)
+    state.active_scene_name = name
+    return True

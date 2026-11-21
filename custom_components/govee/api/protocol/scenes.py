@@ -11,6 +11,14 @@ An H70CX blob is ``49 | len16 | effect | params | nColours | RGB...``. Effect
 12 stacks layers, each ``len16 | effect | params | nColours | RGB...``. A
 scene's speed and direction are single bytes inside those records, so the
 adjustments rewrite the blob and the scene is uploaded again.
+
+An RGBIC blob is ``count``, then per effect ``len | record``::
+
+    head(5) | nBright | nBright x brightness(6) | colour | inAreaMove(3) | areaMove(4)
+    colour = type | speed | x | nColours | RGB...
+
+Its speed is spread over up to four bytes per effect: brightness byte 3,
+colour byte 1, in-area-move byte 2 and area-move byte 2.
 """
 
 from __future__ import annotations
@@ -77,6 +85,24 @@ def direction_name(direction: int) -> str:
 
 
 @dataclass(frozen=True)
+class RgbicPage:
+    """The speed values of one effect of an RGBIC blob, one value per level."""
+
+    page: int
+    """0-based index of the effect inside the blob."""
+
+    color: tuple[int, ...] = ()
+    move_in: tuple[int, ...] = ()
+    move_all: tuple[int, ...] = ()
+    bright: tuple[tuple[int, ...], ...] = ()
+    """One row per brightness record, in blob order."""
+
+    @property
+    def levels(self) -> int:
+        return max(len(self.color), len(self.move_in), len(self.move_all), *(len(row) for row in self.bright), 0)
+
+
+@dataclass(frozen=True)
 class SceneAdjust:
     """The speed levels and directions one scene offers."""
 
@@ -90,6 +116,16 @@ class SceneAdjust:
     default_speed: int | None = None
     default_direction: int | None = None
     """Indexes into ``speeds`` and ``directions``."""
+
+    pages: tuple[RgbicPage, ...] = ()
+    """Speed values of an RGBIC blob, one entry per adjustable effect."""
+
+    @property
+    def speed_levels(self) -> int:
+        """How many speed levels the scene offers."""
+        if self.speeds:
+            return len(self.speeds)
+        return max((page.levels for page in self.pages), default=0)
 
 
 def _byte_list(value: Any) -> tuple[int, ...]:
@@ -108,15 +144,17 @@ def parse_adjust(config: Any, blob: bytes) -> SceneAdjust | None:
     """Read a scene's ``speedInfo.config`` object.
 
     Args:
-        config: The decoded JSON value. Only the object form used by H70CX
-            blobs is understood; the list form used by RGBIC blobs is not.
+        config: The decoded JSON value: an object for an H70CX blob, a list
+            of per-effect entries for an RGBIC blob.
         blob: The scene blob the config belongs to.
 
     Returns:
         The offered adjustments, or None when the scene offers none this
         module can apply.
     """
-    if not isinstance(config, Mapping) or blob[:1] != bytes([H70CX_LEAD]):
+    if blob[:1] != bytes([H70CX_LEAD]):
+        return _parse_rgbic_adjust(config) if blob else None
+    if not isinstance(config, Mapping):
         return None
 
     rows: list[tuple[int, ...]] = []
@@ -139,6 +177,102 @@ def parse_adjust(config: Any, blob: bytes) -> SceneAdjust | None:
         default_speed=_default_index(config.get("defSpeed"), len(rows)),
         default_direction=_default_index(config.get("defDirIndex"), len(directions)),
     )
+
+
+def _parse_rgbic_adjust(config: Any) -> SceneAdjust | None:
+    if not isinstance(config, Sequence) or isinstance(config, (str, bytes)):
+        return None
+    chosen: dict[int, Mapping[str, Any]] = {}
+    for entry in config:
+        if not isinstance(entry, Mapping):
+            continue
+        page = entry.get("page")
+        if isinstance(page, int) and not isinstance(page, bool) and page >= 0:
+            # Where a page repeats, the later entry replaces the earlier.
+            chosen[page] = entry
+
+    pages: list[RgbicPage] = []
+    default: Any = None
+    for page, entry in sorted(chosen.items()):
+        rows = entry.get("bright")
+        bright = (
+            tuple(_byte_list(row.get("brightValue")) if isinstance(row, Mapping) else () for row in rows)
+            if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes))
+            else ()
+        )
+        candidate = RgbicPage(
+            page=page,
+            color=_byte_list(entry.get("color")),
+            move_in=_byte_list(entry.get("moveIn")),
+            move_all=_byte_list(entry.get("moveAll")),
+            bright=bright,
+        )
+        if candidate.levels:
+            pages.append(candidate)
+            if default is None:
+                default = entry.get("defaultIndex")
+    if not pages:
+        return None
+    adjust = SceneAdjust(pages=tuple(pages))
+    return SceneAdjust(pages=adjust.pages, default_speed=_default_index(default, adjust.speed_levels))
+
+
+def _rgbic_records(blob: bytes | bytearray) -> list[dict[str, Any]]:
+    """Positions of the speed bytes of every effect in an RGBIC blob."""
+    if not blob:
+        raise FrameError("RGBIC scene blob is empty")
+    records: list[dict[str, Any]] = []
+    position = 1
+    for _ in range(blob[0]):
+        if position >= len(blob):
+            raise FrameError("RGBIC effect header runs past the blob")
+        start = position + 1
+        end = start + blob[position]
+        if end > len(blob) or start + 6 > end:
+            raise FrameError("RGBIC effect runs past the blob")
+        brights = blob[start + 5]
+        color = start + 6 + 6 * brights
+        if color + 4 > end:
+            raise FrameError("RGBIC effect has no colour block")
+        move_in = color + 4 + 3 * blob[color + 3]
+        move_all = move_in + 3
+        if move_all + 4 != end:
+            raise FrameError("RGBIC effect length does not match its fields")
+        records.append(
+            {
+                "bright": [start + 6 + 6 * index + 3 for index in range(brights)],
+                "color": color + 1,
+                "move_in": move_in + 2,
+                "move_all": move_all + 2,
+            }
+        )
+        position = end
+    if position != len(blob):
+        raise FrameError("RGBIC scene blob has trailing bytes")
+    return records
+
+
+def _adjust_rgbic(blob: bytes, adjust: SceneAdjust, speed: int | None) -> bytes:
+    if speed is None:
+        return blob
+    if not 0 <= speed < adjust.speed_levels:
+        raise FrameError(f"scene has no speed level {speed}")
+    out = bytearray(blob)
+    records = _rgbic_records(out)
+    for page in adjust.pages:
+        if page.page >= len(records):
+            continue
+        record = records[page.page]
+        # A value list shorter than the level leaves its byte alone.
+        for values, position in (
+            (page.color, record["color"]),
+            (page.move_in, record["move_in"]),
+            (page.move_all, record["move_all"]),
+            *zip(page.bright, record["bright"]),
+        ):
+            if speed < len(values):
+                out[position] = values[speed]
+    return bytes(out)
 
 
 def _field_positions(record: bytes | bytearray, start: int, end: int) -> tuple[int | None, int | None]:
@@ -201,7 +335,7 @@ def adjust_blob(
     A record with no byte for the requested field is left alone.
 
     Args:
-        blob: An H70CX scene blob.
+        blob: The scene blob.
         adjust: The scene's offered adjustments.
         speed: Index into ``adjust.speeds``, or None to keep the blob's speed.
         direction: Index into ``adjust.directions``, or None to keep it.
@@ -209,6 +343,11 @@ def adjust_blob(
     Raises:
         FrameError: The blob is malformed or an index is out of range.
     """
+    if blob[:1] != bytes([H70CX_LEAD]):
+        if direction is not None:
+            raise FrameError("an RGBIC scene has no direction")
+        return _adjust_rgbic(blob, adjust, speed)
+
     out = bytearray(blob)
     records = _records(out)
 

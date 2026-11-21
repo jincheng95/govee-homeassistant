@@ -168,6 +168,7 @@ from .request_budget import (
 # Fork: §6.2 per-segment readback riding the MQTT status push.
 from .api.segment_readback import decode_payload as decode_segment_payload
 from .light_schedule import apply_schedule_report
+from .scene_catalogue import apply_scene_report
 from .segment_limit import pushes_segment_readback, verified_segment_count
 
 from .models import (
@@ -4234,6 +4235,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # Fork: lights that report their sleep / wake-up / timer settings.
         if device is not None:
             apply_schedule_report(self, device, self._op_frames_from(state_data))
+        # Fork: scene-upload SKUs name their running scene in ``aa 05``.
+        if device is not None:
+            apply_scene_report(self, device, state, self._op_frames_from(state_data))
         if device is not None and device.supports_pump_state:
             frames = self._op_frames_from(state_data)
             state.update_pump_state_from_frames(frames)
