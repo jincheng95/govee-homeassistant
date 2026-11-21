@@ -9,18 +9,23 @@ lives in one place and is named in another:
 2. Serving — the static path is registered once, at a stable prefix.
 3. The sensors — state follows the mode select, attributes carry the whole map.
 4. Gating — a device with no DIY layout gets none of this.
+5. String lights — the same drift and URL checks for the H70CX effects.
 """
 
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
+from aiohttp.test_utils import make_mocked_request
+from homeassistant.components.http.static import CachingStaticResource
 
 from custom_components.govee import diy_previews
-from custom_components.govee.api.protocol import get_profile
+from custom_components.govee.api.protocol import get_profile, h70cx, h70cx_basic
 from custom_components.govee.const import (
     CONF_ENABLE_LAN_RAW_WRITE,
     CONF_ENABLE_ZONE_LIGHTS,
@@ -28,10 +33,15 @@ from custom_components.govee.const import (
 )
 from custom_components.govee.diy_previews import (
     PREVIEW_FILES,
+    STRING_EFFECT_FILES,
+    STRING_PREVIEW_SUBDIR,
     URL_BASE,
     preview_dir,
     preview_map,
     preview_url,
+    string_effect_preview_map,
+    string_effect_preview_url,
+    string_preview_dir,
 )
 from custom_components.govee.diy_state import store
 from custom_components.govee.models import GoveeCapability, GoveeDevice
@@ -336,3 +346,136 @@ class TestGating:
         coordinator = _coordinator()
 
         assert async_diy_preview_entities(coordinator, _entry(zone_lights=False)) == []
+
+
+# The string-light effects the vendor ships no preview for: the generic names,
+# whose parameter blocks come from stock scenes, and the combo.
+STRING_EFFECTS_WITHOUT_ARTWORK = frozenset(
+    {
+        "blend",
+        "combo",
+        "concentric",
+        "diffuse",
+        "flame",
+        "flow",
+        "layered",
+        "rainbow",
+        "rotate",
+        "starlight",
+        "vortex",
+        "wave",
+    }
+)
+
+
+def _accepted_string_effects() -> set[str]:
+    """Every effect key ``apply_diy_effect`` accepts for a string light."""
+    return {*h70cx.TEMPLATES, *h70cx_basic.NAMES}
+
+
+def _selector_effects() -> list[str]:
+    """The ``effect`` selector's options, in the order the action shows them."""
+    services = yaml.safe_load((Path(diy_previews.__file__).parent / "services.yaml").read_text())
+    field = services["apply_diy_effect"]["fields"]["effect_section"]["fields"]["effect"]
+    return field["selector"]["select"]["options"]
+
+
+class TestStringEffectArtwork:
+    """The join between the string-light effect keys and the shipped files."""
+
+    def test_every_accepted_effect_has_artwork_or_is_listed_without(self):
+        accepted = _accepted_string_effects()
+
+        assert set(STRING_EFFECT_FILES) | STRING_EFFECTS_WITHOUT_ARTWORK == accepted
+
+    def test_no_effect_is_both_mapped_and_listed_without_artwork(self):
+        assert not set(STRING_EFFECT_FILES) & STRING_EFFECTS_WITHOUT_ARTWORK
+
+    def test_every_mapped_file_exists(self):
+        missing = [name for name in STRING_EFFECT_FILES.values() if not (string_preview_dir() / name).is_file()]
+
+        assert not missing
+
+    def test_every_shipped_file_is_claimed_by_an_effect(self):
+        on_disk = {path.name for path in string_preview_dir().iterdir()}
+
+        assert on_disk == set(STRING_EFFECT_FILES.values())
+        assert len(on_disk) == 31
+
+    def test_files_are_named_by_effect_key(self):
+        for effect, filename in STRING_EFFECT_FILES.items():
+            assert filename == f"{effect}.png"
+
+    def test_the_files_are_pngs(self):
+        for filename in STRING_EFFECT_FILES.values():
+            assert (string_preview_dir() / filename).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_the_directory_sits_inside_the_served_one(self):
+        assert string_preview_dir().parent == preview_dir()
+        assert string_preview_dir().name == STRING_PREVIEW_SUBDIR
+
+
+class TestStringEffectUrls:
+    """What a string-light URL is, and what an effect with no artwork gets."""
+
+    def test_url_is_the_stable_prefix_plus_the_subdirectory_and_key(self):
+        assert string_effect_preview_url("spiral") == f"{URL_BASE}/h70cx/spiral.png"
+
+    @pytest.mark.parametrize("effect", sorted(STRING_EFFECTS_WITHOUT_ARTWORK))
+    def test_an_effect_without_artwork_has_no_url(self, effect):
+        assert string_effect_preview_url(effect) is None
+
+    @pytest.mark.parametrize("effect", [None, "", "not_an_effect"])
+    def test_an_unknown_or_unset_effect_has_no_url(self, effect):
+        assert string_effect_preview_url(effect) is None
+
+    def test_the_map_holds_every_effect_with_artwork(self):
+        urls = string_effect_preview_map()
+
+        assert set(urls) == set(STRING_EFFECT_FILES)
+        for effect, url in urls.items():
+            assert url == string_effect_preview_url(effect)
+
+    def test_the_map_follows_the_actions_display_order(self):
+        urls = string_effect_preview_map()
+
+        assert list(urls) == [effect for effect in _selector_effects() if effect in urls]
+
+    def test_the_selector_offers_exactly_the_accepted_effects(self):
+        assert set(_selector_effects()) == _accepted_string_effects()
+
+    def test_the_map_is_a_fresh_copy(self):
+        string_effect_preview_map()["spiral"] = "elsewhere"
+
+        assert string_effect_preview_url("spiral") == f"{URL_BASE}/h70cx/spiral.png"
+
+    def test_the_lamp_urls_do_not_move(self):
+        assert preview_url("ring", "graffiti") == f"{URL_BASE}/21_ring_graffiti.png"
+        assert preview_url("ripple", None) == f"{URL_BASE}/16_ripple_none.png"
+
+
+class TestStringEffectServing:
+    """The one registered directory serves the subdirectory's files."""
+
+    @staticmethod
+    async def _served_path(resource: CachingStaticResource, url: str) -> Path:
+        match, _ = await resource.resolve(make_mocked_request("GET", url))
+        assert match is not None, url
+        response = await match.handler(make_mocked_request("GET", url, match_info=dict(match)))
+        return Path(response._path)
+
+    @pytest.mark.asyncio
+    async def test_the_registered_resource_serves_a_subdirectory_file(self):
+        hass = MagicMock()
+        hass.data = {}
+        hass.http.async_register_static_paths = AsyncMock()
+        await diy_previews.async_register_previews(hass)
+        (configs,) = hass.http.async_register_static_paths.await_args.args
+        assert len(configs) == 1
+
+        resource = CachingStaticResource(configs[0].url_path, configs[0].path)
+
+        served = await self._served_path(resource, string_effect_preview_url("spiral"))
+        assert served.resolve() == (string_preview_dir() / "spiral.png").resolve()
+        lamp = await self._served_path(resource, preview_url("ring", "graffiti"))
+        assert lamp.resolve() == (preview_dir() / "21_ring_graffiti.png").resolve()

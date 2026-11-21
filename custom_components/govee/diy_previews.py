@@ -1,11 +1,12 @@
-"""DIY mode preview artwork, served from the integration (fork feature).
+"""DIY preview artwork, served from the integration (fork feature).
 
 HA ``select`` entities cannot render an image in their options, so the vendor's
-preview stills are shipped in ``diy_mode_previews/`` and served as URLs a picture
-card can point at — deliberately outside ``/api/``, since they hold no secrets
-and a card has no bearer token. Nothing fetches at runtime. The mode-name to
-filename map below is asserted both ways by the tests, so a mode added to a
-profile without artwork fails the suite rather than shipping a dead URL.
+preview images are shipped in ``diy_mode_previews/`` and served as URLs a
+picture card can point at. The multi-zone lamp's mode stills sit at the top of
+the directory and the H70CX string-light effects in ``h70cx/``. The URLs are
+outside ``/api/`` because the images hold no secrets and a card has no bearer
+token. Nothing fetches at runtime. The tests assert both name-to-file maps both
+ways, so a mode or effect added without artwork fails the suite.
 """
 
 from __future__ import annotations
@@ -69,6 +70,48 @@ PREVIEW_FILES: Final[dict[str, dict[str, str]]] = {
 FALLBACK_MODE: Final = "none"
 """What an unknown or unset mode previews as: the zone's "off" placeholder."""
 
+STRING_PREVIEW_SUBDIR: Final = "h70cx"
+"""Subdirectory of :data:`PREVIEW_DIR_NAME` holding the string-light effects."""
+
+# String-light effect key -> shipped filename, in the action's display order.
+# Effects absent here have no vendor artwork.
+STRING_EFFECT_FILES: Final[dict[str, str]] = {
+    effect: f"{effect}.png"
+    for effect in (
+        "bounce_1",
+        "bounce_2",
+        "bounce_3",
+        "breathe",
+        "candy_crush",
+        "diffuse_1",
+        "diffuse_2",
+        "fade_1",
+        "fade_2",
+        "fade_3",
+        "flexing",
+        "flow_1",
+        "flow_2",
+        "flow_3",
+        "flow_4",
+        "marquee_1",
+        "marquee_2",
+        "marquee_3",
+        "mountain_peak",
+        "rainbow_1",
+        "rainbow_2",
+        "ribbon_1",
+        "ribbon_2",
+        "smudge",
+        "spin_1",
+        "spin_2",
+        "spin_3",
+        "spiral",
+        "stripes_1",
+        "stripes_2",
+        "whirlpool",
+    )
+}
+
 
 def preview_dir() -> Path:
     """Absolute path of the shipped artwork directory."""
@@ -115,8 +158,43 @@ def preview_map(zone: DiyZoneSpec) -> dict[str, str]:
     return {name: f"{URL_BASE}/{files[name]}" for name in zone.modes if name in files}
 
 
+def string_preview_dir() -> Path:
+    """Absolute path of the shipped string-light artwork directory."""
+    return preview_dir() / STRING_PREVIEW_SUBDIR
+
+
+def string_effect_preview_url(effect: str | None) -> str | None:
+    """The URL path of one string-light effect's preview.
+
+    Args:
+        effect: An effect key the ``apply_diy_effect`` action accepts.
+
+    Returns:
+        A URL path, or ``None`` for an effect with no artwork.
+    """
+    filename = STRING_EFFECT_FILES.get(effect or "")
+    if filename is None:
+        return None
+    return f"{URL_BASE}/{STRING_PREVIEW_SUBDIR}/{filename}"
+
+
+def string_effect_preview_map() -> dict[str, str]:
+    """Every string-light effect with artwork mapped to its preview URL.
+
+    Returns:
+        Effect key → URL path, in the action's display order.
+    """
+    return {
+        effect: f"{URL_BASE}/{STRING_PREVIEW_SUBDIR}/{filename}"
+        for effect, filename in STRING_EFFECT_FILES.items()
+    }
+
+
 async def async_register_previews(hass: HomeAssistant) -> None:
     """Serve the shipped artwork under :data:`URL_BASE`.
+
+    One registration covers both families, since a static path serves the
+    files in its subdirectories too.
 
     Per-HA rather than per-entry: the path is a constant and registering it
     twice raises. The flag alone is not enough — the registration await is a
