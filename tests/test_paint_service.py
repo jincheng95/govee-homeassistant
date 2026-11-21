@@ -14,10 +14,10 @@ import pytest
 import voluptuous as vol
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.govee import services
+from custom_components.govee import bulb_actions, services
 from custom_components.govee.api.protocol import get_profile, paint
 from custom_components.govee.models import GoveeDeviceState
-from custom_components.govee.services import (
+from custom_components.govee.bulb_actions import (
     SERVICE_PAINT_BULBS_SCHEMA,
     _expand_bulbs,
     async_paint_bulbs_handler,
@@ -48,7 +48,7 @@ def _call(**data: Any) -> SimpleNamespace:
 async def _run(coordinator: MagicMock, call: SimpleNamespace, *, routed: bool = True) -> AsyncMock:
     route = AsyncMock(return_value=routed)
     with patch(LOOKUP, return_value=(coordinator, DEVICE_ID)), patch.object(
-        services.raw_router, "async_route_frames", route
+        bulb_actions.raw_router, "async_route_frames", route
     ):
         await async_paint_bulbs_handler(MagicMock(), call)
     return route
@@ -114,7 +114,7 @@ class TestHandler:
         async def _sleep(seconds: float) -> None:
             sleeps.append(seconds)
 
-        with patch.object(services.asyncio, "sleep", _sleep):
+        with patch.object(bulb_actions.asyncio, "sleep", _sleep):
             route = await _run(_coordinator(), _call(colors=colors))
 
         sent = [list(call.args[4]) for call in route.await_args_list]
@@ -128,8 +128,8 @@ class TestHandler:
         colors = [{"rgb_color": [index, 0, 0], "bulbs": [index]} for index in range(30)]
         route = AsyncMock(side_effect=[True, False, True])
         with patch(LOOKUP, return_value=(_coordinator(), DEVICE_ID)), patch.object(
-            services.raw_router, "async_route_frames", route
-        ), patch.object(services.asyncio, "sleep", AsyncMock()), pytest.raises(HomeAssistantError):
+            bulb_actions.raw_router, "async_route_frames", route
+        ), patch.object(bulb_actions.asyncio, "sleep", AsyncMock()), pytest.raises(HomeAssistantError):
             await async_paint_bulbs_handler(MagicMock(), _call(colors=colors))
         assert route.await_count == 2
 
@@ -195,6 +195,6 @@ class TestHandler:
 async def test_the_service_is_registered(hass) -> None:
     services.async_setup_services(hass)
     assert hass.services.has_service("govee", "paint_bulbs")
-    with patch.object(services, "async_paint_bulbs_handler", AsyncMock()) as handler:
+    with patch.object(bulb_actions, "async_paint_bulbs_handler", AsyncMock()) as handler:
         await hass.services.async_call("govee", "paint_bulbs", {"device_id": DEVICE_ID}, blocking=True)
     handler.assert_awaited_once()

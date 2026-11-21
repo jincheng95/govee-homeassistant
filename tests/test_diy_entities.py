@@ -34,7 +34,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.govee import diy_state, services
+from custom_components.govee import diy_actions, diy_state, services
 from custom_components.govee.api.protocol import h70cx, h70cx_basic
 from custom_components.govee.api.lan_client import LanDeviceInfo
 from custom_components.govee.api.protocol import (
@@ -817,7 +817,7 @@ class TestService:
         async def _call(payload: dict[str, Any]) -> None:
             await hass.services.async_call(
                 DOMAIN,
-                services.SERVICE_APPLY_DIY_EFFECT,
+                diy_actions.SERVICE_APPLY_DIY_EFFECT,
                 payload,
                 blocking=True,
             )
@@ -1128,29 +1128,29 @@ class TestService:
         """Schema-level: the ring's wire record has no tail to put them in."""
         for stray in ("ring_direction", "ring_flow_rate"):
             with pytest.raises(vol.Invalid):
-                services.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
+                diy_actions.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
                     {"device_id": DEVICE_ID, "ring_mode": "gradient", stray: "cw"}
                 )
 
     def test_flow_rate_accepts_zero_and_speed_does_not(self):
-        validated = services.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
+        validated = diy_actions.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
             {"device_id": DEVICE_ID, "ripple_mode": "gradient", "ripple_flow_rate": 0}
         )
         assert validated["ripple_flow_rate"] == 0
         for field, value in (("ripple_flow_rate", 101), ("ripple_speed", 0)):
             with pytest.raises(vol.Invalid):
-                services.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
+                diy_actions.SERVICE_APPLY_DIY_EFFECT_SCHEMA(
                     {"device_id": DEVICE_ID, "ripple_mode": "gradient", field: value}
                 )
 
     def test_a_zone_field_without_its_mode_is_rejected(self):
         """Naming a zone is what switches it on; there is no default mode."""
         with pytest.raises(vol.Invalid, match="ripple_mode is required"):
-            services.SERVICE_APPLY_DIY_EFFECT_SCHEMA({"device_id": DEVICE_ID, "ripple_speed": 60})
+            diy_actions.SERVICE_APPLY_DIY_EFFECT_SCHEMA({"device_id": DEVICE_ID, "ripple_speed": 60})
 
     def test_the_target_fields_are_the_standard_ones(self):
         """`target:` in YAML lands in call.data under these five keys."""
-        validated = services.SERVICE_APPLY_DIY_EFFECT_SCHEMA({"area_id": "living_room", "ring_mode": "gradient"})
+        validated = diy_actions.SERVICE_APPLY_DIY_EFFECT_SCHEMA({"area_id": "living_room", "ring_mode": "gradient"})
         assert validated["area_id"] == ["living_room"]
         for key in ("entity_id", "device_id", "area_id", "floor_id", "label_id"):
             assert key in cv.TARGET_SERVICE_FIELDS
@@ -1205,4 +1205,4 @@ class TestService:
     async def test_the_service_is_registered_without_an_entry(self, hass):
         services.async_setup_services(hass)
 
-        assert hass.services.has_service(DOMAIN, services.SERVICE_APPLY_DIY_EFFECT)
+        assert hass.services.has_service(DOMAIN, diy_actions.SERVICE_APPLY_DIY_EFFECT)

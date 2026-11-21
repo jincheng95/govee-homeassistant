@@ -14,16 +14,16 @@ import pytest
 import voluptuous as vol
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.govee import services
+from custom_components.govee import diy_actions
 from custom_components.govee.api.protocol import get_profile, h70cx, h70cx_basic
 from custom_components.govee.models import GoveeDeviceState
-from custom_components.govee.services import (
+from custom_components.govee.diy_actions import (
     SERVICE_APPLY_DIY_EFFECT_SCHEMA,
     async_apply_diy_effect_handler,
 )
 
 LOOKUP = "custom_components.govee.services._get_coordinator_for_device"
-TARGETS = "custom_components.govee.services._targeted_govee_device_ids"
+TARGETS = "custom_components.govee.diy_actions._targeted_govee_device_ids"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:60:B0"
 OTHER_ID = "AA:BB:CC:DD:EE:FF:60:B1"
 COLORS = [[255, 0, 0], [0, 255, 0]]
@@ -57,7 +57,7 @@ async def _run(coordinator: MagicMock, call: SimpleNamespace, *, routed: bool = 
         return (coordinator, raw_id) if raw_id in coordinator.devices else None
 
     with patch(TARGETS, return_value=list(coordinator.devices) + ["unknown"]), patch(LOOKUP, side_effect=_lookup), patch.object(
-        services.raw_router, "async_route_frames", route
+        diy_actions.raw_router, "async_route_frames", route
     ):
         await async_apply_diy_effect_handler(MagicMock(), call)
     return route
@@ -248,7 +248,7 @@ class TestTargeting:
     async def test_a_zone_lamp_still_takes_the_zone_path(self) -> None:
         coordinator = _coordinator({DEVICE_ID: "H60B0"})
         sender = AsyncMock()
-        with patch.object(services, "async_send_diy_effect", sender), patch.object(services, "diy_store", MagicMock()):
+        with patch.object(diy_actions, "async_send_diy_effect", sender), patch.object(diy_actions, "diy_store", MagicMock()):
             await _run(coordinator, _call(ring_mode="gradient", ring_colors=[[1, 2, 3]]))
         sender.assert_awaited_once()
 

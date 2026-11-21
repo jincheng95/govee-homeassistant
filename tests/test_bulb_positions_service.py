@@ -15,15 +15,15 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError,
 
 from custom_components.govee.api.protocol import positions
 from custom_components.govee.const import DOMAIN
-from custom_components.govee.services import (
+from custom_components.govee.bulb_actions import (
     SERVICE_UPLOAD_BULB_POSITIONS,
     SERVICE_UPLOAD_BULB_POSITIONS_SCHEMA,
-    async_setup_services,
     async_upload_bulb_positions_handler,
 )
+from custom_components.govee.services import async_setup_services
 
 LOOKUP = "custom_components.govee.services._get_coordinator_for_device"
-SLEEP = "custom_components.govee.services.asyncio.sleep"
+SLEEP = "custom_components.govee.bulb_actions.asyncio.sleep"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
 
 

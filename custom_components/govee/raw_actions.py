@@ -22,14 +22,15 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
-from . import services
 from .api.protocol import Capability, DeviceProfile, GoveeCodec
 from .api.raw_router import async_device_frames, white_point
 from .const import DOMAIN
 from .coordinator import GoveeCoordinator
 from .models import GoveeDevice
+from .upstream_access import coordinator_for_device, device_not_found
 from .zone_state import profile_for
 
+ATTR_DEVICE_ID = "device_id"
 ATTR_SLOT = "slot"
 ATTR_ENABLED = "enabled"
 ATTR_ACTION = "action"
@@ -64,7 +65,7 @@ _MINUTES = vol.All(vol.Coerce(int), vol.Range(min=1, max=255))
 
 SET_LIGHT_TIMER_SCHEMA = vol.Schema(
     {
-        vol.Required(services.ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_DEVICE_ID): cv.string,
         vol.Required(ATTR_SLOT): vol.All(vol.Coerce(int), vol.Range(min=1)),
         vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
         vol.Optional(ATTR_ACTION): vol.In(TIMER_ACTIONS),
@@ -75,7 +76,7 @@ SET_LIGHT_TIMER_SCHEMA = vol.Schema(
 
 SET_SLEEP_TIMER_SCHEMA = vol.Schema(
     {
-        vol.Required(services.ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_DEVICE_ID): cv.string,
         vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
         vol.Optional(ATTR_MINUTES, default=15): _MINUTES,
         vol.Optional(ATTR_START_BRIGHTNESS, default=30): _PERCENT,
@@ -84,7 +85,7 @@ SET_SLEEP_TIMER_SCHEMA = vol.Schema(
 
 SET_WAKE_UP_SCHEMA = vol.Schema(
     {
-        vol.Required(services.ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_DEVICE_ID): cv.string,
         vol.Optional(ATTR_ENABLED, default=True): cv.boolean,
         vol.Optional(ATTR_TIME): cv.time,
         vol.Optional(ATTR_WEEKDAYS, default=[]): _WEEKDAY_LIST,
@@ -100,7 +101,7 @@ _RGB = vol.All(vol.ExactSequence((cv.byte, cv.byte, cv.byte)), vol.Coerce(tuple)
 
 SET_MUSIC_MODE_SCHEMA = vol.Schema(
     {
-        vol.Required(services.ATTR_DEVICE_ID): cv.string,
+        vol.Required(ATTR_DEVICE_ID): cv.string,
         vol.Required(ATTR_EFFECT): vol.All(cv.string, vol.Lower),
         vol.Optional(ATTR_SENSITIVITY, default=99): vol.All(vol.Coerce(int), vol.Range(min=0, max=99)),
         vol.Optional(ATTR_SOFT, default=False): cv.boolean,
@@ -133,10 +134,10 @@ def _resolve(
         ServiceValidationError: The device is unknown, a group, or its
             profile does not encode the action.
     """
-    raw_id = call.data[services.ATTR_DEVICE_ID]
-    found = services._get_coordinator_for_device(hass, raw_id)
+    raw_id = call.data[ATTR_DEVICE_ID]
+    found = coordinator_for_device(hass, raw_id)
     if found is None:
-        raise services._device_not_found(raw_id)
+        raise device_not_found(raw_id)
     coordinator, device_id = found
     device = coordinator.devices[device_id]
     profile = profile_for(device.sku)
@@ -299,7 +300,7 @@ async def async_set_music_mode_handler(hass: HomeAssistant, call: ServiceCall) -
 
 @callback
 def async_setup_raw_actions(hass: HomeAssistant) -> None:
-    """Register the raw schedule actions (called from ``async_setup_services``)."""
+    """Register the raw schedule and music actions."""
 
     async def _set_light_timer(call: ServiceCall) -> None:
         await async_set_light_timer_handler(hass, call)

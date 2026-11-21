@@ -39,6 +39,7 @@ from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
 from ..models import GoveeDevice
 from ..scene_catalogue import CatalogueScene, catalogue
+from ..upstream_access import scene_select_names
 from ..zone_state import profile_for
 
 _LOGGER = logging.getLogger(__name__)
@@ -205,6 +206,17 @@ async def async_start_scene_locally(
     state.apply_optimistic_scene(str(scene_id), scene_name)
     coordinator.async_update_listeners()
     return True
+
+
+async def async_start_scene_from_select(entity: Any, scene_id: int, scene_name: str) -> bool:
+    """Start a scene picked in the scene select locally, when its name is unambiguous.
+
+    A name that two platform scenes share could mean either catalogue blob, so
+    it is declined and the caller uses the cloud command.
+    """
+    if scene_select_names(entity).count(scene_name) != 1:
+        return False
+    return await async_start_scene_locally(entity.coordinator, entity._device, scene_id, scene_name)
 
 
 class _GoveeSceneSettingBase(GoveeEntity):

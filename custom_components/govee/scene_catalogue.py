@@ -21,6 +21,7 @@ import aiohttp
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api.protocol import scenes
+from .upstream_access import platform_scene_cache
 from .zone_state import profile_for
 
 if TYPE_CHECKING:
@@ -207,8 +208,8 @@ def reported_scene_code(frames: Iterable[bytes]) -> int | None:
 
 def _platform_scene_id(coordinator: GoveeCoordinator, device_id: str, name: str) -> str | None:
     """The platform API id of the scene called ``name``, from the scene cache."""
-    cache = getattr(getattr(coordinator, "_scene_cache", None), "_scene_cache", None)
-    entry = cache.get(device_id) if isinstance(cache, dict) else None
+    cache = platform_scene_cache(coordinator)
+    entry = cache.get(device_id) if cache is not None else None
     if not entry:
         return None
     for scene in entry[1]:

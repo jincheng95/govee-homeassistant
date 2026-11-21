@@ -19,7 +19,7 @@ from custom_components.govee.api.protocol import h70cx
 from custom_components.govee.api.protocol.errors import FrameError
 from custom_components.govee.api.protocol.packets import DIY_COMMIT_SUB_MODE, commit_frame
 from custom_components.govee.api.protocol.scenes import H70CX_MARKER, terminated_chunks
-from custom_components.govee.services import SERVICE_APPLY_DIY_EFFECT_SCHEMA
+from custom_components.govee.diy_actions import SERVICE_APPLY_DIY_EFFECT_SCHEMA
 from tests.test_string_effect_service import COLORS, _call, _coordinator, _run
 
 Block = tuple[int, bytes, bytes]
