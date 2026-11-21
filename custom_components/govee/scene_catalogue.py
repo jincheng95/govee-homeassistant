@@ -119,6 +119,8 @@ class SceneCatalogue:
         self._locks: dict[str, asyncio.Lock] = {}
         self._scheduled: set[str] = set()
         self._timers: dict[str, Callable[[], None]] = {}
+        self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._warned: set[str] = set()
         self._stopped = False
 
     def scene(self, sku: str, name: str | None) -> CatalogueScene | None:
@@ -163,7 +165,8 @@ class SceneCatalogue:
         catalogue is refetched after :data:`CATALOGUE_TTL`. A failed refresh
         keeps the held copy. The coordinator's listeners are told when a fetch
         brings a new copy. Later calls for a scheduled SKU do nothing, and
-        unloading the config entry stops the schedule.
+        unloading the config entry stops the schedule and cancels a fetch in
+        flight. A fetch that raises anything is a failed fetch.
         """
         if sku in self._scheduled or self._stopped:
             return
@@ -171,20 +174,38 @@ class SceneCatalogue:
         if not self._scheduled and entry is not None:
             entry.async_on_unload(self.async_stop)
         self._scheduled.add(sku)
-        hass.async_create_task(self._async_refresh(hass, sku))
+        self._start(hass, sku)
 
     @callback
     def async_stop(self) -> None:
-        """Cancel every scheduled reload."""
+        """Cancel every scheduled reload and every load in flight."""
         self._stopped = True
         for cancel in self._timers.values():
             cancel()
         self._timers.clear()
+        for task in self._tasks.values():
+            task.cancel()
+        self._tasks.clear()
+
+    @callback
+    def _start(self, hass: HomeAssistant, sku: str) -> None:
+        self._tasks[sku] = hass.async_create_background_task(
+            self._async_refresh(hass, sku), name=f"govee scene catalogue {sku}"
+        )
 
     async def _async_refresh(self, hass: HomeAssistant, sku: str) -> None:
         self._timers.pop(sku, None)
         before = self._scenes.get(sku)
-        await self.async_load(sku)
+        try:
+            await self.async_load(sku)
+        except Exception as err:  # noqa: BLE001 - the schedule must outlive any fetch error
+            self._retry_at[sku] = time.monotonic() + RETRY_AFTER_FAILURE
+            log = _LOGGER.debug if sku in self._warned else _LOGGER.warning
+            self._warned.add(sku)
+
+            # The exception's arguments can carry the request URL, so only its type is logged.
+
+            log("Scene catalogue load for %s failed with %s, retrying later", sku, type(err).__name__)
         if self._stopped:
             return
         if self._scenes.get(sku) is not before:
@@ -193,7 +214,7 @@ class SceneCatalogue:
 
         @callback
         def _reload(_now: datetime) -> None:
-            hass.async_create_task(self._async_refresh(hass, sku))
+            self._start(hass, sku)
 
         self._timers[sku] = async_call_later(hass, delay, _reload)
 

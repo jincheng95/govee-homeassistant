@@ -461,7 +461,7 @@ class TestReset:
 
 async def _add(entity: Any, data: dict[str, Any] | None) -> None:
     entity.async_get_last_extra_data = AsyncMock(return_value=None if data is None else RestoredExtraData(data))
-    entity.hass.async_create_task = lambda coro: coro.close()
+    entity.hass.async_create_background_task = lambda coro, name: coro.close()
     with patch("homeassistant.helpers.update_coordinator.CoordinatorEntity.async_added_to_hass", AsyncMock()):
         await entity.async_added_to_hass()
 

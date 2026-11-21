@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -246,7 +248,7 @@ class _Schedule:
         self.tasks: list[Any] = []
         self.timers: list[tuple[float, Any, MagicMock]] = []
         self.hass = MagicMock()
-        self.hass.async_create_task = self.tasks.append
+        self.hass.async_create_background_task = self._create
         self.coordinator = MagicMock()
         self.store = scene_catalogue.SceneCatalogue(self.coordinator)
         self._patches = [
@@ -255,6 +257,11 @@ class _Schedule:
             patch.object(scene_catalogue, "async_call_later", self._call_later),
         ]
 
+    def _create(self, coro: Any, name: str) -> asyncio.Task[None]:
+        task = asyncio.get_running_loop().create_task(coro, name=name)
+        self.tasks.append(task)
+        return task
+
     def _call_later(self, _hass: Any, delay: float, action: Any) -> MagicMock:
         cancel = MagicMock()
         self.timers.append((delay, action, cancel))
@@ -262,7 +269,8 @@ class _Schedule:
 
     async def run(self) -> None:
         while self.tasks:
-            await self.tasks.pop(0)
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.tasks.pop(0)
 
     async def fire(self) -> None:
         delay, action, _cancel = self.timers[-1]
@@ -337,6 +345,45 @@ class TestCatalogueSchedule:
 
             schedule.store.async_schedule(schedule.hass, "H70C1")
             assert schedule.tasks == []
+
+    async def test_an_unexpected_fetch_error_keeps_the_schedule(self, caplog: pytest.LogCaptureFixture) -> None:
+        session = _session(
+            RuntimeError("https://example.invalid/scences?sku=x"), RuntimeError("again"), _Response(200, _payload())
+        )
+        with _Schedule(session) as schedule, caplog.at_level(logging.DEBUG, logger=scene_catalogue.__name__):
+            schedule.store.async_schedule(schedule.hass, SKU)
+            await schedule.run()
+            assert schedule.timers[-1][0] == scene_catalogue.RETRY_AFTER_FAILURE
+            await schedule.fire()
+            assert schedule.timers[-1][0] == scene_catalogue.RETRY_AFTER_FAILURE
+            await schedule.fire()
+            assert schedule.store.loaded(SKU) is True
+
+        warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+        assert warnings == [f"Scene catalogue load for {SKU} failed with RuntimeError, retrying later"]
+        assert "example.invalid" not in caplog.text
+
+    async def test_unloading_cancels_a_fetch_in_flight(self) -> None:
+        started = asyncio.Event()
+
+        class _Hanging:
+            async def __aenter__(self) -> None:
+                started.set()
+                await asyncio.Event().wait()
+
+            async def __aexit__(self, *exc: Any) -> None:
+                return None
+
+        with _Schedule(_session(_Hanging())) as schedule:
+            schedule.store.async_schedule(schedule.hass, SKU)
+            task = schedule.tasks[0]
+            await started.wait()
+            schedule.store.async_stop()
+            await schedule.run()
+
+            assert task.cancelled()
+            assert schedule.timers == []
+            schedule.coordinator.async_update_listeners.assert_not_called()
 
     async def test_a_load_that_ends_after_unloading_schedules_nothing(self) -> None:
         with _Schedule(_session(_Response(200, _payload()))) as schedule:
