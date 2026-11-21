@@ -203,7 +203,7 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
     string_target = _string_effect_target(hass, call)
     if string_target is not None:
         await _async_apply_string_effect(*string_target, call.data)
-        _LOGGER.info("Applied DIY effect to %s", string_target[1].name)
+        _LOGGER.debug("Applied DIY effect to %s", string_target[1].name)
         return
 
     coordinator, device, profile, diy = _resolve_diy_target(hass, call)
@@ -218,7 +218,7 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
         )
 
     await async_send_diy_effect(coordinator, device, profile, store.effects(device_id, diy))
-    _LOGGER.info("Applied DIY effect to %s", device.name)
+    _LOGGER.debug("Applied DIY effect to %s", device.name)
 
 
 async def _async_apply_string_effect(
