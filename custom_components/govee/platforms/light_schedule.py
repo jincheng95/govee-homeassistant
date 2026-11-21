@@ -8,10 +8,11 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
 
+from ..api.protocol.encoders import repeat_byte
 from ..const import SUFFIX_SCHEDULE_SLEEP, SUFFIX_SCHEDULE_TIMERS, SUFFIX_SCHEDULE_WAKE
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
-from ..light_schedule import LightSchedule, reports_schedule, schedules
+from ..light_schedule import LightSchedule, reports_schedule, schedule
 from ..models import GoveeDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class _GoveeScheduleSensor(GoveeEntity, SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def _schedule(self) -> LightSchedule:
-        return schedules(self.coordinator).get(self._device_id, LightSchedule())
+        return schedule(self.coordinator, self._device_id)
 
 
 class GoveeSleepTimerSensor(_GoveeScheduleSensor):
@@ -90,9 +91,9 @@ class GoveeWakeUpSensor(_GoveeScheduleSensor):
             return {}
         return {
             "time": f"{wake.hour:02d}:{wake.minute:02d}",
-            "ramp_minutes": wake.ramp_minutes,
+            "ramp_minutes": wake.duration,
             "end_brightness": wake.end_brightness,
-            "repeat": wake.repeat,
+            "repeat": repeat_byte(wake.weekdays),
         }
 
 
@@ -118,7 +119,11 @@ class GoveeTimersSensor(_GoveeScheduleSensor):
             return {}
         return {
             "timers": [
-                {"on": timer.enabled, "time": f"{timer.hour:02d}:{timer.minute:02d}", "repeat": timer.repeat}
+                {
+                    "on": timer.enabled,
+                    "time": f"{timer.hour:02d}:{timer.minute:02d}",
+                    "repeat": repeat_byte(timer.weekdays),
+                }
                 for timer in timers
             ]
         }

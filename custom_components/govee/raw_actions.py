@@ -8,7 +8,8 @@
 Each action takes one device, checks that its profile encodes the setting, and
 sends the frames through :func:`~.api.raw_router.async_device_frames`. No cloud
 command carries these settings, so an action fails when no raw pipe takes the
-frames.
+frames. A sent schedule write is stored in :mod:`.light_schedule`, which the
+schedule sensors read.
 """
 
 from __future__ import annotations
@@ -22,10 +23,12 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 
-from .api.protocol import Capability, DeviceProfile, GoveeCodec
+from .api.protocol import Capability, DeviceProfile, GoveeCodec, LightTimer, SleepTimer, WakeUp
+from .api.protocol.encoders import repeat_byte, repeat_days
 from .api.raw_router import async_device_frames, white_point
 from .const import DOMAIN
 from .coordinator import GoveeCoordinator
+from .light_schedule import record_sleep, record_timer, record_wake_up
 from .models import GoveeDevice
 from .upstream_access import coordinator_for_device, device_not_found
 from .zone_state import profile_for
@@ -115,6 +118,11 @@ def _weekday_bits(names: Sequence[str]) -> list[int]:
     return [WEEKDAYS.index(name) for name in names]
 
 
+def _days(weekdays: Sequence[int]) -> tuple[int, ...]:
+    """Weekdays as the decoder reports them, sorted and without repeats."""
+    return repeat_days(repeat_byte(weekdays))
+
+
 def _validation_error(key: str, **placeholders: str) -> ServiceValidationError:
     return ServiceValidationError(
         translation_domain=DOMAIN,
@@ -194,6 +202,13 @@ async def async_set_light_timer_handler(hass: HomeAssistant, call: ServiceCall) 
             )
         ],
     )
+    record_timer(
+        coordinator,
+        device.device_id,
+        data[ATTR_SLOT] - 1,
+        LightTimer(enabled=enabled, turn_on=turn_on, hour=at.hour, minute=at.minute, weekdays=_days(weekdays)),
+    )
+    coordinator.async_update_listeners()
 
 
 async def async_set_sleep_timer_handler(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -212,6 +227,17 @@ async def async_set_sleep_timer_handler(hass: HomeAssistant, call: ServiceCall) 
             )
         ],
     )
+    record_sleep(
+        coordinator,
+        device.device_id,
+        SleepTimer(
+            enabled=data[ATTR_ENABLED],
+            start_brightness=data[ATTR_START_BRIGHTNESS],
+            minutes=data[ATTR_MINUTES],
+            remaining_minutes=data[ATTR_MINUTES],
+        ),
+    )
+    coordinator.async_update_listeners()
 
 
 async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -254,6 +280,21 @@ async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> N
             )
         ],
     )
+    record_wake_up(
+        coordinator,
+        device.device_id,
+        WakeUp(
+            enabled=enabled,
+            end_brightness=data[ATTR_END_BRIGHTNESS],
+            hour=at.hour,
+            minute=at.minute,
+            weekdays=_days(weekdays),
+            duration=data[ATTR_DURATION],
+            rgb=white_point(kelvin),
+            kelvin=kelvin,
+        ),
+    )
+    coordinator.async_update_listeners()
 
 
 async def async_set_music_mode_handler(hass: HomeAssistant, call: ServiceCall) -> None:

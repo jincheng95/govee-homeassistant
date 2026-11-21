@@ -24,7 +24,7 @@ import pytest
 import voluptuous as vol
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.govee import raw_actions, services
+from custom_components.govee import light_schedule, raw_actions, services
 from custom_components.govee.api import raw_router
 from custom_components.govee.api.protocol import (
     FrameError,
@@ -294,6 +294,17 @@ class TestSetLightTimer:
         assert err.value.translation_key == "timer_needs_time_and_action"
         route.assert_not_awaited()
 
+    async def test_a_sent_write_replaces_the_stored_slot(self, hass, actions, route) -> None:
+        coordinator = actions["coordinator"]
+        light_schedule.apply_schedule_report(coordinator, _light(), [TIMER_REPLY_UNSET])
+        await _call(
+            hass, raw_actions.SERVICE_SET_LIGHT_TIMER, slot=2, action="turn_on", time="21:05", weekdays=["sunday"]
+        )
+        timers = light_schedule.schedule(coordinator, DEVICE_ID).timers
+        assert timers is not None
+        assert timers[1] == LightTimer(enabled=True, turn_on=True, hour=21, minute=5, weekdays=(6,))
+        assert timers[0] == timers[2] == timers[3] == decode_status([TIMER_REPLY_UNSET]).timers[0]  # type: ignore[index]
+
     @pytest.mark.parametrize(
         "data", [{"slot": 0}, {"slot": 1, "weekdays": ["someday"]}, {"slot": 1, "action": "toggle"}]
     )
@@ -340,10 +351,11 @@ class TestSleepTimerDecode:
         expected = SleepTimer(enabled=False, start_brightness=30, minutes=15, remaining_minutes=15)
         assert decode_status([SLEEP_REPLY]).sleep == expected
 
-    def test_round_trip(self) -> None:
-        frame = _codec().sleep_timer(enabled=True, start_brightness=80, minutes=120)
+    @pytest.mark.parametrize("minutes", [1, 120, 250, 255])
+    def test_round_trip(self, minutes: int) -> None:
+        frame = _codec().sleep_timer(enabled=True, start_brightness=80, minutes=minutes)
         assert decode_status([_reply(frame)]).sleep == SleepTimer(
-            enabled=True, start_brightness=80, minutes=120, remaining_minutes=120
+            enabled=True, start_brightness=80, minutes=minutes, remaining_minutes=minutes
         )
 
     @pytest.mark.parametrize("body", [(0x02, 0x1E, 0x0F, 0x0F), (0x01, 0x65, 0x0F, 0x0F)], ids=["enable", "brightness"])
@@ -369,6 +381,19 @@ class TestSetSleepTimer:
         with pytest.raises(vol.Invalid):
             await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, **data)
         route.assert_not_awaited()
+
+    async def test_a_sent_write_is_stored(self, hass, actions, route) -> None:
+        await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, minutes=250, start_brightness=40)
+        assert light_schedule.schedule(actions["coordinator"], DEVICE_ID).sleep == SleepTimer(
+            enabled=True, start_brightness=40, minutes=250, remaining_minutes=250
+        )
+        actions["coordinator"].async_update_listeners.assert_called_once()
+
+    async def test_a_refused_write_is_not_stored(self, hass, actions) -> None:
+        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=False)):
+            with pytest.raises(HomeAssistantError):
+                await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER)
+        assert light_schedule.schedule(actions["coordinator"], DEVICE_ID).sleep is None
 
 
 # ==============================================================================
@@ -517,6 +542,19 @@ class TestSetWakeUp:
         with pytest.raises(vol.Invalid):
             await _call(hass, raw_actions.SERVICE_SET_WAKE_UP, time="07:00", **data)
         route.assert_not_awaited()
+
+    async def test_a_sent_write_is_stored_as_the_reply_would_read(self, hass, actions, route) -> None:
+        await _call(
+            hass,
+            raw_actions.SERVICE_SET_WAKE_UP,
+            time="06:45",
+            weekdays=["friday", "monday", "monday"],
+            duration=30,
+            end_brightness=80,
+        )
+        stored = light_schedule.schedule(actions["coordinator"], DEVICE_ID).wake
+        assert stored == decode_status([_reply(_sent(route)[0])]).wake_up
+        assert stored is not None and stored.weekdays == (0, 4)
 
 
 # ==============================================================================

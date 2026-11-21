@@ -6,7 +6,8 @@
     aa a3 <00|01>          gradient reply to an ``aa a3`` query
     aa 41 02 <n>           power-off memory reply to an ``aa 41`` query
     aa 11 <en> <brightness> <minutes> <minutes left> ...
-                           sleep timer reply to an ``aa 11`` query
+                           sleep timer reply to an ``aa 11`` query; both
+                           minute bytes read as 0-255, as the encoder writes
     aa 12 <en> <brightness> <hour> <minute> <repeat> <minutes> 00 <R G B> <K>
                            wake-up reply to an ``aa 12`` query; an enable
                            byte of ``ff`` reads as disabled
@@ -45,6 +46,7 @@ TIMER_READ_ALL: Final = 0xFF
 """The ``aa 23`` selector that reads every timer slot."""
 TIMER_REPLY_SLOTS: Final = 4
 WAKE_UP_NEVER_SET: Final = 0xFF
+"""The wake-up enable byte of a light whose wake-up was never set. It reads as disabled."""
 
 SETTING_QUERIES: Final[Mapping[Capability, int]] = {
     Capability.GRADIENT: GRADIENT_COMMAND_TYPE,

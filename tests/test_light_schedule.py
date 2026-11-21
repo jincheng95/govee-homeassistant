@@ -1,6 +1,7 @@
-"""On-device schedule decoding and its diagnostic sensors (fork feature).
+"""The on-device schedule store and its diagnostic sensors (fork feature).
 
-The three status frames are the ones an H80C5 pushed with every schedule off.
+The ``*_OFF`` frames read as every schedule off. The decoder itself is tested
+in ``test_h80c5_schedule.py``.
 """
 
 from __future__ import annotations
@@ -11,8 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from custom_components.govee import light_schedule
-from custom_components.govee.api.protocol import get_profile
-from custom_components.govee.light_schedule import LightSchedule, SleepTimer, Timer, WakeUp
+from custom_components.govee.api.protocol import LightTimer, SleepTimer, WakeUp, get_profile
 from custom_components.govee.models import GoveeDevice, GoveeDeviceState
 from custom_components.govee.models.device import DEVICE_TYPE_LIGHT
 from custom_components.govee.platforms.light_schedule import (
@@ -37,52 +37,6 @@ def _frame(*body: int) -> bytes:
 SLEEP_OFF = _frame(0x11, 0x00, 0x1E, 0x0F, 0x0F, 0x00, 0xFF, 0x32)
 WAKE_OFF = _frame(0x12, 0xFF, 0x64, 0x00, 0x00, 0x80, 0x0A, 0x00, 0xFF, 0xAE, 0x54)
 TIMERS_OFF = _frame(0x23, 0xFF, *([0x00, 0x00, 0x00, 0x80] * 4))
-
-
-class TestDecode:
-    def test_the_captured_frames_read_as_everything_off(self) -> None:
-        assert SLEEP_OFF.hex() == "aa11001e0f0f00ff320000000000000000000068"
-        assert WAKE_OFF.hex() == "aa12ff640000800a00ffae5400000000000000ac"
-        assert TIMERS_OFF.hex() == "aa23ff0000008000000080000000800000008076"
-
-        schedule = light_schedule.decode([SLEEP_OFF, WAKE_OFF, TIMERS_OFF])
-
-        assert schedule.sleep == SleepTimer(False, 30, 15, 15)
-        assert schedule.wake == WakeUp(False, 100, 0, 0, 0x80, 10)
-        assert schedule.timers == (Timer(False, 0, 0, 0x80),) * 4
-
-    def test_enabled_values(self) -> None:
-        schedule = light_schedule.decode(
-            [
-                _frame(0x11, 0x01, 0x32, 0x3C, 0x28),
-                _frame(0x12, 0x01, 0x50, 0x07, 0x1E, 0x7F, 0x14),
-                _frame(0x23, 0xFF, 0x81, 0x16, 0x2D, 0x7F, 0x00, 0x00, 0x00, 0x80, 0x80, 0x06, 0x00, 0x01, 0, 0, 0, 0),
-            ]
-        )
-        assert schedule.sleep == SleepTimer(True, 50, 60, 40)
-        assert schedule.wake == WakeUp(True, 80, 7, 30, 0x7F, 20)
-        assert schedule.timers is not None
-        assert [timer.enabled for timer in schedule.timers] == [True, False, True, False]
-        assert (schedule.timers[0].hour, schedule.timers[0].minute) == (22, 45)
-
-    def test_out_of_range_bytes_are_clamped(self) -> None:
-        schedule = light_schedule.decode([_frame(0x11, 0x01, 0xFF, 0xFF, 0xFF), _frame(0x12, 0x01, 0xFF, 0xFF, 0xFF)])
-        assert schedule.sleep == SleepTimer(True, 100, 240, 240)
-        assert schedule.wake is not None and (schedule.wake.hour, schedule.wake.minute) == (23, 59)
-
-    @pytest.mark.parametrize(
-        "frames",
-        [
-            [],
-            [b"short"],
-            [SLEEP_OFF[:19] + b"\x00"],
-            [b"\x33" + SLEEP_OFF[1:]],
-            [_frame(0x05, 0x04)],
-            [_frame(0x23, 0x01, 0x81, 0x16, 0x2D, 0x7F)],
-        ],
-    )
-    def test_frames_that_carry_no_schedule(self, frames: list[bytes]) -> None:
-        assert light_schedule.decode(frames) == LightSchedule()
 
 
 def _device(sku: str = "H80C5", *, is_group: bool = False) -> GoveeDevice:
@@ -126,7 +80,7 @@ class TestApply:
         assert light_schedule.apply_schedule_report(coordinator, device, [_frame(0x11, 0x01, 0x32, 0x3C, 0x28)])
         stored = light_schedule.schedules(coordinator)[DEVICE_ID]
         assert stored.sleep == SleepTimer(True, 50, 60, 40)
-        assert stored.wake == WakeUp(False, 100, 0, 0, 0x80, 10)
+        assert stored.wake == WakeUp(False, 100, 0, 0, (), 10, (0xFF, 0xAE, 0x54), 0)
 
     def test_a_push_without_schedule_frames_stores_nothing(self) -> None:
         coordinator = _coordinator()
@@ -186,14 +140,44 @@ class TestSensors:
             coordinator,
             coordinator.devices[DEVICE_ID],
             [
-                _frame(0x11, 0x01, 0x32, 0x3C, 0x28),
-                _frame(0x12, 0x01, 0x50, 0x07, 0x1E, 0x7F, 0x14),
-                _frame(0x23, 0xFF, 0x81, 0x16, 0x2D, 0x7F, *([0, 0, 0, 0x80] * 3)),
+                _frame(0x11, 0x01, 0x32, 0xFA, 0x28),
+                _frame(0x12, 0x01, 0x50, 0x07, 0x1E, 0xFF, 0x14),
+                _frame(0x23, 0xFF, 0x81, 0x16, 0x2D, 0xFF, *([0, 0, 0, 0x80] * 3)),
             ],
         )
         sleep, wake, timers = self._sensors(coordinator)
         assert sleep.native_value == "on"
+        assert sleep.extra_state_attributes["minutes"] == 250
         assert wake.native_value == "on"
-        assert wake.extra_state_attributes["time"] == "07:30"
+        assert wake.extra_state_attributes == {"time": "07:30", "ramp_minutes": 20, "end_brightness": 80, "repeat": 0xFF}
         assert timers.native_value == 1
-        assert timers.extra_state_attributes["timers"][0] == {"on": True, "time": "22:45", "repeat": 0x7F}
+        assert timers.extra_state_attributes["timers"][0] == {"on": True, "time": "22:45", "repeat": 0xFF}
+
+    def test_an_out_of_range_push_keeps_the_last_good_value(self) -> None:
+        coordinator = _coordinator()
+        device = coordinator.devices[DEVICE_ID]
+        light_schedule.apply_schedule_report(coordinator, device, [SLEEP_OFF, WAKE_OFF, TIMERS_OFF])
+        assert not light_schedule.apply_schedule_report(
+            coordinator, device, [_frame(0x11, 0x01, 0xFF, 0x0F, 0x0F), _frame(0x12, 0x01, 0x64, 0x18, 0, 0x80)]
+        )
+        assert light_schedule.schedule(coordinator, DEVICE_ID).sleep == SleepTimer(False, 30, 15, 15)
+
+
+class TestRecord:
+    def test_a_written_timer_replaces_its_slot(self) -> None:
+        coordinator = _coordinator()
+        light_schedule.apply_schedule_report(coordinator, coordinator.devices[DEVICE_ID], [TIMERS_OFF])
+        timer = LightTimer(enabled=True, turn_on=True, hour=6, minute=0, weekdays=(0,))
+        light_schedule.record_timer(coordinator, DEVICE_ID, 2, timer)
+        timers = light_schedule.schedule(coordinator, DEVICE_ID).timers
+        assert timers is not None and timers[2] == timer and timers[0].enabled is False
+
+    @pytest.mark.parametrize("slot", [4, -1])
+    def test_a_timer_is_not_stored_until_the_slots_are_known(self, slot: int) -> None:
+        coordinator = _coordinator()
+        timer = LightTimer(enabled=True, turn_on=True, hour=6, minute=0, weekdays=())
+        light_schedule.record_timer(coordinator, DEVICE_ID, 0, timer)
+        assert light_schedule.schedules(coordinator) == {}
+        light_schedule.apply_schedule_report(coordinator, coordinator.devices[DEVICE_ID], [TIMERS_OFF])
+        light_schedule.record_timer(coordinator, DEVICE_ID, slot, timer)
+        assert timer not in (light_schedule.schedule(coordinator, DEVICE_ID).timers or ())
