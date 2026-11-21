@@ -585,7 +585,8 @@ class TestSelecting:
             name="Rainbow B", code=good.code, blob=RAINBOW[:-1], adjust=good.adjust
         )
 
-        with _routed() as route, pytest.raises(HomeAssistantError, match="cannot be adjusted"):
+        failed = pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "scene_adjust_failed")
+        with _routed() as route, failed:
             await speed.async_select_option("fast")
 
         route.assert_not_awaited()

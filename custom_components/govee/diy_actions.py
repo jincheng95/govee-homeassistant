@@ -344,7 +344,7 @@ def _string_effect_target(
         HomeAssistantError: The target mixes such a device with another
             DIY-capable one.
     """
-    capable = 0
+    capable: list[str] = []
     found_string: tuple[GoveeCoordinator, GoveeDevice, DeviceProfile] | None = None
     for raw_id in _targeted_govee_device_ids(hass, call):
         found = coordinator_for_device(hass, raw_id)
@@ -353,19 +353,21 @@ def _string_effect_target(
         coordinator, device_id = found
         device = coordinator.devices[device_id]
         if diy_spec_for(device.sku) is not None:
-            capable += 1
+            capable.append(device.name)
             continue
         profile = profile_for(device.sku)
         if profile is not None and profile.scene_upload:
-            capable += 1
+            capable.append(device.name)
             found_string = (coordinator, device, profile)
     if found_string is None:
         return None
-    if capable > 1:
-        raise HomeAssistantError(
-            f"This action uploads one authored effect and takes exactly one device, but the target resolved to {capable}"
-        )
+    if len(capable) > 1:
+        raise _diy_error("diy_target_ambiguous", count=str(len(capable)), devices=", ".join(sorted(capable)))
     return found_string
+
+
+def _diy_error(key: str, **placeholders: str) -> HomeAssistantError:
+    return HomeAssistantError(translation_domain=DOMAIN, translation_key=key, translation_placeholders=placeholders)
 
 
 def _targeted_govee_device_ids(hass: HomeAssistant, call: ServiceCall) -> list[str]:
@@ -442,10 +444,7 @@ def _resolve_diy_target(
     """
     device_ids = _targeted_govee_device_ids(hass, call)
     if not device_ids:
-        raise HomeAssistantError(
-            "No Govee device in the target of this action — pick a Govee device, or "
-            "one of its entities, that is known to this integration"
-        )
+        raise _diy_error("diy_target_missing")
 
     candidates: list[tuple[GoveeCoordinator, GoveeDevice]] = []
     for raw_id in device_ids:
@@ -455,7 +454,7 @@ def _resolve_diy_target(
         coordinator, device_id = found
         candidates.append((coordinator, coordinator.devices[device_id]))
     if not candidates:
-        raise HomeAssistantError(f"Govee device {', '.join(device_ids)} is not known to this integration")
+        raise _diy_error("diy_target_unknown", devices=", ".join(device_ids))
 
     capable: list[tuple[GoveeCoordinator, GoveeDevice, tuple[DeviceProfile, DiyEffectSpec]]] = []
     for coordinator, device in candidates:
@@ -464,13 +463,10 @@ def _resolve_diy_target(
             capable.append((coordinator, device, resolved))
     if not capable:
         listed = ", ".join(f"{device.name} ({device.sku})" for _c, device in candidates)
-        raise HomeAssistantError(f"{listed} does not support DIY effects")
+        raise _diy_error("diy_unsupported", devices=listed)
     if len(capable) > 1:
         listed = ", ".join(sorted(device.name for _c, device, _r in capable))
-        raise HomeAssistantError(
-            f"This action uploads one authored effect and takes exactly one device, "
-            f"but the target resolved to {len(capable)}: {listed}"
-        )
+        raise _diy_error("diy_target_ambiguous", count=str(len(capable)), devices=listed)
 
     coordinator, device, (profile, diy) = capable[0]
     return coordinator, device, profile, diy
@@ -519,7 +515,7 @@ def _staged_record(zone: DiyZoneSpec, data: dict[str, Any] | None) -> dict[str, 
     try:
         mode = resolve_mode(zone, data["mode"])
     except GoveeProtocolError as err:
-        raise HomeAssistantError(f"DIY zone {zone.zone_key!r}: {err}") from err
+        raise _diy_error("diy_zone_mode_invalid", zone=zone.zone_key, reason=str(err)) from err
     record: dict[str, Any] = {
         "mode": mode,
         "speed": int(data.get("speed", DEFAULT_SPEED)),

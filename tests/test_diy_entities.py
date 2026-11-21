@@ -920,7 +920,7 @@ class TestService:
         device_entry, _entity = _register_device(hass, identifier_domain="demo")
         call = await self._handler(monkeypatch, hass, coordinator)
 
-        with pytest.raises(HomeAssistantError, match="No Govee device in the target"):
+        with pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "diy_target_missing"):
             await call({"device_id": device_entry.id, "ring_mode": "gradient"})
 
         assert raw_client.envelopes == []
@@ -930,7 +930,7 @@ class TestService:
         coordinator = _coordinator()
         call = await self._handler(monkeypatch, hass, coordinator)
 
-        with pytest.raises(HomeAssistantError, match="No Govee device in the target"):
+        with pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "diy_target_missing"):
             await call({"ring_mode": "gradient", "ring_colors": [[1, 2, 3]]})
 
     @pytest.mark.asyncio
@@ -942,7 +942,7 @@ class TestService:
         second_entry, _entity2 = _register_device(hass, device_id=OTHER_DEVICE_ID, name="Second Uplighter")
         call = await self._handler(monkeypatch, hass, coordinator)
 
-        with pytest.raises(HomeAssistantError, match="exactly one device"):
+        with pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "diy_target_ambiguous"):
             await call(
                 {
                     "device_id": [first_entry.id, second_entry.id],
@@ -958,7 +958,7 @@ class TestService:
         _device_entry, _entity = _register_device(hass)
         call = await self._handler(monkeypatch, hass, None)
 
-        with pytest.raises(HomeAssistantError, match="not known to this integration"):
+        with pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "diy_target_unknown"):
             await call({"device_id": _device_entry.id})
 
     @pytest.mark.asyncio
@@ -967,7 +967,7 @@ class TestService:
         device_entry, _entity = _register_device(hass)
         call = await self._handler(monkeypatch, hass, coordinator)
 
-        with pytest.raises(HomeAssistantError, match="does not support DIY effects"):
+        with pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "diy_unsupported"):
             await call(
                 {
                     "device_id": device_entry.id,
@@ -1102,7 +1102,7 @@ class TestService:
         device_entry, _entity = _register_device(hass)
         call = await self._handler(monkeypatch, hass, coordinator)
 
-        with pytest.raises(HomeAssistantError, match="no DIY mode"):
+        with pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "diy_zone_mode_invalid" and "no DIY mode" in err.translation_placeholders["reason"]):
             await call(
                 {
                     "device_id": device_entry.id,

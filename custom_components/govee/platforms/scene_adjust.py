@@ -278,7 +278,11 @@ class _GoveeSceneSettingBase(GoveeEntity):
         try:
             frames = scenes.scene_frames(scene_blob(scene, settings), scene.code)
         except GoveeProtocolError as err:
-            raise HomeAssistantError(f"{self._device.name}: scene '{scene.name}' cannot be adjusted ({err})") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="scene_adjust_failed",
+                translation_placeholders={"device": self._device.name, "scene": scene.name, "reason": str(err)},
+            ) from err
         if not await raw_router.async_route_frames(
             self.coordinator, self._device_id, self._device.sku, self._profile, frames, what="scene adjustment"
         ):

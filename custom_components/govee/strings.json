@@ -1168,6 +1168,24 @@
     },
     "layers_with_effect_fields": {
       "message": "Cannot apply the effect to {device}. Leave {fields} empty when giving layers."
+    },
+    "diy_target_missing": {
+      "message": "No Govee device is in the target of this action. Pick a Govee device, or one of its entities, that this integration knows."
+    },
+    "diy_target_unknown": {
+      "message": "Govee device {devices} is not known to this integration."
+    },
+    "diy_unsupported": {
+      "message": "{devices} does not support DIY effects."
+    },
+    "diy_target_ambiguous": {
+      "message": "This action uploads one authored effect to exactly one device, but the target resolved to {count}: {devices}."
+    },
+    "diy_zone_mode_invalid": {
+      "message": "DIY zone {zone}: {reason}"
+    },
+    "scene_adjust_failed": {
+      "message": "The scene {scene} on {device} cannot be adjusted: {reason}"
     }
   },
   "issues": {

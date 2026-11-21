@@ -441,7 +441,7 @@ class TestReset:
         entities = _entities(coordinator)
         store = scene_catalogue.catalogue(coordinator)._scenes[SKU]
         store["Single"] = scene_catalogue.CatalogueScene(name="Single", code=0x10000, blob=SINGLE, adjust=None)
-        with _routed() as route, pytest.raises(HomeAssistantError, match="cannot be adjusted"):
+        with _routed() as route, pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "scene_adjust_failed"):
             await entities["reset"].async_press()
         route.assert_not_awaited()
 

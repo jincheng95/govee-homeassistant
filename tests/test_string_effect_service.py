@@ -237,8 +237,10 @@ class TestAppNamedEffect:
 class TestTargeting:
     async def test_two_diy_capable_devices_are_refused(self) -> None:
         coordinator = _coordinator({DEVICE_ID: "H80C5", OTHER_ID: "H60B0"})
-        with pytest.raises(HomeAssistantError, match="exactly one device"):
+        with pytest.raises(HomeAssistantError) as err:
             await _run(coordinator, _call(effect="flame", colors=COLORS))
+        assert err.value.translation_key == "diy_target_ambiguous"
+        assert err.value.translation_placeholders["count"] == "2"
 
     async def test_a_plain_light_beside_the_string_light_is_ignored(self) -> None:
         coordinator = _coordinator({DEVICE_ID: "H80C5", OTHER_ID: "H0000"})
@@ -254,7 +256,7 @@ class TestTargeting:
 
     async def test_a_light_with_no_diy_at_all_keeps_the_old_error(self) -> None:
         coordinator = _coordinator({DEVICE_ID: "H0000"})
-        with pytest.raises(HomeAssistantError, match="does not support DIY effects"):
+        with pytest.raises(HomeAssistantError, check=lambda err: err.translation_key == "diy_unsupported"):
             await _run(coordinator, _call(effect="flame", colors=COLORS))
 
 
