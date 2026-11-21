@@ -4,7 +4,9 @@ The 20-byte frames are transport-neutral, so the pipe is a routing decision, not
 a codec one: :func:`async_route_frames` tries LAN raw, then plaintext BLE, then
 the cloud MQTT ``ptReal`` passthrough, and reports False when no tier accepted
 ("not handled, use the cloud command you had"). No tier raises at the entity and
-no tier confirms, so callers keep optimistic state. Also home to the per-segment
+no tier confirms, so callers keep optimistic state. :func:`async_route_upload`
+sends a multi-message upload over one tier, and a per-device lock keeps the
+fork's raw writes from landing inside it. Also home to the per-segment
 paint (:func:`async_segment_color`), which picks its wire form from the profile,
 to whole-device colour temperature (:func:`async_color_temp`), to device
 settings and schedules (:func:`async_device_setting`, :func:`async_device_frames`) and to zone
@@ -13,8 +15,9 @@ power (:func:`async_zone_power`).
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.util import color as color_util
@@ -39,6 +42,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Profile zone key used by SKUs whose segments are addressed by mask alone.
 SEGMENT_ZONE_KEY: Final = "segments"
+
+_UPLOAD_LOCKS_ATTR: Final = "_govee_upload_locks"
 
 
 # Routing
@@ -81,21 +86,127 @@ async def async_route_frames(
         frames: The frames to deliver, in order.
         what: Human-readable intent, for the debug log.
 
+    The device's upload lock is held while the frames go out, so they never
+    land inside another fork upload to the same device.
+
     Returns:
         True when some tier accepted the frames.
     """
     if not frames:
         return False
+    async with upload_lock(coordinator, device_id):
+        return await _async_pick_tier(coordinator, device_id, sku, profile, frames, what) is not None
 
-    if await _async_lan_tier(coordinator, device_id, sku, frames, what):
-        return True
 
-    if await _async_tier("BLE", ble_raw_write.async_send_frames, coordinator, device_id, sku, profile, frames, what):
-        return True
+async def async_route_upload(
+    coordinator: GoveeCoordinator,
+    device_id: str,
+    sku: str,
+    profile: DeviceProfile,
+    messages: Sequence[Sequence[bytes]],
+    *,
+    gap_seconds: float,
+    what: str,
+    repeat: bool = True,
+) -> int:
+    """Send an upload of several ``ptReal`` messages over one raw pipe, in order.
 
-    return await _async_tier(
-        "MQTT", mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, frames, what
-    )
+    The pipe is the first tier that takes the first message, and every later
+    message goes over that pipe only, ``gap_seconds`` apart. A message the pipe
+    refuses ends the upload. The device's upload lock is held throughout.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device_id: The Govee device id.
+        sku: The device model.
+        profile: The SKU's profile.
+        messages: The messages, each a list of frames sent in one envelope.
+        gap_seconds: Pause between messages.
+        what: Human-readable intent, for the log.
+        repeat: False sends each message once on the LAN tier instead of
+            :data:`.lan_raw.LAN_WRITE_REPEATS` times.
+
+    Returns:
+        How many messages went out. Fewer than ``len(messages)`` means the
+        upload stopped after that many.
+
+    Raises:
+        asyncio.CancelledError: The caller was cancelled. The messages already
+            sent are logged at warning level and are not rolled back.
+    """
+    if not messages:
+        return 0
+    repeats = lan_raw.LAN_WRITE_REPEATS if repeat else 1
+    async with upload_lock(coordinator, device_id):
+        send = await _async_pick_tier(coordinator, device_id, sku, profile, messages[0], what, repeats)
+        if send is None:
+            return 0
+        sent = 1
+        try:
+            for message in messages[1:]:
+                await asyncio.sleep(gap_seconds)
+                if not await send(message):
+                    _LOGGER.debug(
+                        "Govee raw router: %s to %s stopped after %d of %d messages", what, device_id, sent, len(messages)
+                    )
+                    break
+                sent += 1
+        except asyncio.CancelledError:
+            _LOGGER.warning(
+                "Govee raw router: %s to %s was cancelled after %d of %d messages", what, device_id, sent, len(messages)
+            )
+            raise
+        return sent
+
+
+def upload_lock(coordinator: GoveeCoordinator, device_id: str) -> asyncio.Lock:
+    """The lock that keeps the fork's raw writes to one device from interleaving."""
+    locks = getattr(coordinator, _UPLOAD_LOCKS_ATTR, None)
+    if not isinstance(locks, dict):
+        locks = {}
+        setattr(coordinator, _UPLOAD_LOCKS_ATTR, locks)
+    lock: asyncio.Lock = locks.setdefault(device_id, asyncio.Lock())
+    return lock
+
+
+def upload_in_progress(coordinator: GoveeCoordinator, device_id: str) -> bool:
+    """Whether a fork raw write to the device holds its upload lock now."""
+    return upload_lock(coordinator, device_id).locked()
+
+
+async def _async_pick_tier(
+    coordinator: GoveeCoordinator,
+    device_id: str,
+    sku: str,
+    profile: DeviceProfile,
+    frames: Sequence[bytes],
+    what: str,
+    repeats: int = lan_raw.LAN_WRITE_REPEATS,
+) -> Callable[[Sequence[bytes]], Awaitable[bool]] | None:
+    """Send ``frames`` down the first tier that takes them.
+
+    Returns:
+        A sender bound to that tier for the rest of an upload, or None when no
+        tier took the frames.
+    """
+
+    async def lan(message: Sequence[bytes]) -> bool:
+        return await _async_lan_tier(coordinator, device_id, sku, message, what, repeats)
+
+    async def ble(message: Sequence[bytes]) -> bool:
+        return await _async_tier(
+            "BLE", ble_raw_write.async_send_frames, coordinator, device_id, sku, profile, message, what
+        )
+
+    async def mqtt(message: Sequence[bytes]) -> bool:
+        return await _async_tier(
+            "MQTT", mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, message, what
+        )
+
+    for tier in (lan, ble, mqtt):
+        if await tier(frames):
+            return tier
+    return None
 
 
 async def _async_tier(
@@ -128,6 +239,7 @@ async def _async_lan_tier(
     sku: str,
     frames: Sequence[bytes],
     what: str,
+    repeats: int = lan_raw.LAN_WRITE_REPEATS,
 ) -> bool:
     """The LAN tier of :func:`async_route_frames`. False means "not handled".
 
@@ -146,7 +258,7 @@ async def _async_lan_tier(
         return False
     ip, _profile = target
     try:
-        return await lan_raw.async_send_frames(coordinator, device_id, ip, frames, what=what)
+        return await lan_raw.async_send_frames(coordinator, device_id, ip, frames, what=what, repeats=repeats)
     except Exception as err:  # noqa: BLE001 - a tier must never raise at an entity
         _LOGGER.debug("Govee raw router: the LAN tier for %s raised (%s) — trying the next tier", device_id, err)
         return False

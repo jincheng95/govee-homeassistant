@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 from typing import Any, Final
@@ -105,15 +104,17 @@ async def async_upload_bulb_positions_handler(hass: HomeAssistant, call: Service
     """Handle ``govee.upload_bulb_positions``.
 
     Stores a 3D position map on a string light, replacing the one it holds.
-    Packets go one per raw ``ptReal`` message, :data:`.positions.MESSAGE_GAP_SECONDS`
-    apart, so a 300-bulb map takes about 14 seconds.
+    Packets go one per raw ``ptReal`` message over one raw pipe,
+    :data:`.positions.MESSAGE_GAP_SECONDS` apart, so a 300-bulb map takes
+    about 14 seconds. The LAN pipe sends each packet once.
 
     Raises:
         ServiceValidationError: Unknown or unsupported device, a position that
             is not three numbers, the wrong number of positions, or (with
             ``normalize`` off) a coordinate that is not an integer in range.
-        HomeAssistantError: A packet could not be sent. Packets already sent
-            are not rolled back.
+        HomeAssistantError: ``bulb_positions_failed`` with the packets sent,
+            when no raw pipe took a packet. Packets already sent are not
+            rolled back.
     """
     raw_id = call.data[ATTR_DEVICE_ID]
     found = coordinator_for_device(hass, raw_id)
@@ -155,16 +156,23 @@ async def async_upload_bulb_positions_handler(hass: HomeAssistant, call: Service
             translation_placeholders={"reason": str(err)},
         ) from err
 
-    for index, frame in enumerate(frames):
-        if index:
-            await asyncio.sleep(positions.MESSAGE_GAP_SECONDS)
-        if not await coordinator.async_send_raw_ptreal(device_id, frame):
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="bulb_positions_failed",
-                translation_placeholders={"device": device.name, "sent": str(index), "total": str(len(frames))},
-            )
-    _LOGGER.info("Uploaded a %d-bulb position map to %s in %d packets", len(points), device.name, len(frames))
+    sent = await raw_router.async_route_upload(
+        coordinator,
+        device_id,
+        device.sku,
+        profile,
+        [[frame] for frame in frames],
+        gap_seconds=positions.MESSAGE_GAP_SECONDS,
+        what="bulb position map",
+        repeat=False,
+    )
+    if sent < len(frames):
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="bulb_positions_failed",
+            translation_placeholders={"device": device.name, "sent": str(sent), "total": str(len(frames))},
+        )
+    _LOGGER.debug("Uploaded a %d-bulb position map to %s in %d packets", len(points), device.name, len(frames))
 
 
 def _expand_bulbs(entries: list[Any], bulb_count: int) -> list[int]:
@@ -200,6 +208,12 @@ async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> N
 
     Colours the named LEDs and shows the base colour on every other one. The
     paint replaces whatever the light was showing, including an earlier paint.
+    Its messages go over one raw pipe, :data:`.paint.MESSAGE_GAP_SECONDS` apart.
+
+    Raises:
+        HomeAssistantError: ``command_failed`` when no raw pipe took the first
+            message, ``bulb_paint_incomplete`` with the packets sent when a
+            later one was refused.
     """
     raw_id = call.data[ATTR_DEVICE_ID]
     found = coordinator_for_device(hass, raw_id)
@@ -233,17 +247,32 @@ async def async_paint_bulbs_handler(hass: HomeAssistant, call: ServiceCall) -> N
             translation_placeholders={"device": device.name, "reason": str(err)},
         ) from err
 
-    for index, message in enumerate(paint.messages(frames)):
-        if index:
-            await asyncio.sleep(paint.MESSAGE_GAP_SECONDS)
-        if not await raw_router.async_route_frames(
-            coordinator, device_id, device.sku, profile, message, what="bulb paint"
-        ):
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="command_failed",
-                translation_placeholders={"device": device.name},
-            )
+    messages = paint.messages(frames)
+    sent = await raw_router.async_route_upload(
+        coordinator,
+        device_id,
+        device.sku,
+        profile,
+        messages,
+        gap_seconds=paint.MESSAGE_GAP_SECONDS,
+        what="bulb paint",
+    )
+    if not sent:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="command_failed",
+            translation_placeholders={"device": device.name},
+        )
+    if sent < len(messages):
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="bulb_paint_incomplete",
+            translation_placeholders={
+                "device": device.name,
+                "sent": str(sum(len(message) for message in messages[:sent])),
+                "total": str(len(frames)),
+            },
+        )
 
     clear_optimistic_scene(coordinator, device_id)
 

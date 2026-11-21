@@ -1040,7 +1040,10 @@
       "message": "The bulb positions are not valid: {reason}."
     },
     "bulb_positions_failed": {
-      "message": "Could not finish uploading the position map to {device}: {sent} of {total} packets were sent. This requires a healthy LAN connection to the device or the account (email/password) login with AWS IoT connected."
+      "message": "Could not finish uploading the position map to {device}: {sent} of {total} packets were sent. This needs a raw-frame option (local raw writes or AWS IoT raw writes) and a reachable device. Upload the whole map again."
+    },
+    "bulb_paint_incomplete": {
+      "message": "Could not finish painting {device}: {sent} of {total} packets were sent. Paint it again."
     },
     "too_many_ptreal_frames": {
       "message": "{count} frames were given, but at most {max} can be sent in one message."

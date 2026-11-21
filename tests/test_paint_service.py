@@ -16,7 +16,9 @@ import voluptuous as vol
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.govee import bulb_actions, services
-from custom_components.govee.api.protocol import get_profile, paint
+from custom_components.govee.api import lan_raw, raw_router
+from custom_components.govee.api.protocol import paint
+from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE
 from custom_components.govee.models import GoveeDeviceState
 from custom_components.govee.bulb_actions import (
     SERVICE_PAINT_BULBS_SCHEMA,
@@ -34,6 +36,8 @@ def _coordinator(sku: str = "H80C5", *, scene: str | None = None) -> MagicMock:
     device.name = "String lights"
     coordinator = MagicMock()
     coordinator.devices = {DEVICE_ID: device}
+    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: True}
+    coordinator._lan_devices = {DEVICE_ID: SimpleNamespace(ip="lamp")}
     state = GoveeDeviceState.create_empty(DEVICE_ID)
     state.active_scene = "7" if scene else None
     state.active_scene_name = scene
@@ -47,10 +51,9 @@ def _call(**data: Any) -> SimpleNamespace:
 
 
 async def _run(coordinator: MagicMock, call: SimpleNamespace, *, routed: bool = True) -> AsyncMock:
+    """Run the handler with the LAN sender mocked; frames land at ``args[3]``."""
     route = AsyncMock(return_value=routed)
-    with patch(LOOKUP, return_value=(coordinator, DEVICE_ID)), patch.object(
-        bulb_actions.raw_router, "async_route_frames", route
-    ):
+    with patch(LOOKUP, return_value=(coordinator, DEVICE_ID)), patch.object(lan_raw, "async_send_frames", route):
         await async_paint_bulbs_handler(MagicMock(), call)
     return route
 
@@ -117,8 +120,9 @@ class TestHandler:
             base_brightness=40,
         )
         args = route.await_args.args
-        assert args[:4] == (coordinator, DEVICE_ID, "H80C5", get_profile("H80C5"))
-        assert list(args[4]) == expected
+        assert args[:3] == (coordinator, DEVICE_ID, "lamp")
+        assert list(args[3]) == expected
+        assert route.await_args.kwargs["repeats"] == lan_raw.LAN_WRITE_REPEATS
 
     async def test_a_long_paint_goes_out_as_spaced_messages(self) -> None:
         colors = [{"rgb_color": [index, 0, 0], "bulbs": [index]} for index in range(30)]
@@ -127,10 +131,10 @@ class TestHandler:
         async def _sleep(seconds: float) -> None:
             sleeps.append(seconds)
 
-        with patch.object(bulb_actions.asyncio, "sleep", _sleep):
+        with patch.object(raw_router.asyncio, "sleep", _sleep):
             route = await _run(_coordinator(), _call(colors=colors))
 
-        sent = [list(call.args[4]) for call in route.await_args_list]
+        sent = [list(call.args[3]) for call in route.await_args_list]
         expected = paint.paint_frames([((index, 0, 0), [index]) for index in range(30)], bulb_count=300)
         assert len(sent) > 1
         assert all(len(message) <= paint.MESSAGE_FRAMES for message in sent)
@@ -139,12 +143,19 @@ class TestHandler:
 
     async def test_a_refused_later_message_stops_the_upload(self) -> None:
         colors = [{"rgb_color": [index, 0, 0], "bulbs": [index]} for index in range(30)]
+        total = len(paint.paint_frames([((index, 0, 0), [index]) for index in range(30)], bulb_count=300))
         route = AsyncMock(side_effect=[True, False, True])
         with patch(LOOKUP, return_value=(_coordinator(), DEVICE_ID)), patch.object(
-            bulb_actions.raw_router, "async_route_frames", route
-        ), patch.object(bulb_actions.asyncio, "sleep", AsyncMock()), pytest.raises(HomeAssistantError):
+            lan_raw, "async_send_frames", route
+        ), patch.object(raw_router.asyncio, "sleep", AsyncMock()), pytest.raises(HomeAssistantError) as err:
             await async_paint_bulbs_handler(MagicMock(), _call(colors=colors))
         assert route.await_count == 2
+        assert err.value.translation_key == "bulb_paint_incomplete"
+        assert err.value.translation_placeholders == {
+            "device": "String lights",
+            "sent": str(paint.MESSAGE_FRAMES),
+            "total": str(total),
+        }
 
     async def test_a_paint_clears_the_running_scene(self) -> None:
         coordinator = _coordinator(scene="Rainbow B")

@@ -1,11 +1,14 @@
 """``govee.upload_bulb_positions`` validation and send path (fork feature).
 
 The coordinator is mocked; the device lookup is monkeypatched as in
-``test_services.py``. Point lists are synthetic.
+``test_services.py``. The upload runs through the real raw router with the LAN
+and MQTT senders mocked. Point lists are synthetic.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,18 +16,23 @@ import pytest
 from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError, Unauthorized
 
-from custom_components.govee.api.protocol import positions
-from custom_components.govee.const import DOMAIN
+from custom_components.govee import raw_status
+from custom_components.govee.api import lan_raw, mqtt_raw_write, raw_router
+from custom_components.govee.api.protocol import paint, positions
+from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE, DOMAIN
 from custom_components.govee.bulb_actions import (
+    SERVICE_PAINT_BULBS_SCHEMA,
     SERVICE_UPLOAD_BULB_POSITIONS,
     SERVICE_UPLOAD_BULB_POSITIONS_SCHEMA,
+    async_paint_bulbs_handler,
     async_upload_bulb_positions_handler,
 )
 from custom_components.govee.services import async_setup_services
 
 LOOKUP = "custom_components.govee.services._get_coordinator_for_device"
-SLEEP = "custom_components.govee.bulb_actions.asyncio.sleep"
+SLEEP = "custom_components.govee.api.raw_router.asyncio.sleep"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF:00:11"
+REAL_MQTT_SEND = mqtt_raw_write.async_send_frames
 
 
 def _grid(count: int = 300) -> list[list[int]]:
@@ -40,16 +48,35 @@ def coordinator(monkeypatch) -> MagicMock:
     device.sku = "H80C5"
     coordinator = MagicMock(name="coordinator")
     coordinator.devices = {DEVICE_ID: device}
-    coordinator.async_send_raw_ptreal = AsyncMock(return_value=True)
+    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: True}
+    coordinator._lan_devices = {DEVICE_ID: SimpleNamespace(ip="lamp")}
+    coordinator.lan_send = AsyncMock(return_value=True)
+    coordinator.mqtt_send = AsyncMock(return_value=True)
+    monkeypatch.setattr(lan_raw, "async_send_frames", coordinator.lan_send)
+    monkeypatch.setattr(mqtt_raw_write, "async_send_frames", coordinator.mqtt_send)
     monkeypatch.setattr(LOOKUP, lambda hass, raw: (coordinator, DEVICE_ID))
     return coordinator
 
 
 @pytest.fixture
 def sleep(monkeypatch) -> AsyncMock:
-    mock = AsyncMock()
+    real_sleep = asyncio.sleep
+
+    async def _yield(_seconds: float) -> None:
+        await real_sleep(0)
+
+    mock = AsyncMock(side_effect=_yield)
     monkeypatch.setattr(SLEEP, mock)
     return mock
+
+
+def _lan_frames(coordinator: MagicMock) -> list[bytes]:
+    """The frames of every LAN message, each of which must carry one packet."""
+    frames = []
+    for call in coordinator.lan_send.await_args_list:
+        (frame,) = call.args[3]
+        frames.append(frame)
+    return frames
 
 
 def _call(positions_data, *, normalize: bool = True) -> SimpleNamespace:
@@ -66,11 +93,13 @@ class TestSendPath:
         await async_upload_bulb_positions_handler(MagicMock(), _call(points, normalize=False))
 
         expected = positions.position_map_frames([tuple(point) for point in points], bulb_count=300)
-        sent = [call.args for call in coordinator.async_send_raw_ptreal.await_args_list]
-        assert sent == [(DEVICE_ID, frame) for frame in expected]
-        assert len(sent) == 113
+        assert _lan_frames(coordinator) == expected
+        assert len(expected) == 113
+        assert {call.args[:3] for call in coordinator.lan_send.await_args_list} == {(coordinator, DEVICE_ID, "lamp")}
+        assert {call.kwargs["repeats"] for call in coordinator.lan_send.await_args_list} == {1}
         assert sleep.await_count == 112
         sleep.assert_awaited_with(positions.MESSAGE_GAP_SECONDS)
+        coordinator.mqtt_send.assert_not_awaited()
 
     async def test_normalizes_by_default(self, coordinator, sleep) -> None:
         points = [[x / 10, y / 10 + 7, z / 10 - 3] for x, y, z in _grid()]
@@ -79,24 +108,92 @@ class TestSendPath:
 
         normalized = positions.normalize_positions([tuple(point) for point in points])
         expected = positions.position_map_frames(normalized, bulb_count=300)
-        assert [call.args[1] for call in coordinator.async_send_raw_ptreal.await_args_list] == expected
+        assert _lan_frames(coordinator) == expected
 
     async def test_integral_floats_pass_without_normalizing(self, coordinator, sleep) -> None:
         points = [[float(axis) for axis in point] for point in _grid()]
 
         await async_upload_bulb_positions_handler(MagicMock(), _call(points, normalize=False))
 
-        assert coordinator.async_send_raw_ptreal.await_count == 113
+        assert coordinator.lan_send.await_count == 113
 
-    async def test_a_refused_send_stops_and_raises(self, coordinator, sleep) -> None:
-        coordinator.async_send_raw_ptreal.side_effect = [True, True, False]
+    async def test_a_refused_send_stops_without_changing_pipe(self, coordinator, sleep) -> None:
+        coordinator.lan_send.side_effect = [True, True, False]
 
         with pytest.raises(HomeAssistantError) as excinfo:
             await async_upload_bulb_positions_handler(MagicMock(), _call(_grid()))
 
         assert excinfo.value.translation_key == "bulb_positions_failed"
         assert excinfo.value.translation_placeholders == {"device": "Tree", "sent": "2", "total": "113"}
-        assert coordinator.async_send_raw_ptreal.await_count == 3
+        assert coordinator.lan_send.await_count == 3
+        coordinator.mqtt_send.assert_not_awaited()
+
+    async def test_without_lan_the_whole_map_goes_over_mqtt(self, coordinator, sleep) -> None:
+        coordinator._lan_devices = {}
+
+        await async_upload_bulb_positions_handler(MagicMock(), _call(_grid(), normalize=False))
+
+        coordinator.lan_send.assert_not_awaited()
+        assert [call.args[4] for call in coordinator.mqtt_send.await_args_list] == [
+            [frame] for frame in positions.position_map_frames([tuple(p) for p in _grid()], bulb_count=300)
+        ]
+
+    async def test_the_raw_option_gates_the_upload(self, coordinator, sleep, monkeypatch) -> None:
+        coordinator.config_entry.options = {}
+        monkeypatch.setattr(mqtt_raw_write, "async_send_frames", REAL_MQTT_SEND)
+
+        with pytest.raises(HomeAssistantError) as excinfo:
+            await async_upload_bulb_positions_handler(MagicMock(), _call(_grid()))
+
+        assert excinfo.value.translation_placeholders == {"device": "Tree", "sent": "0", "total": "113"}
+        coordinator.lan_send.assert_not_awaited()
+
+    async def test_two_uploads_do_not_interleave(self, coordinator, sleep) -> None:
+        first = _grid()
+        second = [[x, y, 7] for x, y, _z in _grid()]
+
+        await asyncio.gather(
+            async_upload_bulb_positions_handler(MagicMock(), _call(first, normalize=False)),
+            async_upload_bulb_positions_handler(MagicMock(), _call(second, normalize=False)),
+        )
+
+        frames_a = positions.position_map_frames([tuple(p) for p in first], bulb_count=300)
+        frames_b = positions.position_map_frames([tuple(p) for p in second], bulb_count=300)
+        assert _lan_frames(coordinator) in (frames_a + frames_b, frames_b + frames_a)
+
+    async def test_a_paint_waits_for_a_running_upload(self, coordinator, sleep) -> None:
+        paint_call = SimpleNamespace(data=SERVICE_PAINT_BULBS_SCHEMA({"device_id": DEVICE_ID}))
+
+        await asyncio.gather(
+            async_upload_bulb_positions_handler(MagicMock(), _call(_grid(), normalize=False)),
+            async_paint_bulbs_handler(MagicMock(), paint_call),
+        )
+
+        messages = [call.args[3] for call in coordinator.lan_send.await_args_list]
+        assert len(messages) == 114
+        assert all(message[0][0] == 0xA4 for message in messages[:113])
+        assert messages[113] == paint.paint_frames([], bulb_count=300)
+
+    async def test_the_settings_sweep_skips_a_device_mid_upload(self, coordinator, sleep) -> None:
+        async with raw_router.upload_lock(coordinator, DEVICE_ID):
+            assert await raw_status.async_query_settings(coordinator, DEVICE_ID) == 0
+
+    async def test_a_cancelled_upload_logs_how_far_it_got(self, coordinator, sleep, caplog) -> None:
+        sent = asyncio.Event()
+
+        async def _send(*_args, **_kwargs) -> bool:
+            if coordinator.lan_send.await_count == 5:
+                sent.set()
+            return True
+
+        coordinator.lan_send.side_effect = _send
+        task = asyncio.ensure_future(async_upload_bulb_positions_handler(MagicMock(), _call(_grid())))
+        await sent.wait()
+        task.cancel()
+        with caplog.at_level(logging.WARNING), pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert "bulb position map to AA:BB:CC:DD:EE:FF:00:11 was cancelled after 5 of 113 messages" in caplog.text
 
 
 class TestValidation:
@@ -106,7 +203,7 @@ class TestValidation:
 
         assert excinfo.value.translation_key == "bulb_position_count"
         assert excinfo.value.translation_placeholders == {"device": "Tree", "count": "299", "expected": "300"}
-        coordinator.async_send_raw_ptreal.assert_not_awaited()
+        coordinator.lan_send.assert_not_awaited()
 
     @pytest.mark.parametrize(
         "bad",
@@ -122,7 +219,7 @@ class TestValidation:
 
         assert excinfo.value.translation_key == "invalid_bulb_positions"
         assert "position 7" in excinfo.value.translation_placeholders["reason"]
-        coordinator.async_send_raw_ptreal.assert_not_awaited()
+        coordinator.lan_send.assert_not_awaited()
 
     @pytest.mark.parametrize("bad", [[0, 1001, 0], [0, -1, 0], [0, 2.5, 0]], ids=["above-max", "negative", "fraction"])
     async def test_out_of_range_without_normalizing(self, coordinator, sleep, bad) -> None:
@@ -134,7 +231,7 @@ class TestValidation:
 
         assert excinfo.value.translation_key == "invalid_bulb_positions"
         assert "point 3" in excinfo.value.translation_placeholders["reason"]
-        coordinator.async_send_raw_ptreal.assert_not_awaited()
+        coordinator.lan_send.assert_not_awaited()
 
     async def test_unsupported_device(self, coordinator, sleep) -> None:
         coordinator.devices[DEVICE_ID].sku = "H60B0"
@@ -143,7 +240,7 @@ class TestValidation:
             await async_upload_bulb_positions_handler(MagicMock(), _call(_grid()))
 
         assert excinfo.value.translation_key == "bulb_positions_unsupported"
-        coordinator.async_send_raw_ptreal.assert_not_awaited()
+        coordinator.lan_send.assert_not_awaited()
 
     async def test_device_without_a_profile(self, coordinator, sleep) -> None:
         coordinator.devices[DEVICE_ID].sku = "H6199"
@@ -173,7 +270,7 @@ class TestRegistration:
             blocking=True,
         )
 
-        assert coordinator.async_send_raw_ptreal.await_count == 113
+        assert coordinator.lan_send.await_count == 113
 
     async def test_non_admin_users_cannot_upload(self, hass, hass_read_only_user, coordinator, sleep) -> None:
         async_setup_services(hass)
@@ -187,4 +284,4 @@ class TestRegistration:
                 context=Context(user_id=hass_read_only_user.id),
             )
 
-        coordinator.async_send_raw_ptreal.assert_not_awaited()
+        coordinator.lan_send.assert_not_awaited()

@@ -106,8 +106,9 @@ async def async_send_frames(
     frames: Sequence[bytes],
     *,
     what: str = "frames",
+    repeats: int = LAN_WRITE_REPEATS,
 ) -> bool:
-    """Send pre-built frames to a device, repeated. True when they went out.
+    """Send pre-built frames to a device, ``repeats`` times. True when they went out.
 
     The frames travel in ONE ``ptReal`` envelope per repeat, which the device
     applies in order — so "set colour, then switch the zone on" arrives as a
@@ -117,7 +118,7 @@ async def async_send_frames(
         return False
     started = time.monotonic()
     try:
-        sent = await _async_send_repeated(ip, frames)
+        sent = await _async_send_repeated(ip, frames, repeats)
     except GoveeProtocolError as err:
         # The frames were built successfully and then could not be wrapped for
         # the wire. That is a bug in this integration, not evidence about the
@@ -147,14 +148,14 @@ async def async_send_frames(
         ip,
         (time.monotonic() - started) * 1000,
         sent,
-        LAN_WRITE_REPEATS,
+        repeats,
         " | ".join(frame.hex(" ") for frame in frames),
     )
     return True
 
 
-async def _async_send_repeated(ip: str, frames: Sequence[bytes]) -> int:
-    """Send the same envelope :data:`LAN_WRITE_REPEATS` times, spaced out.
+async def _async_send_repeated(ip: str, frames: Sequence[bytes], repeats: int = LAN_WRITE_REPEATS) -> int:
+    """Send the same envelope ``repeats`` times, spaced out.
 
     The repeats are redundancy, not a sequence: the frames are absolute, so one
     copy reaching the socket says exactly what three do. A copy that fails
@@ -165,6 +166,7 @@ async def _async_send_repeated(ip: str, frames: Sequence[bytes]) -> int:
     Args:
         ip: The device's LAN address.
         frames: The frames to put in each envelope.
+        repeats: How many copies to send.
 
     Returns:
         How many copies were handed to the socket (at least one).
@@ -176,7 +178,7 @@ async def _async_send_repeated(ip: str, frames: Sequence[bytes]) -> int:
     client = _client()
     sent = 0
     last_error: OSError | None = None
-    for attempt in range(LAN_WRITE_REPEATS):
+    for attempt in range(repeats):
         if attempt:
             await asyncio.sleep(LAN_WRITE_GAP_SECONDS)
         try:

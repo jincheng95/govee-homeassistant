@@ -16,6 +16,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final
 
 from .api import mqtt_raw_write
+from .api.raw_router import upload_in_progress
 from .api.protocol import SETTING_QUERIES, Capability, GoveeCodec, decode_status
 from .api.zone_power_report import decode_frames as decode_zone_power_frames
 from .zone_state import profile_for
@@ -101,11 +102,12 @@ async def async_query_settings(coordinator: GoveeCoordinator, device_id: str) ->
         device_id: The device to ask.
 
     Returns:
-        How many queries went out. 0 when the profile encodes no setting or
-        the MQTT ``ptReal`` tier is unavailable.
+        How many queries went out. 0 when the profile encodes no setting, the
+        MQTT ``ptReal`` tier is unavailable, or a fork upload to the device is
+        in progress.
     """
     device = coordinator.devices.get(device_id)
-    if device is None or device.is_group:
+    if device is None or device.is_group or upload_in_progress(coordinator, device_id):
         return 0
     profile = profile_for(device.sku)
     if profile is None or not profile.supports(Capability.QUERY):
