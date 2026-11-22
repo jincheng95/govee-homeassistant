@@ -173,7 +173,9 @@ def sleep_timer(constants: Mapping[str, Any], *, enabled: bool, start_brightness
     The ``tail`` constant is four bytes, big-endian, written as the table
     gives it. Its meaning is not known and differs by SKU.
     """
-    tail = _byte("sleep tail", constant(constants, "tail"), 0, 0xFFFFFFFF)
+    tail = constant(constants, "tail")
+    if not 0 <= tail <= 0xFFFFFFFF:
+        raise FrameError(f"sleep tail {tail!r} does not fit in four bytes")
     body = [
         PRO_TYPE_WRITE,
         SLEEP_TIMER_COMMAND_TYPE,

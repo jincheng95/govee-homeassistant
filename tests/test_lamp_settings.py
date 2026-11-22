@@ -28,6 +28,7 @@ from custom_components.govee.api import raw_router
 from custom_components.govee.api.protocol import (
     Capability,
     CapabilitySpec,
+    FrameError,
     GoveeCodec,
     LightTimer,
     SleepTimer,
@@ -203,6 +204,21 @@ class TestFrames:
     @pytest.mark.parametrize("sku", LAMPS)
     def test_sleep_carries_the_lights_tail(self, sku: str) -> None:
         assert _codec(sku).sleep_timer(enabled=False, start_brightness=50, minutes=20) == SLEEP_FRAMES[sku]
+
+    @pytest.mark.parametrize("tail", [-1, 0x1_0000_0000])
+    def test_a_tail_wider_than_four_bytes_is_refused(self, tail: int) -> None:
+        profile = get_profile("H60B0")
+        spec = CapabilitySpec("sleep_timer", {"tail": tail})
+        wide = replace(profile, capabilities={**profile.capabilities, Capability.SLEEP_TIMER: spec})
+        with pytest.raises(FrameError, match="sleep tail"):
+            GoveeCodec(wide).sleep_timer(enabled=False, start_brightness=50, minutes=20)
+
+    def test_the_widest_tail_fits(self) -> None:
+        profile = get_profile("H60B0")
+        spec = CapabilitySpec("sleep_timer", {"tail": 0xFFFFFFFF})
+        wide = replace(profile, capabilities={**profile.capabilities, Capability.SLEEP_TIMER: spec})
+        frame = GoveeCodec(wide).sleep_timer(enabled=False, start_brightness=50, minutes=20)
+        assert frame[6:10] == bytes([0xFF, 0xFF, 0xFF, 0xFF])
 
     def test_the_string_light_tail_is_unchanged(self) -> None:
         frame = _codec("H80C5").sleep_timer(enabled=False, start_brightness=50, minutes=20)
