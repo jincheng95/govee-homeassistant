@@ -42,6 +42,7 @@ from custom_components.govee.api.protocol.profiles import PROFILES
 from custom_components.govee.const import (
     CONF_ENABLE_LAN_RAW_WRITE,
     CONF_ENABLE_MQTT_CONTROL,
+    CONF_MQTT_STATUS_INTERVAL,
     DOMAIN,
     SCHEDULE_SENSOR_SUFFIXES,
     SUFFIX_POWER_OFF_MEMORY,
@@ -816,3 +817,59 @@ class TestReadBack:
         (cancel,) = coordinator.config_entry.async_on_unload.call_args.args
         cancel()
         unsub.assert_called_once_with()
+
+
+class TestReadAtConnect:
+    """With the status re-query off, each raw-profile device is still read once."""
+
+    @staticmethod
+    def _connect(coord: Any) -> dict[str, Any]:
+        """Run the connect handler and return the background tasks it created."""
+        tasks: dict[str, Any] = {}
+        coord._config_entry.async_create_background_task = lambda _hass, coro, name=None: tasks.setdefault(name, coro)
+        with (
+            patch("custom_components.govee.coordinator.async_delete_mqtt_issue"),
+            patch.object(coord, "_arm_mqtt_silence_check"),
+            patch.object(coord, "async_set_updated_data"),
+        ):
+            coord._on_mqtt_connected()
+        return tasks
+
+    @pytest.mark.parametrize("sku", LAMPS)
+    async def test_the_first_connect_reads_a_lamp_and_a_reconnect_does_not(self, sku, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator(sku, monkeypatch)
+        coord._config_entry.options = {CONF_MQTT_STATUS_INTERVAL: 0}
+
+        tasks = self._connect(coord)
+        assert set(tasks) == {"govee_mqtt_connected_settings_read"}
+        assert await tasks["govee_mqtt_connected_settings_read"] == 1
+        assert send.await_count == POLLED[sku]
+
+        coord._status_request_last.clear()
+        assert await self._connect(coord)["govee_mqtt_connected_settings_read"] == 0
+        assert send.await_count == POLLED[sku]
+
+    async def test_a_lamp_that_could_not_be_asked_is_retried(self, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator("H60B0", monkeypatch)
+        topics, coord._device_topics = coord._device_topics, {}
+        assert await raw_status.async_read_once_at_connect(coord) == 0
+        assert send.await_count == 0
+
+        coord._device_topics = topics
+        assert await raw_status.async_read_once_at_connect(coord) == 1
+        assert send.await_count == POLLED["H60B0"]
+
+    async def test_only_devices_with_a_query_profile_are_asked(self) -> None:
+        plain = replace(_light("H60B0"), device_id="AA:BB:CC:DD:EE:FF:00:01", sku="H0000")
+        group = replace(_light("H80C5"), device_id="11825917", is_group=True)
+        coordinator = _coordinator(_light("H80C5"), plain, group)
+        coordinator.async_request_status = AsyncMock(return_value=True)
+
+        assert await raw_status.async_read_once_at_connect(coordinator) == 1
+        coordinator.async_request_status.assert_awaited_once_with(DEVICE_IDS["H80C5"], user=True)
+
+    def test_a_polling_entry_leaves_the_read_to_the_sweep(self, monkeypatch) -> None:
+        coord, _send = _status_coordinator("H60B0", monkeypatch)
+        tasks = self._connect(coord)
+        assert set(tasks) == {"govee_mqtt_connected_status_poll"}
+        tasks["govee_mqtt_connected_status_poll"].close()

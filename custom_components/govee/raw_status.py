@@ -66,6 +66,7 @@ class _PolledReads:
     last: dict[str, float] = field(default_factory=dict)
     stale: set[str] = field(default_factory=set)
     pending: dict[str, CALLBACK_TYPE] = field(default_factory=dict)
+    read_at_connect: set[str] = field(default_factory=set)
 
     def due(self, device_id: str) -> bool:
         last = self.last.get(device_id)
@@ -191,6 +192,29 @@ def request_readback(coordinator: GoveeCoordinator, device_id: str) -> None:
         await coordinator.async_request_status(device_id, user=True)
 
     reads.pending[device_id] = async_call_later(coordinator.hass, READBACK_DELAY, _read_back)
+
+
+async def async_read_once_at_connect(coordinator: GoveeCoordinator) -> int:
+    """Read each raw-profile device once, for an entry with the status re-query off.
+
+    Runs on every MQTT connect. A device whose request went out is not asked
+    again by a later connect, so a reconnect only retries the ones that failed.
+
+    Returns:
+        How many devices were asked.
+    """
+    reads = _reads(coordinator)
+    asked = 0
+    for device_id, device in list(coordinator.devices.items()):
+        if device_id in reads.read_at_connect or device.is_group:
+            continue
+        profile = profile_for(device.sku)
+        if profile is None or not profile.supports(Capability.QUERY):
+            continue
+        if await coordinator.async_request_status(device_id, user=True):
+            reads.read_at_connect.add(device_id)
+            asked += 1
+    return asked
 
 
 async def async_query_settings_on_request(coordinator: GoveeCoordinator, device_id: str, *, user: bool) -> int:

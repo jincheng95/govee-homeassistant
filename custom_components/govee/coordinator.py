@@ -174,6 +174,7 @@ from .raw_status import (
     apply_raw_status,
     async_query_settings as async_query_raw_settings,
     async_query_settings_on_request as async_query_raw_settings_on_request,
+    async_read_once_at_connect as async_read_raw_settings_once,
 )
 from .api.raw_router import async_color_temp as async_raw_color_temp
 from .segment_limit import pushes_segment_readback, verified_segment_count
@@ -4350,6 +4351,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                 self.hass,
                 self._poll_mqtt_status(),
                 name="govee_mqtt_connected_status_poll",
+            )
+        else:
+            # Fork: the raw settings are still read once with the re-query off.
+            self._config_entry.async_create_background_task(
+                self.hass,
+                async_read_raw_settings_once(self),
+                name="govee_mqtt_connected_settings_read",
             )
 
     def _arm_mqtt_silence_check(self) -> None:
