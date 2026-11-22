@@ -602,6 +602,10 @@ def _with_state(coordinator: Any) -> Any:
 
 
 class TestSettingsQuery:
+    @pytest.fixture(autouse=True)
+    def _no_spacing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(raw_status, "MQTT_STATUS_QUERY_SPACING", 0)
+
     async def test_one_query_per_setting(self) -> None:
         coordinator = _settings_coordinator()
         with patch.object(raw_status.mqtt_raw_write, "async_send_frames", AsyncMock(return_value=True)) as send:
@@ -655,15 +659,15 @@ class TestQueriesRideStatusRequests:
     async def test_a_status_request_also_reads_the_settings(self, no_spacing: None) -> None:
         coord, client = _mqtt_coordinator()
         coord.status_query_possible = MagicMock(return_value=True)
-        with patch("custom_components.govee.coordinator.async_query_raw_settings", AsyncMock()) as query:
+        with patch("custom_components.govee.coordinator.async_query_raw_settings_on_request", AsyncMock()) as query:
             assert await coord.async_request_status(DEVICE_ID, user=True) is True
         client.async_publish_status_query.assert_awaited_once()
-        query.assert_awaited_once_with(coord, DEVICE_ID)
+        query.assert_awaited_once_with(coord, DEVICE_ID, user=True)
 
     async def test_a_refused_status_request_reads_nothing(self, no_spacing: None) -> None:
         coord, _ = _mqtt_coordinator()
         coord.status_query_possible = MagicMock(return_value=False)
-        with patch("custom_components.govee.coordinator.async_query_raw_settings", AsyncMock()) as query:
+        with patch("custom_components.govee.coordinator.async_query_raw_settings_on_request", AsyncMock()) as query:
             assert await coord.async_request_status(DEVICE_ID, user=True) is False
         query.assert_not_awaited()
 

@@ -237,8 +237,9 @@ class TestSettingsSweep:
     """The settings sweep against a single H80C5 with raw writes on."""
 
     @pytest.fixture(autouse=True)
-    def _single_device(self, coordinator) -> None:
+    def _single_device(self, coordinator, monkeypatch) -> None:
         coordinator.devices[DEVICE_ID].is_group = False
+        monkeypatch.setattr(raw_status, "MQTT_STATUS_QUERY_SPACING", 0)
 
     async def test_the_sweep_sends_one_query_per_setting(self, coordinator) -> None:
         assert await raw_status.async_query_settings(coordinator, DEVICE_ID) == 2

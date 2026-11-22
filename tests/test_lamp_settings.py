@@ -4,10 +4,12 @@
 2. Frames: gradient, power-off memory, timer, sleep and wake-up per light.
 3. Replies: the sleep, wake-up and timer replies per light, and the raw path
    that stores them for a profile without ``schedule_report``.
-4. Queries: what each light is asked after a status request.
+4. Queries: what each light is asked when polled.
 5. Actions: the per-light sleep tail and the H6046 wake-up colour refusal.
 6. Entities: schedule sensors, the power-off memory select, the blending
    switch, and their cleanup.
+7. Query load: which status requests carry the queries, how often, how far
+   apart, and the read-back after a schedule write.
 
 Device ids are the suite's synthetic ones.
 """
@@ -330,6 +332,12 @@ QUERY_WAKE = bytes([0xAA, 0x12, *bytes(17), 0xB8])
 QUERY_TIMERS = bytes([0xAA, 0x23, 0xFF, *bytes(16), 0x76])
 
 
+@pytest.fixture
+def no_spacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(raw_status, "MQTT_STATUS_QUERY_SPACING", 0)
+
+
+@pytest.mark.usefixtures("no_spacing")
 class TestQueries:
     @pytest.mark.parametrize(
         ("sku", "expected"),
@@ -619,3 +627,192 @@ def test_which_raw_entities_go_with_the_raw_option_off(device: GoveeDevice, suff
 @pytest.mark.parametrize("suffix", [SUFFIX_SEGMENT_BLENDING, SUFFIX_POWER_OFF_MEMORY, *SCHEDULE_SENSOR_SUFFIXES])
 def test_nothing_goes_with_both_raw_options_on(suffix: str) -> None:
     assert raw_status.raw_entity_unwanted(_entry(raw=True), _light("H60B0"), suffix) is False
+
+
+# ==============================================================================
+# 7. Query load
+# ==============================================================================
+
+POLLED = {"H60B0": 5, "H6076": 4, "H6046": 4}
+"""Queries in one polled read of each lamp."""
+
+
+def _status_coordinator(sku: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, AsyncMock]:
+    """A real coordinator with MQTT up, whose raw sends are recorded."""
+    import custom_components.govee.coordinator as coord_mod
+
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry"
+    config_entry.options = {}
+    coord = coord_mod.GoveeCoordinator(
+        hass=MagicMock(),
+        config_entry=config_entry,
+        api_client=MagicMock(),
+        iot_credentials=None,
+        poll_interval=60,
+    )
+    device = _light(sku)
+    coord._devices = {device.device_id: device}
+    coord._device_topics = {device.device_id: "GD/synthetic"}
+    client = MagicMock()
+    client.connected = True
+    client.async_publish_status_query = AsyncMock(return_value=True)
+    coord._mqtt_client = client
+    send = AsyncMock(return_value=True)
+    monkeypatch.setattr(raw_status.mqtt_raw_write, "async_send_frames", send)
+    return coord, send
+
+
+@pytest.fixture
+def paced(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record every pacing sleep instead of waiting it out."""
+    import custom_components.govee.coordinator as coord_mod
+
+    seen: list[float] = []
+
+    async def _sleep(delay: float) -> None:
+        seen.append(delay)
+
+    monkeypatch.setattr(coord_mod.asyncio, "sleep", _sleep)
+    return seen
+
+
+async def _user_request(coord: Any, device_id: str) -> None:
+    coord._status_request_last.clear()
+    assert await coord.async_request_status(device_id, user=True) is True
+
+
+class TestQueryLoad:
+    @pytest.mark.parametrize("sku", LAMPS)
+    async def test_two_requests_inside_the_interval_read_once(self, sku: str, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator(sku, monkeypatch)
+        await _user_request(coord, DEVICE_IDS[sku])
+        await _user_request(coord, DEVICE_IDS[sku])
+        assert send.await_count == POLLED[sku]
+
+        later = raw_status.monotonic() + raw_status.POLLED_READ_INTERVAL
+        monkeypatch.setattr(raw_status, "monotonic", lambda: later)
+        await _user_request(coord, DEVICE_IDS[sku])
+        assert send.await_count == 2 * POLLED[sku]
+
+    async def test_the_sweep_reads_a_lamp_once_per_interval(self, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator("H60B0", monkeypatch)
+        await coord._poll_mqtt_status()
+        await coord._poll_mqtt_status()
+        assert send.await_count == POLLED["H60B0"]
+
+    async def test_the_string_lights_are_asked_on_every_request(self, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator("H80C5", monkeypatch)
+        coord.status_burst.running = MagicMock(return_value=True)
+        await _user_request(coord, DEVICE_IDS["H80C5"])
+        await _user_request(coord, DEVICE_IDS["H80C5"])
+        assert send.await_count == 4
+
+    async def test_a_burst_tick_reads_nothing(self, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator("H60B0", monkeypatch)
+        coord.status_burst.running = MagicMock(return_value=True)
+        await _user_request(coord, DEVICE_IDS["H60B0"])
+        coord.status_burst.running.assert_called_with(DEVICE_IDS["H60B0"])
+        send.assert_not_awaited()
+
+    async def test_an_automatic_follow_up_reads_nothing(self, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator("H60B0", monkeypatch)
+        monkeypatch.setattr(type(coord), "_mqtt_status_poll_enabled", property(lambda _self: True))
+        assert await coord.async_request_status(DEVICE_IDS["H60B0"]) is True
+        send.assert_not_awaited()
+
+    async def test_each_query_holds_the_in_flight_marker_for_its_window(self, monkeypatch) -> None:
+        import custom_components.govee.coordinator as coord_mod
+
+        coord, send = _status_coordinator("H60B0", monkeypatch)
+        windows: list[tuple[float, str | None]] = []
+
+        async def _sleep(delay: float) -> None:
+            windows.append((delay, coord._status_query_in_flight))
+
+        monkeypatch.setattr(coord_mod.asyncio, "sleep", _sleep)
+        await _user_request(coord, DEVICE_IDS["H60B0"])
+
+        spacing = raw_status.MQTT_STATUS_QUERY_SPACING
+        assert spacing >= 1
+        assert windows == [(spacing, DEVICE_IDS["H60B0"])] * (1 + POLLED["H60B0"])
+        assert coord._status_query_in_flight is None
+
+    async def test_a_drop_during_a_query_is_blamed_on_the_device(self, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator("H60B0", monkeypatch)
+
+        async def _drop(*_args: Any, **_kwargs: Any) -> bool:
+            coord._on_mqtt_disconnected()
+            return True
+
+        send.side_effect = _drop
+        coord.async_set_updated_data = MagicMock()
+        await _user_request(coord, DEVICE_IDS["H60B0"])
+        assert coord._status_query_strikes == {DEVICE_IDS["H60B0"]: 1}
+
+    async def test_a_failed_send_is_not_paced(self, monkeypatch, paced) -> None:
+        coord, send = _status_coordinator("H60B0", monkeypatch)
+        send.return_value = False
+        await _user_request(coord, DEVICE_IDS["H60B0"])
+        assert paced == [raw_status.MQTT_STATUS_QUERY_SPACING]
+        await _user_request(coord, DEVICE_IDS["H60B0"])
+        assert send.await_count == 2 * POLLED["H60B0"]
+
+
+class TestReadBack:
+    @pytest.fixture
+    def later(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[float, Any]]:
+        scheduled: list[tuple[float, Any]] = []
+
+        def _call_later(_hass: Any, delay: float, action: Any) -> MagicMock:
+            scheduled.append((delay, action))
+            return MagicMock()
+
+        monkeypatch.setattr(raw_status, "async_call_later", _call_later)
+        return scheduled
+
+    @pytest.mark.parametrize(
+        ("service", "data"),
+        [
+            (raw_actions.SERVICE_SET_SLEEP_TIMER, {"enabled": False, "minutes": 20}),
+            (raw_actions.SERVICE_SET_WAKE_UP, {"enabled": False, "time": "07:00"}),
+            (raw_actions.SERVICE_SET_LIGHT_TIMER, {"slot": 1, "enabled": False, "time": "00:00"}),
+        ],
+    )
+    async def test_a_schedule_write_is_read_back(self, hass, actions, route, later, service, data) -> None:
+        coordinator = actions["coordinator"]
+        coordinator.async_request_status = AsyncMock(return_value=True)
+        await _call(hass, service, "H60B0", **data)
+
+        ((delay, read_back),) = later
+        assert delay == raw_status.READBACK_DELAY
+        await read_back(None)
+        coordinator.async_request_status.assert_awaited_once_with(DEVICE_IDS["H60B0"], user=True)
+
+    async def test_writes_inside_the_delay_share_one_read(self, hass, actions, route, later) -> None:
+        for minutes in (10, 20):
+            await _call(hass, raw_actions.SERVICE_SET_SLEEP_TIMER, "H6076", enabled=False, minutes=minutes)
+        assert len(later) == 1
+
+    def test_the_string_lights_push_theirs(self, later) -> None:
+        coordinator = _coordinator(_light("H80C5"))
+        raw_status.request_readback(coordinator, DEVICE_IDS["H80C5"])
+        raw_status.request_readback(coordinator, "AA:BB:CC:DD:EE:FF:60:B1")
+        assert later == []
+
+    async def test_a_written_lamp_is_read_inside_the_interval(self, monkeypatch, paced, later) -> None:
+        coord, send = _status_coordinator("H6046", monkeypatch)
+        await _user_request(coord, DEVICE_IDS["H6046"])
+        raw_status.request_readback(coord, DEVICE_IDS["H6046"])
+        await _user_request(coord, DEVICE_IDS["H6046"])
+        await _user_request(coord, DEVICE_IDS["H6046"])
+        assert send.await_count == 2 * POLLED["H6046"]
+
+    def test_unloading_cancels_a_pending_read(self) -> None:
+        coordinator = _coordinator(_light("H60B0"))
+        unsub = MagicMock()
+        with patch.object(raw_status, "async_call_later", return_value=unsub):
+            raw_status.request_readback(coordinator, DEVICE_IDS["H60B0"])
+        (cancel,) = coordinator.config_entry.async_on_unload.call_args.args
+        cancel()
+        unsub.assert_called_once_with()

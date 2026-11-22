@@ -9,7 +9,8 @@ Each action takes one device, checks that its profile encodes the setting, and
 sends the frames through :func:`~.api.raw_router.async_device_frames`. No cloud
 command carries these settings, so an action fails when no raw pipe takes the
 frames. A sent schedule write is stored in :mod:`.light_schedule`, which the
-schedule sensors read.
+schedule sensors read, and is then read back from the device
+(:func:`~.raw_status.request_readback`).
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from .const import DOMAIN
 from .coordinator import GoveeCoordinator
 from .light_schedule import record_sleep, record_timer, record_wake_up, schedule
 from .models import GoveeDevice
+from .raw_status import request_readback
 from .upstream_access import coordinator_for_device, device_not_found
 from .zone_state import profile_for
 
@@ -230,6 +232,7 @@ async def async_set_light_timer_handler(hass: HomeAssistant, call: ServiceCall) 
         data[ATTR_SLOT] - 1,
         LightTimer(enabled=enabled, turn_on=turn_on, hour=at.hour, minute=at.minute, weekdays=_days(weekdays)),
     )
+    request_readback(coordinator, device.device_id)
     coordinator.async_update_listeners()
 
 
@@ -262,6 +265,7 @@ async def async_set_sleep_timer_handler(hass: HomeAssistant, call: ServiceCall) 
         device.device_id,
         SleepTimer(enabled=enabled, start_brightness=start_brightness, minutes=minutes, remaining_minutes=minutes),
     )
+    request_readback(coordinator, device.device_id)
     coordinator.async_update_listeners()
 
 
@@ -345,6 +349,7 @@ async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> N
             kelvin=kelvin,
         ),
     )
+    request_readback(coordinator, device.device_id)
     coordinator.async_update_listeners()
 
 
