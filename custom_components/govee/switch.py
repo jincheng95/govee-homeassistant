@@ -660,8 +660,9 @@ class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity)
 
     A profile that encodes ``Capability.GRADIENT`` takes the raw frame first;
     the cloud toggle is the fallback, and only on a device with the cloud
-    capability. Such a device also reports the setting in raw status frames
-    (:mod:`.raw_status`), and a report wins over the optimistic value.
+    capability. Without that capability a failed raw write raises. Such a
+    device also reports the setting in raw status frames (:mod:`.raw_status`),
+    and a report wins over the optimistic value.
     """
 
     _attr_translation_key = "govee_segment_blending"
@@ -715,6 +716,8 @@ class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity)
             self._is_on = enabled
             record_settings(self.coordinator, self._device_id, gradient=enabled)
             self.async_write_ha_state()
+        elif not self._device.supports_segment_blending:
+            raise self._command_failed()
 
 
 class GoveeMusicModeSwitchEntity(GoveeEntity, SwitchEntity):

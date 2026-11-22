@@ -20,7 +20,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.govee import _async_cleanup_orphaned_entities, light_schedule, raw_actions, raw_status, services
@@ -520,12 +520,19 @@ class TestBlendingSwitch:
         coordinator.async_control_device.assert_not_awaited()
         assert entity.is_on is True
 
-    async def test_the_uplighter_has_no_cloud_fallback(self) -> None:
+    @pytest.mark.parametrize(("turn", "before"), [("async_turn_on", False), ("async_turn_off", True)])
+    async def test_the_uplighter_has_no_cloud_fallback(self, turn: str, before: bool) -> None:
         entity, coordinator = _blending(_light("H60B0"))
-        with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=False)):
-            await entity.async_turn_on()
+        entity._is_on = before
+        with (
+            patch.object(raw_router, "async_route_frames", AsyncMock(return_value=False)),
+            pytest.raises(HomeAssistantError) as err,
+        ):
+            await getattr(entity, turn)()
+        assert err.value.translation_key == "command_failed"
+        assert err.value.translation_placeholders == {"device": "Lamp"}
         coordinator.async_control_device.assert_not_awaited()
-        assert entity.is_on is False
+        assert entity.is_on is before
         entity.async_write_ha_state.assert_not_called()
 
     async def test_the_floor_lamp_falls_back_to_the_cloud(self) -> None:
