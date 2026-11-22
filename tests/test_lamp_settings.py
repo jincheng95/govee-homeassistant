@@ -492,6 +492,9 @@ class TestBlendingSwitch:
             ("H60B0", False, False, False),
             ("H6076", True, False, True),
             ("H6046", True, False, True),
+            ("H80C5", False, True, True),
+            ("H80C5", False, False, False),
+            ("H80C5", True, False, True),
         ],
     )
     def test_who_gets_one(self, sku: str, blending: bool, raw: bool, built: bool) -> None:
@@ -514,7 +517,9 @@ class TestBlendingSwitch:
         (entity,) = [e for e in added if isinstance(e, GoveeSegmentBlendingSwitchEntity)]
         assert entity.unique_id == f"{DEVICE_IDS['H60B0']}{SUFFIX_SEGMENT_BLENDING}"
 
-    @pytest.mark.parametrize(("sku", "blending"), [("H60B0", False), ("H6076", True), ("H6046", True)])
+    @pytest.mark.parametrize(
+        ("sku", "blending"), [("H60B0", False), ("H6076", True), ("H6046", True), ("H80C5", False)]
+    )
     async def test_the_raw_frame_goes_first(self, sku: str, blending: bool) -> None:
         entity, coordinator = _blending(_light(sku, blending=blending))
         with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)) as route:
