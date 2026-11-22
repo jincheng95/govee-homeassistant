@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
 from .api.protocol import SCHEDULE_QUERIES, LightTimer, SleepTimer, WakeUp, decode_status
-from .zone_state import profile_for, raw_settings_enabled
+from .zone_state import profile_for, raw_queries_enabled
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -60,13 +60,13 @@ def schedule_sensors_enabled(entry: ConfigEntry, sku: str) -> bool:
     """Whether the SKU's schedule sensors are built.
 
     A ``schedule_report`` SKU always gets them. A SKU read by raw queries gets
-    them while ``enable_lan_raw_write`` is on, because only a raw query reads
-    its schedule.
+    them while :func:`~.zone_state.raw_queries_enabled` holds, because only a
+    raw query reads its schedule.
     """
     profile = profile_for(sku)
     if profile is None or not reports_schedule(sku):
         return False
-    return profile.schedule_report or raw_settings_enabled(entry)
+    return profile.schedule_report or raw_queries_enabled(entry)
 
 
 def apply_schedule_report(coordinator: GoveeCoordinator, device: GoveeDevice, frames: Iterable[bytes]) -> bool:

@@ -13,7 +13,7 @@ import pytest
 
 from custom_components.govee import light_schedule
 from custom_components.govee.api.protocol import LightTimer, SleepTimer, WakeUp
-from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE
+from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE, CONF_ENABLE_MQTT_CONTROL
 from custom_components.govee.models import GoveeDevice, GoveeDeviceState
 from custom_components.govee.models.device import DEVICE_TYPE_LIGHT
 from custom_components.govee.platforms.light_schedule import (
@@ -51,9 +51,9 @@ def _device(sku: str = "H80C5", *, is_group: bool = False) -> GoveeDevice:
     )
 
 
-def _entry(*, raw: bool = False) -> Any:
+def _entry(*, raw: bool = False, mqtt: bool = True) -> Any:
     entry = MagicMock()
-    entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw}
+    entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw, CONF_ENABLE_MQTT_CONTROL: mqtt}
     return entry
 
 
@@ -115,9 +115,10 @@ class TestSensors:
         assert async_light_schedule_sensor_entities(_coordinator(_device("H0000")), _entry(raw=True)) == []
         assert async_light_schedule_sensor_entities(_coordinator(_device(is_group=True)), _entry(raw=True)) == []
 
-    def test_a_queried_sku_needs_the_raw_option(self) -> None:
-        assert async_light_schedule_sensor_entities(_coordinator(_device("H6076")), _entry()) == []
-        assert len(async_light_schedule_sensor_entities(_coordinator(_device("H6076")), _entry(raw=True))) == 3
+    @pytest.mark.parametrize(("raw", "mqtt", "count"), [(False, True, 0), (True, False, 0), (True, True, 3)])
+    def test_a_queried_sku_needs_raw_queries(self, raw: bool, mqtt: bool, count: int) -> None:
+        entities = async_light_schedule_sensor_entities(_coordinator(_device("H6076")), _entry(raw=raw, mqtt=mqtt))
+        assert len(entities) == count
 
     def test_unknown_until_the_first_push(self) -> None:
         sleep, wake, timers = self._sensors(_coordinator())

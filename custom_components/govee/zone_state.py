@@ -26,7 +26,13 @@ from .api.protocol import (
     get_profile,
 )
 from .api.zone_power_report import decode_payload as decode_zone_power_payload
-from .const import CONF_ENABLE_LAN_RAW_WRITE, CONF_ENABLE_ZONE_LIGHTS, DEFAULT_ENABLE_ZONE_LIGHTS
+from .const import (
+    CONF_ENABLE_LAN_RAW_WRITE,
+    CONF_ENABLE_MQTT_CONTROL,
+    CONF_ENABLE_ZONE_LIGHTS,
+    DEFAULT_ENABLE_MQTT_CONTROL,
+    DEFAULT_ENABLE_ZONE_LIGHTS,
+)
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -109,6 +115,17 @@ def raw_settings_enabled(entry: ConfigEntry) -> bool:
     Strictly a boolean check, as for :func:`zone_lights_enabled`.
     """
     return entry.options.get(CONF_ENABLE_LAN_RAW_WRITE) is True
+
+
+def raw_queries_enabled(entry: ConfigEntry) -> bool:
+    """Whether raw queries can read a device's settings.
+
+    A raw query is answered only over MQTT ``ptReal``, so it needs
+    ``enable_mqtt_control`` as well as :func:`raw_settings_enabled`.
+    """
+    return raw_settings_enabled(entry) and bool(
+        entry.options.get(CONF_ENABLE_MQTT_CONTROL, DEFAULT_ENABLE_MQTT_CONTROL)
+    )
 
 
 def segment_blending_switch(entry: ConfigEntry, device: GoveeDevice) -> bool:

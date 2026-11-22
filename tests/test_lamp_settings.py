@@ -39,8 +39,10 @@ from custom_components.govee.api.protocol import (
 from custom_components.govee.api.protocol.profiles import PROFILES
 from custom_components.govee.const import (
     CONF_ENABLE_LAN_RAW_WRITE,
+    CONF_ENABLE_MQTT_CONTROL,
     DOMAIN,
     SCHEDULE_SENSOR_SUFFIXES,
+    SUFFIX_POWER_OFF_MEMORY,
     SUFFIX_SEGMENT_BLENDING,
 )
 from custom_components.govee.models import GoveeCapability, GoveeDevice
@@ -76,16 +78,16 @@ def _light(sku: str, *, blending: bool = False) -> GoveeDevice:
 
 def _coordinator(*devices: GoveeDevice, raw: bool = True) -> Any:
     coordinator = MagicMock()
-    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw}
+    coordinator.config_entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw, CONF_ENABLE_MQTT_CONTROL: True}
     coordinator.devices = {device.device_id: device for device in devices}
     coordinator.last_update_success = True
     coordinator.get_state = MagicMock(return_value=None)
     return coordinator
 
 
-def _entry(*, raw: bool) -> Any:
+def _entry(*, raw: bool, mqtt: bool = True) -> Any:
     entry = MagicMock()
-    entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw}
+    entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw, CONF_ENABLE_MQTT_CONTROL: mqtt}
     return entry
 
 
@@ -442,16 +444,17 @@ class TestActions:
 
 class TestScheduleSensors:
     @pytest.mark.parametrize("sku", LAMPS)
-    @pytest.mark.parametrize(("raw", "count"), [(True, 3), (False, 0)])
-    def test_a_queried_light_needs_the_raw_option(self, sku: str, raw: bool, count: int) -> None:
-        entities = async_light_schedule_sensor_entities(_coordinator(_light(sku)), _entry(raw=raw))
+    @pytest.mark.parametrize(("raw", "mqtt", "count"), [(True, True, 3), (False, True, 0), (True, False, 0)])
+    def test_a_queried_light_needs_raw_queries(self, sku: str, raw: bool, mqtt: bool, count: int) -> None:
+        entities = async_light_schedule_sensor_entities(_coordinator(_light(sku)), _entry(raw=raw, mqtt=mqtt))
         assert len(entities) == count
         assert {entity.unique_id for entity in entities} == {
             f"{DEVICE_IDS[sku]}{suffix}" for suffix in SCHEDULE_SENSOR_SUFFIXES[:count]
         }
 
     def test_the_string_lights_keep_theirs_without_it(self) -> None:
-        assert len(async_light_schedule_sensor_entities(_coordinator(_light("H80C5")), _entry(raw=False))) == 3
+        entry = _entry(raw=False, mqtt=False)
+        assert len(async_light_schedule_sensor_entities(_coordinator(_light("H80C5")), entry)) == 3
 
     def test_a_queried_reply_reaches_the_sensor(self) -> None:
         device = _light("H6046")
@@ -552,27 +555,36 @@ def _cleanup_coordinator(*devices: GoveeDevice) -> SimpleNamespace:
     )
 
 
-@pytest.mark.parametrize(("raw", "kept"), [(False, False), (True, True)])
-async def test_cleanup_follows_the_raw_option(hass, raw: bool, kept: bool) -> None:
+@pytest.mark.parametrize(
+    ("raw", "mqtt", "writes_kept", "reads_kept"),
+    [(False, True, False, False), (True, True, True, True), (True, False, True, False)],
+)
+async def test_cleanup_follows_the_raw_options(hass, raw: bool, mqtt: bool, writes_kept: bool, reads_kept: bool) -> None:
     uplighter, bar, strings = _light("H60B0"), _light("H6046", blending=True), _light("H80C5")
-    entry = _cleanup_entry(hass, **{CONF_ENABLE_LAN_RAW_WRITE: raw})
+    entry = _cleanup_entry(hass, **{CONF_ENABLE_LAN_RAW_WRITE: raw, CONF_ENABLE_MQTT_CONTROL: mqtt})
     registry = er.async_get(hass)
-    raw_only = [f"{uplighter.device_id}{SUFFIX_SEGMENT_BLENDING}"] + [
-        f"{device.device_id}{suffix}" for device in (uplighter, bar) for suffix in SCHEDULE_SENSOR_SUFFIXES
-    ]
+    raw_writes = [f"{uplighter.device_id}{SUFFIX_SEGMENT_BLENDING}", f"{uplighter.device_id}{SUFFIX_POWER_OFF_MEMORY}"]
+    raw_reads = [f"{device.device_id}{suffix}" for device in (uplighter, bar) for suffix in SCHEDULE_SENSOR_SUFFIXES]
+    raw_only = raw_writes + raw_reads
     always = [f"{bar.device_id}{SUFFIX_SEGMENT_BLENDING}"] + [
         f"{strings.device_id}{suffix}" for suffix in SCHEDULE_SENSOR_SUFFIXES
     ]
     ids = _seed(
         registry,
         entry,
-        *(
-            ("switch" if unique_id.endswith(SUFFIX_SEGMENT_BLENDING) else "sensor", unique_id)
-            for unique_id in raw_only + always
-        ),
+        *((_domain(unique_id), unique_id) for unique_id in raw_only + always),
     )
 
     await _async_cleanup_orphaned_entities(hass, entry, _cleanup_coordinator(uplighter, bar, strings))
 
-    assert all((registry.async_get(ids[unique_id]) is not None) is kept for unique_id in raw_only)
+    assert all((registry.async_get(ids[unique_id]) is not None) is writes_kept for unique_id in raw_writes)
+    assert all((registry.async_get(ids[unique_id]) is not None) is reads_kept for unique_id in raw_reads)
     assert all(registry.async_get(ids[unique_id]) is not None for unique_id in always)
+
+
+def _domain(unique_id: str) -> str:
+    if unique_id.endswith(SUFFIX_SEGMENT_BLENDING):
+        return "switch"
+    if unique_id.endswith(SUFFIX_POWER_OFF_MEMORY):
+        return "select"
+    return "sensor"
