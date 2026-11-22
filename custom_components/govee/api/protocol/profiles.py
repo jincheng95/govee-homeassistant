@@ -84,6 +84,9 @@ BLE_MANUFACTURER_MODERN: Final = 0x8843
 BLE_MANUFACTURER_LEGACY: Final = 0x8803
 """Advertisement manufacturer id of the legacy stack (plaintext BLE only)."""
 
+SLEEP_TAIL_STRING: Final = 0x000003E8
+"""Sleep-timer tail ``00 00 03 e8`` of the string lights."""
+
 
 @unique
 class Capability(str, Enum):
@@ -342,7 +345,11 @@ class DeviceProfile:
     catalogue code.
     """
     schedule_report: bool = False
-    """Whether status pushes carry the ``aa 11`` / ``aa 12`` / ``aa 23`` schedule frames."""
+    """Whether status pushes carry the ``aa 11`` / ``aa 12`` / ``aa 23`` schedule frames.
+
+    A SKU without it is asked for the schedule capabilities it encodes with
+    raw queries (:data:`.status.SCHEDULE_QUERIES`).
+    """
     paint_bulbs: int = 0
     """How many LEDs the :mod:`.paint` upload addresses one by one; 0 for none."""
     power_push: bool = False
@@ -743,8 +750,7 @@ H80C5: Final = DeviceProfile(
         Capability.GRADIENT: CapabilitySpec("gradient"),
         Capability.POWER_OFF_MEMORY: CapabilitySpec("power_off_memory", {"sub_type": 0x02}),
         Capability.LIGHT_TIMER: CapabilitySpec("light_timer", {"slots": 4}),
-        # The trailer's meaning is not known. It is written as 03 e8.
-        Capability.SLEEP_TIMER: CapabilitySpec("sleep_timer", {"trailer": 0x03E8}),
+        Capability.SLEEP_TIMER: CapabilitySpec("sleep_timer", {"tail": SLEEP_TAIL_STRING}),
         Capability.WAKE_UP: CapabilitySpec("wake_up"),
     },
     modes={"scene": 0x04, "music": 0x13},

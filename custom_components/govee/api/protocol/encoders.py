@@ -167,12 +167,13 @@ def light_timer(
 
 
 def sleep_timer(constants: Mapping[str, Any], *, enabled: bool, start_brightness: int, minutes: int) -> bytes:
-    """``33 11 <enable> <brightness> <minutes> <minutes> 00 00 <trailer hi> <trailer lo>``.
+    """``33 11 <enable> <brightness> <minutes> <minutes> <tail x 4>``.
 
     The light dims from ``start_brightness`` percent to off over ``minutes``.
-    The two-byte ``trailer`` constant is written as the table gives it.
+    The ``tail`` constant is four bytes, big-endian, written as the table
+    gives it. Its meaning is not known and differs by SKU.
     """
-    trailer = constant(constants, "trailer")
+    tail = _byte("sleep tail", constant(constants, "tail"), 0, 0xFFFFFFFF)
     body = [
         PRO_TYPE_WRITE,
         SLEEP_TIMER_COMMAND_TYPE,
@@ -180,10 +181,8 @@ def sleep_timer(constants: Mapping[str, Any], *, enabled: bool, start_brightness
         _byte("sleep brightness", start_brightness, 1, 100),
         _byte("sleep minutes", minutes, 1),
         minutes,
-        0,
-        0,
     ]
-    return build_frame(bytes(body) + trailer.to_bytes(2, "big"))
+    return build_frame(bytes(body) + tail.to_bytes(4, "big"))
 
 
 def wake_up(
@@ -202,9 +201,10 @@ def wake_up(
 
     The light brightens to ``end_brightness`` percent over ``duration``
     minutes, ending at ``hour``:``minute``, in ``kelvin`` with ``white_rgb``
-    as its RGB approximation.
+    as its RGB approximation. A ``color`` constant of 0 marks a SKU that
+    stores no wake-up colour. Its frame carries zeros there, and ``kelvin``
+    and ``white_rgb`` are ignored.
     """
-    del constants
     body = bytearray(
         [
             PRO_TYPE_WRITE,
@@ -217,19 +217,27 @@ def wake_up(
             0,
         ]
     )
-    body += rgb_bytes(white_rgb)
-    body += kelvin_bytes(kelvin)
+    if wake_up_color(constants):
+        body += rgb_bytes(white_rgb)
+        body += kelvin_bytes(kelvin)
+    else:
+        body += bytes(5)
     return build_frame(body)
 
 
-def query(constants: Mapping[str, Any], *, command_type: int) -> bytes:
-    """``aa <commandType>``.
+def wake_up_color(constants: Mapping[str, Any]) -> bool:
+    """Whether the SKU stores a wake-up colour. Without a ``color`` constant it does."""
+    return "color" not in constants or constant(constants, "color") != 0
+
+
+def query(constants: Mapping[str, Any], *, command_type: int, selector: Iterable[int] = ()) -> bytes:
+    """``aa <commandType> <selector...>``.
 
     Raw ``ptReal`` queries get NO reply over LAN (see :mod:`.client`). Over
     MQTT ``ptReal`` the device answers on its cloud topic.
     """
     del constants
-    return build_frame([PRO_TYPE_QUERY, command_type & 0xFF])
+    return build_frame([PRO_TYPE_QUERY, command_type & 0xFF, *(byte & 0xFF for byte in selector)])
 
 
 def mode_select(

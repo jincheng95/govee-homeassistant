@@ -60,7 +60,7 @@ from .profiles import (
     get_profile,
     validate_table,
 )
-from .status import SETTING_QUERIES, LightTimer, SleepTimer, StatusReport, WakeUp, decode_status
+from .status import SCHEDULE_QUERIES, SETTING_QUERIES, LightTimer, SleepTimer, StatusReport, WakeUp, decode_status
 
 __all__ = [
     "BLE_MANUFACTURER_LEGACY",
@@ -75,6 +75,7 @@ __all__ = [
     "MAX_DIY_COLORS",
     "MODE_NONE",
     "PROFILES",
+    "SCHEDULE_QUERIES",
     "SETTING_QUERIES",
     "UNKNOWN",
     "Capability",

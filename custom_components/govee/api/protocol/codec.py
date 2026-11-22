@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from .diy import DiyZoneEffect, all_off, encode_payload
-from .encoders import ENCODERS, constant, music_select, power_off_memory_behaviours
+from .encoders import ENCODERS, constant, music_select, power_off_memory_behaviours, wake_up_color
 from .errors import DiyEffectError, GoveeProtocolError, UnknownEncodingError, UnsupportedCapabilityError
 from .frames import ptreal_message, rgb_bytes, segment_mask
 from .packets import chunk_effect, upload_effect
@@ -104,9 +104,9 @@ class GoveeCodec:
     def brightness(self, percent: int) -> bytes:
         return self._encode(Capability.BRIGHTNESS, percent=percent)
 
-    def query(self, command_type: int) -> bytes:
-        """Build an ``aa <commandType>`` frame. Only MQTT ``ptReal`` carries an answer back."""
-        return self._encode(Capability.QUERY, command_type=command_type)
+    def query(self, command_type: int, *selector: int) -> bytes:
+        """Build an ``aa <commandType> <selector...>`` frame. Only MQTT ``ptReal`` carries an answer back."""
+        return self._encode(Capability.QUERY, command_type=command_type, selector=selector)
 
     def mode(self, name: str, *, index: int = 0, marker: int | None = None) -> bytes:
         """Select a firmware mode by profile-declared name (``solid``, ``music``...)."""
@@ -260,6 +260,8 @@ class GoveeCodec:
             duration: Minutes the light takes to brighten.
             kelvin: Colour temperature, clamped to the profile range.
             white_rgb: RGB approximation of ``kelvin``, carried beside it.
+
+        Both colour fields go out as zeros when :meth:`wake_up_color` is False.
         """
         return self._encode(
             Capability.WAKE_UP,
@@ -272,6 +274,10 @@ class GoveeCodec:
             kelvin=self.clamp_kelvin(kelvin),
             white_rgb=white_rgb,
         )
+
+    def wake_up_color(self) -> bool:
+        """Whether the device stores the wake-up colour and colour temperature."""
+        return wake_up_color(self._spec(Capability.WAKE_UP).constants)
 
     def bar_power_mask(self, mask: int) -> bytes:
         """H6046 two-bar power mask (0x01 = bar A, 0x10 = bar B, 0x11 = both)."""

@@ -15,8 +15,8 @@
                            ``<flags> <hour> <minute> <repeat>`` group per slot
 
 A frame with a bad checksum, a wrong length or an unexpected value is skipped.
-``DeviceProfile.power_push`` and the setting capabilities in
-:data:`SETTING_QUERIES` say which reports a SKU sends.
+``DeviceProfile.power_push`` and the capabilities in :data:`SETTING_QUERIES`
+and :data:`SCHEDULE_QUERIES` say which reports a SKU sends.
 """
 
 from __future__ import annotations
@@ -53,6 +53,17 @@ SETTING_QUERIES: Final[Mapping[Capability, int]] = {
     Capability.POWER_OFF_MEMORY: POWER_OFF_MEMORY_COMMAND_TYPE,
 }
 """The query command type that reads back each setting capability."""
+
+SCHEDULE_QUERIES: Final[Mapping[Capability, tuple[int, ...]]] = {
+    Capability.SLEEP_TIMER: (SLEEP_TIMER_COMMAND_TYPE,),
+    Capability.WAKE_UP: (WAKE_UP_COMMAND_TYPE,),
+    Capability.LIGHT_TIMER: (LIGHT_TIMER_COMMAND_TYPE, TIMER_READ_ALL),
+}
+"""The query bytes after ``aa`` that read back each schedule capability.
+
+Only a profile without ``schedule_report`` is asked, because the others push
+these frames unprompted.
+"""
 
 
 @dataclass(frozen=True)
