@@ -588,3 +588,29 @@ def _domain(unique_id: str) -> str:
     if unique_id.endswith(SUFFIX_POWER_OFF_MEMORY):
         return "select"
     return "sensor"
+
+
+def _bare_light() -> GoveeDevice:
+    return replace(_light("H6076"), sku="H0000")
+
+
+@pytest.mark.parametrize(
+    ("device", "suffix", "unwanted"),
+    [
+        (_light("H6076", blending=True), SUFFIX_SEGMENT_BLENDING, False),
+        (_light("H6076"), SUFFIX_SEGMENT_BLENDING, True),
+        (_light("H6076"), SCHEDULE_SENSOR_SUFFIXES[0], True),
+        (_light("H80C5"), SCHEDULE_SENSOR_SUFFIXES[2], False),
+        (_light("H60B0"), SUFFIX_POWER_OFF_MEMORY, True),
+        (_light("H60B0"), "_scene_select", False),
+        (_bare_light(), SUFFIX_SEGMENT_BLENDING, False),
+        (_bare_light(), SCHEDULE_SENSOR_SUFFIXES[1], True),
+    ],
+)
+def test_which_raw_entities_go_with_the_raw_option_off(device: GoveeDevice, suffix: str, unwanted: bool) -> None:
+    assert raw_status.raw_entity_unwanted(_entry(raw=False), device, suffix) is unwanted
+
+
+@pytest.mark.parametrize("suffix", [SUFFIX_SEGMENT_BLENDING, SUFFIX_POWER_OFF_MEMORY, *SCHEDULE_SENSOR_SUFFIXES])
+def test_nothing_goes_with_both_raw_options_on(suffix: str) -> None:
+    assert raw_status.raw_entity_unwanted(_entry(raw=True), _light("H60B0"), suffix) is False

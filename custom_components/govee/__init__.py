@@ -68,13 +68,10 @@ from .const import (
     SUFFIX_DIY_SCENE_SELECT,
     SUFFIX_DIY_SPEED,
     SUFFIX_DIY_STYLE_SELECT,
-    SUFFIX_POWER_OFF_MEMORY,
     SCENE_SETTING_SUFFIXES,
-    SCHEDULE_SENSOR_SUFFIXES,
     SUFFIX_GROUPED_SEGMENT,
     SUFFIX_SCENE_SELECT,
     SUFFIX_SEGMENT,
-    SUFFIX_SEGMENT_BLENDING,
     SUFFIX_ZONE,
     hub_device_identifier,
 )
@@ -89,8 +86,8 @@ from .segment_limit import (
     is_segment_group_suffix,
 )
 from .services import async_setup_services
-from .light_schedule import schedule_sensors_enabled
-from .zone_state import raw_only_segment_blending, raw_settings_enabled, zone_lights_enabled
+from .raw_status import raw_entity_unwanted
+from .zone_state import zone_lights_enabled
 
 __all__ = ["GoveeConfigEntry"]
 
@@ -692,22 +689,8 @@ async def _async_cleanup_orphaned_entities(
                 # Fork: the scene-setting entities follow the scenes option.
                 should_remove = True
                 removal_reason = "scenes disabled"
-            elif suffix == SUFFIX_POWER_OFF_MEMORY and not raw_settings_enabled(entry):
-                # Fork: the raw-only setting selects follow enable_lan_raw_write.
-                should_remove = True
-                removal_reason = "raw writes disabled"
-            elif (
-                suffix == SUFFIX_SEGMENT_BLENDING
-                and raw_only_segment_blending(coordinator.devices[owner_id])
-                and not raw_settings_enabled(entry)
-            ):
-                # Fork: a blending switch without the cloud capability is raw-only.
-                should_remove = True
-                removal_reason = "raw writes disabled"
-            elif suffix in SCHEDULE_SENSOR_SUFFIXES and not schedule_sensors_enabled(
-                entry, coordinator.devices[owner_id].sku
-            ):
-                # Fork: a schedule read only by raw queries follows enable_lan_raw_write.
+            elif raw_entity_unwanted(entry, coordinator.devices[owner_id], suffix):
+                # Fork: the raw-only settings and schedules follow the raw options.
                 should_remove = True
                 removal_reason = "raw writes disabled"
             elif suffix == SUFFIX_DIY_EFFECT_PREVIEWS and not takes_string_effects(coordinator.devices[owner_id].sku):

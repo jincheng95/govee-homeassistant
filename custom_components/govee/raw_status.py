@@ -21,10 +21,13 @@ from .api import mqtt_raw_write
 from .api.raw_router import upload_lock
 from .api.protocol import SCHEDULE_QUERIES, SETTING_QUERIES, Capability, GoveeCodec, decode_status
 from .api.zone_power_report import decode_frames as decode_zone_power_frames
-from .light_schedule import apply_schedule_report
-from .zone_state import profile_for
+from .const import SCHEDULE_SENSOR_SUFFIXES, SUFFIX_POWER_OFF_MEMORY, SUFFIX_SEGMENT_BLENDING
+from .light_schedule import apply_schedule_report, schedule_sensors_enabled
+from .zone_state import profile_for, raw_only_segment_blending, raw_settings_enabled
 
 if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+
     from .coordinator import GoveeCoordinator
     from .models import GoveeDevice
 
@@ -56,6 +59,21 @@ def record_settings(coordinator: GoveeCoordinator, device_id: str, **changes: An
     """Store settings a write just set, so a later reading cannot predate them."""
     store = _store(coordinator)
     store[device_id] = replace(store.get(device_id, DeviceSettings()), **changes)
+
+
+def raw_entity_unwanted(entry: ConfigEntry, device: GoveeDevice, suffix: str) -> bool:
+    """Whether the entry no longer builds the device's raw-only entity with ``suffix``.
+
+    Covers the power-off memory select, a blending switch without the cloud
+    capability, and the schedule sensors. Any other suffix is False.
+    """
+    if suffix == SUFFIX_POWER_OFF_MEMORY:
+        return not raw_settings_enabled(entry)
+    if suffix == SUFFIX_SEGMENT_BLENDING:
+        return raw_only_segment_blending(device) and not raw_settings_enabled(entry)
+    if suffix in SCHEDULE_SENSOR_SUFFIXES:
+        return not schedule_sensors_enabled(entry, device.sku)
+    return False
 
 
 def apply_raw_status(coordinator: GoveeCoordinator, device: GoveeDevice, frames: Iterable[bytes]) -> bool:
