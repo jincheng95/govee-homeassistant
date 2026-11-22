@@ -17,6 +17,7 @@ route is patched. Device ids are the suite's synthetic ones.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,6 +28,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from custom_components.govee import light_schedule, raw_actions, services
 from custom_components.govee.api import raw_router
 from custom_components.govee.api.protocol import (
+    DeviceProfile,
     FrameError,
     GoveeCodec,
     GoveeProtocolError,
@@ -105,6 +107,19 @@ def _sent(route: AsyncMock) -> list[bytes]:
     return list(route.await_args.args[4])
 
 
+ACTION_CALLS = [
+    (raw_actions.SERVICE_SET_LIGHT_TIMER, {"slot": 1, "enabled": False}),
+    (raw_actions.SERVICE_SET_SLEEP_TIMER, {}),
+    (raw_actions.SERVICE_SET_WAKE_UP, {"enabled": False}),
+    (raw_actions.SERVICE_SET_MUSIC_MODE, {"effect": "rhythm"}),
+]
+
+
+def _bare_profile() -> DeviceProfile:
+    """The string-light profile with no setting capability and no music table."""
+    return replace(get_profile(SKU), capabilities={}, music=None)
+
+
 class TestRegistration:
     async def test_the_actions_are_registered(self, hass, actions) -> None:
         assert hass.services.has_service(DOMAIN, raw_actions.SERVICE_SET_LIGHT_TIMER)
@@ -124,21 +139,15 @@ class TestCommonGates:
 
     @pytest.mark.parametrize(
         "device",
-        [_light(sku="H6076"), _light(sku="H7099"), _light(is_group=True)],
+        [_light(sku=SKU), _light(sku="H7099"), _light(is_group=True)],
         ids=["no-capability", "no-profile", "group"],
     )
-    @pytest.mark.parametrize(
-        ("service", "data"),
-        [
-            (raw_actions.SERVICE_SET_LIGHT_TIMER, {"slot": 1, "enabled": False}),
-            (raw_actions.SERVICE_SET_SLEEP_TIMER, {}),
-            (raw_actions.SERVICE_SET_WAKE_UP, {"enabled": False}),
-            (raw_actions.SERVICE_SET_MUSIC_MODE, {"effect": "rhythm"}),
-        ],
-    )
+    @pytest.mark.parametrize(("service", "data"), ACTION_CALLS)
     async def test_a_device_without_the_capability_is_refused(
-        self, hass, actions, route, device, service, data
+        self, hass, actions, route, monkeypatch, device, service, data
     ) -> None:
+        if device.sku == SKU:
+            monkeypatch.setattr(raw_actions, "profile_for", lambda _sku: _bare_profile())
         actions["coordinator"] = _coordinator(device)
         with pytest.raises(ServiceValidationError) as err:
             await _call(hass, service, **data)
@@ -213,10 +222,9 @@ class TestLightTimerFrame:
         with pytest.raises(FrameError):
             _codec().light_timer(slot, **values)
 
-    @pytest.mark.parametrize("sku", ["H6076", "H60B0"])
-    def test_other_skus_do_not_encode_it(self, sku: str) -> None:
+    def test_a_profile_without_it_refuses(self) -> None:
         with pytest.raises(UnsupportedCapabilityError):
-            _codec(sku).light_timer(0, enabled=False, turn_on=False, hour=0, minute=0)
+            GoveeCodec(_bare_profile()).light_timer(0, enabled=False, turn_on=False, hour=0, minute=0)
 
 
 class TestLightTimerDecode:
@@ -369,9 +377,9 @@ class TestSleepTimerFrame:
         with pytest.raises(FrameError):
             _codec().sleep_timer(enabled=True, **{"start_brightness": 30, "minutes": 15, **kwargs})
 
-    def test_other_skus_do_not_encode_it(self) -> None:
+    def test_a_profile_without_it_refuses(self) -> None:
         with pytest.raises(UnsupportedCapabilityError):
-            _codec("H6076").sleep_timer(enabled=False, start_brightness=30, minutes=15)
+            GoveeCodec(_bare_profile()).sleep_timer(enabled=False, start_brightness=30, minutes=15)
 
 
 class TestSleepTimerDecode:
@@ -514,9 +522,9 @@ class TestWakeUpFrame:
         with pytest.raises(FrameError):
             _wake(**kwargs)
 
-    def test_other_skus_do_not_encode_it(self) -> None:
+    def test_a_profile_without_it_refuses(self) -> None:
         with pytest.raises(UnsupportedCapabilityError):
-            GoveeCodec(get_profile("H6076")).wake_up(
+            GoveeCodec(_bare_profile()).wake_up(
                 enabled=False, end_brightness=100, hour=0, minute=0, duration=10, kelvin=2700, white_rgb=(0, 0, 0)
             )
 

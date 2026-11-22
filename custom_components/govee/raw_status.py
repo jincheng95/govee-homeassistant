@@ -5,8 +5,10 @@ whose profile declares them. Power goes into the device state: from the
 ``ee 30 01 <on>`` push on a ``power_push`` profile, and from the lamp bit of the
 zone power report on a ``zone_power_report`` profile. The gradient and
 power-off memory settings go into a per-device store that their entities read.
-Settings are read with raw queries over MQTT ``ptReal`` only, because a raw
-query is answered on the device's cloud topic and nowhere else.
+A profile without ``schedule_report`` gets its schedule replies merged into
+:mod:`.light_schedule` here. Settings are read with raw queries over MQTT
+``ptReal`` only, because a raw query is answered on the device's cloud topic
+and nowhere else.
 """
 
 from __future__ import annotations
@@ -17,8 +19,9 @@ from typing import TYPE_CHECKING, Any, Final
 
 from .api import mqtt_raw_write
 from .api.raw_router import upload_lock
-from .api.protocol import SETTING_QUERIES, Capability, GoveeCodec, decode_status
+from .api.protocol import SCHEDULE_QUERIES, SETTING_QUERIES, Capability, GoveeCodec, decode_status
 from .api.zone_power_report import decode_frames as decode_zone_power_frames
+from .light_schedule import apply_schedule_report
 from .zone_state import profile_for
 
 if TYPE_CHECKING:
@@ -91,11 +94,16 @@ def apply_raw_status(coordinator: GoveeCoordinator, device: GoveeDevice, frames:
     if after != before:
         _store(coordinator)[device.device_id] = after
         changed = True
+    if not profile.schedule_report and apply_schedule_report(coordinator, device, frames):
+        changed = True
     return changed
 
 
 async def async_query_settings(coordinator: GoveeCoordinator, device_id: str) -> int:
     """Ask the device for every setting its profile encodes, one query per envelope.
+
+    A profile without ``schedule_report`` is also asked for each schedule
+    capability it encodes.
 
     Args:
         coordinator: The coordinator owning the device.
@@ -120,12 +128,17 @@ async def async_query_settings(coordinator: GoveeCoordinator, device_id: str) ->
         return 0
     codec = GoveeCodec(profile)
     sent = 0
+    queries: dict[Capability, tuple[int, ...]] = {
+        capability: (command_type,) for capability, command_type in SETTING_QUERIES.items()
+    }
+    if not profile.schedule_report:
+        queries.update(SCHEDULE_QUERIES)
 
     # An unheld lock with no waiters is taken without yielding, so the check
     # above and this acquire cannot be split by an upload.
 
     async with lock:
-        for capability, command_type in SETTING_QUERIES.items():
+        for capability, query in queries.items():
             if not profile.supports(capability):
                 continue
             if await mqtt_raw_write.async_send_frames(
@@ -133,7 +146,7 @@ async def async_query_settings(coordinator: GoveeCoordinator, device_id: str) ->
                 device_id,
                 device.sku,
                 profile,
-                [codec.query(command_type)],
+                [codec.query(*query)],
                 what=f"{capability.value} read",
             ):
                 sent += 1

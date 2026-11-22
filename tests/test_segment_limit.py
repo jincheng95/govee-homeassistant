@@ -42,9 +42,11 @@ from custom_components.govee.models.device import (
     CAPABILITY_ON_OFF,
     CAPABILITY_RANGE,
     CAPABILITY_SEGMENT_COLOR,
+    CAPABILITY_TOGGLE,
     DEVICE_TYPE_LIGHT,
     INSTANCE_BRIGHTNESS,
     INSTANCE_COLOR_RGB,
+    INSTANCE_GRADUAL_ON,
     INSTANCE_POWER,
     INSTANCE_SEGMENT_COLOR,
 )
@@ -72,6 +74,7 @@ def _device(sku: str = "H6076", segments: int = CLOUD_ADVERTISED) -> GoveeDevice
             GoveeCapability(type=CAPABILITY_ON_OFF, instance=INSTANCE_POWER, parameters={}),
             GoveeCapability(type=CAPABILITY_RANGE, instance=INSTANCE_BRIGHTNESS, parameters={}),
             GoveeCapability(type=CAPABILITY_COLOR_SETTING, instance=INSTANCE_COLOR_RGB, parameters={}),
+            GoveeCapability(type=CAPABILITY_TOGGLE, instance=INSTANCE_GRADUAL_ON, parameters={}),
             GoveeCapability(
                 type=CAPABILITY_SEGMENT_COLOR,
                 instance=INSTANCE_SEGMENT_COLOR,

@@ -42,7 +42,7 @@ from .entity import GoveeEntity
 from .api.protocol import Capability
 from .api.raw_router import async_device_setting, async_zone_power
 from .raw_status import device_settings, record_settings
-from .zone_state import note_zone_power, register_zone_switch, zone_switch_suppressed
+from .zone_state import note_zone_power, register_zone_switch, segment_blending_switch, zone_switch_suppressed
 from .models import (
     GoveeDevice,
     MusicModeCommand,
@@ -222,10 +222,9 @@ async def async_setup_entry(
                 entities.append(GoveeNamedLightSwitchEntity(coordinator, device, instance, translation_key, suffix))
                 _LOGGER.debug("Created named light switch %s for %s", instance, device.name)
 
-            # Segment blending (``gradientToggle``) — fork: capability-driven,
-            # so only the SKUs that actually advertise it (H6076 / H6046 in the
-            # test fleet) get the entity. No SKU list.
-            if device.supports_segment_blending:
+            # Segment blending (``gradientToggle``) — fork: driven by the cloud
+            # capability or the profile's GRADIENT. No SKU list.
+            if segment_blending_switch(entry, device):
                 entities.append(GoveeSegmentBlendingSwitchEntity(coordinator, device))
                 _LOGGER.debug(
                     "Created segment blending switch for %s (%s)",
@@ -660,9 +659,9 @@ class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity)
     light and light-zone switches take.
 
     A profile that encodes ``Capability.GRADIENT`` takes the raw frame first;
-    the cloud toggle is the fallback. Such a device also reports the setting
-    in raw status frames (:mod:`.raw_status`), and a report wins over the
-    optimistic value.
+    the cloud toggle is the fallback, and only on a device with the cloud
+    capability. Such a device also reports the setting in raw status frames
+    (:mod:`.raw_status`), and a report wins over the optimistic value.
     """
 
     _attr_translation_key = "govee_segment_blending"
@@ -705,9 +704,12 @@ class GoveeSegmentBlendingSwitchEntity(GoveeEntity, SwitchEntity, RestoreEntity)
     async def _async_set(self, enabled: bool) -> None:
         success = await async_device_setting(
             self.coordinator, self._device, Capability.GRADIENT, lambda codec: codec.gradient(enabled)
-        ) or await self.coordinator.async_control_device(
-            self._device_id,
-            ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=enabled),
+        ) or (
+            self._device.supports_segment_blending
+            and await self.coordinator.async_control_device(
+                self._device_id,
+                ToggleCommand(toggle_instance=INSTANCE_GRADUAL_ON, enabled=enabled),
+            )
         )
         if success:
             self._is_on = enabled

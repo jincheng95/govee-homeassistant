@@ -1,9 +1,10 @@
 """On-device sleep, wake-up and timer settings of a light (fork feature).
 
 :func:`~.api.protocol.decode_status` reads them from the ``aa 11``, ``aa 12``
-and ``aa 23`` frames of a status push. This module keeps the last value per
-device. Each push merges into it, and so does each schedule action after its
-write is sent.
+and ``aa 23`` frames of a status push, or of the replies to raw schedule
+queries on a profile without ``schedule_report``. This module keeps the last
+value per device. Each report merges into it, and so does each schedule action
+after its write is sent.
 """
 
 from __future__ import annotations
@@ -12,10 +13,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final
 
-from .api.protocol import LightTimer, SleepTimer, WakeUp, decode_status
-from .zone_state import profile_for
+from .api.protocol import SCHEDULE_QUERIES, LightTimer, SleepTimer, WakeUp, decode_status
+from .zone_state import profile_for, raw_settings_enabled
 
 if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+
     from .coordinator import GoveeCoordinator
     from .models import GoveeDevice
 
@@ -46,8 +49,24 @@ def schedule(coordinator: GoveeCoordinator, device_id: str) -> LightSchedule:
 
 
 def reports_schedule(sku: str) -> bool:
+    """Whether the SKU reports a schedule, unprompted or in reply to raw queries."""
     profile = profile_for(sku)
-    return profile is not None and profile.schedule_report
+    if profile is None:
+        return False
+    return profile.schedule_report or any(profile.supports(capability) for capability in SCHEDULE_QUERIES)
+
+
+def schedule_sensors_enabled(entry: ConfigEntry, sku: str) -> bool:
+    """Whether the SKU's schedule sensors are built.
+
+    A ``schedule_report`` SKU always gets them. A SKU read by raw queries gets
+    them while ``enable_lan_raw_write`` is on, because only a raw query reads
+    its schedule.
+    """
+    profile = profile_for(sku)
+    if profile is None or not reports_schedule(sku):
+        return False
+    return profile.schedule_report or raw_settings_enabled(entry)
 
 
 def apply_schedule_report(coordinator: GoveeCoordinator, device: GoveeDevice, frames: Iterable[bytes]) -> bool:

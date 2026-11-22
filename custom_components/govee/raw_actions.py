@@ -272,7 +272,9 @@ async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> N
     leaves out from the wake-up as last reported or written, colour included,
     and with no time given it needs that wake-up known. Any other field left
     out takes its default. A given or default colour temperature must lie in
-    the profile's range and is sent with HA's RGB approximation of it.
+    the profile's range and is sent with HA's RGB approximation of it. A
+    device that stores no wake-up colour refuses a colour temperature and is
+    sent zeros, which is what it reports back.
     """
     coordinator, device, profile = _resolve(hass, call, lambda profile: profile.supports(Capability.WAKE_UP))
     data: dict[str, Any] = call.data
@@ -283,8 +285,14 @@ async def async_set_wake_up_handler(hass: HomeAssistant, call: ServiceCall) -> N
     if not enabled and ATTR_TIME not in data and known is None:
         raise _validation_error("wake_up_unknown", device=device.name)
     codec = GoveeCodec(profile)
-    if ATTR_COLOR_TEMP_KELVIN in data or known is None:
-        kelvin: int = data.get(ATTR_COLOR_TEMP_KELVIN, DEFAULT_WAKE_UP_KELVIN)
+    kelvin: int
+    rgb: tuple[int, int, int]
+    if not codec.wake_up_color():
+        if ATTR_COLOR_TEMP_KELVIN in data:
+            raise _validation_error("wake_up_color_unsupported", device=device.name)
+        kelvin, rgb = 0, (0, 0, 0)
+    elif ATTR_COLOR_TEMP_KELVIN in data or known is None:
+        kelvin = data.get(ATTR_COLOR_TEMP_KELVIN, DEFAULT_WAKE_UP_KELVIN)
         if not profile.kelvin.minimum <= kelvin <= profile.kelvin.maximum:
             raise _validation_error(
                 "kelvin_out_of_range",

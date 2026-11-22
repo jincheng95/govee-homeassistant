@@ -138,6 +138,7 @@ class TestCommands:
 
         device = _h6076()
         coordinator = MagicMock()
+        coordinator.config_entry.options = {}
         coordinator.async_control_device = AsyncMock(return_value=True)
         entity = GoveeSegmentBlendingSwitchEntity(coordinator, device)
         entity.async_write_ha_state = MagicMock()

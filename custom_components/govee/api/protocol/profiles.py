@@ -87,6 +87,12 @@ BLE_MANUFACTURER_LEGACY: Final = 0x8803
 SLEEP_TAIL_STRING: Final = 0x000003E8
 """Sleep-timer tail ``00 00 03 e8`` of the string lights."""
 
+SLEEP_TAIL_LAMP: Final = 0x00FF3200
+"""Sleep-timer tail ``00 ff 32 00`` of the uplighter and the floor lamp."""
+
+SLEEP_TAIL_BAR: Final = 0x00000000
+"""Sleep-timer tail ``00 00 00 00`` of the light bar."""
+
 
 @unique
 class Capability(str, Enum):
@@ -530,8 +536,11 @@ H60B0: Final = DeviceProfile(
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
-        # Only "last state" (0) and "stay off" (2) are verified on this SKU.
-        Capability.POWER_OFF_MEMORY: CapabilitySpec("power_off_memory", {"sub_type": 0x02, "behaviours": 0b101}),
+        Capability.GRADIENT: CapabilitySpec("gradient"),
+        Capability.POWER_OFF_MEMORY: CapabilitySpec("power_off_memory", {"sub_type": 0x02}),
+        Capability.LIGHT_TIMER: CapabilitySpec("light_timer", {"slots": 4}),
+        Capability.SLEEP_TIMER: CapabilitySpec("sleep_timer", {"tail": SLEEP_TAIL_LAMP}),
+        Capability.WAKE_UP: CapabilitySpec("wake_up"),
     },
     modes={"scene": 0x04, "diy": 0x0A, "solid": 0x0D, "music": 0x13, "game": 0x14},
     diy=DiyEffectSpec(
@@ -661,6 +670,11 @@ H6046: Final = DeviceProfile(
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
+        Capability.GRADIENT: CapabilitySpec("gradient"),
+        Capability.LIGHT_TIMER: CapabilitySpec("light_timer", {"slots": 4}),
+        Capability.SLEEP_TIMER: CapabilitySpec("sleep_timer", {"tail": SLEEP_TAIL_BAR}),
+        # The wake-up colour and Kelvin read back as zeros whatever is written.
+        Capability.WAKE_UP: CapabilitySpec("wake_up", {"color": 0}),
     },
     modes={"scene": 0x04},
     # This SKU's AWS IoT status pushes carry the `aa a5` readback frames in
@@ -701,6 +715,12 @@ H6076: Final = DeviceProfile(
         ),
         Capability.MODE_SELECT: CapabilitySpec("mode_select"),
         Capability.QUERY: CapabilitySpec("query"),
+        Capability.GRADIENT: CapabilitySpec("gradient"),
+        # No POWER_OFF_MEMORY. The setting reads back, but the lamp refuses
+        # every write of it.
+        Capability.LIGHT_TIMER: CapabilitySpec("light_timer", {"slots": 4}),
+        Capability.SLEEP_TIMER: CapabilitySpec("sleep_timer", {"tail": SLEEP_TAIL_LAMP}),
+        Capability.WAKE_UP: CapabilitySpec("wake_up"),
     },
     modes={"scene": 0x04},
 )

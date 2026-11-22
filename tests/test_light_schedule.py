@@ -13,6 +13,7 @@ import pytest
 
 from custom_components.govee import light_schedule
 from custom_components.govee.api.protocol import LightTimer, SleepTimer, WakeUp
+from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE
 from custom_components.govee.models import GoveeDevice, GoveeDeviceState
 from custom_components.govee.models.device import DEVICE_TYPE_LIGHT
 from custom_components.govee.platforms.light_schedule import (
@@ -48,6 +49,12 @@ def _device(sku: str = "H80C5", *, is_group: bool = False) -> GoveeDevice:
         capabilities=(),
         is_group=is_group,
     )
+
+
+def _entry(*, raw: bool = False) -> Any:
+    entry = MagicMock()
+    entry.options = {CONF_ENABLE_LAN_RAW_WRITE: raw}
+    return entry
 
 
 def _coordinator(device: GoveeDevice | None = None) -> Any:
@@ -87,7 +94,7 @@ class TestApply:
         assert light_schedule.apply_schedule_report(coordinator, coordinator.devices[DEVICE_ID], []) is False
         assert light_schedule.schedules(coordinator) == {}
 
-    @pytest.mark.parametrize("sku", ["H6076", "H0000"])
+    @pytest.mark.parametrize("sku", ["H0000"])
     def test_other_skus_are_ignored(self, sku: str) -> None:
         coordinator = _coordinator(_device(sku))
         device = coordinator.devices[DEVICE_ID]
@@ -97,16 +104,20 @@ class TestApply:
 
 class TestSensors:
     def _sensors(self, coordinator: Any) -> tuple[GoveeSleepTimerSensor, GoveeWakeUpSensor, GoveeTimersSensor]:
-        sleep, wake, timers = async_light_schedule_sensor_entities(coordinator)
+        sleep, wake, timers = async_light_schedule_sensor_entities(coordinator, _entry())
         assert isinstance(sleep, GoveeSleepTimerSensor)
         assert isinstance(wake, GoveeWakeUpSensor)
         assert isinstance(timers, GoveeTimersSensor)
         return sleep, wake, timers
 
     def test_only_reporting_skus_get_sensors(self) -> None:
-        assert len(async_light_schedule_sensor_entities(_coordinator())) == 3
-        assert async_light_schedule_sensor_entities(_coordinator(_device("H6076"))) == []
-        assert async_light_schedule_sensor_entities(_coordinator(_device(is_group=True))) == []
+        assert len(async_light_schedule_sensor_entities(_coordinator(), _entry())) == 3
+        assert async_light_schedule_sensor_entities(_coordinator(_device("H0000")), _entry(raw=True)) == []
+        assert async_light_schedule_sensor_entities(_coordinator(_device(is_group=True)), _entry(raw=True)) == []
+
+    def test_a_queried_sku_needs_the_raw_option(self) -> None:
+        assert async_light_schedule_sensor_entities(_coordinator(_device("H6076")), _entry()) == []
+        assert len(async_light_schedule_sensor_entities(_coordinator(_device("H6076")), _entry(raw=True))) == 3
 
     def test_unknown_until_the_first_push(self) -> None:
         sleep, wake, timers = self._sensors(_coordinator())

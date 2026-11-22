@@ -6,13 +6,14 @@ import logging
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 
 from ..api.protocol.encoders import repeat_byte
 from ..const import SUFFIX_SCHEDULE_SLEEP, SUFFIX_SCHEDULE_TIMERS, SUFFIX_SCHEDULE_WAKE
 from ..coordinator import GoveeCoordinator
 from ..entity import GoveeEntity
-from ..light_schedule import LightSchedule, reports_schedule, schedule
+from ..light_schedule import LightSchedule, schedule, schedule_sensors_enabled
 from ..models import GoveeDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,11 +22,11 @@ STATE_ON = "on"
 STATE_OFF = "off"
 
 
-def async_light_schedule_sensor_entities(coordinator: GoveeCoordinator) -> list[SensorEntity]:
-    """Build the three schedule sensors for SKUs that report a schedule."""
+def async_light_schedule_sensor_entities(coordinator: GoveeCoordinator, entry: ConfigEntry) -> list[SensorEntity]:
+    """Build the three schedule sensors for SKUs whose schedule can be read."""
     entities: list[SensorEntity] = []
     for device in coordinator.devices.values():
-        if device.is_group or not reports_schedule(device.sku):
+        if device.is_group or not schedule_sensors_enabled(entry, device.sku):
             continue
         entities.append(GoveeSleepTimerSensor(coordinator, device))
         entities.append(GoveeWakeUpSensor(coordinator, device))

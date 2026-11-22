@@ -38,8 +38,14 @@ from custom_components.govee.api.protocol import (
 )
 from custom_components.govee.const import CONF_ENABLE_LAN_RAW_WRITE, SUFFIX_POWER_OFF_MEMORY
 from custom_components.govee.api.protocol import Capability
-from custom_components.govee.models import ColorTempCommand, GoveeDevice, GoveeDeviceState, ToggleCommand
-from custom_components.govee.models.device import DEVICE_TYPE_LIGHT, INSTANCE_GRADUAL_ON
+from custom_components.govee.models import (
+    ColorTempCommand,
+    GoveeCapability,
+    GoveeDevice,
+    GoveeDeviceState,
+    ToggleCommand,
+)
+from custom_components.govee.models.device import CAPABILITY_TOGGLE, DEVICE_TYPE_LIGHT, INSTANCE_GRADUAL_ON
 from custom_components.govee.platforms.device_settings import (
     GoveePowerOffMemorySelect,
     async_device_setting_select_entities,
@@ -201,9 +207,8 @@ class TestGradientFrame:
         assert GoveeCodec(get_profile(SKU)).gradient(on) == expected
 
     @pytest.mark.parametrize("sku", ["H6046", "H6076", "H60B0"])
-    def test_other_skus_do_not_encode_it(self, sku: str) -> None:
-        with pytest.raises(UnsupportedCapabilityError):
-            GoveeCodec(get_profile(sku)).gradient(True)
+    def test_the_other_lights_send_the_same_frame(self, sku: str) -> None:
+        assert GoveeCodec(get_profile(sku)).gradient(True) == _frame(0x33, 0xA3, 0x01)
 
 
 class TestSettingRoute:
@@ -218,24 +223,24 @@ class TestSettingRoute:
         assert list(args[4]) == [_frame(0x33, 0xA3, 0x01)]
 
     @pytest.mark.parametrize(
-        ("device", "raw"),
+        ("device", "raw", "capability"),
         [
-            (_device(sku="H6076", segments=7), True),
-            (_device(sku="H0000"), True),
-            (_device(is_group=True), True),
-            (_device(), False),
+            (_device(sku="H6076", segments=7), True, Capability.POWER_OFF_MEMORY),
+            (_device(sku="H0000"), True, Capability.GRADIENT),
+            (_device(is_group=True), True, Capability.GRADIENT),
+            (_device(), False, Capability.GRADIENT),
         ],
     )
-    async def test_declines_without_sending(self, device: Any, raw: bool) -> None:
+    async def test_declines_without_sending(self, device: Any, raw: bool, capability: Capability) -> None:
         with patch.object(raw_router, "async_route_frames", AsyncMock(return_value=True)) as route:
             assert not await raw_router.async_device_setting(
-                _raw_coordinator(raw=raw), device, Capability.GRADIENT, lambda codec: codec.gradient(True)
+                _raw_coordinator(raw=raw), device, capability, lambda codec: codec.gradient(True)
             )
         route.assert_not_awaited()
 
     def test_supports_setting(self) -> None:
         assert raw_router.supports_setting(SKU, Capability.GRADIENT) is True
-        assert raw_router.supports_setting("H6076", Capability.GRADIENT) is False
+        assert raw_router.supports_setting("H6076", Capability.POWER_OFF_MEMORY) is False
         assert raw_router.supports_setting("H0000", Capability.GRADIENT) is False
 
 
@@ -243,7 +248,11 @@ def _blending_switch() -> tuple[GoveeSegmentBlendingSwitchEntity, Any]:
     coordinator = _raw_coordinator()
     coordinator.async_control_device = AsyncMock(return_value=True)
     device = GoveeDevice(
-        device_id=DEVICE_ID, sku=SKU, name="String lights", device_type=DEVICE_TYPE_LIGHT, capabilities=()
+        device_id=DEVICE_ID,
+        sku=SKU,
+        name="String lights",
+        device_type=DEVICE_TYPE_LIGHT,
+        capabilities=(GoveeCapability(type=CAPABILITY_TOGGLE, instance=INSTANCE_GRADUAL_ON, parameters={}),),
     )
     entity = GoveeSegmentBlendingSwitchEntity(coordinator, device)
     entity.async_write_ha_state = MagicMock()
@@ -547,8 +556,8 @@ class TestSettingsStore:
 
     def test_a_sku_without_the_setting_ignores_the_reply(self) -> None:
         coordinator = _state_coordinator(False)
-        assert raw_status.apply_raw_status(coordinator, _light("H6076"), [GRADIENT_ON, MEMORY_LAST_STATE]) is False
-        assert raw_status.device_settings(coordinator, DEVICE_ID) == raw_status.DeviceSettings()
+        assert raw_status.apply_raw_status(coordinator, _light("H6076"), [GRADIENT_ON, MEMORY_LAST_STATE]) is True
+        assert raw_status.device_settings(coordinator, DEVICE_ID) == raw_status.DeviceSettings(gradient=True)
 
     def test_a_write_is_recorded(self) -> None:
         coordinator = _state_coordinator(False)
@@ -610,7 +619,6 @@ class TestSettingsQuery:
     @pytest.mark.parametrize(
         ("device", "device_id"),
         [
-            (_light("H6076"), DEVICE_ID),
             (_light("H0000"), DEVICE_ID),
             (_light(is_group=True), DEVICE_ID),
             (_light(), "AA:BB:CC:DD:EE:FF:60:B1"),

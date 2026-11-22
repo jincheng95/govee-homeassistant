@@ -243,7 +243,7 @@ async def async_setup_entry(
     # Fork: one preview sensor per DIY zone, carrying the shipped artwork URL
     # for the mode staged on that zone's select.
     entities.extend(async_diy_preview_entities(coordinator, entry))
-    entities.extend(async_light_schedule_sensor_entities(coordinator))
+    entities.extend(async_light_schedule_sensor_entities(coordinator, entry))
     entities.extend(async_string_preview_sensor_entities(coordinator))
 
     async_add_entities(entities)

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
     from .coordinator import GoveeCoordinator
+    from .models import GoveeDevice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,6 +109,26 @@ def raw_settings_enabled(entry: ConfigEntry) -> bool:
     Strictly a boolean check, as for :func:`zone_lights_enabled`.
     """
     return entry.options.get(CONF_ENABLE_LAN_RAW_WRITE) is True
+
+
+def segment_blending_switch(entry: ConfigEntry, device: GoveeDevice) -> bool:
+    """Whether the device gets the segment blending switch.
+
+    The cloud ``gradientToggle`` capability always gives it one. A profile
+    that encodes ``Capability.GRADIENT`` gives it one while
+    :func:`raw_settings_enabled` holds.
+    """
+    if device.supports_segment_blending:
+        return True
+    return raw_only_segment_blending(device) and raw_settings_enabled(entry)
+
+
+def raw_only_segment_blending(device: GoveeDevice) -> bool:
+    """Whether only the raw ``GRADIENT`` frame can carry the device's segment blending."""
+    if device.is_group or device.supports_segment_blending:
+        return False
+    profile = profile_for(device.sku)
+    return profile is not None and profile.supports(Capability.GRADIENT)
 
 
 def zone_switch_suppressed(entry: ConfigEntry, sku: str, toggle_instance: str) -> bool:

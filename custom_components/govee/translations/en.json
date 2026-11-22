@@ -959,7 +959,7 @@
         },
         "color_temp_kelvin": {
           "name": "Color temperature",
-          "description": "White the light wakes up in, in kelvin, within the light's range."
+          "description": "White the light wakes up in, in kelvin, within the light's range. Leave it out for a light that stores no wake-up color."
         }
       }
     },
@@ -1115,6 +1115,9 @@
     },
     "wake_up_unknown": {
       "message": "The wake-up on {device} is not known yet, so disabling it needs a time. Give a time, or ask the device for its status first."
+    },
+    "wake_up_color_unsupported": {
+      "message": "{device} does not store a wake-up color temperature. Leave the color temperature out."
     },
     "sleep_timer_unknown": {
       "message": "The sleep timer on {device} is not known yet, so disabling it needs the minutes. Give the minutes, or ask the device for its status first."

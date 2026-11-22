@@ -751,6 +751,7 @@ SUFFIX_DIY_EFFECT_PREVIEWS: Final = "_diy_effect_previews"
 SUFFIX_SCHEDULE_SLEEP: Final = "_schedule_sleep"
 SUFFIX_SCHEDULE_WAKE: Final = "_schedule_wake"
 SUFFIX_SCHEDULE_TIMERS: Final = "_schedule_timers"
+SCHEDULE_SENSOR_SUFFIXES: Final = (SUFFIX_SCHEDULE_SLEEP, SUFFIX_SCHEDULE_WAKE, SUFFIX_SCHEDULE_TIMERS)
 SUFFIX_SOCKET: Final = "_socket_"
 SUFFIX_MQTT_OUTLET: Final = "_mqtt_outlet_"
 SUFFIX_MAIN_LIGHT: Final = "_main_light"
