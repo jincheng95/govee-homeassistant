@@ -244,15 +244,23 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
 
 @dataclass(frozen=True)
 class _StringEffect:
-    """One encoded whole-light effect and its account form."""
+    """One encoded whole-light effect."""
 
     record: bytes
     basic: bool
-    saved: saved_diy.SavedEffect
+    name: str
+    """The effect name, or the first layer's."""
+    combine: tuple[str, ...] = ()
 
     def frames(self, code: int) -> list[bytes]:
         module = h70cx_basic if self.basic else h70cx
         return module.upload_frames(self.record, code)
+
+    def saved(self) -> saved_diy.SavedEffect:
+        """The effect in the form the account stores."""
+        if self.basic:
+            return saved_diy.basic(self.record, self.name, self.combine)
+        return saved_diy.composed(self.record, self.name)
 
 
 async def _async_apply_string_effect(
@@ -261,7 +269,8 @@ async def _async_apply_string_effect(
     """Upload one composed, basic, combo or layered whole-light effect (H70CX family).
 
     With ``save_as`` the effect is committed under a new DIY code and then
-    stored in the account under that code.
+    stored in the account under that code. A save that fails leaves the lamp
+    showing the effect.
 
     Returns:
         ``effect_id``, ``diy_code`` and ``name`` of the saved effect, or an
@@ -284,6 +293,7 @@ async def _async_apply_string_effect(
     try:
         effect = _layered_effect(device, data) if ATTR_LAYERS in data else _single_effect(data)
         frames = effect.frames(code)
+        saved = None if name is None else effect.saved()
     except GoveeProtocolError as err:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
@@ -300,9 +310,9 @@ async def _async_apply_string_effect(
             translation_placeholders={"device": device.name},
         )
     clear_optimistic_scene(coordinator, device.device_id)
-    if name is None:
+    if name is None or saved is None:
         return {}
-    effect_id = await async_save_effect(coordinator, device, name, effect.saved, code)
+    effect_id = await async_save_effect(coordinator, device, name, saved, code)
     return {"effect_id": effect_id, "diy_code": code, "name": name}
 
 
@@ -351,7 +361,7 @@ def _layered_effect(device: GoveeDevice, data: Mapping[str, Any]) -> _StringEffe
             translation_key="invalid_string_effect_layer",
             translation_placeholders={"device": device.name, "layer": str(err.layer), "reason": err.reason},
         ) from err
-    return _StringEffect(record, False, saved_diy.composed(record, layers[0].effect))
+    return _StringEffect(record, False, layers[0].effect)
 
 
 def _single_effect(data: Mapping[str, Any]) -> _StringEffect:
@@ -374,7 +384,7 @@ def _single_effect(data: Mapping[str, Any]) -> _StringEffect:
             direction=data.get(ATTR_DIRECTION),
             combine=data.get(ATTR_COMBINE),
         )
-        return _StringEffect(record, True, saved_diy.basic(record, effect, data.get(ATTR_COMBINE)))
+        return _StringEffect(record, True, effect, tuple(data.get(ATTR_COMBINE) or ()))
     if ATTR_COMBINE in data:
         raise GoveeProtocolError(f"only {h70cx_basic.COMBO} takes effects to combine")
     record = h70cx.effect_record(
@@ -386,7 +396,7 @@ def _single_effect(data: Mapping[str, Any]) -> _StringEffect:
         center=data.get(ATTR_CENTER),
         params=data.get(ATTR_PARAMS),
     )
-    return _StringEffect(record, False, saved_diy.composed(record, effect))
+    return _StringEffect(record, False, effect)
 
 
 def _string_effect_target(

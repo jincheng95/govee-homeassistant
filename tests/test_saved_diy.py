@@ -17,7 +17,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.govee import diy_actions, saved_diy_actions, upstream_access
 from custom_components.govee.api import saved_diy_cloud
-from custom_components.govee.api.auth import GoveeAuthClient
+from custom_components.govee.api.auth import GoveeAuthClient, _derive_client_id
 from custom_components.govee.api.exceptions import GoveeApiError, GoveeAuthError
 from custom_components.govee.api.protocol import h70cx, h70cx_basic, saved_diy
 from custom_components.govee.api.protocol.errors import FrameError
@@ -226,6 +226,14 @@ class TestAccountCalls:
     async def test_list_of_an_empty_account_is_empty(self) -> None:
         assert await saved_diy_cloud.async_list(_session(body=_ok({})), HEADERS, sku="H80C5", goods_type=260) == []
 
+    @pytest.mark.parametrize("body", [None, ValueError("empty")])
+    async def test_delete_takes_a_bodyless_200_as_done(self, body: Any) -> None:
+        await saved_diy_cloud.async_delete(_session(body=body), HEADERS, 4321)
+
+    async def test_delete_with_a_bodyless_error_status_fails(self) -> None:
+        with pytest.raises(GoveeApiError, match="HTTP 500"):
+            await saved_diy_cloud.async_delete(_session(500, None), HEADERS, 4321)
+
     async def test_delete_names_the_effect_in_the_query(self) -> None:
         session = _session(body={"status": 200})
         await saved_diy_cloud.async_delete(session, HEADERS, 4321)
@@ -285,7 +293,7 @@ class TestSaveAs:
         assert create.await_args.args[0] is session
         headers = create.await_args.args[1]
         assert headers["Authorization"] == "Bearer tok"
-        assert headers["clientId"] == upstream_access.app_headers("user@example.com")["clientId"]
+        assert headers["clientId"] == _derive_client_id("user@example.com")
         assert create.await_args.kwargs == {
             "sku": "H80C5",
             "goods_type": 260,
@@ -361,12 +369,21 @@ class TestSaveAs:
         with pytest.raises(Exception, match="length"):
             SERVICE_APPLY_DIY_EFFECT_SCHEMA({"effect": "rainbow", "colors": COLORS, "save_as": name})
 
-    async def test_an_entry_without_an_account_login_says_so(self, session: Any) -> None:
+    async def test_a_login_that_stopped_working_says_so(self, session: Any) -> None:
         with pytest.raises(HomeAssistantError) as err:
             await _handle(
                 async_apply_diy_effect_handler,
                 _account_coordinator(token=None),
                 _call(effect="rainbow", colors=COLORS, save_as="X"),
+            )
+        assert err.value.translation_key == "saved_diy_login_failed"
+
+    async def test_an_entry_without_an_account_email_is_told_to_add_one(self, session: Any) -> None:
+        coordinator = _account_coordinator(token=None)
+        coordinator.config_entry.data = {}
+        with pytest.raises(HomeAssistantError) as err:
+            await _handle(
+                async_list_saved_diy_effects_handler, coordinator, _call(diy_actions.SERVICE_LIST_SAVED_DIY_EFFECTS_SCHEMA)
             )
         assert err.value.translation_key == "saved_diy_no_account"
 
@@ -378,8 +395,39 @@ class TestSaveAs:
                 _account_coordinator(),
                 _call(effect="rainbow", colors=COLORS, save_as="X"),
             )
-        assert err.value.translation_key == "saved_diy_failed"
+        assert err.value.translation_key == "save_diy_failed"
         assert err.value.translation_placeholders["reason"] == "saving the DIY effect: name taken"
+
+    async def test_a_plain_apply_never_builds_the_account_form(self, session: Any) -> None:
+        with patch.object(saved_diy, "basic", side_effect=AssertionError), patch.object(
+            saved_diy, "composed", side_effect=AssertionError
+        ):
+            await _handle(async_apply_diy_effect_handler, _account_coordinator(), _call(effect="fade_1", colors=COLORS))
+            await _handle(async_apply_diy_effect_handler, _account_coordinator(), _call(effect="spiral", colors=COLORS))
+
+    async def test_an_effect_with_no_account_form_is_refused_before_the_lamp_changes(self, session: Any) -> None:
+        with patch.object(saved_diy, "basic", side_effect=FrameError("fade_1 cannot be saved")), pytest.raises(
+            ServiceValidationError
+        ) as err:
+            route = AsyncMock()
+            with patch.object(diy_actions.raw_router, "async_route_frames", route):
+                await _handle(
+                    async_apply_diy_effect_handler,
+                    _account_coordinator(),
+                    _call(effect="fade_1", colors=COLORS, save_as="X"),
+                )
+        assert err.value.translation_key == "invalid_string_effect"
+
+    async def test_a_failed_list_names_the_account_error(self, session: Any) -> None:
+        with patch.object(saved_diy_cloud, "async_list", AsyncMock(side_effect=GoveeApiError("down"))), pytest.raises(
+            HomeAssistantError
+        ) as err:
+            await _handle(
+                async_list_saved_diy_effects_handler,
+                _account_coordinator(),
+                _call(diy_actions.SERVICE_LIST_SAVED_DIY_EFFECTS_SCHEMA),
+            )
+        assert err.value.translation_key == "saved_diy_failed"
 
     def test_a_new_code_is_in_the_apps_range(self) -> None:
         codes = {saved_diy_actions.new_diy_code() for _ in range(2000)}
@@ -436,7 +484,7 @@ class TestListAndDelete:
         delete = AsyncMock()
         with patch.object(saved_diy_cloud, "async_list", AsyncMock(return_value=ACCOUNT_ITEMS)), patch.object(
             saved_diy_cloud, "async_delete", delete
-        ), pytest.raises(HomeAssistantError) as err:
+        ), pytest.raises(ServiceValidationError) as err:
             await _handle(
                 async_delete_saved_diy_effect_handler,
                 _account_coordinator(),
@@ -495,6 +543,44 @@ class TestUpstreamMembers:
         coordinator = _real_coordinator()
         coordinator._iot_credentials = None
         assert await upstream_access.bff_call(coordinator, AsyncMock(), "test") is None
+
+    async def test_the_real_token_call_hands_over_a_client_and_the_token(self) -> None:
+        coordinator = _real_coordinator()
+        coordinator._iot_credentials = SimpleNamespace(token="tok")
+        seen: list[Any] = []
+
+        async def _operation(client: Any, token: str) -> str:
+            seen.append((type(client), token))
+            return "done"
+
+        assert await upstream_access.bff_call(coordinator, _operation, "test") == "done"
+        assert seen == [(GoveeAuthClient, "tok")]
+
+    async def test_the_real_token_call_logs_in_again_once_on_a_refused_token(self) -> None:
+        coordinator = _real_coordinator()
+        coordinator._iot_credentials = SimpleNamespace(token="old")
+        tokens: list[str] = []
+
+        async def _refresh() -> bool:
+            coordinator._iot_credentials = SimpleNamespace(token="new")
+            return True
+
+        async def _operation(_client: Any, token: str) -> str:
+            tokens.append(token)
+            if token == "old":
+                raise GoveeAuthError("refused")
+            return "done"
+
+        with patch.object(coordinator, "_async_refresh_iot_credentials", _refresh):
+            assert await upstream_access.bff_call(coordinator, _operation, "test") == "done"
+        assert tokens == ["old", "new"]
+
+    async def test_the_real_token_call_gives_none_when_the_new_login_fails(self) -> None:
+        coordinator = _real_coordinator()
+        coordinator._iot_credentials = SimpleNamespace(token="old")
+        with patch.object(coordinator, "_async_refresh_iot_credentials", AsyncMock(return_value=False)):
+            result = await upstream_access.bff_call(coordinator, AsyncMock(side_effect=GoveeAuthError("refused")), "test")
+        assert result is None
 
     def test_the_headers_are_the_auth_clients(self) -> None:
         headers = upstream_access.app_headers("user@example.com")

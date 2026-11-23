@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Final
 
 import aiohttp
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import saved_diy_cloud
@@ -42,12 +42,16 @@ async def _account_call(
     device: GoveeDevice,
     call: Callable[[aiohttp.ClientSession, Mapping[str, str]], Awaitable[Any]],
     what: str,
+    failed: str = "saved_diy_failed",
 ) -> Any:
     """Run ``call(session, headers)`` with the entry's account token.
 
+    Args:
+        failed: Translation key for a call the account refused.
+
     Raises:
-        HomeAssistantError: The entry has no account login, or the account
-            refused the call.
+        HomeAssistantError: The entry has no account login, the login no
+            longer works, or the account refused the call.
     """
     session = async_get_clientsession(coordinator.hass)
     email = coordinator.config_entry.data.get(CONF_EMAIL)
@@ -60,9 +64,9 @@ async def _account_call(
         result = await bff_call(coordinator, _operation, what)
     except GoveeApiError as err:
         _LOGGER.debug("Account call failed (%s): %s", what, err)
-        raise _error("saved_diy_failed", device, str(err)) from err
+        raise _error(failed, device, str(err)) from err
     if result is None:
-        raise _error("saved_diy_no_account", device)
+        raise _error("saved_diy_login_failed" if email else "saved_diy_no_account", device)
     return result[0]
 
 
@@ -86,7 +90,7 @@ async def async_save_effect(
             diy_code=diy_code,
         )
 
-    effect_id: int = await _account_call(coordinator, device, _create, "saved DIY create")
+    effect_id: int = await _account_call(coordinator, device, _create, "saved DIY create", "save_diy_failed")
     return effect_id
 
 
@@ -131,12 +135,16 @@ async def async_delete_effect(coordinator: GoveeCoordinator, device: GoveeDevice
     """Delete one saved effect, after checking it is one of this SKU's.
 
     Raises:
-        HomeAssistantError: The id is not among the SKU's saved effects, or as
-            :func:`_account_call`.
+        ServiceValidationError: The id is not among the SKU's saved effects.
+        HomeAssistantError: As :func:`_account_call`.
     """
     known = {item["effect_id"] for item in await async_list_effects(coordinator, device)}
     if effect_id not in known:
-        raise _error("saved_diy_unknown", device, str(effect_id))
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="saved_diy_unknown",
+            translation_placeholders={"device": device.name, "reason": str(effect_id)},
+        )
 
     async def _delete(session: aiohttp.ClientSession, headers: Mapping[str, str]) -> None:
         await saved_diy_cloud.async_delete(session, headers, effect_id)

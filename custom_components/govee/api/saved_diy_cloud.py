@@ -35,8 +35,11 @@ async def _request(
     *,
     json: Any = None,
     params: Mapping[str, str] | None = None,
+    body_optional: bool = False,
 ) -> dict[str, Any]:
     """One call, returning the JSON body's ``data`` object.
+
+    With ``body_optional``, HTTP 200 with no JSON body counts as success.
 
     Raises:
         GoveeAuthError: The token was refused, by HTTP status or in the body.
@@ -55,6 +58,8 @@ async def _request(
             status = response.status
     except (aiohttp.ClientError, TimeoutError) as err:
         raise GoveeApiError(f"{what}: {type(err).__name__}") from err
+    if body_optional and status == _OK and not isinstance(body, dict):
+        return {}
     if not isinstance(body, dict):
         raise GoveeApiError(f"{what}: HTTP {status} with no JSON body", code=status)
     body_status = body.get("status", status)
@@ -162,5 +167,11 @@ async def async_delete(session: aiohttp.ClientSession, headers: Mapping[str, str
         GoveeApiError: Any other failure.
     """
     await _request(
-        session, "DELETE", _DELETE_URL, headers, "deleting the saved DIY effect", params={"effectId": str(effect_id)}
+        session,
+        "DELETE",
+        _DELETE_URL,
+        headers,
+        "deleting the saved DIY effect",
+        params={"effectId": str(effect_id)},
+        body_optional=True,
     )
