@@ -9,7 +9,7 @@ fails the suite instead of degrading quietly.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.core import HomeAssistant
@@ -69,3 +69,26 @@ def scene_select_names(entity: Any) -> list[str]:
     if not isinstance(scene_map, Mapping):
         return []
     return [name for _scene_id, name in scene_map.values()]
+
+
+async def bff_call(coordinator: GoveeCoordinator, operation: Callable[[Any, str], Awaitable[Any]], what: str) -> Any:
+    """``coordinator._async_bff_call``: run ``operation(auth_client, token)``, logging in again once on a refused token.
+
+    Returns None when the entry holds no account token.
+    """
+    call = _read(coordinator, "_async_bff_call", "GoveeCoordinator._async_bff_call")
+    if call is _MISSING:
+        raise RuntimeError("upstream GoveeCoordinator._async_bff_call is missing")
+    return await call(operation, what)
+
+
+def app_headers(email: str | None) -> dict[str, str]:
+    """``GoveeAuthClient._build_govee_headers`` with the client id ``auth._derive_client_id`` gives ``email``."""
+    from .api import auth
+
+    build = _read(auth.GoveeAuthClient, "_build_govee_headers", "GoveeAuthClient._build_govee_headers")
+    derive = _read(auth, "_derive_client_id", "auth._derive_client_id")
+    if build is _MISSING or derive is _MISSING:
+        raise RuntimeError("upstream app header builders are missing")
+    headers: dict[str, str] = build(derive(email) if email else None)
+    return headers

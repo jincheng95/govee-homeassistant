@@ -1186,6 +1186,7 @@ class TestService:
             "ripple_flow_rate",
             "ripple_mode",
             "ripple_speed",
+            "save_as",
             "shape",
             "speed",
         ]

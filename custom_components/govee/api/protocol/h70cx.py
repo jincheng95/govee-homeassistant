@@ -227,11 +227,16 @@ def effect_record(
     return bytes(record) + bytes([len(colors)]) + bytes(palette)
 
 
-def _upload(record: bytes) -> list[bytes]:
+def upload_frames(record: bytes, code: int = EFFECT_CODE) -> list[bytes]:
+    """The frames that upload a composed or layered record and commit it as DIY ``code``.
+
+    Raises:
+        FrameError: The upload needs more than :data:`MAX_FRAMES` frames.
+    """
     payload = bytes([len(record) & 0xFF, len(record) >> 8]) + record
     frames = [
         *terminated_chunks(payload, H70CX_MARKER),
-        commit_frame(sub_mode=DIY_COMMIT_SUB_MODE, index=EFFECT_CODE),
+        commit_frame(sub_mode=DIY_COMMIT_SUB_MODE, index=code),
     ]
     if len(frames) > MAX_FRAMES:
         raise FrameError(f"the effect needs {len(frames)} frames, the limit is {MAX_FRAMES}")
@@ -249,7 +254,7 @@ def effect_frames(
     params: Sequence[int] | None = None,
 ) -> list[bytes]:
     """The frames that upload and show one composed effect. See :func:`effect_record`."""
-    return _upload(
+    return upload_frames(
         effect_record(effect, colors, speed=speed, direction=direction, shape=shape, center=center, params=params)
     )
 
@@ -325,4 +330,4 @@ def layered_frames(layers: Sequence[Layer], mode: str = DEFAULT_LAYER_MODE) -> l
         FrameError: As :func:`layered_record`, or the upload needs more than
             :data:`MAX_FRAMES` frames.
     """
-    return _upload(layered_record(layers, mode))
+    return upload_frames(layered_record(layers, mode))

@@ -845,6 +845,10 @@
         "layer_mode": {
           "name": "Layer mode",
           "description": "The two header bytes of a layered effect: default (2, 0), variant_3 (3, 0) or variant_1_2 (1, 2). Stock scenes use all three. Leave empty for default. Only with layers."
+        },
+        "save_as": {
+          "name": "Save as",
+          "description": "Also stores the effect in the Govee account under this name, so it shows among the saved DIY effects in the Govee app. String lights only. The response then carries the saved effect's effect_id and diy_code."
         }
       },
       "sections": {
@@ -1014,6 +1018,20 @@
           "description": "Brightness of the base colour."
         }
       }
+    },
+    "list_saved_diy_effects": {
+      "name": "List saved DIY effects",
+      "description": "Returns the DIY effects saved in the Govee account for one string light: effect_id, name, diy_code, effect_code, gif_id, group, kind and the stored effect_str. Needs the account login."
+    },
+    "delete_saved_diy_effect": {
+      "name": "Delete saved DIY effect",
+      "description": "Deletes one saved DIY effect from the Govee account. Target the string light it was saved for.",
+      "fields": {
+        "effect_id": {
+          "name": "Effect ID",
+          "description": "The effect_id from the list action or from a save."
+        }
+      }
     }
   },
   "exceptions": {
@@ -1175,6 +1193,21 @@
     },
     "scene_adjust_failed": {
       "message": "The scene {scene} on {device} cannot be adjusted: {reason}"
+    },
+    "save_diy_unsupported": {
+      "message": "Cannot save the effect for {device}. Only string lights keep saved DIY effects."
+    },
+    "saved_diy_failed": {
+      "message": "The Govee account refused the saved-effect request for {device}: {reason}"
+    },
+    "saved_diy_no_account": {
+      "message": "Saved DIY effects for {device} need the Govee account login. Add the account email and password in the integration's settings."
+    },
+    "saved_diy_unknown": {
+      "message": "{device} has no saved DIY effect with ID {reason}."
+    },
+    "saved_diy_no_target": {
+      "message": "Target exactly one string light that keeps saved DIY effects."
     }
   },
   "issues": {

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
 import voluptuous as vol
-from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -31,7 +32,7 @@ from .api.protocol import (
     GoveeProtocolError,
     resolve_mode,
 )
-from .api.protocol import h70cx, h70cx_basic
+from .api.protocol import h70cx, h70cx_basic, saved_diy
 from .bulb_actions import RGB_SCHEMA, clear_optimistic_scene
 from .const import DOMAIN
 from .coordinator import GoveeCoordinator
@@ -43,12 +44,15 @@ from .diy_state import (
 )
 from .diy_state import store as diy_store
 from .models import GoveeDevice
+from .saved_diy_actions import async_delete_effect, async_list_effects, async_save_effect, new_diy_code
 from .upstream_access import coordinator_for_device
 from .zone_state import profile_for
 
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_APPLY_DIY_EFFECT: Final = "apply_diy_effect"
+SERVICE_LIST_SAVED_DIY_EFFECTS: Final = "list_saved_diy_effects"
+SERVICE_DELETE_SAVED_DIY_EFFECT: Final = "delete_saved_diy_effect"
 
 ATTR_COLORS = "colors"
 ATTR_EFFECT = "effect"
@@ -60,6 +64,10 @@ ATTR_CENTER = "center"
 ATTR_LAYERS = "layers"
 ATTR_PARAMS = "params"
 ATTR_LAYER_MODE = "layer_mode"
+ATTR_SAVE_AS = "save_as"
+ATTR_EFFECT_ID = "effect_id"
+
+MAX_SAVED_NAME: Final = 30
 
 # Top-level whole-light fields a layered call leaves out.
 _SINGLE_EFFECT_FIELDS = (
@@ -175,13 +183,14 @@ SERVICE_APPLY_DIY_EFFECT_SCHEMA = vol.Schema(
             vol.Optional(ATTR_PARAMS): _PARAMS,
             vol.Optional(ATTR_LAYERS): vol.All(cv.ensure_list, vol.Length(min=1), [_LAYER_SCHEMA]),
             vol.Optional(ATTR_LAYER_MODE): vol.All(cv.string, vol.Lower, vol.In(list(h70cx.LAYER_MODES))),
+            vol.Optional(ATTR_SAVE_AS): vol.All(cv.string, vol.Strip, vol.Length(min=1, max=MAX_SAVED_NAME)),
         },
         _require_mode_with_zone_fields,
     )
 )
 
 
-async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
     """Compose and upload a DIY effect to a multi-zone lamp (fork).
 
     Deliberately *self-contained*: a zone left out of the call is switched
@@ -194,20 +203,31 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
     DIY config entities show what was actually sent instead of a draft the
     service just overwrote.
 
+    With ``save_as``, a string light's effect is also stored in the Govee
+    account under that name, and the response carries its ``effect_id`` and
+    ``diy_code``. The response is empty when nothing was saved.
+
     Raises:
         HomeAssistantError: If the target does not resolve to exactly one
             DIY-capable Govee device, a mode name is not in that zone's
             table, the effect cannot be encoded (no zone on, or a zone with
-            a mode and no colours), or the upload could not be sent.
+            a mode and no colours), the upload could not be sent, or the
+            account refused the save.
     """
     string_target = _string_effect_target(hass, call)
     if string_target is not None:
-        await _async_apply_string_effect(*string_target, call.data)
+        response = await _async_apply_string_effect(*string_target, call.data)
         _LOGGER.debug("Applied DIY effect to %s", string_target[1].name)
-        return
+        return response
 
     coordinator, device, profile, diy = _resolve_diy_target(hass, call)
     device_id = device.device_id
+    if ATTR_SAVE_AS in call.data:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="save_diy_unsupported",
+            translation_placeholders={"device": device.name},
+        )
 
     store = diy_store(coordinator)
     for zone in diy.zones:
@@ -219,22 +239,57 @@ async def async_apply_diy_effect_handler(hass: HomeAssistant, call: ServiceCall)
 
     await async_send_diy_effect(coordinator, device, profile, store.effects(device_id, diy))
     _LOGGER.debug("Applied DIY effect to %s", device.name)
+    return {}
+
+
+@dataclass(frozen=True)
+class _StringEffect:
+    """One encoded whole-light effect and its account form."""
+
+    record: bytes
+    basic: bool
+    saved: saved_diy.SavedEffect
+
+    def frames(self, code: int) -> list[bytes]:
+        module = h70cx_basic if self.basic else h70cx
+        return module.upload_frames(self.record, code)
 
 
 async def _async_apply_string_effect(
     coordinator: GoveeCoordinator, device: GoveeDevice, profile: DeviceProfile, data: Mapping[str, Any]
-) -> None:
-    """Upload one composed, basic, combo or layered whole-light effect (H70CX family)."""
+) -> dict[str, Any]:
+    """Upload one composed, basic, combo or layered whole-light effect (H70CX family).
+
+    With ``save_as`` the effect is committed under a new DIY code and then
+    stored in the account under that code.
+
+    Returns:
+        ``effect_id``, ``diy_code`` and ``name`` of the saved effect, or an
+        empty dict when nothing was saved.
+    """
     if ATTR_LAYER_MODE in data and ATTR_LAYERS not in data:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
             translation_key="layer_mode_without_layers",
             translation_placeholders={"device": device.name},
         )
-    if ATTR_LAYERS in data:
-        frames = _layered_frames(device, data)
-    else:
-        frames = _single_effect_frames(device, data)
+    name = data.get(ATTR_SAVE_AS)
+    if name is not None and device.sku not in saved_diy.GOODS_TYPES:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="save_diy_unsupported",
+            translation_placeholders={"device": device.name},
+        )
+    code = h70cx.EFFECT_CODE if name is None else new_diy_code()
+    try:
+        effect = _layered_effect(device, data) if ATTR_LAYERS in data else _single_effect(data)
+        frames = effect.frames(code)
+    except GoveeProtocolError as err:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_string_effect",
+            translation_placeholders={"device": device.name, "reason": str(err)},
+        ) from err
 
     if not await raw_router.async_route_frames(
         coordinator, device.device_id, device.sku, profile, frames, what="string effect"
@@ -245,10 +300,18 @@ async def _async_apply_string_effect(
             translation_placeholders={"device": device.name},
         )
     clear_optimistic_scene(coordinator, device.device_id)
+    if name is None:
+        return {}
+    effect_id = await async_save_effect(coordinator, device, name, effect.saved, code)
+    return {"effect_id": effect_id, "diy_code": code, "name": name}
 
 
-def _layered_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[bytes]:
-    """Frames for the ``layers`` field, refusing it beside the single-effect fields."""
+def _layered_effect(device: GoveeDevice, data: Mapping[str, Any]) -> _StringEffect:
+    """The ``layers`` field's effect, refusing it beside the single-effect fields.
+
+    Raises:
+        GoveeProtocolError: The layers as a whole cannot be encoded.
+    """
     mixed = [field for field in _SINGLE_EFFECT_FIELDS if field in data]
     if mixed:
         raise ServiceValidationError(
@@ -281,55 +344,49 @@ def _layered_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[bytes]
         for item in items
     ]
     try:
-        return h70cx.layered_frames(layers, data.get(ATTR_LAYER_MODE, h70cx.DEFAULT_LAYER_MODE))
+        record = h70cx.layered_record(layers, data.get(ATTR_LAYER_MODE, h70cx.DEFAULT_LAYER_MODE))
     except h70cx.LayerError as err:
         raise ServiceValidationError(
             translation_domain=DOMAIN,
             translation_key="invalid_string_effect_layer",
             translation_placeholders={"device": device.name, "layer": str(err.layer), "reason": err.reason},
         ) from err
-    except GoveeProtocolError as err:
-        raise ServiceValidationError(
-            translation_domain=DOMAIN,
-            translation_key="invalid_string_effect",
-            translation_placeholders={"device": device.name, "reason": str(err)},
-        ) from err
+    return _StringEffect(record, False, saved_diy.composed(record, layers[0].effect))
 
 
-def _single_effect_frames(device: GoveeDevice, data: Mapping[str, Any]) -> list[bytes]:
-    """Frames for the top-level whole-light fields."""
-    try:
-        if ATTR_EFFECT not in data or ATTR_COLORS not in data:
-            raise GoveeProtocolError("this light takes the whole-light fields: effect and colors, or layers")
-        effect = data[ATTR_EFFECT]
-        if effect in h70cx_basic.NAMES:
-            for option in (ATTR_SHAPE, ATTR_CENTER, ATTR_PARAMS):
-                if option in data:
-                    raise GoveeProtocolError(f"{effect} has no {option}")
-            return h70cx_basic.effect_frames(
-                effect,
-                data[ATTR_COLORS],
-                speed=data.get(ATTR_SPEED),
-                direction=data.get(ATTR_DIRECTION),
-                combine=data.get(ATTR_COMBINE),
-            )
-        if ATTR_COMBINE in data:
-            raise GoveeProtocolError(f"only {h70cx_basic.COMBO} takes effects to combine")
-        return h70cx.effect_frames(
+def _single_effect(data: Mapping[str, Any]) -> _StringEffect:
+    """The top-level whole-light fields' effect.
+
+    Raises:
+        GoveeProtocolError: The fields cannot be encoded.
+    """
+    if ATTR_EFFECT not in data or ATTR_COLORS not in data:
+        raise GoveeProtocolError("this light takes the whole-light fields: effect and colors, or layers")
+    effect = data[ATTR_EFFECT]
+    if effect in h70cx_basic.NAMES:
+        for option in (ATTR_SHAPE, ATTR_CENTER, ATTR_PARAMS):
+            if option in data:
+                raise GoveeProtocolError(f"{effect} has no {option}")
+        record = h70cx_basic.effect_record(
             effect,
             data[ATTR_COLORS],
             speed=data.get(ATTR_SPEED),
             direction=data.get(ATTR_DIRECTION),
-            shape=data.get(ATTR_SHAPE),
-            center=data.get(ATTR_CENTER),
-            params=data.get(ATTR_PARAMS),
+            combine=data.get(ATTR_COMBINE),
         )
-    except GoveeProtocolError as err:
-        raise ServiceValidationError(
-            translation_domain=DOMAIN,
-            translation_key="invalid_string_effect",
-            translation_placeholders={"device": device.name, "reason": str(err)},
-        ) from err
+        return _StringEffect(record, True, saved_diy.basic(record, effect, data.get(ATTR_COMBINE)))
+    if ATTR_COMBINE in data:
+        raise GoveeProtocolError(f"only {h70cx_basic.COMBO} takes effects to combine")
+    record = h70cx.effect_record(
+        effect,
+        data[ATTR_COLORS],
+        speed=data.get(ATTR_SPEED),
+        direction=data.get(ATTR_DIRECTION),
+        shape=data.get(ATTR_SHAPE),
+        center=data.get(ATTR_CENTER),
+        params=data.get(ATTR_PARAMS),
+    )
+    return _StringEffect(record, False, saved_diy.composed(record, effect))
 
 
 def _string_effect_target(
@@ -528,16 +585,68 @@ def _staged_record(zone: DiyZoneSpec, data: dict[str, Any] | None) -> dict[str, 
     return record
 
 
+SERVICE_LIST_SAVED_DIY_EFFECTS_SCHEMA = vol.Schema({**cv.TARGET_SERVICE_FIELDS})
+SERVICE_DELETE_SAVED_DIY_EFFECT_SCHEMA = vol.Schema(
+    {**cv.TARGET_SERVICE_FIELDS, vol.Required(ATTR_EFFECT_ID): vol.All(vol.Coerce(int), vol.Range(min=1))}
+)
+
+
+def _saved_diy_target(hass: HomeAssistant, call: ServiceCall) -> tuple[GoveeCoordinator, GoveeDevice]:
+    """The one device a saved-effect action targets.
+
+    Raises:
+        HomeAssistantError: The target names no light that keeps saved
+            effects, or more than one DIY-capable device.
+    """
+    target = _string_effect_target(hass, call)
+    if target is None or target[1].sku not in saved_diy.GOODS_TYPES:
+        raise _diy_error("saved_diy_no_target")
+    return target[0], target[1]
+
+
+async def async_list_saved_diy_effects_handler(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
+    """Return the account's saved DIY effects for the targeted light."""
+    coordinator, device = _saved_diy_target(hass, call)
+    return {"effects": await async_list_effects(coordinator, device)}
+
+
+async def async_delete_saved_diy_effect_handler(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Delete one of the targeted light's saved DIY effects from the account."""
+    coordinator, device = _saved_diy_target(hass, call)
+    await async_delete_effect(coordinator, device, call.data[ATTR_EFFECT_ID])
+
+
 @callback
 def async_setup_diy_actions(hass: HomeAssistant) -> None:
-    """Register ``govee.apply_diy_effect``."""
+    """Register ``govee.apply_diy_effect`` and the saved-effect actions."""
 
-    async def _apply_diy_effect(call: ServiceCall) -> None:
-        await async_apply_diy_effect_handler(hass, call)
+    async def _apply_diy_effect(call: ServiceCall) -> ServiceResponse:
+        return await async_apply_diy_effect_handler(hass, call)
 
     hass.services.async_register(
         DOMAIN,
         SERVICE_APPLY_DIY_EFFECT,
         _apply_diy_effect,
         schema=SERVICE_APPLY_DIY_EFFECT_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def _list_saved(call: ServiceCall) -> ServiceResponse:
+        return await async_list_saved_diy_effects_handler(hass, call)
+
+    async def _delete_saved(call: ServiceCall) -> None:
+        await async_delete_saved_diy_effect_handler(hass, call)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_SAVED_DIY_EFFECTS,
+        _list_saved,
+        schema=SERVICE_LIST_SAVED_DIY_EFFECTS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DELETE_SAVED_DIY_EFFECT,
+        _delete_saved,
+        schema=SERVICE_DELETE_SAVED_DIY_EFFECT_SCHEMA,
     )

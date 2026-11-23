@@ -306,6 +306,11 @@ apply_diy_effect:
                 - default
                 - variant_3
                 - variant_1_2
+        save_as:
+          required: false
+          example: Candy cane
+          selector:
+            text:
 
 send_raw_ptreal:
   fields:
@@ -583,3 +588,23 @@ upload_bulb_positions:
       default: true
       selector:
         boolean:
+
+list_saved_diy_effects:
+  target:
+    entity:
+      integration: govee
+      domain: light
+
+delete_saved_diy_effect:
+  target:
+    entity:
+      integration: govee
+      domain: light
+  fields:
+    effect_id:
+      required: true
+      example: 1234567
+      selector:
+        number:
+          min: 1
+          mode: box

@@ -154,8 +154,12 @@ def effect_frames(
     combine: Sequence[str] | None = None,
 ) -> list[bytes]:
     """The frames that upload and show one basic or combo effect. See :func:`effect_record`."""
-    record = effect_record(effect, colors, speed=speed, direction=direction, combine=combine)
+    return upload_frames(effect_record(effect, colors, speed=speed, direction=direction, combine=combine))
+
+
+def upload_frames(record: bytes, code: int = EFFECT_CODE) -> list[bytes]:
+    """The frames that upload a basic or combo record and commit it as DIY ``code``."""
     return [
         *terminated_chunks(record, MARKER),
-        commit_frame(sub_mode=DIY_COMMIT_SUB_MODE, index=EFFECT_CODE),
+        commit_frame(sub_mode=DIY_COMMIT_SUB_MODE, index=code),
     ]
