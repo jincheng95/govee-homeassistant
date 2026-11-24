@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.util import color as color_util
 
+from .. import lan_delivery
 from ..lan_udp_health import lan_writable
 from ..segment_limit import manual_segment_count, segment_count
 from ..zone_state import ZONE_KEY_BY_TOGGLE, profile_for, registry, set_switch_state
@@ -57,6 +58,7 @@ async def async_route_frames(
     frames: Sequence[bytes],
     *,
     what: str = "frames",
+    confirm: bool = False,
 ) -> bool:
     """Send pre-built frames down the best raw pipe this device has right now.
 
@@ -75,8 +77,9 @@ async def async_route_frames(
     Every tier that does not apply — or raises — returns "not handled" and the
     next one is tried; when none of them can, this returns False and the caller
     falls back to whatever cloud *command* it had. Nothing here propagates an
-    exception to the entity. No tier confirms — raw frames are unacknowledged
-    on all channels — so callers keep optimistic state.
+    exception to the entity. No tier confirms, so callers keep optimistic
+    state. ``confirm`` adds the one check there is: a LAN write the lamp does
+    not answer (see :mod:`..lan_delivery`) is sent again over MQTT.
 
     Args:
         coordinator: The coordinator owning the device.
@@ -85,17 +88,27 @@ async def async_route_frames(
         profile: The SKU's profile (already looked up by the caller).
         frames: The frames to deliver, in order.
         what: Human-readable intent, for the debug log.
+        confirm: Wait for the lamp's answer to a LAN write, and resend over
+            MQTT when none comes.
 
     The device's upload lock is held while the frames go out, so they never
     land inside another fork upload to the same device.
 
     Returns:
-        True when some tier accepted the frames.
+        True when some tier accepted the frames. With ``confirm``, False also
+        when the LAN write went unanswered and MQTT did not take the resend.
     """
     if not frames:
         return False
     async with upload_lock(coordinator, device_id):
-        return await _async_pick_tier(coordinator, device_id, sku, profile, frames, what) is not None
+        if await _async_pick_tier(coordinator, device_id, sku, profile, frames, what) is None:
+            return False
+        if not confirm or await lan_delivery.async_confirm(coordinator, device_id):
+            return True
+        _LOGGER.debug("Govee raw router: %s to %s went unanswered over LAN — resending over MQTT", what, device_id)
+        return await _async_tier(
+            "MQTT", mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, frames, what
+        )
 
 
 async def async_route_upload(
@@ -252,6 +265,9 @@ async def _async_lan_tier(
     if target is None:
         return False
     ip, _profile = target
+    if lan_delivery.is_suspect(coordinator, device_id, ip):
+        _LOGGER.debug("Govee raw router: %s at %s stopped answering LAN writes — trying the remaining tiers", sku, ip)
+        return False
     try:
         return await lan_raw.async_send_frames(coordinator, device_id, ip, frames, what=what, repeats=repeats)
     except Exception as err:  # noqa: BLE001 - a tier must never raise at an entity

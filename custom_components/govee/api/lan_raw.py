@@ -17,7 +17,7 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Final
 
-from .. import lan_udp_health
+from .. import lan_delivery, lan_udp_health
 from ..const import CONF_ENABLE_LAN_RAW_WRITE, DEFAULT_ENABLE_LAN_RAW_WRITE
 from ..zone_state import profile_for
 from .protocol import DeviceProfile, GoveeProtocolError, LanUdpClient, Transport
@@ -141,6 +141,7 @@ async def async_send_frames(
         return False
 
     lan_udp_health.note_send(coordinator, device_id)
+    lan_delivery.note_send(coordinator, device_id, ip)
     _LOGGER.debug(
         "Govee LAN write: %s %s via LAN transport %s in %.1f ms (%d/%d x %s)",
         device_id,

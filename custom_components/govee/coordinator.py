@@ -247,6 +247,7 @@ from .models.device import (
 )
 from .models.device import GoveeLeakSensor, GoveeLeakSensorState
 from .api.lan_nudge import async_cancel_nudges, async_note_cloud_push
+from . import lan_delivery
 from . import lan_udp_health
 from . import lan_confirm
 from .scene_cache import SceneCacheManager, scenes_refreshed_signal
@@ -4147,6 +4148,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         device = self._devices.get(device_id)
         if device is None:
             return
+        lan_delivery.note_inbound(self, device_id, payload)
         if apply_raw_status(self, device, payload_frames(payload)):
             self.async_set_updated_data(self._states)
         # Fork: the `ee 30 01` zone power report, gated by the profile.

@@ -65,6 +65,7 @@ custom_components/govee/
 ├── child_power.py           # FORK: whole-lamp power behind a child entity
 ├── lan_confirm.py           # FORK: echo-lag-aware LAN confirm
 ├── lan_udp_health.py        # FORK: health for the raw LAN UDP link
+├── lan_delivery.py          # FORK: delivery check for raw LAN writes (cloud ptReal answer)
 ├── models/
 │   ├── device.py            # GoveeDevice, GoveeCapability, leak sensor models, synthetic probe thermometers
 │   ├── state.py             # GoveeDeviceState (mutable), RGBColor

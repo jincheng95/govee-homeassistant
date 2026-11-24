@@ -1245,6 +1245,10 @@
         }
       }
     },
+    "lan_pin_unreachable": {
+      "title": "{device} does not answer at its pinned LAN address",
+      "description": "{device} is pinned to {address} under **LAN device addresses**, and it has not answered several commands in a row sent there. The commands were sent again over Govee's cloud, so the device keeps working, only slower.\n\nThe device has probably moved to another address. Open the integration's **Configure** dialog and correct the address, or replace the pin with the device's subnet (for example 10.20.0.0/24) so the device is found again when its address changes. This repair clears itself when the device answers at the pinned address."
+    },
     "mqtt_silent": {
       "title": "Govee real-time updates are silent for {entry_title}",
       "description": "The real-time (AWS IoT) session for {entry_title} is connected, but in {minutes} minutes not one message arrived, although new readings from your devices reached Govee's cloud or the integration asked them for their status. Reconnecting once did not help. Everything keeps working over polling.\n\nThis usually means the saved account sign-in no longer gets updates. Go to the integration page and select **Reconfigure** to sign in again, which fetches fresh real-time credentials. This repair clears itself as soon as a real-time message arrives."

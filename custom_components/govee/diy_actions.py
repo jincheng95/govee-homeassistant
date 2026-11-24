@@ -302,7 +302,7 @@ async def _async_apply_string_effect(
         ) from err
 
     if not await raw_router.async_route_frames(
-        coordinator, device.device_id, device.sku, profile, frames, what="string effect"
+        coordinator, device.device_id, device.sku, profile, frames, what="string effect", confirm=True
     ):
         raise HomeAssistantError(
             translation_domain=DOMAIN,

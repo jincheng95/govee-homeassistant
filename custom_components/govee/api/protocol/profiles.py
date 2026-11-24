@@ -360,6 +360,12 @@ class DeviceProfile:
     """How many LEDs the :mod:`.paint` upload addresses one by one; 0 for none."""
     power_push: bool = False
     """Whether this SKU pushes ``ee 30 01 <on>`` when its power changes (:mod:`.status`)."""
+    echoes_raw_writes: bool = False
+    """Whether this SKU answers a raw write with a cloud ``ptReal`` message.
+
+    The answer lists ``<byte 0> <byte 1 or marker> 00`` per frame written, and
+    comes for a LAN write as well. True only where it has been captured.
+    """
     echo_lag_seconds: float = 0.0
     """How long this SKU keeps reporting its PRE-command state after a write.
 
@@ -441,6 +447,7 @@ class DeviceProfile:
 
 H60B0: Final = DeviceProfile(
     sku="H60B0",
+    echoes_raw_writes=True,
     goods_type=301,
     name="Uplighter",
     # Manufacturer claims 9000 K; above ~6500 K the firmware drops the zone
@@ -727,6 +734,7 @@ H6076: Final = DeviceProfile(
 
 H80C5: Final = DeviceProfile(
     sku="H80C5",
+    echoes_raw_writes=True,
     goods_type=260,
     name="Christmas string lights",
     kelvin=KelvinRange(2700, 9000, verified=True, note="range of the raw colour-temperature frame"),
