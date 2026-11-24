@@ -1247,7 +1247,7 @@
     },
     "lan_pin_unreachable": {
       "title": "{device} does not answer at its pinned LAN address",
-      "description": "{device} is pinned to {address} under **LAN device addresses**, and it has not answered several commands in a row sent there. Effect uploads and zone commands go over Govee's cloud meanwhile, which is slower. Power, brightness and colour commands still go to the pinned address and may be lost.\n\nThe device has probably moved to another address. Open the integration's **Configure** dialog and correct the address, or replace the pin with the device's subnet (for example 10.20.0.0/24) so the device is found again when its address changes. This repair clears itself when the device answers at the pinned address, and when the integration reloads."
+      "description": "{device} is pinned to {address} under **LAN device addresses**, and it has not answered several commands in a row sent there. Commands go over Govee's cloud meanwhile, which is slower.\n\nThe device has probably moved to another address. Open the integration's **Configure** dialog and correct the address, or replace the pin with the device's subnet (for example 10.20.0.0/24) so the device is found again when its address changes. Every five minutes one effect or zone command tries the pinned address again. This repair clears itself when the device answers there, and when the integration reloads."
     },
     "mqtt_silent": {
       "title": "Govee real-time updates are silent for {entry_title}",

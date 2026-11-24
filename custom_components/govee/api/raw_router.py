@@ -314,7 +314,7 @@ async def _async_lan_tier(
     a device inside it must still be paintable over BLE and MQTT. Consulting it
     before routing blacked out every raw pipe at once.
     """
-    if _writes_suppressed(coordinator, device_id):
+    if _writes_suppressed(coordinator, device_id) and not lan_delivery.holds_writes(coordinator, device_id):
         _LOGGER.debug(
             "Govee raw router: LAN writes to %s are in upstream's cooldown — trying the remaining tiers", sku
         )

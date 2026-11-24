@@ -62,6 +62,7 @@ def _coordinator(*, sku: str = ECHO_SKU, hass: Any = None) -> Any:
     coordinator._ensure_device_topic = AsyncMock(return_value="GA/device-topic")
     coordinator._lan_writes_suppressed = MagicMock(return_value=False)
     coordinator._lan_write_only = set()
+    coordinator._lan_write_suppressed_until = {}
     coordinator._lan_devices = {}
     coordinator.lan_health = TransportHealth("lan")
     coordinator.get_transport_health = MagicMock(return_value=coordinator.lan_health)
@@ -360,16 +361,59 @@ class TestWriteOnlyPin:
         assert IP in caplog.text
         coordinator._request_lan_rescan.assert_not_called()
 
-    async def test_a_reloaded_entry_drops_the_issue(self, hass: HomeAssistant) -> None:
+    async def test_the_entry_deletes_the_issue_on_unload(self, hass: HomeAssistant) -> None:
         coordinator = _coordinator(hass=hass)
         coordinator._lan_write_only = {DEVICE_ID}
         for _ in range(lan_delivery.PIN_MISS_THRESHOLD):
             await _miss(coordinator)
         assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is not None
 
-        lan_delivery.note_send(_coordinator(hass=hass), DEVICE_ID, IP, FRAMES)
+        coordinator.config_entry.async_on_unload.assert_called_once()
+        coordinator.config_entry.async_on_unload.call_args.args[0]()
 
         assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is None
+
+    async def test_a_coordinator_without_an_entry_still_reports(self, hass: HomeAssistant) -> None:
+        coordinator = _coordinator(hass=hass)
+        coordinator.config_entry = None
+
+        lan_delivery._report_pin(coordinator, DEVICE_ID, IP)
+
+        assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is not None
+
+    async def test_the_first_miss_holds_upstreams_lan_commands(self) -> None:
+        coordinator = _coordinator()
+        coordinator._lan_write_only = {DEVICE_ID}
+
+        await _miss(coordinator)
+
+        assert coordinator._lan_write_suppressed_until == {DEVICE_ID: float("inf")}
+        assert lan_delivery.holds_writes(coordinator, DEVICE_ID) is True
+
+    async def test_an_answered_retry_lifts_the_hold(
+        self, raw_client: FakeRawClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        coordinator = _coordinator()
+        coordinator._lan_write_only = {DEVICE_ID}
+        await _miss(coordinator)
+        # Upstream's cooldown now reports the hold, and the raw tier must retry through it.
+        coordinator._lan_writes_suppressed = MagicMock(return_value=True)
+        monkeypatch.setattr(lan_delivery, "SUSPECT_RETRY_SECONDS", 0)
+
+        assert await _route_answered(coordinator) is True
+
+        assert {host for host, _ in raw_client.envelopes} == {IP}
+        coordinator._clear_lan_write_misses.assert_called_once_with(DEVICE_ID)
+        assert lan_delivery.holds_writes(coordinator, DEVICE_ID) is False
+
+    async def test_a_scanned_device_is_not_held(self) -> None:
+        coordinator = _coordinator()
+
+        await _miss(coordinator)
+
+        assert coordinator._lan_write_suppressed_until == {}
+        assert lan_delivery.holds_writes(coordinator, DEVICE_ID) is False
+        assert lan_delivery.holds_writes(coordinator, "unknown") is False
 
     async def test_an_answer_clears_the_issue(self, hass: HomeAssistant) -> None:
         coordinator = _coordinator(hass=hass)
@@ -477,6 +521,10 @@ class TestKnownAddress:
 class TestWiring:
     def test_the_coordinator_members_read_here_exist(self) -> None:
         assert callable(GoveeCoordinator._request_lan_rescan)
+        assert callable(GoveeCoordinator._clear_lan_write_misses)
+        assert "self._lan_write_suppressed_until.get(device_id)" in inspect.getsource(
+            GoveeCoordinator._lan_writes_suppressed
+        )
         assert callable(GoveeCoordinator.mqtt_last_receive_for)
         assert callable(GoveeCoordinator.get_transport_health)
         assert "self._lan_write_only" in inspect.getsource(GoveeCoordinator._resolve_lan_overrides)
@@ -485,7 +533,9 @@ class TestWiring:
         bare = SimpleNamespace()
 
         lan_delivery._request_rescan(bare)
+        lan_delivery._release_writes(bare, DEVICE_ID)
 
+        assert lan_delivery._hold_writes(bare, DEVICE_ID) is False
         assert lan_delivery._write_only(bare, DEVICE_ID) is False
 
     def test_the_mqtt_raw_frame_hook_feeds_the_check(self, monkeypatch: pytest.MonkeyPatch) -> None:

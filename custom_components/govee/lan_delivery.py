@@ -4,7 +4,8 @@ A lamp whose profile sets ``echoes_raw_writes`` answers every raw write with a
 cloud ``ptReal`` message, so a LAN write with no answer did not arrive. A missed
 answer marks the LAN address suspect, and raw writes then go over the cloud. A
 different address, a LAN reading from the device or an answered retry clears
-the mark. A write-only pin that keeps missing raises a repair issue.
+the mark. A suspect write-only pin also holds upstream's LAN commands, which
+nothing else checks, and raises a repair issue when it keeps missing.
 
 The check runs only while the cloud session is connected, has heard the device
 and could carry the same frames.
@@ -14,9 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final
 
@@ -60,6 +63,7 @@ class _Target:
     suspect_at: datetime | None = None
     misses: int = 0
     reported: bool = False
+    holding: bool = False
 
 
 def note_send(coordinator: GoveeCoordinator, device_id: str, ip: str, frames: Sequence[bytes]) -> None:
@@ -142,6 +146,16 @@ def is_suspect(coordinator: GoveeCoordinator, device_id: str, ip: str) -> bool:
     return time.monotonic() - target.suspect_since < SUSPECT_RETRY_SECONDS
 
 
+def holds_writes(coordinator: GoveeCoordinator, device_id: str) -> bool:
+    """Whether upstream's LAN write cooldown for the device is this module's hold.
+
+    The raw LAN tier must not honour that hold, or no write would ever retry
+    the address and lift it.
+    """
+    target = _targets(coordinator).get(device_id)
+    return target is not None and target.holding
+
+
 def _settle(coordinator: GoveeCoordinator, device_id: str, target: _Target, *, overdue: bool = False) -> bool:
     """Count an overdue watch as a miss. True when it did."""
     ip = target.pending_ip
@@ -167,7 +181,9 @@ def _settle(coordinator: GoveeCoordinator, device_id: str, target: _Target, *, o
     if not _write_only(coordinator, device_id):
         # A rescan cannot move a pinned address.
         _request_rescan(coordinator)
-    elif target.misses >= PIN_MISS_THRESHOLD and not target.reported:
+        return True
+    target.holding = _hold_writes(coordinator, device_id)
+    if target.misses >= PIN_MISS_THRESHOLD and not target.reported:
         target.reported = True
         _report_pin(coordinator, device_id, ip)
     return True
@@ -181,10 +197,13 @@ def _resolve(target: _Target, answered: bool) -> None:
 
 
 def _clear(coordinator: GoveeCoordinator, device_id: str, target: _Target) -> None:
-    """Forget the suspect mark, the miss count and the repair issue."""
+    """Forget the suspect mark, the miss count, the write hold and the repair issue."""
     target.suspect_ip = None
     target.suspect_at = None
     target.misses = 0
+    if target.holding:
+        target.holding = False
+        _release_writes(coordinator, device_id)
     if target.reported:
         target.reported = False
         ir.async_delete_issue(coordinator.hass, DOMAIN, _issue_id(device_id))
@@ -199,6 +218,10 @@ def _report_pin(coordinator: GoveeCoordinator, device_id: str, ip: str) -> None:
         PIN_MISS_THRESHOLD,
         ip,
     )
+    # The record of the issue dies with the coordinator, so the entry deletes it on unload.
+    entry = coordinator.config_entry
+    if entry is not None:
+        entry.async_on_unload(partial(ir.async_delete_issue, coordinator.hass, DOMAIN, _issue_id(device_id)))
     ir.async_create_issue(
         coordinator.hass,
         DOMAIN,
@@ -228,17 +251,10 @@ def _echo_expected(coordinator: GoveeCoordinator, device_id: str) -> bool:
 
 
 def _targets(coordinator: GoveeCoordinator) -> dict[str, _Target]:
-    """The per-device records, created on first use.
-
-    A reloaded entry gets a new coordinator, so first use also drops the repair
-    issues an earlier coordinator raised for these devices.
-    """
     targets = getattr(coordinator, _TARGETS_ATTR, None)
     if not isinstance(targets, dict):
         targets = {}
         setattr(coordinator, _TARGETS_ATTR, targets)
-        for device_id in coordinator.devices:
-            ir.async_delete_issue(coordinator.hass, DOMAIN, _issue_id(device_id))
     return targets
 
 
@@ -260,6 +276,25 @@ def _read_since(coordinator: GoveeCoordinator, device_id: str, since: datetime |
 
 def _write_only(coordinator: GoveeCoordinator, device_id: str) -> bool:
     return device_id in (getattr(coordinator, "_lan_write_only", None) or ())
+
+
+def _hold_writes(coordinator: GoveeCoordinator, device_id: str) -> bool:
+    """Put the device in upstream's LAN write cooldown with no expiry. True when held.
+
+    Upstream sends power, brightness and colour to a write-only pin without a
+    readback, so the cooldown is the one thing that moves them to the cloud.
+    """
+    cooldowns = getattr(coordinator, "_lan_write_suppressed_until", None)
+    if not isinstance(cooldowns, dict):
+        return False
+    cooldowns[device_id] = math.inf
+    return True
+
+
+def _release_writes(coordinator: GoveeCoordinator, device_id: str) -> None:
+    release = getattr(coordinator, "_clear_lan_write_misses", None)
+    if release is not None:
+        release(device_id)
 
 
 def _request_rescan(coordinator: GoveeCoordinator) -> None:
