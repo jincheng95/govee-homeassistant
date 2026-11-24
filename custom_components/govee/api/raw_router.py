@@ -4,7 +4,8 @@ The 20-byte frames are transport-neutral, so the pipe is a routing decision, not
 a codec one: :func:`async_route_frames` tries LAN raw, then plaintext BLE, then
 the cloud MQTT ``ptReal`` passthrough, and reports False when no tier accepted
 ("not handled, use the cloud command you had"). No tier raises at the entity and
-no tier confirms, so callers keep optimistic state. :func:`async_route_upload`
+no tier confirms, so callers keep optimistic state. The one check is the cloud
+answer to a LAN write (:mod:`..lan_delivery`). :func:`async_route_upload`
 sends a multi-message upload over one tier, and a per-device lock keeps the
 fork's raw writes from landing inside it. Also home to the per-segment
 paint (:func:`async_segment_color`), which picks its wire form from the profile,
@@ -45,6 +46,10 @@ _LOGGER = logging.getLogger(__name__)
 SEGMENT_ZONE_KEY: Final = "segments"
 
 _UPLOAD_LOCKS_ATTR: Final = "_govee_upload_locks"
+
+_LAN: Final = "LAN"
+_BLE: Final = "BLE"
+_MQTT: Final = "MQTT"
 
 
 # Routing
@@ -92,7 +97,8 @@ async def async_route_frames(
             MQTT when none comes.
 
     The device's upload lock is held while the frames go out, so they never
-    land inside another fork upload to the same device.
+    land inside another fork upload to the same device. It is released during
+    the ``confirm`` wait, so another write can land before the resend.
 
     Returns:
         True when some tier accepted the frames. With ``confirm``, False also
@@ -101,14 +107,65 @@ async def async_route_frames(
     if not frames:
         return False
     async with upload_lock(coordinator, device_id):
-        if await _async_pick_tier(coordinator, device_id, sku, profile, frames, what) is None:
-            return False
-        if not confirm or await lan_delivery.async_confirm(coordinator, device_id):
-            return True
-        _LOGGER.debug("Govee raw router: %s to %s went unanswered over LAN — resending over MQTT", what, device_id)
+        picked = await _async_pick_tier(coordinator, device_id, sku, profile, frames, what)
+    if picked is None:
+        return False
+    if not confirm or picked[0] != _LAN or await lan_delivery.async_confirm(coordinator, device_id):
+        return True
+    _LOGGER.debug("Govee raw router: %s to %s went unanswered over LAN — resending over MQTT", what, device_id)
+    async with upload_lock(coordinator, device_id):
         return await _async_tier(
-            "MQTT", mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, frames, what
+            _MQTT, mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, frames, what
         )
+
+
+async def async_send_to_lan_address(
+    coordinator: GoveeCoordinator,
+    device_id: str,
+    sku: str,
+    profile: DeviceProfile,
+    ip: str,
+    frames: Sequence[bytes],
+    *,
+    what: str,
+    confirm: bool = False,
+) -> bool:
+    """Send frames to a LAN address the caller resolved itself.
+
+    For writers whose LAN target does not follow the transport option, so
+    :func:`async_route_frames` would resolve a different one. MQTT stands in
+    while the address is suspect (see :mod:`..lan_delivery`). When MQTT cannot
+    take the frames the LAN send goes out anyway.
+
+    Args:
+        coordinator: The coordinator owning the device.
+        device_id: The Govee device id.
+        sku: The device model.
+        profile: The SKU's profile.
+        ip: The LAN address to write to.
+        frames: The frames, sent in one envelope.
+        what: Human-readable intent, for the debug log.
+        confirm: Wait for the lamp's answer, and resend over MQTT when none
+            comes.
+
+    Returns:
+        True when the frames went out. With ``confirm``, False also when the
+        LAN write went unanswered and MQTT did not take the resend.
+    """
+
+    async def mqtt() -> bool:
+        return await _async_tier(
+            _MQTT, mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, frames, what
+        )
+
+    if lan_delivery.is_suspect(coordinator, device_id, ip) and await mqtt():
+        return True
+    if not await lan_raw.async_send_frames(coordinator, device_id, ip, frames, what=what):
+        return False
+    if not confirm or await lan_delivery.async_confirm(coordinator, device_id):
+        return True
+    _LOGGER.debug("Govee raw router: %s to %s went unanswered over LAN — resending over MQTT", what, device_id)
+    return await mqtt()
 
 
 async def async_route_upload(
@@ -151,9 +208,10 @@ async def async_route_upload(
         return 0
     repeats = lan_raw.LAN_WRITE_REPEATS if repeat else 1
     async with upload_lock(coordinator, device_id):
-        send = await _async_pick_tier(coordinator, device_id, sku, profile, messages[0], what, repeats)
-        if send is None:
+        picked = await _async_pick_tier(coordinator, device_id, sku, profile, messages[0], what, repeats)
+        if picked is None:
             return 0
+        send = picked[1]
         sent = 1
         try:
             for message in messages[1:]:
@@ -190,12 +248,12 @@ async def _async_pick_tier(
     frames: Sequence[bytes],
     what: str,
     repeats: int = lan_raw.LAN_WRITE_REPEATS,
-) -> Callable[[Sequence[bytes]], Awaitable[bool]] | None:
+) -> tuple[str, Callable[[Sequence[bytes]], Awaitable[bool]]] | None:
     """Send ``frames`` down the first tier that takes them.
 
     Returns:
-        A sender bound to that tier for the rest of an upload, or None when no
-        tier took the frames.
+        The tier's name and a sender bound to it for the rest of an upload, or
+        None when no tier took the frames.
     """
 
     async def lan(message: Sequence[bytes]) -> bool:
@@ -203,17 +261,17 @@ async def _async_pick_tier(
 
     async def ble(message: Sequence[bytes]) -> bool:
         return await _async_tier(
-            "BLE", ble_raw_write.async_send_frames, coordinator, device_id, sku, profile, message, what
+            _BLE, ble_raw_write.async_send_frames, coordinator, device_id, sku, profile, message, what
         )
 
     async def mqtt(message: Sequence[bytes]) -> bool:
         return await _async_tier(
-            "MQTT", mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, message, what
+            _MQTT, mqtt_raw_write.async_send_frames, coordinator, device_id, sku, profile, message, what
         )
 
-    for tier in (lan, ble, mqtt):
+    for name, tier in ((_LAN, lan), (_BLE, ble), (_MQTT, mqtt)):
         if await tier(frames):
-            return tier
+            return name, tier
     return None
 
 
@@ -322,6 +380,10 @@ async def async_zone_power(entity: Any, *, on: bool) -> bool:
         # cooldown). Zone power has an exact cloud fallback (ToggleCommand),
         # so honour the hold and let the caller reroute — nothing is lost.
         _LOGGER.debug("Govee LAN write: writes to %s are in upstream's cooldown — routing zone power via cloud", sku)
+        return False
+
+    if device_id is not None and lan_delivery.is_suspect(coordinator, device_id, ip):
+        _LOGGER.debug("Govee LAN write: %s at %s stopped answering LAN writes — routing zone power via cloud", sku, ip)
         return False
 
     if not zone_power_supported(profile, zone_key):

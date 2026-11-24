@@ -2,10 +2,9 @@
 
 A lamp whose profile sets ``echoes_raw_writes`` answers every raw write with a
 cloud ``ptReal`` message, so a LAN write with no answer did not arrive. A missed
-answer marks the LAN address suspect, which sends later raw writes to the
-other tiers, and asks for a LAN rescan. A different address, a LAN read from the
-same address or an answered retry clears the mark. A write-only pin that
-keeps missing raises a repair issue.
+answer marks the LAN address suspect, and raw writes then go over the cloud. A
+different address, a LAN reading from the device or an answered retry clears
+the mark. A write-only pin that keeps missing raises a repair issue.
 
 The check runs only while the cloud session is connected, has heard the device
 and could carry the same frames.
@@ -16,13 +15,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final
 
 from homeassistant.helpers import issue_registry as ir
 
 from .api import mqtt_raw_write
+from .api.segment_readback import payload_frames
 from .const import DOMAIN, LAN_RESCAN_INTERVAL
 from .zone_state import profile_for
 
@@ -52,6 +53,7 @@ class _Target:
 
     pending_ip: str | None = None
     pending_since: float = 0.0
+    pending_heads: set[int] = field(default_factory=set)
     waiter: asyncio.Future[bool] | None = None
     suspect_ip: str | None = None
     suspect_since: float = 0.0
@@ -60,29 +62,40 @@ class _Target:
     reported: bool = False
 
 
-def note_send(coordinator: GoveeCoordinator, device_id: str, ip: str) -> None:
+def note_send(coordinator: GoveeCoordinator, device_id: str, ip: str, frames: Sequence[bytes]) -> None:
     """Start watching for the answer to a raw LAN write that just went out.
 
     A write sent while an earlier one is still unanswered joins that watch.
     """
+    targets = _targets(coordinator)
     if not _echo_expected(coordinator, device_id):
         return
-    target = _targets(coordinator).setdefault(device_id, _Target())
+    target = targets.setdefault(device_id, _Target())
     _settle(coordinator, device_id, target)
     if target.pending_ip is None:
         target.pending_ip = ip
         target.pending_since = time.monotonic()
+        target.pending_heads = set()
+    target.pending_heads.update(frame[0] for frame in frames if frame)
 
 
 def note_inbound(coordinator: GoveeCoordinator, device_id: str, payload: dict[str, Any]) -> None:
     """Take an inbound cloud message as the answer to a watched write.
 
-    Only a ``ptReal`` message counts. A status push says nothing about delivery.
+    Only a ``ptReal`` message counts, and only when one of its acks opens with
+    the first byte of a watched frame. A status push or the answer to a query
+    says nothing about delivery. An answer that comes after the wait ran out
+    does not count either.
     """
     if payload.get("cmd") != _ECHO_CMD:
         return
     target = _targets(coordinator).get(device_id)
-    if target is None or target.pending_ip is None:
+    if target is None:
+        return
+    _settle(coordinator, device_id, target)
+    if target.pending_ip is None:
+        return
+    if target.pending_heads.isdisjoint(ack[0] for ack in payload_frames(payload) if ack):
         return
     target.pending_ip = None
     _resolve(target, True)
@@ -146,13 +159,15 @@ def _settle(coordinator: GoveeCoordinator, device_id: str, target: _Target, *, o
     target.suspect_at = datetime.now(timezone.utc)
     target.misses += 1
     _LOGGER.debug(
-        "Govee LAN delivery: no answer from %s at %s (%d in a row) — raw writes use the other tiers",
+        "Govee LAN delivery: no answer from %s at %s (%d in a row) — raw writes use the cloud",
         device_id,
         ip,
         target.misses,
     )
-    _request_rescan(coordinator)
-    if _write_only(coordinator, device_id) and target.misses >= PIN_MISS_THRESHOLD and not target.reported:
+    if not _write_only(coordinator, device_id):
+        # A rescan cannot move a pinned address.
+        _request_rescan(coordinator)
+    elif target.misses >= PIN_MISS_THRESHOLD and not target.reported:
         target.reported = True
         _report_pin(coordinator, device_id, ip)
     return True
@@ -213,29 +228,41 @@ def _echo_expected(coordinator: GoveeCoordinator, device_id: str) -> bool:
 
 
 def _targets(coordinator: GoveeCoordinator) -> dict[str, _Target]:
+    """The per-device records, created on first use.
+
+    A reloaded entry gets a new coordinator, so first use also drops the repair
+    issues an earlier coordinator raised for these devices.
+    """
     targets = getattr(coordinator, _TARGETS_ATTR, None)
     if not isinstance(targets, dict):
         targets = {}
         setattr(coordinator, _TARGETS_ATTR, targets)
+        for device_id in coordinator.devices:
+            ir.async_delete_issue(coordinator.hass, DOMAIN, _issue_id(device_id))
     return targets
 
 
 def _heard(coordinator: GoveeCoordinator, device_id: str) -> bool:
     """Whether the cloud session has delivered a message from the device."""
-    client = getattr(coordinator, "_mqtt_client", None)
-    return client is not None and client.last_message_ts_for(device_id) is not None
+    return coordinator.mqtt_last_receive_for(device_id) is not None
 
 
 def _read_since(coordinator: GoveeCoordinator, device_id: str, since: datetime | None) -> bool:
-    """Whether the device answered a LAN read after ``since``."""
+    """Whether a LAN reading from the device was applied after ``since``.
+
+    ``last_success_ts`` cannot answer this, because a send to a write-only pin
+    stamps it too.
+    """
     health = coordinator.get_transport_health(device_id, "lan")
-    answered = getattr(health, "last_success_ts", None)
-    return isinstance(answered, datetime) and since is not None and answered > since
+    read = getattr(health, "last_read_ts", None)
+    return isinstance(read, datetime) and since is not None and read > since
 
 
 def _write_only(coordinator: GoveeCoordinator, device_id: str) -> bool:
-    return device_id in coordinator._lan_write_only
+    return device_id in (getattr(coordinator, "_lan_write_only", None) or ())
 
 
 def _request_rescan(coordinator: GoveeCoordinator) -> None:
-    coordinator._request_lan_rescan()
+    rescan = getattr(coordinator, "_request_lan_rescan", None)
+    if rescan is not None:
+        rescan()

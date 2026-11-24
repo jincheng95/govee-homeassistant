@@ -287,7 +287,7 @@ async def async_send_diy_effect(
     # Imported here rather than at module scope: lan_raw imports zone_state,
     # and keeping the transport out of this module's import graph is what lets
     # the store be unit-tested with no coordinator at all.
-    from .api import lan_raw
+    from .api import lan_raw, raw_router
 
     try:
         frames = GoveeCodec(profile).diy_effect(effects)
@@ -307,11 +307,11 @@ async def async_send_diy_effect(
         )
     ip, _profile = target
 
-    if not await lan_raw.async_send_frames(
-        coordinator, device.device_id, ip, frames, what="diy effect upload"
+    if not await raw_router.async_send_to_lan_address(
+        coordinator, device.device_id, device.sku, profile, ip, frames, what="diy effect upload", confirm=True
     ):
         raise HomeAssistantError(
-            f"{device.name}: the local-network DIY effect upload could not be sent"
+            f"{device.name}: the DIY effect upload could not be sent, or the device did not answer it"
         )
 
     _LOGGER.debug(

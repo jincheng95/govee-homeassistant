@@ -30,7 +30,7 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from ..api import lan_raw
+from ..api import lan_raw, raw_router
 from ..child_power import async_ensure_device_powered
 from ..api.protocol import (
     Capability,
@@ -239,8 +239,10 @@ class _GoveeZoneEntityBase(GoveeEntity):
         target = self._lan_target()
         if target is None:
             return False
-        ip, _profile = target
-        return await lan_raw.async_send_frames(self.coordinator, self._device_id, ip, frames, what=what)
+        ip, profile = target
+        return await raw_router.async_send_to_lan_address(
+            self.coordinator, self._device_id, self._device.sku, profile, ip, frames, what=what
+        )
 
 
 class GoveeZoneLightEntity(_GoveeZoneEntityBase, LightEntity, RestoreEntity):

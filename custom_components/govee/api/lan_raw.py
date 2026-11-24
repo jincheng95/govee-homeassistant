@@ -141,7 +141,7 @@ async def async_send_frames(
         return False
 
     lan_udp_health.note_send(coordinator, device_id)
-    lan_delivery.note_send(coordinator, device_id, ip)
+    lan_delivery.note_send(coordinator, device_id, ip, frames)
     _LOGGER.debug(
         "Govee LAN write: %s %s via LAN transport %s in %.1f ms (%d/%d x %s)",
         device_id,
