@@ -283,6 +283,7 @@ def clear_optimistic_scene(coordinator: GoveeCoordinator, device_id: str) -> Non
     if state is not None and (state.active_scene or state.active_scene_name):
         state.active_scene = None
         state.active_scene_name = None
+        state.active_scene_param_id = None
         coordinator.async_update_listeners()
 
 

@@ -49,6 +49,7 @@ from .entity import GoveeEntity
 from .kettle.entities import kettle_sensors
 from .models import GoveeDevice, TransportHealth, TransportKind
 from .models.device import GoveeLeakSensor, leak_sensor_device_info
+from .registry import hub_link_info
 from .models.energy_counter import EnergyCounter
 from .platforms.light_schedule import async_light_schedule_sensor_entities
 from .platforms.string_previews import async_string_preview_sensor_entities
@@ -235,7 +236,7 @@ async def async_setup_entry(
         entities.append(GoveeLeakBatterySensor(coordinator, sensor))
         entities.append(GoveeLeakLastWetSensor(coordinator, sensor))
         entities.append(GoveeLeakAlertStatusSensor(coordinator, sensor))
-        entities.append(GoveeLeakDeviceAddressSensor(sensor))
+        entities.append(GoveeLeakDeviceAddressSensor(coordinator, sensor))
         if sensor.hub_device_id and sensor.hub_device_id not in seen_hubs:
             seen_hubs.add(sensor.hub_device_id)
             entities.append(GoveeLeakHubAddressSensor(sensor.hub_device_id))
@@ -1142,7 +1143,11 @@ class GoveeLeakBatterySensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return leak_sensor_device_info(self._sensor, DOMAIN)
+        return leak_sensor_device_info(
+            self._sensor,
+            DOMAIN,
+            hub_link_info(self.hass, (DOMAIN, self._sensor.hub_device_id), self._coordinator._config_entry.entry_id),
+        )
 
     @property
     def native_value(self) -> int | None:
@@ -1172,7 +1177,11 @@ class GoveeLeakLastWetSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return leak_sensor_device_info(self._sensor, DOMAIN)
+        return leak_sensor_device_info(
+            self._sensor,
+            DOMAIN,
+            hub_link_info(self.hass, (DOMAIN, self._sensor.hub_device_id), self._coordinator._config_entry.entry_id),
+        )
 
     @property
     def native_value(self) -> datetime | None:
@@ -1205,7 +1214,11 @@ class GoveeLeakAlertStatusSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return leak_sensor_device_info(self._sensor, DOMAIN)
+        return leak_sensor_device_info(
+            self._sensor,
+            DOMAIN,
+            hub_link_info(self.hass, (DOMAIN, self._sensor.hub_device_id), self._coordinator._config_entry.entry_id),
+        )
 
     @property
     def native_value(self) -> str | None:
@@ -1237,14 +1250,19 @@ class GoveeLeakDeviceAddressSensor(SensorEntity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_translation_key = "ieee_address"
 
-    def __init__(self, sensor: GoveeLeakSensor) -> None:
+    def __init__(self, coordinator: GoveeCoordinator, sensor: GoveeLeakSensor) -> None:
+        self._coordinator = coordinator
         self._sensor = sensor
         self._attr_unique_id = f"{sensor.device_id}_address"
         self._attr_native_value = sensor.device_id
 
     @property
     def device_info(self) -> DeviceInfo:
-        return leak_sensor_device_info(self._sensor, DOMAIN)
+        return leak_sensor_device_info(
+            self._sensor,
+            DOMAIN,
+            hub_link_info(self.hass, (DOMAIN, self._sensor.hub_device_id), self._coordinator._config_entry.entry_id),
+        )
 
 
 class GoveeLeakHubAddressSensor(SensorEntity):

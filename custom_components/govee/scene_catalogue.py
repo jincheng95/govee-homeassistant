@@ -286,18 +286,20 @@ def _mode_report(frames: Iterable[bytes]) -> bytes | None:
     return None
 
 
-def _platform_scene_id(coordinator: GoveeCoordinator, device_id: str, name: str) -> str | None:
-    """The platform API id of the scene called ``name``, from the scene cache."""
+def _platform_scene_id(coordinator: GoveeCoordinator, device_id: str, name: str) -> tuple[str | None, int | None]:
+    """The platform API id and ``paramId`` of the scene called ``name``, from the scene cache."""
     cache = platform_scene_cache(coordinator)
     entry = cache.get(device_id) if cache is not None else None
     if not entry:
-        return None
+        return None, None
     for scene in entry[1]:
         if isinstance(scene, dict) and scene.get("name") == name:
             value = scene.get("value")
-            scene_id = value.get("id") if isinstance(value, dict) else None
-            return None if scene_id is None else str(scene_id)
-    return None
+            if not isinstance(value, dict) or value.get("id") is None:
+                return None, None
+            param_id = value.get("paramId")
+            return str(value["id"]), param_id if type(param_id) is int else None
+    return None, None
 
 
 def apply_scene_report(
@@ -327,11 +329,12 @@ def apply_scene_report(
             return False
         state.active_scene = None
         state.active_scene_name = None
+        state.active_scene_param_id = None
         return True
     code = raw[3] | (raw[4] << 8)
     name = catalogue(coordinator).name_for_code(device.sku, code)
     if name is None or name == state.active_scene_name:
         return False
-    state.active_scene = _platform_scene_id(coordinator, device.device_id, name)
+    state.active_scene, state.active_scene_param_id = _platform_scene_id(coordinator, device.device_id, name)
     state.active_scene_name = name
     return True

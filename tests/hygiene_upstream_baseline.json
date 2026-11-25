@@ -1,6 +1,6 @@
 {
   "upstream_ref": "upstream/main",
-  "upstream_commit": "64b9038a1f88ff188ef013c2a5d3492c0710bad7",
+  "upstream_commit": "0fdd2807fcb3a85ffa6e9be14b5e4b26b5e756cd",
   "identifiers": {
     "device_ids": [
       "00a90cf1815aa91f4d2c0c9dc5037d98bd0907746d923318b2bd03f4fb52895f",
@@ -98,6 +98,7 @@
       "ba67dbd28529b5ea9b54c4d227dce68d4aef0604e16a5211536a64d0be1e6c79",
       "bb684a8eb3436b9a0c4dec09be207a33134e20cf2ef2564151a8a3f6f8d2ab5d",
       "bfb9ea2b1da6ac7598a4c801de6fd2171896368886bebea0b6d205d6dab8afd4",
+      "c15a30299f2e362b695daec985e92647474d0230a3966bfd83807b4e64ea6f23",
       "c15db60fa06aad48414bedd191cfe8de93c399266db288444ffc78c2d20fd7a5",
       "c36dd786a480e5222008542f4ac6540fd4d60e28a2ad7ec1879efda37bf0413d",
       "c4e31ffc8cf15204ec5dc7ef6b4b6ce421acc855cd833f2eb58ca85a0f42da34",
@@ -141,6 +142,7 @@
     ],
     "colonless_ids": [
       "039a9727b5d07f8c818b1447bbf0c8d5be590cab6f96442d1b7dbb288c4f4f96",
+      "12329cc04054acf5bbc8e2b1e5b345249890569a74df46fd4ab3f0e5a0f2178f",
       "1a0acc2f23174001e825fc7a4906aa346fad86955983f1bca228029d02ee03ea",
       "2125b2c332b1113aae9bfc5e9f7e3b4c91d828cb942c2df1eeb02502eccae9e9",
       "37f96542b663971bfdf6b7785174b7255d9aa320fa3455a5b4fa7b079427cf97",

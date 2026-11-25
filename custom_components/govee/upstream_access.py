@@ -68,7 +68,7 @@ def scene_select_names(entity: Any) -> list[str]:
     scene_map = _read(entity, "_scene_map", "GoveeSceneSelectEntity._scene_map")
     if not isinstance(scene_map, Mapping):
         return []
-    return [name for _scene_id, name in scene_map.values()]
+    return [entry[-1] for entry in scene_map.values() if isinstance(entry, tuple) and entry]
 
 
 async def bff_call(coordinator: GoveeCoordinator, operation: Callable[[Any, str], Awaitable[Any]], what: str) -> Any:

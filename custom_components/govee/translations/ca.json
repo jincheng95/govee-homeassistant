@@ -244,6 +244,30 @@
       },
       "govee_bottom_light": {
         "name": "Llum inferior"
+      },
+      "govee_ambient_light": {
+        "name": "Llum ambiental"
+      },
+      "govee_wall_washing_light": {
+        "name": "Llum de paret"
+      },
+      "govee_desk_light": {
+        "name": "Llum d'escriptori"
+      },
+      "govee_left_light": {
+        "name": "Llum esquerra"
+      },
+      "govee_right_light": {
+        "name": "Llum dreta"
+      },
+      "govee_back_light": {
+        "name": "Llum posterior"
+      },
+      "govee_pillar_light": {
+        "name": "Llum de columna"
+      },
+      "govee_base_light": {
+        "name": "Llum de base"
       }
     },
     "sensor": {

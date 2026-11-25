@@ -1006,7 +1006,7 @@ class TestMasterDemotion:
         state.active_scene_name = "Lake Placid"
         light = GoveeLightEntity(coordinator, _device(), True)
         light._enable_scenes = True
-        light._scene_id_to_effect = {"3853": "Lake Placid"}
+        light._scene_id_to_effect = {("3853", None): "Lake Placid"}
 
         assert light.effect == "Lake Placid"
 

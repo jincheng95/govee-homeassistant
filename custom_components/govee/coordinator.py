@@ -78,6 +78,7 @@ from .api.lan_client import (
     correlate_scan,
 )
 from .api.lan_control import command_to_lan, lan_brightness_to_device
+from .brightness import normalize_reported_brightness
 from .const import (
     ACCOUNT_LOGIN_RETRY_INTERVAL,
     ACCOUNT_LOGIN_RETRY_MAX_INTERVAL,
@@ -188,6 +189,7 @@ from .models import (
     TransportHealth,
     TransportKind,
 )
+from .models.state import _coerce_int
 from .models.transport import TRANSPORT_KINDS
 from .transport_health import TransportHealthTracker
 from .models.commands import (
@@ -705,8 +707,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         # list we can't read.
         self._display_fahrenheit: dict[str, bool] = {}
         # Gateway hubs (e.g. H5044) bridging BFF thermo-hygrometers, keyed by
-        # hub_device_id -> {"sku"}. Registered as HA devices so via_device on
-        # the thermo entities resolves (#86).
+        # hub_device_id -> {"sku"}. Registered as HA devices so the hub link
+        # (``hub_link_info``) on the thermo entities resolves (#86).
         self._bff_thermo_hubs: dict[str, dict[str, str]] = {}
         # When a device's temp/humidity reading last *changed* — backs the
         # "Last Reading" diagnostic timestamp sensor (#83). Cloud batches
@@ -3164,7 +3166,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def register_leak_hubs(self) -> None:
         """Register each leak sensor's hub as a device.
 
-        Leak sensors set ``via_device=(DOMAIN, hub_device_id)``; HA requires
+        Leak sensors link to the hub through ``hub_link_info``; HA requires
         the referenced device to exist before the child entity is added,
         otherwise HA logs a deprecation warning (will error in 2025.12).
 
@@ -3205,7 +3207,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
     def register_thermo_hubs(self) -> None:
         """Register gateway hubs bridging BFF thermo-hygrometers (#86).
 
-        Thermo entities set ``via_device=(DOMAIN, hub_device_id)`` (e.g. H5310
+        Thermo entities link to the hub through ``hub_link_info`` (e.g. H5310
         via H5044); HA requires the referenced hub device to exist first.
         Called from the sensor platform ``async_setup_entry`` after orphan
         cleanup. Idempotent via ``async_get_or_create``.
@@ -4243,6 +4245,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # Update state from MQTT data (also flips online back True — issue #68)
         state.update_from_mqtt(state_data, ceiling_fan=ceiling_fan)
+        # Map only a value update_from_mqtt actually took: a null/empty
+        # brightness leaves the already-mapped value, which must not be mapped
+        # a second time (#307).
+        if device is not None and _coerce_int(state_data.get("brightness")) is not None:
+            state.brightness = normalize_reported_brightness(device.sku, state.brightness, device.brightness_range)
         if ceiling_fan:
             state.update_ceiling_fan_from_frames(self._op_frames_from(state_data))
         # Ceiling Light Pro zones (H1252) report main panel / ring on-off only
@@ -5289,6 +5296,10 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         try:
             state = await self._api_client.get_device_state(device_id, device.sku)
             self._record_transport_success(device_id, "cloud_api")
+            if self._poll_reported_brightness(device_id):
+                # Fresh from the poll, so never mapped twice; the optimistic
+                # grace restore below overwrites it with an already-1-100 value.
+                state.brightness = normalize_reported_brightness(device.sku, state.brightness, device.brightness_range)
             if device.mqtt_outlet_count:
                 self._apply_outlet_mask(device, state, self._raw_power_switch_value(device_id))
 
@@ -5335,6 +5346,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     state.active_scene = existing_state.active_scene
                 if existing_state.active_scene_name:
                     state.active_scene_name = existing_state.active_scene_name
+                if existing_state.active_scene_param_id is not None:
+                    state.active_scene_param_id = existing_state.active_scene_param_id
                 # DIY scenes also persist across power cycles
                 if existing_state.active_diy_scene:
                     state.active_diy_scene = existing_state.active_diy_scene
@@ -5360,6 +5373,8 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     state.last_scene_id = existing_state.last_scene_id
                 if existing_state.last_scene_name is not None:
                     state.last_scene_name = existing_state.last_scene_name
+                if existing_state.last_scene_param_id is not None:
+                    state.last_scene_param_id = existing_state.last_scene_param_id
 
                 # Heater state: keep the last known value only when the poll
                 # omits it (the API doesn't reliably return these); a polled
@@ -5514,6 +5529,27 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
                     self._mark_cached_result(device_id)
                     return refreshed
             return err
+
+    def _poll_reported_brightness(self, device_id: str) -> bool:
+        """Whether the last /device/state poll carried a numeric brightness value."""
+        raw = self._api_client.last_raw_state.get(device_id)
+        if not isinstance(raw, dict):
+            return False
+        for cap in raw.get("capabilities") or []:
+            if (
+                isinstance(cap, dict)
+                and cap.get("type") == "devices.capabilities.range"
+                and cap.get("instance") == "brightness"
+            ):
+                value = (cap.get("state") or {}).get("value")
+                if value is None or value == "":
+                    return False
+                try:
+                    int(value)
+                except (TypeError, ValueError):
+                    return False
+                return True
+        return False
 
     def _raw_power_switch_value(self, device_id: str) -> Any:
         """The verbatim ``powerSwitch`` value from the last /device/state poll.
@@ -5796,6 +5832,13 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             HomeAssistantError: H8057 Segment 4 needs an AWS IoT passthrough
                 that is unavailable or failed to publish.
         """
+        device = self._devices.get(device_id)
+        if (
+            isinstance(command, MusicModeCommand)
+            and device is not None
+            and getattr(device, "music_mode_requires_rgb", False) is True
+        ):
+            command = dataclasses.replace(command, rgb_required=True)
         confirmer = self._command_confirmer
         # Before dispatch: a newer command makes a pending confirm stale, and
         # the confirm compares against the value from before this one (#245).
@@ -6699,7 +6742,9 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
             if report.mode in ("tv", "music", "scene", "diy", "color_temp"):
                 updates.update(color=None, color_temp_kelvin=None)
             if report.mode not in ("scene", "diy"):
-                updates.update(active_scene=None, active_scene_name=None, active_diy_scene=None)
+                updates.update(
+                    active_scene=None, active_scene_name=None, active_scene_param_id=None, active_diy_scene=None
+                )
             if report.mode == "music":
                 api_mode = (
                     {0: 5, 1: 6, 2: 4, 3: 3}.get(report.music_effect) if report.music_effect is not None else None
@@ -7069,9 +7114,11 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
 
         # Try restoring last active scene
         if last_scene_id and last_scene_name:
+            last_state = self._states.get(device_id)
             command = SceneCommand(
                 scene_id=int(last_scene_id),
                 scene_name=last_scene_name,
+                param_id=last_state.last_scene_param_id if last_state else None,
             )
             success = await self.async_control_device(device_id, command)
             if success:
@@ -7452,7 +7499,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         elif isinstance(command, ColorTempCommand):
             state.apply_optimistic_color_temp(command.kelvin)
         elif isinstance(command, SceneCommand):
-            state.apply_optimistic_scene(str(command.scene_id), command.scene_name)
+            state.apply_optimistic_scene(str(command.scene_id), command.scene_name, command.param_id)
         elif isinstance(command, DIYSceneCommand):
             state.apply_optimistic_diy_scene(str(command.scene_id))
         elif isinstance(command, ModeCommand):
@@ -7646,6 +7693,7 @@ class GoveeCoordinator(DataUpdateCoordinator[dict[str, GoveeDeviceState]]):
         if state:
             state.active_scene = None
             state.active_scene_name = None
+            state.active_scene_param_id = None
             state.source = "optimistic"
 
     def clear_diy_scene(self, device_id: str) -> None:

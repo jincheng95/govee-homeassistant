@@ -145,11 +145,27 @@ CONF_API_TEMPERATURE_UNIT: Final = "api_temperature_unit"
 #   H5105 (thermo-hygrometer): same class. The raw_api_state carried
 #     sensorTemperature 74.48 (plausible indoor °F, no unit field) and Auto read
 #     it as °C, so HA showed 166.1°F.
+#   H5102 (thermo-hygrometer, #209) and H5107 (thermometer, #91): same class.
+#     The H5102's raw_api_state carried sensorTemperature 69.08-72.68 indoors
+#     and the H5107's 84.2 in an attic, both °F-scale with no unit field. With
+#     an account login the fahOpen preference decides; this list covers the
+#     API-key-only case.
 # SKUs whose Platform API listing omits colorRgb although the device reports a
 # colour over AWS IoT (#240, H7073: only powerSwitch, brightness and scenes are
 # listed, the status push carries ``color`` {r,g,b}). With IoT credentials the
 # coordinator synthesises the capability and sends colour over AWS IoT.
 MQTT_COLOR_SKUS: Final = frozenset({"H7073"})
+
+# SKUs that must never receive a LAN power-off (#308, H60A6: firmware 1.00.48
+# reboots on LAN ``turn`` value 0 and comes back on; cloud off works). Power-on
+# and every other LAN command still go over LAN.
+LAN_POWER_OFF_EXCLUDED_SKUS: Final = frozenset({"H60A6"})
+
+# SKUs whose reported brightness (REST poll and AWS IoT push) is on a raw
+# (low, high) scale instead of the 1-100 the API advertises: the H6054 reports
+# 20-254 (set 50 -> reported 136, set 100 -> 254), so the coordinator maps the
+# report back onto the device range (issue #307).
+BRIGHTNESS_REPORT_SCALE_SKUS: Final[dict[str, tuple[int, int]]] = {"H6054": (20, 254)}
 
 FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
     {
@@ -171,6 +187,8 @@ FAHRENHEIT_REPORTING_SKUS: Final = frozenset(
         "H5075",
         "H5100",
         "H5220",
+        "H5102",
+        "H5107",
     }
 )
 
@@ -248,6 +266,10 @@ SKU_SEGMENT_OVERRIDES: Final = {
     # masked ptReal frames in api/ble_packet.py (issue #223, reporter-verified
     # with send_raw_ptreal).
     "H1232": 16,
+    # H1A42: API reports 15 (elementRange.max=14), but only indices 0-4 light
+    # anything (LEDs 1-18, 19-30, 31-42, 43-54, 55-72); 5-14 are accepted and do
+    # nothing (issue #261).
+    "H1A42": 5,
 }
 
 # SKUs whose segment count follows the installed length, so no static count is
@@ -772,6 +794,16 @@ SUFFIX_BOTTOM_LIGHT: Final = "_bottom_light"
 # Fork: the ``gradientToggle`` capability, exposed truthfully as segment
 # blending (see GoveeSegmentBlendingSwitchEntity for what the hardware does).
 SUFFIX_SEGMENT_BLENDING: Final = "_segment_blending"
+# H2800 Monitor Light Bar: three independently switchable parts.
+SUFFIX_AMBIENT_LIGHT: Final = "_ambient_light"
+SUFFIX_WALL_WASHING_LIGHT: Final = "_wall_washing_light"
+SUFFIX_DESK_LIGHT: Final = "_desk_light"
+# H605A/H605B light bars (left/right/back) and the H607C floor lamp (pillar/base).
+SUFFIX_LEFT_LIGHT: Final = "_left_light"
+SUFFIX_RIGHT_LIGHT: Final = "_right_light"
+SUFFIX_BACK_LIGHT: Final = "_back_light"
+SUFFIX_PILLAR_LIGHT: Final = "_pillar_light"
+SUFFIX_BASE_LIGHT: Final = "_base_light"
 SUFFIX_MUSIC_MODE: Final = "_music_mode"
 SUFFIX_MUSIC_SENSITIVITY: Final = "_music_sensitivity"
 SUFFIX_DREAMVIEW: Final = "_dreamview"

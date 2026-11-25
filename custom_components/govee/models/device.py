@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from homeassistant.helpers.device_registry import DeviceInfo
 
@@ -550,7 +550,7 @@ class GoveeDevice:
         linger as orphans until deleted by hand. Release notes for the version
         that first ships a new SKU here must say so.
         """
-        pattern = re.compile(r"[a-z]+LightToggle")
+        pattern = re.compile(r"[a-z][A-Za-z]*LightToggle")
         dead_on_this_sku = (
             {INSTANCE_MAIN_LIGHT_TOGGLE, INSTANCE_BACKGROUND_LIGHT_TOGGLE}
             if self.sku.upper() in MAIN_LIGHT_TOGGLE_SKUS
@@ -1059,6 +1059,22 @@ class GoveeDevice:
                         options: list[dict[str, Any]] = f.get("options", [])
                         return options
         return []
+
+    @property
+    def music_mode_requires_rgb(self) -> bool:
+        """True when the musicMode STRUCT declares ``rgb`` as a required field.
+
+        The H2800 Monitor Light Bar marks ``rgb`` required even for
+        ``autoColor=1``, and the cloud API rejects a payload without it
+        (HTTP 400 "Missing parameter"). Other lights treat ``rgb`` as optional
+        and are left unchanged.
+        """
+        for cap in self.capabilities:
+            if cap.type == CAPABILITY_MUSIC_MODE and cap.instance == INSTANCE_MUSIC_MODE:
+                for f in cap.parameters.get("fields", []):
+                    if f.get("fieldName") == "rgb":
+                        return bool(f.get("required"))
+        return False
 
     def get_music_sensitivity_range(self) -> tuple[int, int]:
         """Extract sensitivity range from capability fields.
@@ -1615,18 +1631,27 @@ class GoveeLeakSensorState:
     lower_probe_wet: bool | None = None  # H5059 dual-probe only; None = not yet reported (#224)
 
 
-def leak_sensor_device_info(sensor: GoveeLeakSensor, domain: str) -> DeviceInfo:
+def leak_sensor_device_info(sensor: GoveeLeakSensor, domain: str, hub_link: dict[str, Any]) -> DeviceInfo:
     """Build the HA DeviceInfo for a leak sensor.
 
     Shared across binary_sensor, sensor, and event platforms.
+
+    Args:
+        sensor: The leak sensor.
+        domain: Integration domain.
+        hub_link: Hub link keys from ``registry.hub_link_info`` (models stay I/O-free).
+
+    Returns:
+        DeviceInfo for the sensor, linked to its hub per ``hub_link``.
     """
     info = DeviceInfo(
         identifiers={(domain, sensor.device_id)},
         name=sensor.name,
         manufacturer="Govee",
         model=sensor.sku,
-        via_device=(domain, sensor.hub_device_id),
     )
+    for key, value in hub_link.items():
+        cast(Any, info)[key] = value
     if sensor.hw_version:
         info["hw_version"] = sensor.hw_version
     if sensor.sw_version:

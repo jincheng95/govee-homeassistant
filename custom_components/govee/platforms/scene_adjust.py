@@ -182,7 +182,7 @@ def async_scene_reset_button_entities(coordinator: GoveeCoordinator, entry: Conf
 
 
 async def async_start_scene_locally(
-    coordinator: GoveeCoordinator, device: GoveeDevice, scene_id: int, scene_name: str
+    coordinator: GoveeCoordinator, device: GoveeDevice, scene_id: int, scene_name: str, param_id: int | None = None
 ) -> bool:
     """Upload a catalogue scene as raw frames instead of asking the cloud.
 
@@ -212,12 +212,14 @@ async def async_start_scene_locally(
         coordinator, device.device_id, device.sku, profile, frames, what="scene start"
     ):
         return False
-    state.apply_optimistic_scene(str(scene_id), scene_name)
+    state.apply_optimistic_scene(str(scene_id), scene_name, param_id)
     coordinator.async_update_listeners()
     return True
 
 
-async def async_start_scene_from_select(entity: Any, scene_id: int, scene_name: str) -> bool:
+async def async_start_scene_from_select(
+    entity: Any, scene_id: int, scene_name: str, param_id: int | None = None
+) -> bool:
     """Start a scene picked in the scene select locally, when its name is unambiguous.
 
     A name that two platform scenes share could mean either catalogue blob, so
@@ -225,7 +227,7 @@ async def async_start_scene_from_select(entity: Any, scene_id: int, scene_name: 
     """
     if scene_select_names(entity).count(scene_name) != 1:
         return False
-    return await async_start_scene_locally(entity.coordinator, entity._device, scene_id, scene_name)
+    return await async_start_scene_locally(entity.coordinator, entity._device, scene_id, scene_name, param_id)
 
 
 class _GoveeSceneSettingBase(GoveeEntity):

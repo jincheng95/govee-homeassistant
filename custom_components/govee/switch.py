@@ -20,8 +20,10 @@ from .const import (
     CONF_ENABLE_H6104_BLE,
     DEFAULT_ENABLE_H6104_BLE,
     HEATER_AUTO_STOP_STRUCT_SKUS,
+    SUFFIX_AMBIENT_LIGHT,
     SUFFIX_BACKGROUND_LIGHT,
     SUFFIX_BOTTOM_LIGHT,
+    SUFFIX_DESK_LIGHT,
     SUFFIX_DREAMVIEW,
     SUFFIX_HEATER_AUTO_STOP,
     SUFFIX_HEATER_OSCILLATION,
@@ -30,12 +32,18 @@ from .const import (
     SUFFIX_MAIN_LIGHT,
     SUFFIX_MUSIC_MODE,
     SUFFIX_NEBULA_LIGHT,
+    SUFFIX_LEFT_LIGHT,
+    SUFFIX_RIGHT_LIGHT,
+    SUFFIX_BACK_LIGHT,
+    SUFFIX_PILLAR_LIGHT,
+    SUFFIX_BASE_LIGHT,
     SUFFIX_NIGHT_LIGHT,
     SUFFIX_RIPPLE_LIGHT,
     SUFFIX_SEGMENT_BLENDING,
     SUFFIX_SIDE_LIGHT,
     SUFFIX_MQTT_OUTLET,
     SUFFIX_SOCKET,
+    SUFFIX_WALL_WASHING_LIGHT,
 )
 from .coordinator import GoveeConfigEntry, GoveeCoordinator
 from .entity import GoveeEntity
@@ -77,6 +85,17 @@ NAMED_LIGHT_TOGGLE_SPECS: dict[str, tuple[str, str]] = {
     "rippleLightToggle": ("govee_ripple_light", SUFFIX_RIPPLE_LIGHT),
     "sideLightToggle": ("govee_side_light", SUFFIX_SIDE_LIGHT),
     "bottomLightToggle": ("govee_bottom_light", SUFFIX_BOTTOM_LIGHT),
+    # H2800 Monitor Light Bar: ambient / wall-washing / desk light.
+    "ambientLightToggle": ("govee_ambient_light", SUFFIX_AMBIENT_LIGHT),
+    "wallWashingLightToggle": ("govee_wall_washing_light", SUFFIX_WALL_WASHING_LIGHT),
+    "deskLightToggle": ("govee_desk_light", SUFFIX_DESK_LIGHT),
+    # H605A/H605B light bars and the H607C floor lamp: seen in the 2026-11
+    # diagnostics (#241, #306); write-only like the rest (Govee returns "").
+    "leftLightToggle": ("govee_left_light", SUFFIX_LEFT_LIGHT),
+    "rightLightToggle": ("govee_right_light", SUFFIX_RIGHT_LIGHT),
+    "backLightToggle": ("govee_back_light", SUFFIX_BACK_LIGHT),
+    "pillarLightToggle": ("govee_pillar_light", SUFFIX_PILLAR_LIGHT),
+    "baseLightToggle": ("govee_base_light", SUFFIX_BASE_LIGHT),
 }
 
 

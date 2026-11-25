@@ -36,7 +36,7 @@ class TestTheMembersExist:
     def test_the_scene_select_map(self) -> None:
         coordinator = _coordinator(scene=None)
         entity = GoveeSceneSelectEntity(coordinator, coordinator.devices[DEVICE_ID], PLATFORM_SCENES[:2])
-        assert all(isinstance(value, tuple) and len(value) == 2 for value in entity._scene_map.values())
+        assert all(isinstance(value, tuple) and len(value) == 3 for value in entity._scene_map.values())
         assert upstream_access.scene_select_names(entity) == [scene["name"] for scene in PLATFORM_SCENES[:2]]
 
 
