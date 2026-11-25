@@ -994,7 +994,7 @@ class TestMasterDemotion:
         state.active_scene = "3853"
         state.active_scene_name = "Lake Placid"
         master = _master(coordinator, _entry(coordinator))
-        master._scene_id_to_effect = {"3853": "Lake Placid"}
+        master._scene_id_to_effect = {("3853", None): "Lake Placid"}
 
         assert master.effect is None
 
